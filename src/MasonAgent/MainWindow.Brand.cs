@@ -19,7 +19,7 @@ public sealed partial class MainWindow
     // brand/tokens.json palette
     static readonly Color BrandPaper = Rgb(0xF8F6F2), BrandWhite = Rgb(0xFFFFFF), BrandInk = Rgb(0x20263C), BrandMuted = Rgb(0x535B72);
     static readonly Color BrandViolet = Rgb(0x4849A8), BrandNight = Rgb(0x171A2B), BrandRaised = Rgb(0x24283E), BrandSilver = Rgb(0xC3C9E0), BrandBright = Rgb(0xC3C2FF);
-    // The "line" token (#777D8E / silver) at hairline strength over each theme's surface.
+    // Hairline borders over each theme's surface ("hairline" and "seam" in brand/tokens.json).
     static readonly Color BrandLineLight = Rgb(0xD9DBE1), BrandLineDark = Rgb(0x3B4059);
     const double RadiusSmall = 8, RadiusLarge = 20;
 
