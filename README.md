@@ -64,10 +64,10 @@ Prerequisites:
 dotnet build src\MasonAgent\MasonAgent.csproj -c Debug -p:Platform=x64
 
 # Release payload and ZIP in artifacts\MasonAgent-<version>-win-x64
-.\scripts\Publish.ps1 -Version 1.7.1
+.\scripts\Publish.ps1 -Version 1.7.2
 
 # ... plus the installer
-.\scripts\Publish.ps1 -Version 1.7.1 -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+.\scripts\Publish.ps1 -Version 1.7.2 -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
 `Publish.ps1` refuses to overwrite an existing release folder and writes a SHA-256 `payload-manifest.json` into the payload.
