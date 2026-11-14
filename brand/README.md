@@ -2,16 +2,16 @@
 
 <img src="characters/01-mortar.png" alt="Mortar, a violet paper-craft wombat with a steady half-smile" width="180" align="right">
 
-Mason Agent is a Windows coding workspace that runs on your own local models. You add a project, decide what the agent may do and review every change before you keep it. The identity is about careful building: the M is laid like two courses of brick with the joint left visible, and the tagline says what the product is for: **Make the next move clear.**
+Mason Agent is a Windows coding workspace that runs on your own local models. You add a project, decide what the agent may do and review every change before you keep it. The identity is about careful building, one checked step at a time. It has two parts, Mortar the mascot and the Mason Agent wordmark, and the tagline says what the product is for: **Make the next move clear.**
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="logo-kit/png/brand-reversed-1024w.png">
-  <img src="logo-kit/png/brand-primary-outlined-1024w.png" alt="Mason Agent logo: a violet M built from two offset blocks, beside the Mason Agent wordmark" width="360">
+  <source media="(prefers-color-scheme: dark)" srcset="logo-kit/png/logo-dark-1024w.png">
+  <img src="logo-kit/png/logo-light-1024w.png" alt="Mason Agent logo: Mortar the wombat beside the Mason Agent wordmark" width="360">
 </picture>
 
 ## The mascot
 
-**Mortar** is a wombat cut from layers of violet and lilac card, with a broad cream face and a dark nose. The stepped cheeks and overlapping paper repeat the offset blocks of the M. Mortar is steady and quietly witty: someone who checks the work before saying it is done.
+**Mortar** is a wombat cut from layers of violet and lilac card, with a broad cream face and a dark nose. The stepped cheeks and overlapping layers look built up piece by piece, like the work the app is for. Mortar is steady and quietly witty: someone who checks the work before saying it is done.
 
 Four companions are made of the same paper. **Lintel** the heron is perceptive and brief, **Dovetail** the badger asks the exact question, **Rivet** the beetle is energetic and focused, and **Plumb** the seal is calm and dependable.
 
@@ -36,20 +36,21 @@ Please don't:
 
 ## Logo
 
-| File (in `logo-kit/svg`, PNG copies in `logo-kit/png`) | Use it for |
+The logo is Mortar beside the wordmark, the same pairing the app shows in its title bar.
+
+| File (in `logo-kit/png`) | Use it for |
 | --- | --- |
-| `brand-primary-outlined` | The default: the M and the wordmark side by side, on light backgrounds. |
-| `brand-reversed` | The same lockup in white, for dark backgrounds. |
-| `brand-symbol` | The M alone: favicons, profile pictures and other square spaces. |
-| `brand-mono` | One-colour printing, in ink. |
-| `brand-wordmark-outlined` | The lettering alone. The app places it next to Mortar. |
+| `logo-light-512w`, `-1024w`, `-2048w` | The default: Mortar and the wordmark in ink, for light backgrounds. Transparent PNG. |
+| `logo-dark-512w`, `-1024w`, `-2048w` | The same lockup with the wordmark in paper, for dark backgrounds. Transparent PNG. |
+| `mascot-64px` to `mascot-1024px` | Mortar alone: favicons, profile pictures, app icons and other square spaces. |
+| `brand-wordmark-outlined` (also in `logo-kit/svg`) | The lettering alone, for layouts that place Mortar themselves, as the app does. |
 
-- **Minimum size.** In marketing and print, keep the logo at least 180 px wide and the symbol at least 24 px. The app's 48 px title bar uses a compact lockup instead: a 32 px Mortar and a wordmark 16 px tall, which works there because the window frames it.
-- **Clear space.** Leave a margin as wide as one leg of the M on every side.
-- **Do** use the SVG wherever you can, the PNG where you cannot, and the reversed logo on dark backgrounds.
-- **Don't** stretch, rotate or recolour the logo, close the gap between the two halves of the M, add shadows or outlines, or set the name in a font yourself. The wordmark is drawn artwork (Manrope at weight 750, converted to outlines).
+- **Minimum size.** In marketing and print, keep Mortar at least 32 px tall in the logo, which makes the logo about 215 px wide. Alone, Mortar can go down to 16 px, as in the favicon. The app's 48 px title bar uses a 32 px Mortar and a wordmark 16 px tall.
+- **Clear space.** Leave a margin of half Mortar's height on every side.
+- **Do** use the light logo on light backgrounds and the dark logo on dark ones, and use Mortar alone where the space is square.
+- **Don't** stretch, rotate or recolour the logo, change the gap or the relative sizes of Mortar and the wordmark, add shadows or outlines, or set the name in a font yourself. The wordmark is drawn artwork (Manrope at weight 750, converted to outlines).
 
-`logo-kit/preview/logo-usage.png` shows the four main versions on one sheet.
+`logo-kit/preview/logo-usage.png` shows both logos and Mortar alone on one sheet.
 
 ## Colour
 
@@ -63,7 +64,7 @@ Warm paper, blue-black ink and a single violet. The dark theme is a separate set
 | White | `#FFFFFF` | Cards, panels and message surfaces; text on violet buttons |
 | Ink | `#20263C` | Text and the wordmark |
 | Muted | `#535B72` | Secondary text and captions |
-| Violet | `#4849A8` | Buttons, links, selected items, progress, and the M itself |
+| Violet | `#4849A8` | Buttons, links, selected items and progress |
 | Hairline | `#D9DBE1` | Borders of cards and panels |
 
 **Dark theme**
@@ -106,12 +107,13 @@ Name the file, the command and the result. Say "on this computer" when something
 | Path | What it holds |
 | --- | --- |
 | `tokens.json`, `tokens.css` | The palette, light and dark theme colours, fonts and corner radii, for code |
-| `logo-kit/svg`, `logo-kit/png` | The logo versions listed above (PNG at 512 to 4096 px wide; the symbol from 64 to 2048 px) |
-| `logo-kit/favicon` | Favicons, touch icons and a web manifest |
+| `logo-kit/png` | The logos (512 to 2048 px wide), Mortar alone (64 to 1024 px) and the wordmark (512 to 4096 px wide) |
+| `logo-kit/svg` | The wordmark as vector outlines |
+| `logo-kit/favicon` | Favicons and touch icons made from Mortar, and a web manifest |
 | `logo-kit/preview` | The logo usage sheet |
 | `logo-kit/fonts` | Manrope and its licence |
 | `characters` | Mortar and the four companions on round backdrops, 512 px |
-| `graphics` | Share images as SVG and PNG: 1200 × 630 Open Graph, 1080 × 1080 square, 1500 × 500 header, a 1024 px profile picture and a 512 px maskable icon |
+| `graphics` | Share images as PNG: 1200 × 630 Open Graph, 1080 × 1080 square, 1500 × 500 header, a 1024 px profile picture and a 512 px maskable icon |
 
 The app keeps its own copies of the art it shows, including Mortar's mascot art, in [`src/MasonAgent/Assets`](../src/MasonAgent/Assets). The website is in [`site`](../site).
 

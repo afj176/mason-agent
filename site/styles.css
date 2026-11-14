@@ -104,8 +104,10 @@ h3 { font-size: 1.15rem; font-weight: 700; }
   border-bottom: 1px solid var(--line);
 }
 .bar { width: min(1160px, 100% - 32px); margin-inline: auto; height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.brand { display: flex; align-items: center; border-radius: 8px; }
-.brand img { width: 152px; height: auto; }
+.brand { display: flex; align-items: center; gap: 10px; border-radius: 8px; }
+.brand picture { display: flex; }
+.brand-mascot { width: 40px; height: 40px; }
+.brand-wordmark { width: 128px; height: auto; }
 .site-header ul { list-style: none; display: flex; align-items: center; gap: 4px; margin: 0; padding: 0; }
 .site-header nav a {
   display: inline-flex; align-items: center; gap: 8px;
@@ -201,7 +203,9 @@ h3 { font-size: 1.15rem; font-weight: 700; }
 @media (max-width: 640px) {
   body { font-size: 1rem; }
   .site-header .wide { display: none; }
-  .brand img { width: 128px; }
+  .brand { gap: 8px; }
+  .brand-mascot { width: 34px; height: 34px; }
+  .brand-wordmark { width: 84px; }
   .cards, .gallery, .download-grid { grid-template-columns: 1fr; }
   .ctas .button { flex: 1 1 100%; }
   .download-head img { width: 64px; height: 64px; }

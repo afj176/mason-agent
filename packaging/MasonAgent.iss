@@ -101,7 +101,7 @@ Type: files; Name: "{app}\DbCowboy.NetworkHook.*"
 Type: files; Name: "{app}\sandbox-setup\DbCowboy.SandboxSetup.*"
 Type: files; Name: "{app}\native-handoff\DbCowboy.BashBootstrap.exe"
 Type: files; Name: "{app}\Import-DbCowboyProfile.ps1"
-; The letter-mark logo images were replaced by the mascot lockup in 1.1.
+; Logo images that versions before 1.1 installed; the app now shows Mortar and the wordmark.
 Type: files; Name: "{app}\Assets\Brand\logo-dark.png"
 Type: files; Name: "{app}\Assets\Brand\logo-light.png"
 Type: files; Name: "{app}\Assets\Brand\symbol.png"
