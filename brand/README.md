@@ -43,7 +43,6 @@ Please don't:
 | `brand-symbol` | The M alone: favicons, profile pictures and other square spaces. |
 | `brand-mono` | One-colour printing, in ink. |
 | `brand-wordmark-outlined` | The lettering alone. The app places it next to Mortar. |
-| `brand-secondary-outlined` | The same artwork as the primary logo, kept so the file names match the other kits. |
 
 - **Minimum size.** In marketing and print, keep the logo at least 180 px wide and the symbol at least 24 px. The app's 48 px title bar uses a compact lockup instead: a 32 px Mortar and a wordmark 16 px tall, which works there because the window frames it.
 - **Clear space.** Leave a margin as wide as one leg of the M on every side.
