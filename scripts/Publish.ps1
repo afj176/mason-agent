@@ -11,6 +11,7 @@ dotnet publish (Join-Path $appRoot 'src/Mason.SandboxSetup') -c Release -p:Debug
 if($LASTEXITCODE -ne 0){throw 'Mason.SandboxSetup publish failed'}
 & (Join-Path $PSScriptRoot 'Assert-ReleasePayload.ps1') -Payload $payload
 Copy-Item -LiteralPath (Join-Path $appRoot 'README.md') -Destination $payload
+Copy-Item -LiteralPath (Join-Path $appRoot 'LICENSE') -Destination $payload
 $notices=Join-Path $appRoot 'THIRD-PARTY-NOTICES.md'
 if(Test-Path -LiteralPath $notices){Copy-Item -LiteralPath $notices -Destination $payload}
 New-Item -ItemType Directory -Path (Join-Path $payload 'licenses') -Force | Out-Null

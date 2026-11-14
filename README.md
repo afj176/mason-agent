@@ -90,4 +90,4 @@ Everything stays on your computer: projects, sessions, chats and settings live i
 
 ## License
 
-License: to be decided. Manrope is used under the SIL Open Font License 1.1; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[MIT](LICENSE). Manrope is used under the SIL Open Font License 1.1; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
