@@ -1,0 +1,228 @@
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Windows.System;
+namespace Mason;
+
+public sealed partial class MainWindow : Window
+{
+    // Below this window width (in effective pixels) the sidebar collapses to an icon rail.
+    const double CompactShellWidth = 900;
+
+    readonly Grid root = new() { RequestedTheme = ElementTheme.Default };
+    readonly NavigationView nav = new()
+    {
+        IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed,
+        IsSettingsVisible = false,
+        IsPaneToggleButtonVisible = false,
+        PaneDisplayMode = NavigationViewPaneDisplayMode.Left,
+        OpenPaneLength = 228
+    };
+    // One status line for the whole window. Pages may add their own context on the right.
+    readonly TextBlock status = Muted("Ready", 12), pageContext = Muted("", 12);
+    // Holds the page area; the hairline where it meets the sidebar is NavigationView's own content edge (ApplyShellSurface).
+    readonly Border shellDivider = new();
+    readonly InfoBar feedback = new() { IsOpen = false, IsClosable = true };
+    readonly Dictionary<string, FrameworkElement> pages = [];
+    bool dialogOpen;
+    AppPreferences preferences = new();
+
+    static TextBlock Text(string text, double size = 14)
+    {
+        var ink = new SolidColorBrush();
+        var label = new TextBlock { Text = text, FontSize = size <= 13 ? size + 1 : size, TextWrapping = TextWrapping.Wrap, Foreground = ink };
+        // Display sizes are headings: set them in the brand display face.
+        if (size >= 18) { label.FontFamily = DisplayFont; label.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; }
+        void Theme()
+        {
+            ink.Color = BrandHighContrast
+                ? brandSystemColors.UIElementColor(Windows.UI.ViewManagement.UIElementType.WindowText)
+                : label.ActualTheme == ElementTheme.Dark ? BrandPaper : BrandInk;
+        }
+        label.Loaded += (_, _) => Theme(); label.ActualThemeChanged += (_, _) => Theme(); Theme();
+        return label;
+    }
+    static Button Button(string text, RoutedEventHandler handler, bool accent = false) { var b = new Button { Content = text, Padding = new Thickness(13, 7, 13, 7), VerticalAlignment = VerticalAlignment.Center }; b.Click += handler; if (accent) { b.Style = (Style)Application.Current.Resources["AccentButtonStyle"]; BrandAccent(b); } return b; }
+    static StackPanel Row(params UIElement[] items) { var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; foreach (var i in items) p.Children.Add(i); return p; }
+    static StackPanel Stack(params UIElement[] items) { var p = new StackPanel { Spacing = 10 }; foreach (var i in items) p.Children.Add(i); return p; }
+    static ScrollViewer ScrollTools(FrameworkElement content) => new() { Content = content, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
+    static Grid Vertical(FrameworkElement top, FrameworkElement body) { var g = new Grid { RowSpacing = 10 }; g.RowDefinitions.Add(new() { Height = GridLength.Auto }); g.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); g.Children.Add(top); Grid.SetRow(body, 1); g.Children.Add(body); return g; }
+
+    public MainWindow()
+    {
+        Title = "Mason Agent";
+        SystemBackdrop = new MicaBackdrop(); Content = root;
+        try { preferences = Store.Read<AppPreferences>("appearance.json") ?? new(); }
+        catch (Exception error) { status.Text = "Appearance could not be read: " + error.Message; }
+        // Enum.TryParse also accepts numbers, so only a defined theme name is honoured; anything else means Auto.
+        root.RequestedTheme = Enum.TryParse<ElementTheme>(preferences.Theme, out var theme) && Enum.IsDefined(theme) ? theme : ElementTheme.Default;
+        // Every animation checks the Windows animation setting and this app preference (MainWindow.Chrome.cs, Fluent.cs).
+        Fluent.ReducedMotion = () => preferences.ReducedMotion;
+        RestorePlacement(); TrackPlacement();
+
+        // Title bar above, sidebar and pages below; Mica shows through both except where the page paper sits.
+        root.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
+        BrandControl(nav);
+        ApplyShellSurface();
+        root.Children.Add(BuildTitleBar(BrandHeader()));
+        ApplyWindowTheme(); root.ActualThemeChanged += (_, _) => ApplyWindowTheme();
+        brandSystemColors.ColorValuesChanged += (_, _) => DispatcherQueue.TryEnqueue(ApplyWindowTheme);
+        Fluent.FollowContrast(root, ApplyWindowTheme);
+        Grid.SetRow(nav, 1); root.Children.Add(nav);
+        BuildNavigation();
+        nav.ItemInvoked += (_, e) =>
+        {
+            if (e.InvokedItemContainer is not NavigationViewItem { Tag: string route } item) return;
+            DispatcherQueue.TryEnqueue(() => Navigate(route));
+        };
+
+        pages["Code"] = BuildCodeWorkspace();
+        pages["Chat"] = BuildChatWorkspace();
+        var endpoints = BuildAiConnections();
+        var library = BuildModelLibrary();
+        var resources = ModeSwitcher(("Models", library), ("Connections", endpoints));
+        selectResources = index => resources.SelectedIndex = index == 2 ? 1 : 0;
+        pages["Models and connections"] = resources;
+        // "Use for coding" in the model library opens Code with that model selected;
+        // "Open in chat" goes through openNativeChat, which the Chat page owns.
+        openCodeWithModel = id => { Navigate("Code"); selectCodingModel?.Invoke(id); };
+
+        var content = new Grid { Padding = new Thickness(20, 14, 20, 10) };
+        // Lifted cards and the floating composers cast their shadow onto this empty layer behind the pages
+        // (a ThemeShadow receiver may not contain the element that casts it).
+        var shadowLayer = new Grid(); content.Children.Add(shadowLayer); Fluent.AddShadowReceiver(shadowLayer);
+        foreach (var view in pages.Values) { view.Visibility = Visibility.Collapsed; content.Children.Add(view); }
+        nav.Content = BuildShell(content);
+        Navigate("Code");
+
+        root.SizeChanged += (_, _) => ArrangeShell();
+        root.KeyboardAccelerators.Add(Shortcut(VirtualKey.Escape, VirtualKeyModifiers.None, () => { codeOperation?.Cancel(); aiOperation?.Cancel(); }));
+        root.KeyboardAccelerators.Add(Shortcut(VirtualKey.K, VirtualKeyModifiers.Control, FocusTitleSearch));
+        AppWindow.Closing += async (_, e) =>
+        {
+            if(codeOperation != null || aiOperation != null || modelScanBusy?.Invoke() == true)
+            {
+                codeOperation?.Cancel(); aiOperation?.Cancel(); modelScanCancel?.Invoke();
+                e.Cancel = true; status.Text = "Stopping active work. Close again when it finishes."; return;
+            }
+            if(!downloadsClosed && modelDownloads != null)
+            {
+                e.Cancel = true; if(downloadsClosing) return; downloadsClosing = true;
+                try { await modelDownloads.DisposeAsync(); }
+                catch(Exception error) { await Notice("Downloads paused", error.Message); }
+                finally { downloadsClosed = true; }
+                Close(); return;
+            }
+            modelServing.Dispose();
+        };
+    }
+
+    Action<Guid>? openCodeWithModel;
+
+    void BuildNavigation()
+    {
+        NavigationViewItem Item(string key, string label, string glyph, string tip, bool selectable = true)
+        {
+            var item = new NavigationViewItem
+            {
+                Content = label, Tag = key, Icon = new FontIcon { Glyph = glyph },
+                Height = 40, MinHeight = 40, FontSize = 14, SelectsOnInvoked = selectable
+            };
+            AutomationProperties.SetName(item, label);
+            ToolTipService.SetToolTip(item, tip);
+            return BrandControl(item);
+        }
+        nav.MenuItems.Add(Item("Code", "Code", "", "Projects, sessions, files and changes"));
+        nav.MenuItems.Add(Item("Chat", "Chat", "", "Conversations with a model, without a project"));
+        nav.FooterMenuItems.Add(Item("Models and connections", "Models & endpoints", "", "Local models and saved server connections"));
+        nav.PaneFooter = BuildThemeSwitch();
+    }
+
+    /// <summary>Content area above a slim status strip: window status on the left, page context on the right.</summary>
+    FrameworkElement BuildShell(FrameworkElement content)
+    {
+        status.MaxLines = pageContext.MaxLines = 1;
+        status.TextWrapping = pageContext.TextWrapping = TextWrapping.NoWrap;
+        status.TextTrimming = pageContext.TextTrimming = TextTrimming.CharacterEllipsis;
+        status.IsTextSelectionEnabled = true;
+        AutomationProperties.SetName(status, "Status");
+        AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        // Long errors are trimmed in the strip; the tooltip carries the full text.
+        status.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) => ToolTipService.SetToolTip(status, status.Text));
+        pageContext.MaxWidth = 420;
+
+        var strip = new Grid { ColumnSpacing = 16, Padding = new Thickness(20, 6, 20, 7) };
+        strip.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        strip.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        strip.Children.Add(status);
+        Grid.SetColumn(pageContext, 1); strip.Children.Add(pageContext);
+        var stripFrame = new Border { Child = strip, BorderThickness = new Thickness(0, 1, 0, 0) };
+        // High contrast keeps the separator, drawn in the system text colour.
+        void Line() => stripFrame.BorderBrush = new SolidColorBrush(BrandHighContrast ? brandSystemColors.UIElementColor(Windows.UI.ViewManagement.UIElementType.WindowText) : BrandLine(root.ActualTheme == ElementTheme.Dark));
+        brandSystemColors.ColorValuesChanged += (_, _) => DispatcherQueue.TryEnqueue(Line);
+        root.ActualThemeChanged += (_, _) => Line(); Line();
+
+        var shell = new Grid();
+        shell.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
+        shell.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        shell.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        shell.Children.Add(content);
+        feedback.Margin = new Thickness(20, 0, 20, 8); Grid.SetRow(feedback, 1); shell.Children.Add(feedback);
+        Grid.SetRow(stripFrame, 2); shell.Children.Add(stripFrame);
+        shellDivider.Child = shell;
+        return shellDivider;
+    }
+
+    void ArrangeShell()
+    {
+        var mode = root.ActualWidth < CompactShellWidth ? NavigationViewPaneDisplayMode.LeftCompact : NavigationViewPaneDisplayMode.Left;
+        if (nav.PaneDisplayMode != mode) nav.PaneDisplayMode = mode;
+    }
+
+    /// <summary>The Auto / Light / Dark choice at the foot of the sidebar. It applies at once and is saved.</summary>
+    ThemeSwitch BuildThemeSwitch()
+    {
+        var theme = new ThemeSwitch(root.RequestedTheme, segment => BrandControl(segment)) { Margin = new Thickness(12, 4, 12, 10) };
+        theme.Changed += async chosen =>
+        {
+            try { Store.Write("appearance.json", preferences with { Theme = chosen.ToString() }); root.RequestedTheme = chosen; preferences = preferences with { Theme = chosen.ToString() }; }
+            catch (Exception error)
+            {
+                // The window keeps its current theme, so the switch must show that one too.
+                theme.Display(root.RequestedTheme);
+                await Notice("Appearance could not be saved", error.Message);
+            }
+        };
+        return theme;
+    }
+
+    KeyboardAccelerator Shortcut(VirtualKey key, VirtualKeyModifiers modifiers, Action action) { var a = new KeyboardAccelerator { Key = key, Modifiers = modifiers }; a.Invoked += (_, e) => { e.Handled = true; action(); }; return a; }
+
+    void ShowPage(string name)
+    {
+        if(!pages.ContainsKey(name)) return;
+        bool changed = currentRoute != name;
+        string from = currentRoute;
+        currentRoute = name;
+        if(name == "Code") refreshCodeProfiles?.Invoke();
+        if(name == "Chat") refreshNativeChatProfiles?.Invoke();
+        if(name == "Models and connections") refreshModelLibrary?.Invoke();
+        foreach(var view in pages) view.Value.Visibility = view.Key == name ? Visibility.Visible : Visibility.Collapsed;
+        // The right side of the status strip belongs to the Code page (project, branch, save state).
+        pageContext.Visibility = name == "Code" ? Visibility.Visible : Visibility.Collapsed;
+        // A model row's Code or Chat button hands off to its page (connected animation); otherwise the page
+        // enters the way navigation moved, like the stacked pages of Windows Settings.
+        if (changed && !Fluent.Connect("workspace-card", pages[name])) Fluent.PageIn(pages[name], MotionFor(from, name));
+    }
+
+    void Navigate(string name)
+    {
+        if(name is "Models" or "AI connections") { selectResources?.Invoke(name == "AI connections" ? 2 : 0); name = "Models and connections"; }
+        if(!pages.ContainsKey(name)) return;
+        ShowPage(name);
+        nav.SelectedItem = nav.MenuItems.Concat(nav.FooterMenuItems).OfType<NavigationViewItem>().FirstOrDefault(x => Equals(x.Tag, name));
+    }
+}

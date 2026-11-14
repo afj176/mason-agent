@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/Mason.Code.Core/Mason.Code.Core.csproj" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../src/MasonAgent/OwnedModelProcess.cs" Link="OwnedModelProcess.cs" />
+    <Compile Include="../../src/MasonAgent/CodeLocalModel.cs" Link="CodeLocalModel.cs" />
+    <Compile Include="../../src/MasonAgent/AiChat.cs" Link="AiChat.cs" />
+    <Compile Include="../../src/MasonAgent/AiConnections.cs" Link="AiConnections.cs" />
+  </ItemGroup>
+</Project>

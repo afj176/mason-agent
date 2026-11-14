@@ -1,0 +1,18 @@
+{
+  "qwen2": "Qwen2ForCausalLM",
+  "qwen3": "Qwen3ForCausalLM",
+  "qwen3_moe": "Qwen3MoeForCausalLM",
+  "llama": "LlamaForCausalLM",
+  "mistral": "MistralForCausalLM",
+  "mixtral": "MixtralForCausalLM",
+  "gemma": "GemmaForCausalLM",
+  "gemma2": "Gemma2ForCausalLM",
+  "gemma3_text": "Gemma3ForCausalLM",
+  "phi": "PhiForCausalLM",
+  "phi3": "Phi3ForCausalLM",
+  "gpt_neox": "GPTNeoXForCausalLM",
+  "gpt2": "GPT2LMHeadModel",
+  "opt": "OPTForCausalLM",
+  "t5": "T5ForConditionalGeneration",
+  "bart": "BartForConditionalGeneration"
+}
