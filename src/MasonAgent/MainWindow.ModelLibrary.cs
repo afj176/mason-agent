@@ -156,7 +156,7 @@ public sealed partial class MainWindow
             noMatchesTitle.Text=discovered.Length==0?"Your collection starts here":"No models match";
             // An empty collection and an empty filter result are different moments.
             clearFilters.Visibility=discovered.Length==0?Visibility.Collapsed:Visibility.Visible;
-            noMatchesMortar.Source=ReactionSource(discovered.Length==0?MoodChecking:MoodUnsure,96);
+            noMatchesMortar.Source=MascotSource(discovered.Length==0?MoodChecking:MoodUnsure,96);
             noMatchesHelp.Text=discovered.Length==0?"Scan common folders, or add the folder where your model weights live. Scan warnings appear above.":"Try a different name or capability, or clear your filters.";
             clearFilters.Visibility=discovered.Length==0?Visibility.Collapsed:Visibility.Visible;emptyAdd.Visibility=discovered.Length==0?Visibility.Visible:Visibility.Collapsed;
             servingEmpty.Visibility=modelServing.Running.Count==0?Visibility.Visible:Visibility.Collapsed;

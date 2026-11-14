@@ -287,7 +287,7 @@ public sealed partial class MainWindow
             if (mood == shownMood) return;
             shownMood = mood;
             if (mood.Length == 0) return;
-            stateMood.Source = ReactionSource(mood, 40);
+            stateMood.Source = MascotSource(mood, 40);
             AutomationProperties.SetName(stateMood, "Mortar: " + meaning);
             FadeIn(stateMood);
         }
@@ -852,7 +852,7 @@ public sealed partial class MainWindow
             var decline = Button("Decline", (_, _) => completion.TrySetResult(false));
             var approvalTitle = Text("Review " + request.Tool.Replace('_', ' '), 17); approvalTitle.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; approvalTitle.VerticalAlignment = VerticalAlignment.Center;
             AutomationProperties.SetName(allow, "Allow " + request.Tool.Replace('_', ' ') + " once"); AutomationProperties.SetName(decline, "Decline " + request.Tool.Replace('_', ' '));
-            var approvalCard = ChatSurface(Stack(Row(ReactionImage(MoodChecking, 44, "needs your review"), approvalTitle), detail, Row(allow, decline)), new Thickness(14, 10, 14, 12));
+            var approvalCard = ChatSurface(Stack(Row(MascotImage(MoodChecking, 44, "needs your review"), approvalTitle), detail, Row(allow, decline)), new Thickness(14, 10, 14, 12));
             approvalHost.Content = approvalCard; FadeIn(approvalCard);
             try { return await completion.Task; } finally { approvalHost.Content = null; pendingApproval = null; }
         }

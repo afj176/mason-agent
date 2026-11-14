@@ -1,6 +1,6 @@
 # Mason Agent brand guide
 
-<img src="avatars/01-mortar.png" alt="Mortar, a violet paper-craft wombat with a steady half-smile" width="180" align="right">
+<img src="characters/01-mortar.png" alt="Mortar, a violet paper-craft wombat with a steady half-smile" width="180" align="right">
 
 Mason Agent is a Windows coding workspace that runs on your own local models. You add a project, decide what the agent may do and review every change before you keep it. The identity is about careful building: the M is laid like two courses of brick with the joint left visible, and the tagline says what the product is for: **Make the next move clear.**
 
@@ -15,7 +15,7 @@ Mason Agent is a Windows coding workspace that runs on your own local models. Yo
 
 Four companions are made of the same paper. **Lintel** the heron is perceptive and brief, **Dovetail** the badger asks the exact question, **Rivet** the beetle is energetic and focused, and **Plumb** the seal is calm and dependable.
 
-<img src="avatars/01-mortar.png" alt="Mortar" width="88"> <img src="avatars/02-lintel.png" alt="Lintel" width="88"> <img src="avatars/03-dovetail.png" alt="Dovetail" width="88"> <img src="avatars/04-rivet.png" alt="Rivet" width="88"> <img src="avatars/05-plumb.png" alt="Plumb" width="88">
+<img src="characters/01-mortar.png" alt="Mortar" width="88"> <img src="characters/02-lintel.png" alt="Lintel" width="88"> <img src="characters/03-dovetail.png" alt="Dovetail" width="88"> <img src="characters/04-rivet.png" alt="Rivet" width="88"> <img src="characters/05-plumb.png" alt="Plumb" width="88">
 
 Where Mortar appears in the app:
 
@@ -25,12 +25,12 @@ Where Mortar appears in the app:
 - **Session status.** Next to a session, Mortar shows how it stands: "I'm on it" while working, "Let me check" when it waits for your review or approval, "Well played" when it finished with changes to review, "We're good" when it only answered, and "Oof" when it failed or was blocked.
 - **Empty lists.** "Not convinced" appears when a search of your models finds nothing.
 
-Mortar's eight reactions are still images; nothing in the app animates in a loop. The companions are for profiles, documentation and community spaces, and do not appear in the app.
+Mortar's eight moods are still images; nothing in the app animates in a loop. The companions are for profiles, documentation and community spaces, and do not appear in the app.
 
 Please don't:
 
 - Put Mortar inside the working surfaces, such as diffs, file views and command output.
-- Use a cheerful reaction for a failure, or any reaction in place of the message. The text always says what happened.
+- Use a cheerful mood for a failure, or any mascot art in place of the message. The text always says what happened.
 - Recolour Mortar, add a badge or circle behind the cut-out, or crop the ears.
 - Give the companions speaking parts in the app. Mortar is the only voice.
 
@@ -110,10 +110,10 @@ Name the file, the command and the result. Say "on this computer" when something
 | `logo-kit/favicon` | Favicons, touch icons and a web manifest |
 | `logo-kit/preview` | The logo usage sheet |
 | `logo-kit/fonts` | Manrope and its licence |
-| `avatars` | Mortar and the four companions on round backdrops, 512 px |
+| `characters` | Mortar and the four companions on round backdrops, 512 px |
 | `graphics` | Share images as SVG and PNG: 1200 × 630 Open Graph, 1080 × 1080 square, 1500 × 500 header, a 1024 px profile picture and a 512 px maskable icon |
 
-The app keeps its own copies of the art it shows, including Mortar's reactions, in [`src/MasonAgent/Assets`](../src/MasonAgent/Assets). The website is in [`site`](../site).
+The app keeps its own copies of the art it shows, including Mortar's mascot art, in [`src/MasonAgent/Assets`](../src/MasonAgent/Assets). The website is in [`site`](../site).
 
 ## Licence
 

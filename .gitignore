@@ -12,14 +12,14 @@ __pycache__/
 crash.txt
 
 # Brand production material: generation prompts, reviews, manifests and duplicates of what the app ships.
-# The app's own copies live in src/*/Assets; the logo kit, avatars, graphics and tokens stay here.
+# The app's own copies live in src/*/Assets; the logo kit, characters, graphics and tokens stay here.
 brand-source/
-brand/reactions/
+brand/mascot-art/
 brand/site/
 brand/REVIEW.md
 brand/integration-manifest.json
 brand/inventory-sha256.json
-brand/avatars/manifest.json
+brand/characters/manifest.json
 brand/logo-kit/handoff.json
 brand/logo-kit/manifest.json
 brand/logo-kit/qa-report.json

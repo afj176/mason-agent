@@ -113,7 +113,7 @@ public sealed partial class MainWindow
             text.HorizontalAlignment = HorizontalAlignment.Center;
             if (text.FontSize < 18) text.Opacity = .8;
         }
-        var mortar = ReactionImage(mood, 96, meaning);
+        var mortar = MascotImage(mood, 96, meaning);
         mortar.HorizontalAlignment = HorizontalAlignment.Center;
         panel.Children.Insert(0, mortar);
         panel.Children.Add(actions);
@@ -161,7 +161,7 @@ public sealed partial class MainWindow
         models.Padding = new Thickness(0, 4, 0, 4);
 
         return WelcomeHost(640,
-            Centered(ReactionImage(MoodWelcome, 148, "glad you're here")),
+            Centered(MascotImage(MoodWelcome, 148, "glad you're here")),
             WelcomeTitle("Bring a project into focus."),
             WelcomeBody("Add a folder and Mason Agent keeps its conversations, files and changes together."),
             add, models, facts);
@@ -179,7 +179,7 @@ public sealed partial class MainWindow
         actions.HorizontalAlignment = HorizontalAlignment.Center;
 
         return WelcomeHost(560,
-            Centered(ReactionImage(MoodWorking, 124, "ready to start")),
+            Centered(MascotImage(MoodWorking, 124, "ready to start")),
             WelcomeTitle("Start a session in " + project.Name, 26),
             WelcomeBody("This project has no sessions yet. Its files are untouched; start a conversation when you're ready."),
             actions);
@@ -191,7 +191,7 @@ public sealed partial class MainWindow
         var browse = CodeLink("Browse workspace files", (_, _) => browseFiles());
         browse.HorizontalAlignment = HorizontalAlignment.Center;
         return WelcomeHost(520,
-            Centered(ReactionImage(MoodChecking, 104, "ready to look")),
+            Centered(MascotImage(MoodChecking, 104, "ready to look")),
             WelcomeTitle("What would you like to change?", 26),
             WelcomeBody("Ask about this project or describe a change. Files, changes and previews open beside the conversation when there is something to show."),
             PromptList(fill,
@@ -205,7 +205,7 @@ public sealed partial class MainWindow
     Grid ChatWelcome(Action<string> fill)
     {
         return WelcomeHost(520,
-            Centered(ReactionImage(MoodReady, 132, "ready")),
+            Centered(MascotImage(MoodReady, 132, "ready")),
             WelcomeTitle("Make the next move clear."),
             WelcomeBody("Think a problem through, or attach a document and ask about it. Chat uses the model you choose; conversations are saved on this computer."),
             PromptList(fill,

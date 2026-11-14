@@ -344,7 +344,7 @@ public sealed partial class MainWindow
                 {
                     var incomplete = Text(turn.State + " · incomplete answers are excluded from later context", 12); incomplete.VerticalAlignment = VerticalAlignment.Center;
                     // Failures get Mortar's "oof"; a stop you asked for is not a failure.
-                    if (turn.State is "Failed" or "No final answer") content.Children.Add(Row(ReactionImage(MoodTrouble, 40, turn.State.ToLowerInvariant()), incomplete));
+                    if (turn.State is "Failed" or "No final answer") content.Children.Add(Row(MascotImage(MoodTrouble, 40, turn.State.ToLowerInvariant()), incomplete));
                     else content.Children.Add(incomplete);
                 }
                 if (turn.StatusDetail.Length > 0) content.Children.Add(Text(turn.StatusDetail, 12));
@@ -583,7 +583,7 @@ public sealed partial class MainWindow
             var liveAnswer = new TextBlock { FontSize = 15, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, LineHeight = 24 };
             var liveReasoning = new TextBlock { FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
             var liveName = Text(profile.Name, 13); liveName.VerticalAlignment = VerticalAlignment.Center;
-            var live = Stack(Row(ReactionImage(MoodChecking, 34, "working on the answer"), liveName), new Expander { Header = "Reasoning", Content = liveReasoning, HorizontalAlignment = HorizontalAlignment.Stretch }, liveAnswer);
+            var live = Stack(Row(MascotImage(MoodChecking, 34, "working on the answer"), liveName), new Expander { Header = "Reasoning", Content = liveReasoning, HorizontalAlignment = HorizontalAlignment.Stretch }, liveAnswer);
             // Your message and the answer's live view are the new containers: they animate in. Tokens then only
             // change the text inside the live view, which never re-triggers the panel's transitions.
             var sent = transcript.Children[^2];

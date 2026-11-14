@@ -105,19 +105,19 @@ public sealed partial class MainWindow
         return box;
     }
 
-    // Mortar's reaction stills (Assets/Brand/reactions). One artwork set serves both themes: the
+    // Mortar's mascot art (Assets/Brand/mascot). One artwork set serves both themes: the
     // stills are transparent cut-outs, so they are drawn as they are, with no badge or clip behind them.
     const string MoodWelcome = "08-you-made-my-day", MoodReady = "01-that-checks-out", MoodChecking = "02-let-me-check";
     const string MoodUnsure = "03-not-convinced", MoodPleased = "04-well-played", MoodTrouble = "05-oof";
     const string MoodDone = "06-were-good", MoodWorking = "07-im-on-it";
 
-    static BitmapImage ReactionSource(string mood, double size)
-        => new(new Uri($"ms-appx:///Assets/Brand/reactions/{mood}-light.png")) { DecodePixelWidth = (int)Math.Min(768, size * 2) };
+    static BitmapImage MascotSource(string mood, double size)
+        => new(new Uri($"ms-appx:///Assets/Brand/mascot/{mood}-light.png")) { DecodePixelWidth = (int)Math.Min(768, size * 2) };
 
-    /// <summary>A Mortar reaction still. <paramref name="meaning"/> is what assistive technology reads.</summary>
-    static Image ReactionImage(string mood, double size, string meaning)
+    /// <summary>One Mortar mood still. <paramref name="meaning"/> is what assistive technology reads.</summary>
+    static Image MascotImage(string mood, double size, string meaning)
     {
-        var image = new Image { Source = ReactionSource(mood, size), Width = size, Height = size, Stretch = Stretch.Uniform, VerticalAlignment = VerticalAlignment.Center };
+        var image = new Image { Source = MascotSource(mood, size), Width = size, Height = size, Stretch = Stretch.Uniform, VerticalAlignment = VerticalAlignment.Center };
         AutomationProperties.SetName(image, "Mortar: " + meaning);
         return image;
     }
@@ -143,7 +143,7 @@ public sealed partial class MainWindow
         var notice = new Grid { ColumnSpacing = 20, Padding = new Thickness(24), MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         notice.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         notice.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        var mortar = ReactionImage(MoodTrouble, 72, "something went wrong");
+        var mortar = MascotImage(MoodTrouble, 72, "something went wrong");
         notice.Children.Add(mortar);
         Grid.SetColumn(text, 1); notice.Children.Add(text);
         return notice;
