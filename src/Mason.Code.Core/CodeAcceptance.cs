@@ -11,6 +11,8 @@ public sealed record AcceptanceCheck(int Unit, string Feature, string Kind, stri
 public sealed record AcceptanceResult(AcceptanceCheck Check, bool Passed, string Detail)
 {
     public string? ScriptPath {get;init;}
+    public int? ScriptLine {get;init;}
+    public string? ScriptError {get;init;}
 }
 public sealed record CodePageRepair(CodeFile File, string Request, string Evidence, string Instructions)
 {

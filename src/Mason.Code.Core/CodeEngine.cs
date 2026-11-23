@@ -147,7 +147,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 string? question = null;
                 try
                 {
-                    action = await model.Next(messages, text => { session.LiveMessage = text; changed(); }, cancellation);
+                    var quickFix=repairPage!=null && acceptance!=null && session.Permission==CodePermission.Auto && createdFiles.Contains(repairPage.Path) &&
+                        session.Changes.Any(c=>c.Path==repairPage.Path && c.AfterHash==repairPage.Sha256 && !c.Restored)
+                        ? CodeJavaScriptRepair.ForGeneratedFile(repairPage,acceptance.Results) : null;
+                    action = quickFix ?? await model.Next(messages, text => { session.LiveMessage = text; changed(); }, cancellation);
                     if (action.Tool == "ask_user") question = ReadQuestion(action.Arguments);
                 }
                 catch (CodeResponseException error)

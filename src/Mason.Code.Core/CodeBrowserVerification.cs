@@ -5,9 +5,11 @@ namespace Mason.Code;
 
 internal static class CodeBrowserVerification
 {
-    sealed class ScriptFailure(string message, string? path) : Exception(message)
+    sealed class ScriptFailure(string message, string? path,int? line,string error) : Exception(message)
     {
         public string? Path {get;}=path;
+        public int? Line {get;}=line;
+        public string Error {get;}=error;
     }
     const string Origin = "https://workspace.mason.invalid";
     const string Policy = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'; sandbox allow-scripts allow-same-origin";
@@ -61,7 +63,8 @@ internal static class CodeBrowserVerification
     {
         var reason = e.Message.Split('\n')[0].Trim();
         var assertion = c.Kind == "browser_click" ? $"click '{c.Target}' and observe new visible text '{c.Expected}'" : c.Expected;
-        return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}") {ScriptPath=(e as ScriptFailure)?.Path};
+        var script=e as ScriptFailure;
+        return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}") {ScriptPath=script?.Path,ScriptLine=script?.Line,ScriptError=script?.Error};
     }
 
     static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct)
@@ -131,11 +134,16 @@ internal static class CodeBrowserVerification
             if(source.TryGetProperty("url",out var name) && Uri.TryCreate(name.GetString(),UriKind.Absolute,out var uri))
                 staticFiles.TryGetValue(uri.GetLeftPart(UriPartial.Path),out path);
             var where=path??check.Path;
+            int? sourceLine=null;
             if(source.TryGetProperty("lineNumber",out var line) && source.TryGetProperty("columnNumber",out var column))
-                where+=$":{line.GetInt32()+1}:{column.GetInt32()+1}";
+            {
+                sourceLine=line.GetInt32()+1;
+                where+=$":{sourceLine}:{column.GetInt32()+1}";
+            }
             var message=details.TryGetProperty("exception",out var ex) && ex.TryGetProperty("description",out var description)
                 ? description.GetString() : details.GetProperty("text").GetString();
-            Interlocked.CompareExchange(ref scriptFailure,new ScriptFailure($"JavaScript error at {where}: {message?.Split('\n')[0]}",path??(app==null?check.Path:null)),null);
+            var reason=(message??"Uncaught error").Split('\n')[0].Trim();
+            Interlocked.CompareExchange(ref scriptFailure,new ScriptFailure($"JavaScript error at {where}: {reason}",path??(app==null?check.Path:null),sourceLine,reason[..Math.Min(240,reason.Length)]),null);
         };
         await runtime.SendAsync("Runtime.enable");
         page.PageError+=(_,message)=>Record("JavaScript error: "+message);

@@ -74,6 +74,22 @@ internal static class HarnessContractChecks
             await new CodeEngine(store,edit,(_,_)=>throw new Exception("Unexpected approval"),()=>{}).Run(conflict,"Update the map handler",default);
             check(edit.SawFreshSource && File.ReadAllText(Path.Combine(web,"handler.js")).Contains("fixed click") && conflict.Activities.Any(a=>a.State=="Failed" && a.Tool=="edit_file"),
                 "Auto handles stale edits with the current source and a hash-checked replacement");
+            var build=store.New(Directory.CreateDirectory(Path.Combine(area,"generated")).FullName);
+            build.Permission=CodePermission.Auto;
+            await new CodeEngine(store,new BrokenBinding(),(_,_)=>throw new Exception("Unexpected approval"),()=>{}).Run(build,
+                "Clicking the button \"Start\" must show \"Ready\".",default);
+            check(build.State=="Completed" && build.Activities.Any(a=>a.Tool=="replace_file" && a.State=="Completed") &&
+                build.Activities.Any(a=>a.Result.Contains("Assignment to constant variable")), "Edge identifies a reassigned binding and Auto repairs its own file before accepting the interaction");
+        }
+    }
+    sealed class BrokenBinding:ICodeModel
+    {
+        int calls;
+        public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages,Action<string> stream,CancellationToken ct)
+        {
+            if(calls++>0)throw new Exception("Expected a host repair of the observed binding");
+            string content="<!doctype html><html><body><button>Start</button><output></output><script>\nconst value = '';\ndocument.querySelector('button').onclick=()=>{\nvalue = 'Ready';\ndocument.querySelector('output').textContent=value;\n};\n</script></body></html>";
+            return Task.FromResult(new CodeAction("Create page","create_file",JsonSerializer.SerializeToElement(new{path="index.html",content})));
         }
     }
 
