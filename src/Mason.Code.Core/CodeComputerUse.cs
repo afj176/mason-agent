@@ -53,7 +53,7 @@ public static class CodeComputerUse
         var body=page.Locator("body");
         static string Clip(string s,int n)=>s.Length<=n?s:s[..n];
         // Include rendered IDs for noninteractive outputs; a reviewer needs a stable assertion target.
-        var outputs=await page.Locator("[id]:visible").EvaluateAllAsync<string>("els=>els.slice(0,100).map(e=>'#'+CSS.escape(e.id)+' '+e.tagName.toLowerCase()).join('\\n')");
+        var outputs=await page.Locator("[id]:visible").EvaluateAllAsync<string>("els=>els.slice(0,100).map(e=>'#'+CSS.escape(e.id)+' | '+e.tagName.toLowerCase()).join('\\n')");
         var ids=await page.Locator("[id]").EvaluateAllAsync<string[]>("els=>els.slice(0,150).map(e=>'#'+CSS.escape(e.id))");
         return(new ComputerObservation(Clip(await body.InnerTextAsync(),4500),Clip(await body.AriaSnapshotAsync(),5000)+"\nVisible elements\n"+Clip(outputs,2500),[..selectors]){ProductSections=[..sections],ElementIds=ids},handles);
     }

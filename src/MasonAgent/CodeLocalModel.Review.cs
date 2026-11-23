@@ -37,7 +37,7 @@ public sealed partial class CodeLocalModel
 
     public async Task<BrowserScenario[]> DesignReview(string request,string path,ComputerObservation observation,CancellationToken ct)
     {
-        var money=Regex.Matches(request,@"\$\s*(\d+(?:\.\d{1,2})?)").Select(m=>decimal.Parse(m.Groups[1].Value,CultureInfo.InvariantCulture)).ToHashSet();
+        var money=CatalogSpec.Amounts(request);
         if(money.Count>=2 && Regex.IsMatch(request,@"\b(cart|basket|checkout|discount)\b",RegexOptions.IgnoreCase)){
             var cart=await ReviewPrices(request,path,observation,money,ct);
             if(cart!=null)return cart;
@@ -70,9 +70,15 @@ public sealed partial class CodeLocalModel
     {
         var number=new{type="number",minimum=0};
         var item=Shape(("Name",Str(70)),("UnitPrice",number),("DiscountedPrice",number),("Threshold",new{type="integer",minimum=0,maximum=10}),("Button",new{type="integer",minimum=1,maximum=64}));
+        // An observation includes both CSS selectors and descriptive text. Bind a named
+        // total to an actual element so its tag cannot accidentally become a descendant selector.
+        var totalIds=observation.ElementIds.Where(id=>Regex.IsMatch(id,@"total|amount[-_]?due|balance[-_]?due",RegexOptions.IgnoreCase)).Distinct().ToArray();
+        object totalField=totalIds.Length>0?EnumOf(totalIds):Str(100);
         var basket=await IsolatedDecision<Basket>("""
             Extract the price rules FROM THE REQUEST. Use the observation only to map each item to its Add button (1-based index in Selectors) and the total's CSS selector. Undiscounted items have Threshold=0 and DiscountedPrice=UnitPrice. If there are insufficient price rules or no cart, return an empty Items array. Do not infer expected prices from the observed page.
-            """,new{request,observation},Shape(("Items",new{type="array",maxItems=6,items=item}),("Total",Str(100))),ct);
+            """,new{request,observation},Shape(("Items",new{type="array",maxItems=6,items=item}),("Total",totalField)),ct);
+        if(totalIds.Length==1)basket=basket with{Total=totalIds[0]};
+        if(totalIds.Length>1 && !totalIds.Contains(basket.Total))throw new InvalidDataException("Reviewer did not select an observed total.");
         if(basket.Items.Length<2)return null;
         // Prefer a unique product heading/section over the model's list ordinal.
         var items=basket.Items.Select(i=>{

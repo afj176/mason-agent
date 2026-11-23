@@ -129,7 +129,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     System.Text.RegularExpressions.Regex.IsMatch(input,@"\b(?:single|self-contained)\b[^.\r\n]{0,60}\bindex\.html\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))
                 {
                     var guidance=acceptance.Storefront?"\nUse one numeric quantity per food and a price table. Derive the total anew from all quantities at render time. A discounted line uses its requested unit price at its threshold. After checkout remove all visible cart rows, set total to zero, and save the exact receipt. Render the same saved receipt after reload. Implement the full visual brief.":"";
-                    system=system with {PageDraft=new("index.html",input.Split("```mason.acceptance.json",2)[0].Trim()+guidance,string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)),instructions)};
+                    system=system with {PageDraft=new("index.html",input.Split("```mason.acceptance.json",2)[0].Trim()+guidance+"\n"+acceptance.BuildFacts,string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)),instructions)};
                 }
                 if(failedCommands.Count>0)system=system with {Content=system.Content+"\nOutstanding command checks from this task. Inspect the workspace and explicitly rerun the affected check when appropriate: "+JsonSerializer.Serialize(failedCommands.Select(c=>new{c.Tool,c.Arguments}))};
                 if (observedHashes.Count > 0) system = system with { ObservedHashes=observedHashes.Values.Distinct().TakeLast(32).ToArray() };
@@ -138,7 +138,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)) };
                 if(repairingAcceptance) system = system with { RepairingAcceptance=true, Content = system.Content + "\nThe previous implementation failed a host check. Inspect the failed receipt and repair the page. For a small page with broken HTML, use replace_file with the observed hash and complete valid HTML." };
                 if (repairPage is {} page && acceptance!=null) system = system with { ObservedHashes=[page.Sha256],
-                    PageRepair=new(page,acceptance.Request,RepairEvidence(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
+                    PageRepair=new(page,acceptance.Request,acceptance.BuildFacts+"\n"+RepairEvidence(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
                         RelatedSource=RelatedSource(page,acceptance),
                         PreservePassingScenarios=acceptance.Results.Any(r=>r.Passed && r.Check.Kind=="browser_flow") &&
                             acceptance.Results.Any(r=>!r.Passed && r.Check.Kind=="browser_flow"),

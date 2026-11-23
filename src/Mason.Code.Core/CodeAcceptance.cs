@@ -30,6 +30,7 @@ public sealed class CodeAcceptancePlan
     public bool LiteralRequirements {get;set;}
     public string? IndependentReviewPage {get;set;}
     public bool Storefront {get;set;}
+    [System.Text.Json.Serialization.JsonIgnore] public string BuildFacts {get;set;}="";
     public string[] RequirementIds => Units.Select((u,i)=>CodeProtocol.Hash(System.Text.Encoding.UTF8.GetBytes($"{TaskId:N}|{i+1}|{u}"))[..16]).ToArray();
     public string Request { get; set; } = "";
     public string[] Units { get; set; } = [];

@@ -62,6 +62,25 @@ internal static class HarnessExtensionChecks
         check(action.Tool=="replace_file" && action.Arguments.GetProperty("expected_sha256").GetString()==file.Sha256 &&
             action.Arguments.GetProperty("content").GetString()==file.Content.Replace("old();","\n"+script+"\n"),
             "A fresh behavior repair preserves the generated shell and pins the observed source hash");
+        const string brief="Build a store. Rice costs $4 each, three or more cost 3 dollars each. Add Oats for $2. Show the cart total.";
+        var catalog=await CodeStorefrontPlan.Prepare(brief,new PantryPlanner(),default);
+        check(catalog!=null && catalog.Checks.Where(c=>c.Kind=="unverified").Select(c=>c.Feature).SequenceEqual(["Email the receipt"]) &&
+            catalog.BuildFacts.Contains("q * (q >= 3 ? 3 : 4)"),"Covered catalog paraphrases retain real feature checks and unknown requirements remain outstanding");
+        var reply=JsonSerializer.Serialize(new {Items=new[]{new{Name="Rice",UnitPrice=4,DiscountedPrice=3,Threshold=3,Button=1},
+            new{Name="Oats",UnitPrice=2,DiscountedPrice=2,Threshold=0,Button=2}},Total="#amount-due div"});
+        var reviewer=new CodeLocalModel(new AiEndpointProfile{Model="test-coder",Endpoint="http://127.0.0.1:5179"},"","default",_=>{},()=>new LocalAiClient(new ModelHandler(reply)));
+        var scenarios=await reviewer.DesignReview(brief,"index.html",new("","",["#rice | Add","#oats | Add"]){ElementIds=["#amount-due"]},default);
+        check(scenarios.Single().Steps.Where(s=>s.Op=="money").All(s=>s.Target=="#amount-due"),
+            "Independent prices use the observed total element even if a model appends its HTML tag");
+    }
+
+    sealed class PantryPlanner : ICodeCatalogPlanner
+    {
+        public Task<CatalogSpec> ExtractCatalog(string request,CancellationToken ct)=>Task.FromResult(new CatalogSpec(
+            [new("Rice",4,3,3),new("Oats",2,2,0)],"ORD-",true,true,
+            ["A whimsical food store design for bears","Shoppers can add each food to the cart and see the cart total",
+             "Other foods keep their own shelf prices","The cart total is the sum of the three food line totals",
+             "Show the same receipt after the page is reloaded","Email the receipt"]));
     }
 
     sealed class ShelfReviewer : ICodeModel, ICodeBrowserOperator

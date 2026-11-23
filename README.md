@@ -102,10 +102,10 @@ dotnet build src\MasonAgent\MasonAgent.csproj -c Debug -p:Platform=x64
 
 # Release payload and ZIP in artifacts\MasonAgent-<version>-win-x64
 .\scripts\Invoke-ModelBenchmark.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -OutputDirectory .cache\qualification
-.\scripts\Publish.ps1 -Version 2.0.0 -ModelEvidence .cache\qualification\report.json
+.\scripts\Publish.ps1 -Version 2.0.1 -ModelEvidence .cache\qualification\report.json
 
 # ... plus the installer
-.\scripts\Publish.ps1 -Version 2.0.0 -ModelEvidence .cache\qualification\report.json -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+.\scripts\Publish.ps1 -Version 2.0.1 -ModelEvidence .cache\qualification\report.json -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
 `Publish.ps1` requires a clean checkout, two passing real-model trials per scenario and the exact commit in the benchmark, binary and release manifest. Both packages include the model benchmark and SHA-256 payload manifest. The GitHub release workflow runs the benchmark on a Windows runner labeled `mason-model-evals` with repository variables `MASON_EVAL_ENDPOINT` and `MASON_EVAL_MODEL` for a running local model.
