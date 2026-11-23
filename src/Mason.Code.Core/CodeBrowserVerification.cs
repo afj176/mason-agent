@@ -140,11 +140,12 @@ internal static class CodeBrowserVerification
                 catch (Exception e) when (e is TimeoutException or PlaywrightException) { throw new InvalidDataException($"No unique clickable button or link named '{check.Target}' at {width}px."); }
                 try { await VisibleText().First.WaitForAsync(); }
                 catch (TimeoutException) {
-                    var body=await page.Locator("body").InnerTextAsync();
-                    throw new InvalidDataException($"Clicked '{check.Target}' at {width}px. The page never displayed '{check.Expected}'. Visible page text: {body[..Math.Min(300,body.Length)]}."+
+                    var body=System.Text.RegularExpressions.Regex.Replace(await page.Locator("body").InnerTextAsync(),@"\s+"," ").Trim();
+                    throw new InvalidDataException($"Clicked '{check.Target}' at {width}px. The page never displayed '{check.Expected}'."+
                     (dialogMessage!=null?$" JavaScript dialog: '{dialogMessage}'. The check requires visible text in the page.":
                      suppressedDialog!=null?" JavaScript dialog blocked by browser: "+suppressedDialog:"")+
-                    (errors.TryPeek(out var scriptError)?" Page error: "+scriptError:"")); }
+                    (errors.TryPeek(out var scriptError)?" Page error: "+scriptError:"")+
+                    $" Visible page text: {body[..Math.Min(300,body.Length)]}."); }
                 break;
             case "browser_text":
                 await VisibleText().First.WaitForAsync();

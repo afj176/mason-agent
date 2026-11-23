@@ -158,7 +158,7 @@ static class HarnessRecoveryChecks
         check(plan.Results[0].Passed && !plan.Results[1].Passed,"a broken handler fails its feature independently on fresh page bytes");
         File.WriteAllText(Path.Combine(root,"index.html"),page.Replace("document.querySelector('output').textContent='Cart updated'","alert('Cart updated')"));
         await CodeAcceptance.Verify(plan,scope,CodePermission.Auto,default);
-        check(!plan.Results[1].Passed && plan.Results[1].Detail.Contains("JavaScript dialog"),"a modal dialog cannot certify an in-page update and its browser diagnostic is returned for repair");
+        check(!plan.Results[1].Passed && plan.Results[1].Detail.Contains("JavaScript dialog"),"a modal dialog cannot certify an in-page update and its browser diagnostic is returned for repair: "+plan.Results[1].Detail);
         File.WriteAllText(Path.Combine(root,"index.html"),broken.Replace("<output></output>","<output>Cart updated</output>"));
         var resume = new AcceptanceFixture([],Tool("create_file",new { path="notes.txt",content="delivery" }),Done(),Done(),Done());
         await new CodeEngine(store,resume,(_,_)=>throw new Exception("Unexpected review"),()=>{}).Run(task,"continue",default);
