@@ -9,6 +9,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
     static string S(JsonElement a, string key) => a.GetProperty(key).GetString() ?? throw new ArgumentException(key + " must be text.");
     public async Task Run(CodeSession session, string input, CancellationToken cancellation)
     {
+        // WinUI TextBox uses CR for paragraph breaks, while files and API callers use LF or CRLF.
+        input=input?.ReplaceLineEndings("\n")??"";
         bool newTask=input?.StartsWith("/new ",StringComparison.OrdinalIgnoreCase)==true;
         if(newTask)input=input![5..].Trim();
         if (string.IsNullOrWhiteSpace(input) || input.Length > 16_000) throw new ArgumentException("Describe a change in 1–16,000 characters.");

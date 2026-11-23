@@ -80,6 +80,24 @@ internal static class HarnessContractChecks
                 "Clicking the button \"Start\" must show \"Ready\".",default);
             check(build.State=="Completed" && build.Activities.Any(a=>a.Tool=="replace_file" && a.State=="Completed") &&
                 build.Activities.Any(a=>a.Result.Contains("Assignment to constant variable")), "Edge identifies a reassigned binding and Auto repairs its own file before accepting the interaction");
+            var desktop=store.New(Directory.CreateDirectory(Path.Combine(area,"desktop")).FullName);desktop.Permission=CodePermission.Auto;
+            var specification=new BrowserContract(1,null,[new("start","Start shows Ready","index.html",[new("click","button"),new("text","output","Ready")])]);
+            var form="Build this page.\r\r```mason.acceptance.json\r"+JsonSerializer.Serialize(specification)+"\r```";
+            await new CodeEngine(store,new DesktopBuild(),(_,_)=>throw new Exception("Unexpected review"),()=>{}).Run(desktop,form,default);
+            var desktopPlan=desktop.Turns.First().Acceptance!;
+            check(desktop.State=="Completed" && desktopPlan.Checks.Count==1 && desktopPlan.Checks[0].Target=="start" && desktopPlan.Results.Single().Passed,
+                "the installed WinUI CR-only composer preserves the pinned scenario and runs its actual browser steps");
+        }
+    }
+    sealed class DesktopBuild:ICodeModel
+    {
+        bool created;
+        public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages,Action<string> stream,CancellationToken ct)=>
+            Task.FromResult(created ? new CodeAction("Finished.",null,default) : Create());
+        CodeAction Create(){
+            created=true;
+            return new("Create page","create_file",JsonSerializer.SerializeToElement(new{path="index.html",
+                content="<button onclick=\"document.querySelector('output').textContent='Ready'\">Start</button><output></output>"}));
         }
     }
     sealed class BrokenBinding:ICodeModel
