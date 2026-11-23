@@ -116,6 +116,12 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     refreshInventory = false;
                 }
                 var system = WorkspacePrompt(session, listing, instructions, available, snippetRecovery);
+                if(step==0 && acceptance!=null && session.Permission==CodePermission.Auto && !verificationOnly && listing.RootIsOnlyDirectory && listing.Files.Length==0 &&
+                    acceptance.Checks.Count>0 && acceptance.Checks.All(c=>c.Kind=="browser_flow" && c.Application==null && c.Path=="index.html") &&
+                    System.Text.RegularExpressions.Regex.IsMatch(input,@"\b(?:single|self-contained)\b[^.\r\n]{0,60}\bindex\.html\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                {
+                    system=system with {PageDraft=new("index.html",input.Split("```mason.acceptance.json",2)[0].Trim(),string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)),instructions)};
+                }
                 if(failedCommands.Count>0)system=system with {Content=system.Content+"\nOutstanding command checks from this task. Inspect the workspace and explicitly rerun the affected check when appropriate: "+JsonSerializer.Serialize(failedCommands.Select(c=>new{c.Tool,c.Arguments}))};
                 if (observedHashes.Count > 0) system = system with { ObservedHashes=observedHashes.Values.Distinct().TakeLast(32).ToArray() };
                 if (acceptance != null) system = system with { Content = system.Content +

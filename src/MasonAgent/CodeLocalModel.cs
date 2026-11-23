@@ -139,6 +139,8 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
         Verify(server);
         if (messages.FirstOrDefault()?.PageRepair is {} repair && CodeSchema.Available(messages)?.Contains("replace_file")==true)
             return await RepairPage(client,server,repair,cancellation);
+        if(messages.FirstOrDefault()?.PageDraft is {} draft && CodeSchema.Available(messages)?.Contains("create_file")==true)
+            return await DraftPage(client,server,draft,cancellation);
         if(server.FlintTools)return await NativeNext(client,server,messages,onMessage,cancellation);
         var options = new ChatGenerationOptions { Reasoning = reasoning, JsonOutput = server.Llama, Temperature = .15, TimeoutMinutes = 15 };
         ApplyResponseRecovery(options, server, messages);
@@ -198,6 +200,25 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
         try { return CodeProtocol.Parse(buffer.ToString()) with { PerformanceSummary = result.PerformanceSummary }; }
         catch (Exception error) when (error is JsonException or InvalidDataException or InvalidOperationException or KeyNotFoundException or FormatException)
         { throw new CodeResponseException("Invalid action JSON: " + error.Message, buffer.ToString()); }
+    }
+    async Task<CodeAction> DraftPage(LocalAiClient client,ChatServerInfo server,CodePageDraft draft,CancellationToken ct)
+    {
+        var messages=new[]{new AiMessage("system","You are implementing a complete self-contained offline website in an empty directory. Return just the full HTML document with styling and JavaScript. Use the precise UI selectors in the supplied tests. Walk through every user interaction, derived value and required storage transition before returning the implementation. No placeholders, explanation or Markdown."),
+            new AiMessage("user",$"User request\n{draft.Request}\nRepository instructions\n{draft.Instructions}\nAcceptance scenarios\n{draft.Checks}")};
+        var options=new ChatGenerationOptions{Temperature=.15,Reasoning=server.Reasoning?"off":"default",TimeoutMinutes=2};
+        var usage=await client.MeasureChat(profile,key,messages,options,server,ct);
+        if(usage==null || usage.Available<256)throw new InvalidDataException("Insufficient context to draft the requested page.");
+        var output=Math.Min(8192,usage.Available);
+        var plan=await client.PlanChat(profile,key,messages,output,options,server,ct);
+        var body=new StringBuilder();
+        var result=await client.StreamChat(profile,key,messages,output,s=>body.Append(s),ct,options:options,server:server);
+        InferenceCompleted?.Invoke(result);
+        var html=body.ToString().Trim();
+        if(html.StartsWith("```html\n",StringComparison.OrdinalIgnoreCase)&&html.EndsWith("\n```"))html=html[8..^4].Trim();
+        if(ChatCompletionFeedback.From(result,plan).State!="Complete" || !html.EndsWith("</html>",StringComparison.OrdinalIgnoreCase) ||
+            !(html.StartsWith("<!doctype html",StringComparison.OrdinalIgnoreCase)||html.StartsWith("<html",StringComparison.OrdinalIgnoreCase)))
+            throw new CodeResponseException("The proposed new page was incomplete. Return a complete HTML document.",html);
+        return new("Creating the requested page.","create_file",JsonSerializer.SerializeToElement(new{path=draft.Path,content=html})){PerformanceSummary=result.PerformanceSummary};
     }
     async Task<CodeAction> RepairPage(LocalAiClient client, ChatServerInfo server, CodePageRepair repair, CancellationToken ct)
     {

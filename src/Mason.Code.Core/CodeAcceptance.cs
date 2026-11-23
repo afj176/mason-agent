@@ -19,6 +19,7 @@ public sealed record CodePageRepair(CodeFile File, string Request, string Eviden
     public bool RebuildGeneratedPage {get;init;}
     public bool PreservePassingScenarios {get;init;}
 }
+public sealed record CodePageDraft(string Path,string Request,string Checks,string Instructions);
 public sealed class CodeAcceptancePlan
 {
     public Guid TaskId { get; set; }

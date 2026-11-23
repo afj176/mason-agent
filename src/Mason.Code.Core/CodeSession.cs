@@ -13,6 +13,7 @@ public sealed record CodeMessage(string Role, string Content)
     [JsonIgnore] public string[]? ObservedHashes { get; init; }
     [JsonIgnore] public bool RepairingAcceptance { get; init; }
     [JsonIgnore] public CodePageRepair? PageRepair { get; init; }
+    [JsonIgnore] public CodePageDraft? PageDraft { get; init; }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
     public string? ReasoningContent { get; init; }
 }
