@@ -141,7 +141,10 @@ internal static class CodeBrowserVerification
         page.PageError+=(_,message)=>Record("JavaScript error: "+message);
         page.Popup += (_, _) => Record("Unexpected popup during browser verification.");
         page.SetDefaultTimeout(2200);
-        await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.Load, Timeout = 7500 });
+        try { await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.Load, Timeout = 15000 }); }
+        catch(PlaywrightException e) when(errors.TryPeek(out var cause)) {
+            throw new InvalidDataException("Page load failed: "+cause,e);
+        }
         if(scriptFailure!=null)throw scriptFailure;
         if (errors.TryPeek(out var loadError)) throw new InvalidDataException(loadError);
         ILocator VisibleText() => page.GetByText(check.Expected, new() { Exact = true }).Filter(new() { Visible = true });

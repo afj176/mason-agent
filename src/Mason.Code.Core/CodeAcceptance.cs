@@ -17,6 +17,7 @@ public sealed record CodePageRepair(CodeFile File, string Request, string Eviden
     public AcceptanceCheck[] FailedClicks {get;init;}=[];
     public string RelatedSource {get;init;}="";
     public bool RebuildGeneratedPage {get;init;}
+    public bool PreservePassingScenarios {get;init;}
 }
 public sealed class CodeAcceptancePlan
 {
@@ -274,5 +275,15 @@ public static class CodeAcceptance
     }
     public static string Receipt(CodeAcceptancePlan plan) => string.Join("\n", plan.Results.Select(r =>
         $"{(r.Passed ? "PASS" : "UNVERIFIED")} · {r.Check.Feature} [{r.Check.Kind}] · {r.Detail}"));
+    internal static string Describe(AcceptanceCheck check)
+    {
+        if(check.Kind!="browser_flow" || check.Steps==null)return JsonSerializer.Serialize(check);
+        return $"{check.Path} · {check.Feature}\n"+string.Join(" -> ",check.Steps.Select(s=>s.Op switch {
+            "money"=>$"expect amount {s.Value} at {s.Target}", "fill"=>$"enter {s.Value} in {s.Target}",
+            "same"=>$"expect the previously captured value at {s.Target}", "capture"=>$"save the displayed ID from {s.Target} (prefix {s.Value})",
+            "text"=>$"expect text {JsonSerializer.Serialize(s.Value)} at {s.Target}","count_distinct"=>$"expect {s.Value} distinct visible items matching {s.Target}",
+            _=>$"{s.Op} {s.Target}".TrimEnd()
+        }));
+    }
 }
 

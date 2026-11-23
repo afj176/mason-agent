@@ -208,7 +208,9 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
         var requestText=repair.Request;
         int contractStart=requestText.IndexOf("```mason.acceptance.json",StringComparison.Ordinal);
         if(contractStart>=0)requestText=requestText[..contractStart].TrimEnd();
-        bool rebuild=html && repair.RebuildGeneratedPage && repair.Evidence.Contains(" -> ",StringComparison.Ordinal) &&
+        if(repair.PreservePassingScenarios && server.Llama &&
+            await RepairLines(client,server,repair,requestText,ct) is {} edit)return edit;
+        bool rebuild=html && repair.RebuildGeneratedPage && !repair.PreservePassingScenarios && repair.Evidence.Contains(" -> ",StringComparison.Ordinal) &&
             !System.Text.RegularExpressions.Regex.IsMatch(repair.File.Content,@"<script\b[^>]*\bsrc\s*=",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         string sourceContext=rebuild?"Previous visual styling to preserve:\n"+string.Join("\n",System.Text.RegularExpressions.Regex.Matches(repair.File.Content,
             @"<style\b[^>]*>[\s\S]*?</style\s*>",System.Text.RegularExpressions.RegexOptions.IgnoreCase).Select(m=>m.Value)):
@@ -259,6 +261,43 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
             !source.EndsWith("</html>",StringComparison.OrdinalIgnoreCase))) throw new CodeResponseException("The proposed repair was incomplete. "+format,source);
         return new("Repairing the page using the failed browser checks.","replace_file",JsonSerializer.SerializeToElement(new { path=repair.File.Path,expected_sha256=repair.File.Sha256,content=source }))
             { PerformanceSummary=response.PerformanceSummary };
+    }
+    async Task<CodeAction?> RepairLines(LocalAiClient client,ChatServerInfo server,CodePageRepair repair,string request,CancellationToken ct)
+    {
+        var lines=repair.File.Content.Replace("\r\n","\n").Split('\n');
+        if(lines.Length<3 || lines.Length>700)return null;
+        var numbered=string.Join("\n",lines.Select((line,i)=>$"{i+1,3} | {line}"));
+        var messages=new[]{new AiMessage("system","""
+            Debug the first failing browser step in the numbered source. Preserve working controls and earlier passing steps.
+            Return a short list of local edits. Each first and last is an inclusive 1-based ORIGINAL line number. Each text replaces those complete lines, without line numbers or Markdown. To insert code, include the adjacent original line in its replacement. Do not replace unrelated code. Fix the cause, with correct behavior for all inputs. Do not change tests or expectations.
+            """),new AiMessage("user",$"Task\n{request}\nApplicable instructions\n{repair.Instructions}\nBrowser evidence\n{repair.Evidence}\nOther relevant files\n{repair.RelatedSource}\nCurrent {repair.File.Path}\n{numbered}")};
+        var lineNumber=new{type="integer",minimum=1,maximum=lines.Length};
+        var schema=JsonSerializer.SerializeToElement(new{type="object",additionalProperties=false,required=new[]{"edits"},properties=new{edits=new{
+            type="array",minItems=1,maxItems=5,items=new{type="object",additionalProperties=false,required=new[]{"first","last","text"},properties=new{first=lineNumber,last=lineNumber,text=new{type="string",maxLength=4000}}}}}});
+        var options=new ChatGenerationOptions{Reasoning=server.Reasoning?"off":"default",Temperature=0,JsonOutput=true,ResponseSchema=schema,TimeoutMinutes=2};
+        var usage=await client.MeasureChat(profile,key,messages,options,server,ct);
+        if(usage==null || usage.Available<512)return null;
+        var buffer=new StringBuilder();
+        var result=await client.StreamChat(profile,key,messages,Math.Min(3072,usage.Available),s=>buffer.Append(s),ct,options:options,server:server);
+        InferenceCompleted?.Invoke(result);
+        if(result.FinishReason!="stop")return null;
+        try {
+            using var document=JsonDocument.Parse(buffer.ToString());
+            var edits=document.RootElement.GetProperty("edits").EnumerateArray().Select(e=>(First:e.GetProperty("first").GetInt32(),
+                Last:e.GetProperty("last").GetInt32(),Text:e.GetProperty("text").GetString()!)).OrderByDescending(e=>e.First).ToArray();
+            var updated=lines.ToList();
+            int next=lines.Length+1;
+            foreach(var e in edits){
+                if(e.First<1 || e.Last>=next || e.Last<e.First || e.Text==null)return null;
+                updated.RemoveRange(e.First-1,e.Last-e.First+1);
+                if(e.Text.Length!=0)updated.InsertRange(e.First-1,e.Text.Replace("\r\n","\n").Split('\n'));
+                next=e.First;
+            }
+            var content=string.Join("\n",updated);
+            if(content==string.Join("\n",lines))return null;
+            return new("Repairing the failing browser interaction using the observed source lines.","replace_file",
+                JsonSerializer.SerializeToElement(new{path=repair.File.Path,expected_sha256=repair.File.Sha256,content})){PerformanceSummary=result.PerformanceSummary};
+        } catch(JsonException){return null;}
     }
     async Task<CodeAction> NativeNext(LocalAiClient client,ChatServerInfo server,IReadOnlyList<CodeMessage> messages,Action<string> onMessage,CancellationToken ct)
     {

@@ -120,11 +120,13 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if (observedHashes.Count > 0) system = system with { ObservedHashes=observedHashes.Values.Distinct().TakeLast(32).ToArray() };
                 if (acceptance != null) system = system with { Content = system.Content +
                     "\nThe host runs these checks at finish. A browser_click clicks the button named Target and waits for Expected to appear as newly visible page text. Use the exact labels and update the DOM. After writing the implementation, finish so the host can run the checks. " +
-                    JsonSerializer.Serialize(acceptance.Checks) };
+                    string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)) };
                 if(repairingAcceptance) system = system with { RepairingAcceptance=true, Content = system.Content + "\nThe previous implementation failed a host check. Inspect the failed receipt and repair the page. For a small page with broken HTML, use replace_file with the observed hash and complete valid HTML." };
                 if (repairPage is {} page && acceptance!=null) system = system with { ObservedHashes=[page.Sha256],
                     PageRepair=new(page,acceptance.Request,RepairEvidence(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
                         RelatedSource=RelatedSource(page,acceptance),
+                        PreservePassingScenarios=acceptance.Results.Any(r=>r.Passed && r.Check.Kind=="browser_flow") &&
+                            acceptance.Results.Any(r=>!r.Passed && r.Check.Kind=="browser_flow"),
                         RebuildGeneratedPage=createdFiles.Contains(page.Path) && attemptedRepairs.Contains(page.Path) &&
                             session.Changes.Any(c=>c.Path==page.Path && c.Before==null && !c.Restored && c.AfterHash==page.Sha256),
                         FailedClicks=acceptance.Results.Where(r=>!r.Passed && r.Check.Path==page.Path && r.Check.Kind=="browser_click").Select(r=>r.Check).ToArray()}, Content=system.Content+
@@ -320,7 +322,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     repairFeedback="The previous candidate was byte-for-byte identical. Implement the specific behavior missing from the browser observation.";
                 }
                 if(acceptance!=null && session.Permission==CodePermission.Auto && !acceptance.LiteralRequirements &&
-                    result.ChangedFile is {} written && attemptedPageRepair==null && browserRepairs<4 &&
+                    result.ChangedFile is {} written && attemptedPageRepair==null && browserRepairs<6 &&
                     Path.GetExtension(written).ToLowerInvariant() is ".html" or ".htm" && !acceptance.Checks.Any(c=>c.Application!=null))
                 {
                     var load=new AcceptanceCheck(0,"Load the edited page","browser_load",written,"","Page loads without a JavaScript error");
@@ -401,7 +403,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         }
         void QueueBrowserRepair(CodeAcceptancePlan plan)
         {
-            if(browserRepairs>=4)return;
+            if(browserRepairs>=6)return;
             var failure=plan.Results.Where(r=>!r.Passed && r.Check.Application==null && r.Check.Kind.StartsWith("browser_",StringComparison.Ordinal))
                 .OrderByDescending(r=>r.ScriptPath!=null).FirstOrDefault();
             if(failure!=null && QueueFile(failure.ScriptPath??failure.Check.Path,"Fix the first reproducible browser failure before addressing later assertions."))browserRepairs++;
@@ -434,7 +436,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         }
         static string RepairEvidence(CodeAcceptancePlan plan) => Clip(string.Join("\n",plan.Results.Where(r=>!r.Passed && r.Check.Kind!="unverified")
             .Select(r=>r.Detail).Distinct()).Trim()+"\nAcceptance steps\n"+string.Join("\n",plan.Checks.Where(c=>c.Steps?.Length>0)
-            .Select(c=>c.Feature+"\n"+string.Join(" -> ",c.Steps!.Select(s=>$"{s.Op} {s.Target} {s.Value}".TrimEnd())))),10000);
+            .Select(CodeAcceptance.Describe)),10000);
         static string Clip(string s,int max)=>s.Length<=max?s:s[..max]+"…";
         void Save() { session.Updated = DateTimeOffset.UtcNow; store.Save(session); changed(); }
     }
