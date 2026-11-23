@@ -12,9 +12,10 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
 {
     public const string Filename = "mason.acceptance.json";
     static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive=true, UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow };
-    public static BrowserContract Read(CodeWorkspace scope)
+    public static BrowserContract Read(CodeWorkspace scope) => Parse(scope,scope.Read(Filename).Content);
+    public static BrowserContract Parse(CodeWorkspace scope,string source)
     {
-        var contract = JsonSerializer.Deserialize<BrowserContract>(scope.Read(Filename).Content,Json);
+        var contract = JsonSerializer.Deserialize<BrowserContract>(source,Json);
         if (contract is not { Version: 1, Scenarios.Length: >0 and <=32 } ||
             contract.Scenarios.Any(s=>s is null) || contract.Scenarios.Select(s=>s.Id).Distinct().Count()!=contract.Scenarios.Length)
             throw new InvalidDataException("Use version 1 with 1–32 uniquely named acceptance scenarios.");
@@ -36,7 +37,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         foreach (var s in steps)
         {
             if (s is null || s.Target==null || s.Value==null || s.Target.Length>180 || s.Value.Length>300 ||
-                s.Op is not ("count_distinct" or "fill" or "click" or "money" or "text" or "empty" or "capture" or "reload" or "same"))
+                s.Op is not ("count_distinct" or "fill" or "click" or "click_if_enabled" or "money" or "text" or "empty" or "capture" or "reload" or "same"))
                 throw new InvalidDataException("Unknown or oversized browser step.");
             if(s.Op!="reload" && string.IsNullOrWhiteSpace(s.Target)) throw new InvalidDataException("A browser step needs a target.");
             if(s.Op=="count_distinct" && !(int.TryParse(s.Value,out var n) && n is >0 and <=1000)) throw new InvalidDataException("Specify a positive distinct item count.");
@@ -69,13 +70,19 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         Validate(steps);
         string? captured=null;
         var observations=new List<string>();
-        foreach(var step in steps)
+        for(int index=0;index<steps.Length;index++)
         {
+            var step=steps[index];
             ct.ThrowIfCancellationRequested();
-            if(step.Op=="reload") { await page.ReloadAsync(new(){WaitUntil=WaitUntilState.Load}); continue; }
             var node=page.Locator("css="+step.Target).Filter(new(){Visible=true});
-            if(step.Op=="click") { await node.ClickAsync(); continue; }
-            if(step.Op=="fill") { await node.FillAsync(step.Value); await node.PressAsync("Tab"); continue; }
+            try {
+                if(step.Op=="reload") { await page.ReloadAsync(new(){WaitUntil=WaitUntilState.Load}); continue; }
+                if(step.Op=="click") { await node.ClickAsync(); continue; }
+                if(step.Op=="click_if_enabled") { if(await node.IsEnabledAsync())await node.ClickAsync(); continue; }
+                if(step.Op=="fill") { await node.FillAsync(step.Value); await node.PressAsync("Tab"); continue; }
+            } catch(Exception e) when(e is TimeoutException or PlaywrightException) {
+                throw new InvalidDataException($"Step {index+1}, {step.Op} {step.Target} {step.Value}: {e.Message.Split('\n')[0]}",e);
+            }
             var until=System.Diagnostics.Stopwatch.StartNew();
             string actual="";
             while(true)
@@ -94,7 +101,10 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
                     _=>false
                 };
                 if(pass) break;
-                if(until.ElapsedMilliseconds>=2200) throw new InvalidDataException($"{step.Op} {step.Target}: expected '{(step.Op=="same"?captured:step.Value)}', observed '{Clip(actual)}' ({values.Length} visible).");
+                if(until.ElapsedMilliseconds>=2200) {
+                    string after=index==0?"":$" after {steps[index-1].Op} {steps[index-1].Target} {steps[index-1].Value}".TrimEnd();
+                    throw new InvalidDataException($"Step {index+1}{after}, {step.Op} {step.Target}: expected '{(step.Op=="same"?captured:step.Value)}', observed '{Clip(actual)}' ({values.Length} visible).");
+                }
                 await Task.Delay(75,ct);
             }
             if(step.Op=="capture") captured=actual;

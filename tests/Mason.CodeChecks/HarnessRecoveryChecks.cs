@@ -315,7 +315,7 @@ static class HarnessRecoveryChecks
         }
     }
 
-    public static async Task EvaluateEmptyProject(string endpoint, string modelId, string root, string? conversation = null, bool acceptanceTrial = false)
+    public static async Task EvaluateEmptyProject(string endpoint, string modelId, string root, string? conversation = null, bool acceptanceTrial = false, string? requestText=null)
     {
         if (Directory.Exists(root)) throw new IOException("Choose a fresh evaluation directory.");
         var project = Directory.CreateDirectory(Path.Combine(root, "food-bear")).FullName;
@@ -324,8 +324,8 @@ static class HarnessRecoveryChecks
         session.Permission = CodePermission.Auto;
         session.Shell = CodeShellKind.CommandPrompt;
         session.ShellExecutable = CodeShells.Find(session.Shell);
-        session.ActionLimit = 24;
-        string request = "Build an HTML website in this directory. I want the website to be a store for bears to go shopping, make it whimsical.";
+        session.ActionLimit = requestText==null?24:64;
+        string request = requestText??"Build an HTML website in this directory. I want the website to be a store for bears to go shopping, make it whimsical.";
         if (acceptanceTrial) request = "In index.html show a heading named \"Honey Market\". Clicking the button \"Add honey\" must show \"Added to cart\".";
         if (conversation != null)
         {
@@ -337,7 +337,7 @@ static class HarnessRecoveryChecks
         }
         var profile = new AiEndpointProfile { Endpoint = endpoint, Model = modelId, ManagedCapability = AiCapability.Chat };
         var model = new CodeLocalModel(profile, "", "default", Console.WriteLine);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(requestText==null?3:15));
         await new CodeEngine(store, model, (_, _) => throw new Exception("Unexpected approval"), () => { }, Console.WriteLine)
             .Run(session, request, deadline.Token);
         var pages = Directory.EnumerateFiles(project)

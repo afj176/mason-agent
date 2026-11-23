@@ -8,10 +8,14 @@ public sealed record AcceptanceCheck(int Unit, string Feature, string Kind, stri
     public BrowserStep[]? Steps {get;init;}
     public string? Application {get;init;}
 }
-public sealed record AcceptanceResult(AcceptanceCheck Check, bool Passed, string Detail);
+public sealed record AcceptanceResult(AcceptanceCheck Check, bool Passed, string Detail)
+{
+    public string? ScriptPath {get;init;}
+}
 public sealed record CodePageRepair(CodeFile File, string Request, string Evidence, string Instructions)
 {
     public AcceptanceCheck[] FailedClicks {get;init;}=[];
+    public string RelatedSource {get;init;}="";
 }
 public sealed class CodeAcceptancePlan
 {
@@ -87,6 +91,18 @@ public static class CodeAcceptance
     public static async Task<CodeAcceptancePlan> Prepare(string request, ICodeModel model, CodeWorkspace scope, CodeFiles files, CancellationToken ct)
     {
         var plan = new CodeAcceptancePlan { TaskId=Guid.NewGuid(), Request = request, Units = Units(request) };
+        // An explicitly supplied machine acceptance contract belongs to this user turn. This also
+        // permits a reproducible build from an empty project without letting a file edit change its oracle.
+        var inline=Regex.Match(request,@"(?m)^```mason\.acceptance\.json[ \t]*\r?$");
+        if(inline.Success)
+        {
+            var block=request[(inline.Index+inline.Length)..].Trim();
+            if(!block.EndsWith("\n```",StringComparison.Ordinal))throw new InvalidDataException("Close the acceptance contract with a final triple-backtick line.");
+            var contract=BrowserContract.Parse(scope,block[..^3].Trim());
+            plan.Units=contract.Scenarios.Select(s=>s.Requirement).ToArray();
+            plan.Checks=contract.Scenarios.Select((s,i)=>new AcceptanceCheck(i+1,s.Requirement,"browser_flow",s.Page,s.Id,"All scenario assertions pass"){Steps=s.Steps,Application=contract.Application}).ToList();
+            return plan;
+        }
         if (plan.Units.Length == 0) plan.Units = ["Specify the requested features."];
         List<AcceptanceCheck> proposed = [];
         var repositoryChecks = new List<AcceptanceCheck>();

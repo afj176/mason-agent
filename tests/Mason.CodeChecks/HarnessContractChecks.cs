@@ -53,6 +53,56 @@ internal static class HarnessContractChecks
             await new CodeEngine(store,model,(_,_)=>Task.FromResult(false),()=>{}).Run(session,"/new Create second.txt containing \"shipped\".",default);
             check(session.State=="Completed" && session.Turns.Last(t=>t.Acceptance!=null).Acceptance!.RequirementIds.Length==1,"explicit new task has a fresh requirement set and command boundary");
         }
+        var web=Directory.CreateDirectory(Path.Combine(area,"browser")).FullName;
+        using(var store=new CodeStore(data)){
+            var session=store.New(web);session.Permission=CodePermission.Auto;
+            var flow=new BrowserRecovery();
+            await new CodeEngine(store,flow,(_,_)=>throw new Exception("Unexpected approval"),()=>{}).Run(session,"Build a map viewer",default);
+            check(flow.Repaired && session.State=="Needs verification" && session.Activities.Any(a=>a.Tool=="browser_load" && a.Result.Contains("index.html:")) &&
+                session.Turns.Single(t=>t.Acceptance!=null).Acceptance!.Results.Any(r=>r.Passed && r.Check.Kind=="browser_text"),
+                "an inline syntax error on a page over 4 KB is repaired autonomously while a subjective requirement stays open");
+            File.WriteAllText(Path.Combine(web,"handler.js"),"document.querySelector('button').onclick=()=>{throw Error('broken click')};");
+            File.WriteAllText(Path.Combine(web,"index.html"),"<button>Open</button><script src='handler.js'></script>");
+            var checkedPage=new AcceptanceCheck(1,"Open map","browser_click","index.html","Open","Map opened");
+            var outcome=(await CodeBrowserVerification.Run(new CodeWorkspace(web),[checkedPage],default))[checkedPage];
+            check(!outcome.Passed && outcome.ScriptPath=="handler.js" && outcome.Detail.Contains("broken click"),"a handler exception identifies the actual served JavaScript dependency");
+            var conflict=store.New(web);conflict.Permission=CodePermission.Auto;
+            var edit=new ConflictRecovery();
+            await new CodeEngine(store,edit,(_,_)=>throw new Exception("Unexpected approval"),()=>{}).Run(conflict,"Update the map handler",default);
+            check(edit.SawFreshSource && File.ReadAllText(Path.Combine(web,"handler.js")).Contains("fixed click") && conflict.Activities.Any(a=>a.State=="Failed" && a.Tool=="edit_file"),
+                "Auto handles stale edits with the current source and a hash-checked replacement");
+        }
+    }
+
+    sealed class BrowserRecovery:ICodeModel,ICodeAcceptancePlanner
+    {
+        int calls;
+        public bool Repaired;
+        public Task<List<AcceptanceCheck>> PlanAcceptance(string request,string[] units,CodeFiles files,CancellationToken ct)=>Task.FromResult<List<AcceptanceCheck>>([
+            new(1,"Visible map","browser_text","index.html","","Map"),new(1,"Visual taste","unverified","","","Needs visual review")]);
+        public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages,Action<string> stream,CancellationToken ct)
+        {
+            if(calls++==0)return Task.FromResult(new CodeAction("Create map","create_file",JsonSerializer.SerializeToElement(new{path="index.html",content="<!doctype html><html><body><!--"+new string('x',5000)+"--><p>Map</p><script>let = ;</script></body></html>"})));
+            if(messages[0].PageRepair is {} repair){
+                Repaired=repair.Evidence.Contains("JavaScript error") && repair.File.Content.Length>4000;
+                return Task.FromResult(new CodeAction("Repair map","replace_file",JsonSerializer.SerializeToElement(new{path=repair.File.Path,expected_sha256=repair.File.Sha256,content=repair.File.Content.Replace("let = ;","let ready = true;")})));
+            }
+            return Task.FromResult(new CodeAction("Finished.",null,default));
+        }
+    }
+    sealed class ConflictRecovery:ICodeModel
+    {
+        int calls;
+        public bool SawFreshSource;
+        public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages,Action<string> stream,CancellationToken ct)
+        {
+            if(calls++==0)return Task.FromResult(new CodeAction("Edit handler","edit_file",JsonSerializer.SerializeToElement(new{path="handler.js",expected_sha256=new string('0',64),old_text="old",new_text="fixed"})));
+            if(messages[0].PageRepair is {} repair){
+                SawFreshSource=repair.File.Path=="handler.js" && repair.File.Content.Contains("broken click") && repair.Evidence.Contains("Rejected edit");
+                return Task.FromResult(new CodeAction("Repair handler","replace_file",JsonSerializer.SerializeToElement(new{path=repair.File.Path,expected_sha256=repair.File.Sha256,content=repair.File.Content.Replace("broken click","fixed click")})));
+            }
+            return Task.FromResult(new CodeAction("Finished.",null,default));
+        }
     }
 
     sealed class Finish:ICodeModel

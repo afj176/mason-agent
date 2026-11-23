@@ -51,6 +51,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         CodeFile? repairPage = null;
         string repairFeedback="";
         int repeatedPageRepairs=0;
+        int conflictRepairs=0, browserRepairs=0;
         var callerCancellation=cancellation;using var runDeadline=CancellationTokenSource.CreateLinkedTokenSource(cancellation);runDeadline.CancelAfter(TimeSpan.FromMinutes(30));cancellation=runDeadline.Token;
         try
         {
@@ -88,7 +89,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 user.Acceptance = acceptance;
                 Save();
                 if(acceptance.LiteralRequirements && session.Permission==CodePermission.Auto && acceptance.Checks.Any(c=>File.Exists(scope.Resolve(c.Path))) &&
-                    await ObserveLiteralRequirements(acceptance))return;
+                    await VerifyCurrentWork(acceptance))return;
             }
             for (int step = 0; step < session.ActionLimit; step++)
             {
@@ -98,7 +99,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 {
                     available.Remove("open_file"); available.Remove("list_files"); available.Remove("verify_acceptance");
                 }
-                if (repairPage != null) available.IntersectWith(["replace_file","ask_user"]);
+                if (repairPage != null) available.IntersectWith(["replace_file"]);
                 if(verificationOnly)available.IntersectWith(["verify_acceptance"]);
                 if(snippetRecovery){available.Remove("edit_file");available.Remove("apply_edits");}
                 if (revisitRead && lastAction != null)
@@ -120,9 +121,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     JsonSerializer.Serialize(acceptance.Checks) };
                 if(repairingAcceptance) system = system with { RepairingAcceptance=true, Content = system.Content + "\nThe previous implementation failed a host check. Inspect the failed receipt and repair the page. For a small page with broken HTML, use replace_file with the observed hash and complete valid HTML." };
                 if (repairPage is {} page && acceptance!=null) system = system with { ObservedHashes=[page.Sha256],
-                    PageRepair=new(page,acceptance.Request,CodeAcceptance.Receipt(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
+                    PageRepair=new(page,acceptance.Request,RepairEvidence(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
+                        RelatedSource=RelatedSource(page,acceptance),
                         FailedClicks=acceptance.Results.Where(r=>!r.Passed && r.Check.Path==page.Path && r.Check.Kind=="browser_click").Select(r=>r.Check).ToArray()}, Content=system.Content+
-                    $"\nRepair the small self-contained page {page.Path} with replace_file now. Its current SHA-256 is {page.Sha256}. Write a complete HTML document. For click interactions start the output element empty and set its textContent inside an event listener when the button is clicked." };
+                    $"\nRepair {page.Path} with replace_file using its current SHA-256 {page.Sha256}. Preserve working behavior and return complete source for that file." };
                 if (revisitRead)
                     system = system with { Content = system.Content + "\nThe previous two reads returned identical evidence. That tool is paused for this response. If the request is satisfied, return your final answer now. Otherwise take the next distinct action needed for the user's request." };
                 var messages = await CodeContext.Prepare(session, system, model, Save, text => { session.Detail = text; changed(); }, cancellation);
@@ -196,7 +198,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         if (!complete)
                         {
                             turn.Text = $"{passed}/{acceptance.Checks.Count} feature checks passed. See activity for each result.";
-                            if (!verificationOnly && session.Permission!=CodePermission.ReadOnly && browserApproved!=false && !acceptance.Results.Any(r => r.Check.Kind == "unverified") && ++acceptanceAttempts < 3 && step+1 < session.ActionLimit)
+                            if (!verificationOnly && session.Permission!=CodePermission.ReadOnly && browserApproved!=false && acceptance.Results.Any(r => !r.Passed && r.Check.Kind != "unverified") && ++acceptanceAttempts <= 3 && step+1 < session.ActionLimit)
                             {
                                 repairingAcceptance = true;
                                 var sources = new List<object>();
@@ -205,12 +207,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                                     try { var f=scope.Read(path); observedHashes[f.Path]=f.Sha256;
                                         if(f.Content.Length<=4000) {
                                             sources.Add(new { path=f.Path, expected_sha256=f.Sha256, current_content=f.Content });
-                                            if (acceptance.Results.Where(r=>!r.Passed).All(r=>r.Check.Kind.StartsWith("browser_") && r.Check.Application==null && r.Check.Path==path)
-                                                && !System.Text.RegularExpressions.Regex.IsMatch(f.Content,@"<(?:script|link)\b[^>]*(?:src|href)\s*=",System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-                                                repairPage=f;
                                         } }
                                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException) { }
                                 }
+                                QueueBrowserRepair(acceptance);
                                 session.Messages.Add(new("user", "Build completion rejected: repair the failed feature with an edit or replacement. Then finish to rerun the checks.\n"+proof.Result+"\n"+JsonSerializer.Serialize(sources)));
                                 session.Detail = turn.Text; Save(); continue;
                             }
@@ -240,6 +240,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 try
                 {
                     if(verificationOnly && action.Tool!="verify_acceptance") throw new UnauthorizedAccessException("This request verifies the pinned project contract. Use verify_acceptance.");
+                    if(attemptedPageRepair!=null && (action.Tool!="replace_file" || S(action.Arguments,"path")!=attemptedPageRepair.Path))
+                        throw new InvalidOperationException("The focused repair must replace the observed file.");
                     if(snippetRecovery&&action.Tool is "edit_file" or "apply_edits")throw new InvalidOperationException("Snippet edits are paused after a conflict. Read the current file and use replace_file with its fresh SHA256.");
                     if (declined.Any(previous => SameOperation(previous, action)))
                     {
@@ -266,7 +268,12 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 catch (OperationCanceledException) { activity.State = "Interrupted"; activity.Result = "Operation cancelled. Inspect workspace changes before retrying."; Save(); throw; }
                 catch (Exception error) when (error is IOException or InvalidDataException or ArgumentException or UnauthorizedAccessException or InvalidOperationException or FormatException or System.ComponentModel.Win32Exception)
                 {
-                    if(action.Tool is "edit_file" or "apply_edits"&&error.Message.StartsWith("Each old_text must match exactly once",StringComparison.Ordinal))snippetRecovery=true;
+                    if(error is CodeSnippetMismatchException or CodeStaleEditException)
+                    {
+                        snippetRecovery=true;
+                        if(session.Permission==CodePermission.Auto && ++conflictRepairs<=3)
+                            QueueFile(S(action.Arguments,"path"),"The previous edit was rejected. Apply its intended change to the current source, preserving all other features. Rejected edit: "+Clip(action.Arguments.GetRawText(),2400));
+                    }
                     if (activity.Authorization == "Declined") declined.Add(action);
                     invalidPath = error is CodeWorkspacePathException or CodeWorkspaceDirectoryException;
                     activity.State = error is UnauthorizedAccessException ? "Denied" : "Failed";
@@ -304,9 +311,25 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     repairPage=attemptedPageRepair;
                     repairFeedback="The previous candidate was byte-for-byte identical. Implement the specific behavior missing from the browser observation.";
                 }
-                if(acceptance?.LiteralRequirements==true && session.Permission==CodePermission.Auto && result.ChangedFile!=null &&
-                    await ObserveLiteralRequirements(acceptance))return;
-                if(verificationOnly && action.Tool=="verify_acceptance" && acceptance!=null)
+                if(acceptance!=null && session.Permission==CodePermission.Auto && !acceptance.LiteralRequirements &&
+                    result.ChangedFile is {} written && attemptedPageRepair==null && browserRepairs<4 &&
+                    Path.GetExtension(written).ToLowerInvariant() is ".html" or ".htm" && !acceptance.Checks.Any(c=>c.Application!=null))
+                {
+                    var load=new AcceptanceCheck(0,"Load the edited page","browser_load",written,"","Page loads without a JavaScript error");
+                    var observed=(await CodeBrowserVerification.Run(scope,[load],cancellation))[load];
+                    if(!observed.Passed && observed.ScriptPath!=null && QueueFile(observed.ScriptPath,observed.Detail))
+                    {
+                        browserRepairs++;
+                        session.Activities.Add(new(){Tool="browser_load",State="Failed",Result=observed.Detail});
+                        session.Messages.Add(new("user","Edge observed a JavaScript error in the edited page. "+observed.Detail));
+                    }
+                }
+                if(acceptance!=null && (acceptance.LiteralRequirements || attemptedPageRepair!=null) && session.Permission==CodePermission.Auto && result.ChangedFile!=null &&
+                    await VerifyCurrentWork(acceptance))return;
+                if(!verificationOnly && action.Tool=="verify_acceptance" && activity.State=="Failed" && acceptance!=null)
+                    QueueBrowserRepair(acceptance);
+                if(action.Tool=="verify_acceptance" && acceptance!=null && (verificationOnly ||
+                    delivered && activity.State=="Completed" && failedCommands.Count==0 && acceptance.VerifiedRevision!=null))
                 {
                     var passed=acceptance.Results.Count(r=>r.Passed);
                     bool complete=failedCommands.Count==0 && activity.State=="Completed" && passed==acceptance.Checks.Count && passed>0;
@@ -348,7 +371,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         }
         catch (OperationCanceledException) { session.LiveMessage = ""; session.State = "Stopped"; session.Detail = callerCancellation.IsCancellationRequested?"Stopped · completed edits are retained. Pending operations will not be replayed.":"Stopped at the 30-minute run budget · completed edits and receipts are retained."; Save(); }
         catch (Exception error) { try{diagnostic?.Invoke(error);}catch{ /* Diagnostics cannot suppress the failure receipt. */ }session.LiveMessage = ""; session.State = "Failed"; session.Detail = error.Message; Save(); }
-        async Task<bool> ObserveLiteralRequirements(CodeAcceptancePlan plan)
+        async Task<bool> VerifyCurrentWork(CodeAcceptancePlan plan)
         {
             if(failedCommands.Count>0)return false;
             var proof=new CodeActivity{Tool="acceptance_checks",State="Running"};
@@ -365,15 +388,46 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 Save();return true;
             }
             session.Messages.Add(new("user","Host verification on the current files. Work only on the unmet requirements.\n"+proof.Result));
-            if(missing.Length>0 && missing.All(r=>r.Check.Kind.StartsWith("browser_") && r.Check.Application==null && r.Check.Path==missing[0].Check.Path) &&
-               File.Exists(scope.Resolve(missing[0].Check.Path)))
-            {
-                var page=scope.Read(missing[0].Check.Path);
-                if(page.Content.Length<=4000 && !System.Text.RegularExpressions.Regex.IsMatch(page.Content,@"<(?:script|link)\b[^>]*(?:src|href)\s*=",System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-                {repairPage=page;repairingAcceptance=true;}
-            }
+            QueueBrowserRepair(plan);
             Save();return false;
         }
+        void QueueBrowserRepair(CodeAcceptancePlan plan)
+        {
+            if(browserRepairs>=4)return;
+            var failure=plan.Results.Where(r=>!r.Passed && r.Check.Application==null && r.Check.Kind.StartsWith("browser_",StringComparison.Ordinal))
+                .OrderByDescending(r=>r.ScriptPath!=null).FirstOrDefault();
+            if(failure!=null && QueueFile(failure.ScriptPath??failure.Check.Path,"Fix the first reproducible browser failure before addressing later assertions."))browserRepairs++;
+        }
+        bool QueueFile(string path,string reason)
+        {
+            if(Path.GetExtension(path).ToLowerInvariant() is not (".html" or ".htm" or ".js" or ".mjs"))return false;
+            try
+            {
+                var current=scope.Read(path);
+                if(current.Content.Length>18000)return false;
+                repairPage=current;repairingAcceptance=true;repairFeedback=reason;
+                observedHashes[current.Path]=current.Sha256;
+                return true;
+            }
+            catch(Exception e) when(e is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException){return false;}
+        }
+        string RelatedSource(CodeFile target,CodeAcceptancePlan plan)
+        {
+            var related=new System.Text.StringBuilder();
+            foreach(var path in plan.Results.Where(r=>!r.Passed && r.Check.Kind.StartsWith("browser_",StringComparison.Ordinal)).Select(r=>r.Check.Path).Concat(changedFiles).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if(path.Equals(target.Path,StringComparison.OrdinalIgnoreCase) || Path.GetExtension(path).ToLowerInvariant() is not (".js" or ".mjs" or ".htm" or ".html"))continue;
+                try {
+                    var f=scope.Read(path);
+                    if(related.Length+f.Content.Length+path.Length+4<=10000)related.AppendLine(path).AppendLine(f.Content);
+                } catch(Exception e) when(e is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException){}
+            }
+            return related.ToString();
+        }
+        static string RepairEvidence(CodeAcceptancePlan plan) => Clip(string.Join("\n",plan.Results.Where(r=>!r.Passed && r.Check.Kind!="unverified")
+            .Select(r=>r.Detail).Distinct()).Trim()+"\nAcceptance steps\n"+string.Join("\n",plan.Checks.Where(c=>c.Steps?.Length>0)
+            .Select(c=>c.Feature+"\n"+string.Join(" -> ",c.Steps!.Select(s=>$"{s.Op} {s.Target} {s.Value}".TrimEnd())))),10000);
+        static string Clip(string s,int max)=>s.Length<=max?s:s[..max]+"…";
         void Save() { session.Updated = DateTimeOffset.UtcNow; store.Save(session); changed(); }
     }
     public async Task Compact(CodeSession session, CancellationToken cancellation)
@@ -469,7 +523,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 var requestedPath = S(a, "path");
                 string path = scope.Relative(editing ? scope.Resolve(requestedPath) : scope.ResolveAgentCreate(requestedPath, directory: false));
                 var prior = editing ? scope.Read(path) : null;
-                if (editing && prior!.Sha256 != S(a, "expected_sha256")) throw new IOException("The file changed; read it again before editing.");
+                if (editing && prior!.Sha256 != S(a, "expected_sha256")) throw new CodeStaleEditException("The file changed; read it again before editing.");
                 if (tool == "replace_file")
                 {
                     var content = S(a, "content");

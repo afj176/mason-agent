@@ -13,6 +13,8 @@ public sealed record CodeReplacement(string OldText, string NewText);
 
 internal sealed class CodeWorkspacePathException(string message) : UnauthorizedAccessException(message);
 internal sealed class CodeWorkspaceDirectoryException(string message) : DirectoryNotFoundException(message);
+internal sealed class CodeStaleEditException(string message) : IOException(message);
+internal sealed class CodeSnippetMismatchException(string message) : ArgumentException(message);
 
 /// <summary>Bounded, UTF-8-only repository access. These checks are not an operating-system sandbox.</summary>
 public sealed class CodeWorkspace
@@ -190,14 +192,14 @@ public sealed class CodeWorkspace
     public CodeFile ApplyEdits(string relative, string expected, IReadOnlyList<CodeReplacement> edits, Action<CodeFile, string> beforeWrite)
     {
         var file = Read(relative);
-        if (!file.Sha256.Equals(expected, StringComparison.OrdinalIgnoreCase)) throw new IOException("File changed since the last read. Read it again; nothing was overwritten.");
+        if (!file.Sha256.Equals(expected, StringComparison.OrdinalIgnoreCase)) throw new CodeStaleEditException("File changed since the last read. Read it again; nothing was overwritten.");
         if (edits.Count is < 1 or > 32) throw new ArgumentException("Apply 1–32 replacements per file.");
         var regions = new List<(int At, CodeReplacement Edit)>();
         foreach (var edit in edits)
         {
             int at = file.Content.IndexOf(edit.OldText, StringComparison.Ordinal);
             if (edit.OldText.Length == 0 && (file.Content.Length > 0 || edits.Count > 1) || at < 0 || edit.OldText.Length > 0 && file.Content.IndexOf(edit.OldText, at + edit.OldText.Length, StringComparison.Ordinal) >= 0)
-                throw new ArgumentException("Each old_text must match exactly once in the original file; use larger unique context.");
+                throw new CodeSnippetMismatchException("Each old_text must match exactly once in the original file; use larger unique context.");
             regions.Add((at, edit));
         }
         regions.Sort((a, b) => a.At.CompareTo(b.At));
@@ -211,7 +213,7 @@ public sealed class CodeWorkspace
         // Hold the file without write/delete sharing while verifying and replacing its bytes.
         using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
         using var current = new MemoryStream(); stream.CopyTo(current);
-        if (CodeProtocol.Hash(current.ToArray()) != file.Sha256) throw new IOException("File changed while this edit was being reviewed.");
+        if (CodeProtocol.Hash(current.ToArray()) != file.Sha256) throw new CodeStaleEditException("File changed while this edit was being reviewed.");
         stream.Position = 0; stream.Write(bytes); stream.SetLength(bytes.Length); stream.Flush(true);
         return new(file.Path, content, CodeProtocol.Hash(bytes), file.Bom);
     }

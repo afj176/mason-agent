@@ -5,6 +5,10 @@ namespace Mason.Code;
 
 internal static class CodeBrowserVerification
 {
+    sealed class ScriptFailure(string message, string? path) : Exception(message)
+    {
+        public string? Path {get;}=path;
+    }
     const string Origin = "https://workspace.mason.invalid";
     const string Policy = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'; sandbox allow-scripts allow-same-origin";
     static readonly Dictionary<string, string> Types = new(StringComparer.OrdinalIgnoreCase)
@@ -57,7 +61,7 @@ internal static class CodeBrowserVerification
     {
         var reason = e.Message.Split('\n')[0].Trim();
         var assertion = c.Kind == "browser_click" ? $"click '{c.Target}' and observe new visible text '{c.Expected}'" : c.Expected;
-        return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}");
+        return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}") {ScriptPath=(e as ScriptFailure)?.Path};
     }
 
     static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct)
@@ -66,6 +70,8 @@ internal static class CodeBrowserVerification
         await using var context = await browser.NewContextAsync(new() { Offline = true, ServiceWorkers = ServiceWorkerPolicy.Block,
             AcceptDownloads = false, ViewportSize = new() { Width = width, Height = 850 } });
         var errors = new ConcurrentQueue<string>();
+        var staticFiles = new ConcurrentDictionary<string,string>(StringComparer.Ordinal);
+        ScriptFailure? scriptFailure = null;
         void Record(string error) { if (errors.IsEmpty) errors.Enqueue(error); }
         long served = 0;
         int requests = 0;
@@ -95,6 +101,7 @@ internal static class CodeBrowserVerification
                     throw new InvalidDataException("Page exceeded the verification asset budget.");
                 var bytes = new byte[checked((int)input.Length)];
                 await input.ReadExactlyAsync(bytes);
+                staticFiles[uri.GetLeftPart(UriPartial.Path)]=scope.Relative(path);
                 await route.FulfillAsync(new() { Status = 200, BodyBytes = bytes, ContentType = type,
                     Headers = new Dictionary<string,string> { ["Content-Security-Policy"] = Policy, ["X-Content-Type-Options"]="nosniff", ["Referrer-Policy"]="no-referrer" } });
             }
@@ -112,17 +119,39 @@ internal static class CodeBrowserVerification
                 suppressedDialog=entry.Text[..Math.Min(entry.Text.Length,250)];
         };
         page.Dialog += async (_,dialog) => { dialogMessage=dialog.Message[..Math.Min(160,dialog.Message.Length)]; try{await dialog.DismissAsync();}catch(PlaywrightException){} };
-        page.PageError += (_, msg) => Record(msg);
+        // Edge can omit the stack for a parse error. The runtime event still carries the
+        // resource URL and zero-based line/column separately from the exception stack.
+        var runtime=await context.NewCDPSessionAsync(page);
+        runtime.Event("Runtime.exceptionThrown").OnEvent+=(_,data)=>{
+            if(data is not {} json || !json.TryGetProperty("exceptionDetails",out var details))return;
+            var source=details;
+            if(details.TryGetProperty("stackTrace",out var stack) && stack.TryGetProperty("callFrames",out var frames) && frames.GetArrayLength()>0)
+                source=frames[0];
+            string? path=null;
+            if(source.TryGetProperty("url",out var name) && Uri.TryCreate(name.GetString(),UriKind.Absolute,out var uri))
+                staticFiles.TryGetValue(uri.GetLeftPart(UriPartial.Path),out path);
+            var where=path??check.Path;
+            if(source.TryGetProperty("lineNumber",out var line) && source.TryGetProperty("columnNumber",out var column))
+                where+=$":{line.GetInt32()+1}:{column.GetInt32()+1}";
+            var message=details.TryGetProperty("exception",out var ex) && ex.TryGetProperty("description",out var description)
+                ? description.GetString() : details.GetProperty("text").GetString();
+            Interlocked.CompareExchange(ref scriptFailure,new ScriptFailure($"JavaScript error at {where}: {message?.Split('\n')[0]}",path??(app==null?check.Path:null)),null);
+        };
+        await runtime.SendAsync("Runtime.enable");
+        page.PageError+=(_,message)=>Record("JavaScript error: "+message);
         page.Popup += (_, _) => Record("Unexpected popup during browser verification.");
         page.SetDefaultTimeout(2200);
         await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.Load, Timeout = 7500 });
+        if(scriptFailure!=null)throw scriptFailure;
         if (errors.TryPeek(out var loadError)) throw new InvalidDataException(loadError);
         ILocator VisibleText() => page.GetByText(check.Expected, new() { Exact = true }).Filter(new() { Visible = true });
         string observed=check.Expected;
         switch (check.Kind)
         {
+            case "browser_load": break;
             case "browser_flow":
-                observed=await BrowserContract.Observe(page,check.Steps!,ct);
+                try { observed=await BrowserContract.Observe(page,check.Steps!,ct); }
+                catch(Exception) when(!ct.IsCancellationRequested && scriptFailure!=null) {throw scriptFailure;}
                 break;
             case "browser_layout":
                 if (!await page.Locator("body").IsVisibleAsync() || string.IsNullOrWhiteSpace(await page.Locator("body").InnerTextAsync()) ||
@@ -140,6 +169,7 @@ internal static class CodeBrowserVerification
                 catch (Exception e) when (e is TimeoutException or PlaywrightException) { throw new InvalidDataException($"No unique clickable button or link named '{check.Target}' at {width}px."); }
                 try { await VisibleText().First.WaitForAsync(); }
                 catch (TimeoutException) {
+                    if(scriptFailure!=null)throw scriptFailure;
                     var body=System.Text.RegularExpressions.Regex.Replace(await page.Locator("body").InnerTextAsync(),@"\s+"," ").Trim();
                     throw new InvalidDataException($"Clicked '{check.Target}' at {width}px. The page never displayed '{check.Expected}'."+
                     (dialogMessage!=null?$" JavaScript dialog: '{dialogMessage}'. The check requires visible text in the page.":
@@ -153,6 +183,7 @@ internal static class CodeBrowserVerification
             default: throw new InvalidDataException("Unknown browser acceptance operation.");
         }
         if (page.Url != url && (check.Kind!="browser_flow" || !Uri.TryCreate(page.Url,UriKind.Absolute,out var final) || final.GetLeftPart(UriPartial.Authority)!=Origin)) throw new InvalidDataException("The page navigated away from the verification target.");
+        if(scriptFailure!=null)throw scriptFailure;
         if (errors.TryPeek(out var error)) throw new InvalidDataException(error);
         return app==null ? observed : observed+" · app: "+app.Observations;
     }
