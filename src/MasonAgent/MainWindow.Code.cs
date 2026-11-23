@@ -161,6 +161,7 @@ public sealed partial class MainWindow
         var contextLink = CodeLink("Context", (_, _) => OpenTab("context", "", true)); contextLink.FontSize = 12;
         AutomationProperties.SetName(contextLink, "Coding context and checkpoints");
         var draft = new TextBox { PlaceholderText = "Describe a change, ask about the repo, or @ a file…", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 76, MaxHeight = 170, MaxLength = 16000, BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        ToolTipService.SetToolTip(draft,"Build keeps the current task’s requirements across follow-ups. Type /new followed by a request to start a separate task.");
         AutomationProperties.SetName(draft, "Coding message"); ComposerBox(draft);
         var references = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
         var reasoning = new ComboBox { ItemsSource = new[] { "Default", "Off", "Low", "Medium", "High" }, SelectedIndex = 0, MinWidth = 95 }; AutomationProperties.SetName(reasoning, "Coding reasoning");
@@ -686,9 +687,9 @@ public sealed partial class MainWindow
                         var lines = new StackPanel { Spacing=5 };
                         foreach(var criterion in contract.Checks)
                         {
-                            var observed=contract.Results.FirstOrDefault(r=>r.Check==criterion);
+                            var observed=contract.Results.FirstOrDefault(r=>r.Check==criterion || System.Text.Json.JsonSerializer.Serialize(r.Check)==System.Text.Json.JsonSerializer.Serialize(criterion));
                             var status=observed==null ? "Pending" : observed.Passed ? "Passed" : "Unverified";
-                            var item=CodeNote($"{status} · {criterion.Feature}\n{criterion.Kind} · {criterion.Path} · {criterion.Target} {criterion.Expected}".Trim(),12);
+                            var item=CodeNote($"{status} · {criterion.Feature}\n{criterion.Kind} · {criterion.Path} · {criterion.Target} {criterion.Expected}\n{contract.RequirementIds.ElementAtOrDefault(criterion.Unit-1)} · {contract.VerifiedRevision?[..12] ?? "awaiting verification"}".Trim(),12);
                             item.TextWrapping=TextWrapping.Wrap; lines.Children.Add(item);
                         }
                         var details=new Expander { Header=$"Feature checks · {contract.Results.Count(r=>r.Passed)}/{contract.Checks.Count} passed", Content=lines,

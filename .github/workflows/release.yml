@@ -21,10 +21,32 @@ env:
   ISS: packaging/MasonAgent.iss
 
 jobs:
+  qualify:
+    runs-on: [self-hosted, Windows, mason-model-evals]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Qualify the release against the local model and checkout controls
+        shell: pwsh
+        env:
+          MASON_EVAL_ENDPOINT: ${{ vars.MASON_EVAL_ENDPOINT }}
+          MASON_EVAL_MODEL: ${{ vars.MASON_EVAL_MODEL }}
+        run: ./scripts/Invoke-ModelBenchmark.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -OutputDirectory "$env:RUNNER_TEMP/mason-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-evidence
+          path: ${{ runner.temp }}/mason-${{ github.run_id }}-${{ github.run_attempt }}/report.json
   build:
+    needs: qualify
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: model-evidence
+          path: ${{ runner.temp }}/model-evidence
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -49,7 +71,7 @@ jobs:
 
       - name: Publish installer and portable ZIP
         shell: pwsh
-        run: ./scripts/Publish.ps1 -Version ${{ steps.version.outputs.value }} -Installer -InnoCompiler '${{ steps.inno.outputs.path }}'
+        run: ./scripts/Publish.ps1 -Version ${{ steps.version.outputs.value }} -ModelEvidence "$env:RUNNER_TEMP/model-evidence/report.json" -Installer -InnoCompiler '${{ steps.inno.outputs.path }}'
 
       - name: Stage release files
         id: stage

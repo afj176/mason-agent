@@ -8,7 +8,7 @@ public static class CodeSchema
     public static IReadOnlySet<string>? Available(IReadOnlyList<CodeMessage> messages)=>messages.FirstOrDefault(m=>m.Role=="system")?.AvailableTools;
     public static IReadOnlySet<string> Available(CodeSession session)
     {
-        var names=new HashSet<string>(["list_files","search_text","read_file","open_file","ask_user"]);
+        var names=new HashSet<string>(["list_files","search_text","read_file","open_file","ask_user","navigate_code"]);
         if(session.Mode=="ask"||session.Permission==CodePermission.ReadOnly)return names;
         names.UnionWith(["edit_file","apply_edits","replace_file","create_file","create_directory","run_command"]);
         if(session.Shell!=CodeShellKind.Direct&&CodeShells.Unavailable(session)==null)names.Add("run_shell");
@@ -27,6 +27,7 @@ public static class CodeSchema
     }).ToArray());
     static string Description(string name)=>name switch
     {
+        "navigate_code"=>"Find symbol definitions, references, related tests or compiler diagnostics in a workspace directory. C# uses compiler binding. Other supported source languages return labeled text candidates.",
         "list_files"=>"List workspace files recursively, limit 1–1000. Use the supplied inventory first.",
         "search_text"=>"Search literal text in allowed workspace files. Use focused queries to locate existing behavior before reading and editing the relevant files.",
         "read_file"=>"Read the exact UTF-8 file, applicable repository instructions and current byte SHA-256. Use this fresh hash for edits or replacement.",
@@ -68,6 +69,7 @@ public static class CodeSchema
         object existingDirectory = rootIsOnlyDirectory ? new { type = "string", @const = "." } : Text();
         tools.Add(Tool("list_files", Fields(("path", existingDirectory), ("limit", new { type = "integer", minimum = 1, maximum = 1000 }))));
         tools.Add(Tool("search_text", Fields(("query", Text()), ("path", existingDirectory))));
+        tools.Add(Tool("navigate_code", Fields(("path",existingDirectory),("symbol",Text()),("mode",new {type="string",@enum=new[]{"definitions","references","tests","diagnostics"}}))));
         foreach (var name in new[] { "read_file", "open_file", "create_directory" }) tools.Add(Tool(name, Fields(("path", Text()))));
         object hash = observedHashes is { Length: >0 } ? new { type="string", @enum=observedHashes } : Text();
         tools.Add(Tool("edit_file", Fields(("path", Text()), ("expected_sha256", hash), ("old_text", Text()), ("new_text", Text()))));

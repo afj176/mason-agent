@@ -1,0 +1,77 @@
+{
+  "Version": 1,
+  "Application": "store:application",
+  "Scenarios": [
+    {
+      "Id": "products",
+      "Requirement": "List three distinct products",
+      "Page": "index.html",
+      "Steps": [
+        {
+          "Op": "count_distinct",
+          "Target": "ul[aria-label='Products'] li",
+          "Value": "3"
+        }
+      ]
+    },
+    {
+      "Id": "discount",
+      "Requirement": "Apply the ten percent quantity discount at three units and remove it at two",
+      "Page": "index.html",
+      "Steps": [
+        {
+          "Op": "fill",
+          "Target": "#qty",
+          "Value": "3"
+        },
+        {
+          "Op": "money",
+          "Target": "#total",
+          "Value": "27.00"
+        },
+        {
+          "Op": "fill",
+          "Target": "#qty",
+          "Value": "2"
+        },
+        {
+          "Op": "money",
+          "Target": "#total",
+          "Value": "20.00"
+        }
+      ]
+    },
+    {
+      "Id": "order",
+      "Requirement": "Checkout must create an order number that survives reloading its order page",
+      "Page": "index.html",
+      "Steps": [
+        {
+          "Op": "empty",
+          "Target": "#order",
+          "Value": ""
+        },
+        {
+          "Op": "click",
+          "Target": "#checkout",
+          "Value": ""
+        },
+        {
+          "Op": "capture",
+          "Target": "#order",
+          "Value": "ORD-"
+        },
+        {
+          "Op": "reload",
+          "Target": "",
+          "Value": ""
+        },
+        {
+          "Op": "same",
+          "Target": "#order",
+          "Value": ""
+        }
+      ]
+    }
+  ]
+}

@@ -8,6 +8,7 @@ namespace Mason;
 /// <summary>First-party action protocol over the existing checked local chat transport. No external harness/SDK.</summary>
 public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string reasoning, Action<string> budget, Func<LocalAiClient>? clientFactory = null, Action<string>? progress = null) : ICodeContextModel, ICodeAcceptancePlanner
 {
+    public event Action<AiChatResult>? InferenceCompleted;
     public async Task<List<AcceptanceCheck>> PlanAcceptance(string request, string[] units, CodeFiles inventory, CancellationToken ct)
     {
         using var client = clientFactory?.Invoke() ?? new LocalAiClient();
@@ -18,8 +19,9 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
             properties = new { checks = new { type = "array", minItems = 1, maxItems = Math.Min(64, units.Length * 3 + 2), items = new {
                 type = "object", additionalProperties = false, required = new[] { "Unit","Feature","Kind","Path","Target","Expected" },
                 properties = new { Unit = new { type = "integer", minimum = 1, maximum = units.Length }, Feature = str,
-                    Kind = new { type = "string", @enum = new[] { "browser_heading","browser_text","browser_click","browser_layout","document_text","python_test","unverified" } },
-                    Path = str, Target = str, Expected = str }
+                    Kind = new { type = "string", @enum = new[] { "browser_heading","browser_text","browser_click","browser_layout","browser_flow","document_text","python_test","unverified" } },
+                    Path = str, Target = str, Expected = str, Steps=new {type="array",maxItems=24,items=new {type="object",additionalProperties=false,required=new[]{"Op","Target","Value"},properties=new {
+                        Op=new {type="string",@enum=new[]{"count_distinct","fill","click","money","text","empty","capture","reload","same"}},Target=str,Value=str}}} }
             } } } });
         var task = JsonSerializer.Serialize(new { request, clauses = units.Select((text, i) => new { id=i+1, text }), existing_files = inventory.Files });
         var prompt = """
@@ -27,6 +29,7 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
             Cover EVERY distinct requested feature and condition in each numbered clause. A clause can require several checks. Preserve quoted labels exactly. Never invent a passing outcome.
             browser_heading checks a visible exact accessible heading. browser_text checks exact visible text. browser_click clicks an exact button/link label (Target) and requires Expected text to BECOME visible. For a user interaction use browser_click. Use index.html for a new web page unless another path was requested. Path is workspace-relative (index.html). Target and Expected are plain text labels. Example: {"Unit":1,"Feature":"Order confirmation","Kind":"browser_click","Path":"index.html","Target":"Place order","Expected":"Order received"}.
             browser_layout checks that a nonempty static page fits both mobile and desktop widths. Use only for an explicit responsive layout requirement.
+            browser_flow runs a sequence of Steps. Target in each step is a CSS selector. count_distinct counts distinct visible item texts. fill enters Value into an input. money compares a displayed numeric amount with an exact decimal. click activates the control. capture retains a nonempty visible identifier with the supplied prefix, reload refreshes the current page, and same compares against the captured identifier. Use concrete values derived from the request. Mark missing business rules unverified.
             document_text checks literal requested text inside a .md, .txt or .csv document. python_test runs one pre-existing named unittest (Path=test module .py, Target=TestCase class, Expected=test_method). Never use text matching as proof of program behavior.
             For unsupported, subjective, ambiguous or externally dependent behavior use unverified with a short reason in Expected. Do not substitute weaker checks. Output concise JSON only.
             """;
@@ -68,6 +71,7 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
             var plan=await client.PlanChat(profile,key,messages,output,options,server,ct);
             var body=new StringBuilder();
             var result=await client.StreamChat(profile,key,messages,output,chunk=>{body.Append(chunk);if(body.Length>32000)throw new InvalidDataException("Acceptance specification is too large.");},ct,options:options,server:server);
+            InferenceCompleted?.Invoke(result);
             if(ChatCompletionFeedback.From(result,plan).State!="Complete")throw new InvalidDataException("Acceptance specification was incomplete.");
             using var json=JsonDocument.Parse(body.ToString());
             return json.RootElement.Clone();
@@ -110,6 +114,7 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
             var plan = await client.PlanChat(profile, key, request, output, options, server, cancellation);
             var text = new StringBuilder();
             var result = await client.StreamChat(profile, key, request, output, part => { text.Append(part); if (text.Length > 12_000) throw new InvalidDataException("Coding digest exceeded 12,000 characters."); }, cancellation, options: options, server: server);
+            InferenceCompleted?.Invoke(result);
             var feedback = ChatCompletionFeedback.From(result, plan);
             if (feedback.State == "Complete") return new(text.ToString(), attempt, rejectedHash);
             var hash = CodeProtocol.Hash(Encoding.UTF8.GetBytes(text.ToString()));
@@ -177,6 +182,7 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
             }
             catch (JsonException) { /* Incomplete JSON is expected while streaming; final parse remains strict. */ }
         }, cancellation, options: options, server: server);
+        InferenceCompleted?.Invoke(result);
         var completion = ChatCompletionFeedback.From(result, plan);
         if (completion.State != "Complete") throw new CodeResponseException(result.FinishReason == "length"
             ? $"The model exhausted its {output:N0}-token action budget. Split the work into smaller complete tool calls."
@@ -205,6 +211,7 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
         var plan=await client.PlanChat(profile,key,messages,output,options,server,ct);
         var buffer=new StringBuilder();
         var response=await client.StreamChat(profile,key,messages,output,part=>{buffer.Append(part);if(buffer.Length>32000)throw new InvalidDataException("Page repair exceeded its output bound.");},ct,options:options,server:server);
+        InferenceCompleted?.Invoke(response);
         var source=buffer.ToString().Trim();
         if(source.StartsWith("```html\n",StringComparison.OrdinalIgnoreCase) && source.EndsWith("\n```")) source=source[8..^4].Trim();
         if(ChatCompletionFeedback.From(response,plan).State!="Complete" || !(source.StartsWith("<!doctype html",StringComparison.OrdinalIgnoreCase)||source.StartsWith("<html",StringComparison.OrdinalIgnoreCase)) ||
@@ -237,6 +244,7 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
             thinking.Append(part);if(thinking.Length>100_000)throw new CodeResponseException("Native reasoning exceeded the retained resource bound.","");
             Status("Reasoning before the next action");
         },options,server,count=>Status($"Generating tool arguments · {count:N0} characters"));
+        InferenceCompleted?.Invoke(result);
         if(result.ObservedModel!=profile.Model)throw new InvalidDataException("Native response model identity did not match the selected model; no action was accepted.");
         var completion=ChatCompletionFeedback.From(result,plan);
         if(completion.State!="Complete")throw new CodeResponseException(result.FinishReason == "length"

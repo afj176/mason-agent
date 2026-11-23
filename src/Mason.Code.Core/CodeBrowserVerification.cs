@@ -19,7 +19,7 @@ internal static class CodeBrowserVerification
     {
         var results = new Dictionary<AcceptanceCheck, AcceptanceResult>();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(TimeSpan.FromMinutes(2));
+        deadline.CancelAfter(checks.Any(c=>c.Application!=null)?TimeSpan.FromMinutes(6):TimeSpan.FromMinutes(2));
         try
         {
             var edge = new[] { Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.ProgramFiles }
@@ -38,9 +38,10 @@ internal static class CodeBrowserVerification
                     deadline.Token.ThrowIfCancellationRequested();
                     var relative = scope.Relative(scope.Resolve(check.Path));
                     var url = Origin + "/" + string.Join("/", relative.Split('/').Select(Uri.EscapeDataString));
+                    string observed="";
                     foreach (var width in new[] { 390, 1280 })
-                        await Observe(browser, scope, check, url, width);
-                    results[check] = new(check, true, $"{check.Path} · Edge {browser.Version} · 390px and 1280px · {check.Expected}");
+                        observed=await Observe(browser, scope, check, url, width,deadline.Token);
+                    results[check] = new(check, true, $"{check.Path} · Edge {browser.Version} · 390px and 1280px · {observed}");
                 }
                 catch (Exception e) when (!deadline.IsCancellationRequested) { results[check] = Failed(check, e); }
             }
@@ -48,7 +49,7 @@ internal static class CodeBrowserVerification
         catch (Exception e)
         {
             ct.ThrowIfCancellationRequested();
-            foreach (var c in checks) results.TryAdd(c, Failed(c, deadline.IsCancellationRequested ? new TimeoutException("Browser verification exceeded two minutes.") : e));
+            foreach (var c in checks) results.TryAdd(c, Failed(c, deadline.IsCancellationRequested ? new TimeoutException("Browser verification exceeded its time budget.") : e));
         }
         return results;
     }
@@ -59,8 +60,9 @@ internal static class CodeBrowserVerification
         return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}");
     }
 
-    static async Task Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width)
+    static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct)
     {
+        await using var app=check.Application==null?null:await CodeVerificationApp.Start(scope,check.Application,ct);
         await using var context = await browser.NewContextAsync(new() { Offline = true, ServiceWorkers = ServiceWorkerPolicy.Block,
             AcceptDownloads = false, ViewportSize = new() { Width = width, Height = 850 } });
         var errors = new ConcurrentQueue<string>();
@@ -74,9 +76,18 @@ internal static class CodeBrowserVerification
             {
                 var request = route.Request;
                 var uri = new Uri(request.Url);
-                if (Interlocked.Increment(ref requests) > 150 || request.Method != "GET" || uri.GetLeftPart(UriPartial.Authority) != Origin ||
-                    request.Frame.ParentFrame != null || request.IsNavigationRequest && request.Url != url)
+                if (Interlocked.Increment(ref requests) > 150 || uri.GetLeftPart(UriPartial.Authority) != Origin ||
+                    request.Frame.ParentFrame != null || app==null && (request.Method!="GET" || check.Kind!="browser_flow" && request.IsNavigationRequest && request.Url != url))
                     throw new InvalidDataException("Page requested a resource outside the isolated verification page.");
+                if(app!=null)
+                {
+                    var response=await app.Request(request,uri,ct);
+                    if(Interlocked.Add(ref served,response.Body.Length)>16*1024*1024) throw new InvalidDataException("App exceeded response budget.");
+                    response.Headers["Content-Security-Policy"]=Policy.Replace("connect-src 'none'","connect-src 'self'").Replace("form-action 'none'","form-action 'self'").Replace("sandbox allow-scripts","sandbox allow-forms allow-scripts");
+                    response.Headers["X-Content-Type-Options"]="nosniff";
+                    await route.FulfillAsync(new(){Status=response.Status,BodyBytes=response.Body,Headers=response.Headers});
+                    return;
+                }
                 var path = scope.Resolve(Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/')));
                 if (!Types.TryGetValue(Path.GetExtension(path), out var type)) throw new InvalidDataException("Unsupported browser asset type.");
                 using var input = File.OpenRead(path);
@@ -100,8 +111,12 @@ internal static class CodeBrowserVerification
         await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.Load, Timeout = 7500 });
         if (errors.TryPeek(out var loadError)) throw new InvalidDataException(loadError);
         ILocator VisibleText() => page.GetByText(check.Expected, new() { Exact = true }).Filter(new() { Visible = true });
+        string observed=check.Expected;
         switch (check.Kind)
         {
+            case "browser_flow":
+                observed=await BrowserContract.Observe(page,check.Steps!,ct);
+                break;
             case "browser_layout":
                 if (!await page.Locator("body").IsVisibleAsync() || string.IsNullOrWhiteSpace(await page.Locator("body").InnerTextAsync()) ||
                     !await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth <= innerWidth + 1"))
@@ -124,8 +139,9 @@ internal static class CodeBrowserVerification
                 break;
             default: throw new InvalidDataException("Unknown browser acceptance operation.");
         }
-        if (page.Url != url) throw new InvalidDataException("The page navigated away from the verification target.");
+        if (page.Url != url && (check.Kind!="browser_flow" || !Uri.TryCreate(page.Url,UriKind.Absolute,out var final) || final.GetLeftPart(UriPartial.Authority)!=Origin)) throw new InvalidDataException("The page navigated away from the verification target.");
         if (errors.TryPeek(out var error)) throw new InvalidDataException(error);
+        return app==null ? observed : observed+" · app: "+app.Observations;
     }
 }
 

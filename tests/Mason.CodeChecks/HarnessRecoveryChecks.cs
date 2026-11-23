@@ -73,7 +73,7 @@ static class HarnessRecoveryChecks
             "a rejected completion is labeled in the visible transcript and its raw response retained in the journal");
 
         await new CodeEngine(store, new Actions(_ => Tool("create_file", new { path = "about.html", content = "<h1>About</h1>" }), _ => Done()),
-            (_, _) => throw new Exception("Unexpected approval"), () => { }).Run(session, "Create about.html.", default);
+            (_, _) => throw new Exception("Unexpected approval"), () => { }).Run(session, "/new Create about.html.", default);
         check(session.State == "Completed" && session.Changes.Count == 2 && session.Detail.EndsWith("1 file changed"),
             "completion counts unique files changed by the current request");
 
@@ -258,7 +258,7 @@ static class HarnessRecoveryChecks
             var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
             CodeAction Run(string script) => Tool("run_command", new { executable = cmd, arguments = new[] { "/d", "/c", script }, directory = "." });
             var verify = Run("if not exist verified.txt exit /b 7");
-            await new CodeEngine(store, new Actions(_ => verify, _ => Run("exit /b 0"), _ => Done()), (_, _) => Task.FromResult(true), () => { }).Run(session, "Run both checks.", default);
+            await new CodeEngine(store, new Actions(_ => verify, _ => Run("exit /b 0"), _ => Done()), (_, _) => Task.FromResult(true), () => { }).Run(session, "/new Verify the verified.txt file.", default);
             check(session.State == "Needs verification" && session.Turns.Last().Text.Contains("failed"), "an unrelated successful command cannot clear a failed check");
             await new CodeEngine(store, new Actions(_ => verify, _ => Tool("create_file", new { path = "verified.txt", content = "ready" }), _ => verify, _ => Done()), (_, _) => Task.FromResult(true), () => { }).Run(session, "Correct the file and rerun its check.", default);
             check(session.State == "Completed", "a successful rerun of the failed command clears the outstanding check");
@@ -286,6 +286,7 @@ static class HarnessRecoveryChecks
                 "Create about.html." => [new(1,"About page","browser_heading","about.html","","About")],
                 "Keep about.html and add a contact page." => [new(1,"About page","browser_heading","about.html","","About"),new(2,"Contact page","browser_heading","contact.html","","Contact")],
                 "Create a short page." => [new(1,"Recovered page","browser_heading","recovered.html","","Recovered")],
+                "Verify the verified.txt file." => [new(1,"Verified content","document_text","verified.txt","","ready")],
                 "Correct the file and rerun its check." => [new(1,"Corrected file","document_text","verified.txt","","ready"),new(2,"Verified content","document_text","verified.txt","","ready")],
                 _ => []
             });

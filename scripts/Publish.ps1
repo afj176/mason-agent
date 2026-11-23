@@ -1,12 +1,24 @@
-param([Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,[switch]$Installer,[string]$InnoCompiler='')
+param([Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,[Parameter(Mandatory)][string]$ModelEvidence,[switch]$Installer,[string]$InnoCompiler='')
 $ErrorActionPreference='Stop'
 $appRoot=Split-Path $PSScriptRoot -Parent
+$commit=git -C $appRoot rev-parse --verify HEAD
+if($LASTEXITCODE -ne 0 -or $commit -notmatch '^[a-f0-9]{40}$'){throw 'Release requires a Git source commit.'}
+function Confirm-Source {
+    $dirty=git -C $appRoot status --porcelain --untracked-files=all
+    if($LASTEXITCODE -ne 0 -or $dirty -or (git -C $appRoot rev-parse HEAD) -cne $commit){throw 'Release requires a clean checkout at the evaluated source commit.'}
+}
+Confirm-Source
+$configured=[xml](Get-Content -LiteralPath (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -Raw)
+if($configured.Project.PropertyGroup.Version -ne $Version){throw "Requested version differs from the source version."}
+& (Join-Path $PSScriptRoot 'Assert-ModelBenchmark.ps1') -Report $ModelEvidence -Commit $commit
 $payload=Join-Path $appRoot "artifacts/MasonAgent-$Version-win-x64"
 if(Test-Path -LiteralPath $payload){throw "Release already exists: $payload"}
 dotnet build (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1
 if($LASTEXITCODE -ne 0){throw 'Coding checks build failed'}
 dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --harness-recovery-checks ([IO.Path]::GetTempPath())
 if($LASTEXITCODE -ne 0){throw 'Coding harness recovery checks failed'}
+dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --checkout-controls (Join-Path ([IO.Path]::GetTempPath()) ('mason-checkout-'+[guid]::NewGuid().ToString('N')))
+if($LASTEXITCODE -ne 0){throw 'Positive/negative checkout control matrix failed'}
 & (Join-Path $PSScriptRoot 'Build-CodeHandoff.ps1')
 if($LASTEXITCODE -ne 0){throw 'Native coding handoff build failed'}
 dotnet publish (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Platform=x64 -p:PlaywrightPlatform=win-x64 -p:UseSharedCompilation=false -p:NuGetAudit=false -p:Version=$Version -o $payload -m:1
@@ -14,6 +26,10 @@ if($LASTEXITCODE -ne 0){throw 'App publish failed'}
 dotnet publish (Join-Path $appRoot 'src/Mason.SandboxSetup') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Version=$Version -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1 -o (Join-Path $payload 'sandbox-setup')
 if($LASTEXITCODE -ne 0){throw 'Mason.SandboxSetup publish failed'}
 & (Join-Path $PSScriptRoot 'Assert-ReleasePayload.ps1') -Payload $payload
+Confirm-Source
+Copy-Item -LiteralPath $ModelEvidence -Destination (Join-Path $payload 'model-benchmark.json')
+if(!([Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $payload 'MasonAgent.dll')).ProductVersion).EndsWith("+$commit")){throw 'Published app has the wrong source revision.'}
+[pscustomobject]@{Version=$Version;Commit=$commit;Tree=(git -C $appRoot rev-parse 'HEAD^{tree}');BenchmarkSha256=(Get-FileHash -LiteralPath (Join-Path $payload 'model-benchmark.json')).Hash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payload 'release-source.json') -Encoding utf8
 Copy-Item -LiteralPath (Join-Path $appRoot 'README.md') -Destination $payload
 Copy-Item -LiteralPath (Join-Path $appRoot 'LICENSE') -Destination $payload
 $notices=Join-Path $appRoot 'THIRD-PARTY-NOTICES.md'

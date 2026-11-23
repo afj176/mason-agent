@@ -5,6 +5,9 @@ using System.Text.Json;
 using Mason;
 using Mason.Code;
 
+if(args.Length==2 && args[0]=="--checkout-controls"){await CheckoutEvaluation.Run(Path.GetFullPath(args[1]),new ScriptedModel());return;}
+if(args.Length==6 && args[0]=="--model-benchmark"){await ModelBenchmark.Run(args[1],args[2],Path.GetFullPath(args[3]),int.Parse(args[4]),args[5]);return;}
+
 if (args.Length == 2 && args[0] == "--prepare-ui") { await UiFixture.Prepare(args[1]); return; }
 if (args.Length == 2 && args[0] == "--harness-recovery-checks")
 {
@@ -329,7 +332,7 @@ try
     using (var schemaJson = JsonDocument.Parse(JsonSerializer.Serialize(schemaBody)))
     {
         var toolOptions = schemaJson.RootElement.GetProperty("response_format").GetProperty("schema").GetProperty("properties").GetProperty("tool").GetProperty("anyOf");
-        Check(toolOptions.GetArrayLength() == 14 && toolOptions.EnumerateArray().All(t => t.GetProperty("properties").GetProperty("arguments").GetProperty("additionalProperties").ValueKind == JsonValueKind.False), "first Build schema requires a complete known tool with exact argument fields");
+        Check(toolOptions.GetArrayLength() == 15 && toolOptions.EnumerateArray().All(t => t.GetProperty("properties").GetProperty("arguments").GetProperty("additionalProperties").ValueKind == JsonValueKind.False), "first Build schema requires a complete known tool with exact argument fields");
     }
     Reject(() => new ChatGenerationOptions { ResponseSchema = CodeSchema.Action() }.Body(profile, [], 500, false), "response schema is not silently sent to an unverified provider");
     if (OperatingSystem.IsWindows())
@@ -378,6 +381,7 @@ try
         Check(loop.State=="Failed"&&loop.Activities.Count==3&&loop.Activities[^1].State=="Failed"&&loop.Detail.Contains("repeated-tool loop"),"identical tool loop stops before the third execution and retains failure evidence");
     }
     await HarnessRecoveryChecks.Run(root, Check);
+    await HarnessContractChecks.Run(root, Check);
     if (OperatingSystem.IsWindows()) await HarnessRecoveryChecks.CheckNamedTests(root,Check);
     await CodingCompactionChecks.Run(root, workspace, Check);
     await CodingPanelChecks.Run(root, workspace, Check);

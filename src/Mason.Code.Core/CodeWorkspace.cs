@@ -109,7 +109,10 @@ public sealed class CodeWorkspace
         var bom = bytes.AsSpan().StartsWith(new byte[] { 239, 187, 191 });
         return new(Relative(full), Utf8.GetString(bytes, bom ? 3 : 0, bytes.Length - (bom ? 3 : 0)), CodeProtocol.Hash(bytes), bom);
     }
-    public CodeFiles Files(string relative = ".", int limit = 200)
+    public CodeFiles Files(string relative = ".", int limit = 200) => ListFiles(relative,limit,null);
+    internal CodeFiles VerificationFiles() => ListFiles(".",1000, new HashSet<string>(StringComparer.OrdinalIgnoreCase){
+        ".py",".html",".htm",".js",".css",".mjs",".json",".sql",".svg",".png",".jpg",".jpeg",".webp",".gif",".ico",".woff",".woff2",".txt",".csv",".md"});
+    CodeFiles ListFiles(string relative,int limit,HashSet<string>? extensions)
     {
         if (limit is < 1 or > 1000) throw new ArgumentException("List between 1 and 1,000 files.");
         var files = new List<string>(); var queue = new Queue<(string Path, int Depth)>(); queue.Enqueue((Resolve(relative, true), 0));
@@ -120,7 +123,7 @@ public sealed class CodeWorkspace
             var (directory, depth) = queue.Dequeue();
             foreach (var path in Directory.EnumerateFileSystemEntries(directory).Order(StringComparer.OrdinalIgnoreCase))
             {
-                if (++inspected > 8000) return new(files.ToArray(), true);
+                if (++inspected > (extensions==null?8000:60000)) return new(files.ToArray(), true);
                 var info = File.GetAttributes(path);
                 if (Forbidden(System.IO.Path.GetFileName(path)) || (info & FileAttributes.ReparsePoint) != 0) continue;
                 if ((info & FileAttributes.Directory) != 0)
@@ -130,6 +133,7 @@ public sealed class CodeWorkspace
                     else clippedDepth = true;
                     continue;
                 }
+                if(extensions!=null && !extensions.Contains(Path.GetExtension(path))) continue;
                 if (files.Count == limit) return new(files.ToArray(), true);
                 files.Add(Relative(path));
             }
