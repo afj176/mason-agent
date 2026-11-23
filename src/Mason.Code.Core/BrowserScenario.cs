@@ -113,12 +113,16 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         }
         return string.Join("; ",observations);
     }
-    static string Clip(string s)=>s.Length>160?s[..160]+"…":s;
+    static string Clip(string s)
+    {
+        var line=s.ReplaceLineEndings(@"\n");
+        return line.Length>160?line[..160]+"…":line;
+    }
     // Accept a short display label such as "Order total:". Digits or multiple amounts in the
     // label would make extraction ambiguous. Preserve the full observed text in the receipt.
     static string WithoutLabel(string value)
     {
-        int separator=value.IndexOf(':');
+        int separator=value.IndexOfAny([':', '\r', '\n']);
         return separator is >0 and <=64 && value[..separator].All(c=>char.IsLetter(c) || c==' ' || c=='-')
             ? value[(separator+1)..].Trim() : value;
     }

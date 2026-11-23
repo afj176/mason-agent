@@ -11,6 +11,8 @@ internal static class HarnessContractChecks
         var scope=new CodeWorkspace(project);
         check(BrowserContract.Amount("Order total: $27.00",out var price) && price==27m && !BrowserContract.Amount("$30.00: $27.00",out _) &&
             !BrowserContract.Amount("Total: $27.00 or $30.00",out _) && BrowserContract.HasIdentifier("Order number: ORD-5123","ORD-") &&
+            BrowserContract.HasIdentifier("Receipt\n\nORD-5123","ORD-") && !BrowserContract.HasIdentifier("Receipt\n\nORD-","ORD-") &&
+            BrowserContract.Amount("Total\n$27.00",out var stacked) && stacked==27 &&
             !BrowserContract.HasIdentifier("Order number: ORD-","ORD-"),"labeled monetary values and order IDs are observable while ambiguous amounts and bare prefixes fail");
         check(!BrowserContract.CoversBehavior("Calculate the discount for a quantity change",[new("count_distinct",".item","3")]) &&
             !BrowserContract.CoversBehavior("The order number survives a reload",[new("text","#status","Confirmed")]),
