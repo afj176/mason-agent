@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Playwright" Version="1.65.1" />
     <ProjectReference Include="../Mason.NetworkHook/Mason.NetworkHook.csproj" />
     <InternalsVisibleTo Include="Mason.CodeChecks" />
     <EmbeddedResource Include="CodeNetworkNode.cjs" LogicalName="Mason.Code.CodeNetworkNode.cjs" />

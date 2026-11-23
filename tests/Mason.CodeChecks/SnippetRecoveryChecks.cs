@@ -9,7 +9,7 @@ static class SnippetRecoveryChecks
         File.WriteAllText(Path.Combine(workspace,"app.js"),"const value=1;\n// preserve this line\n");
         var scope=new CodeWorkspace(workspace);using var store=new CodeStore(Path.Combine(root,"profile"));var session=store.New(workspace);session.Permission=CodePermission.WorkspaceEdits;
         await new CodeEngine(store,new RecoveryModel(scope),(_,_)=>Task.FromResult(true),()=>{}).Run(session,"Update value and preserve the comment",default);
-        if(session.State!="Completed"||scope.Read("app.js").Content!="const value=2;\n// preserve this line\n"||session.Changes.Count!=1||session.Activities[1].State!="Failed")throw new Exception("Snippet recovery changed the wrong file or permitted the unavailable tool");
+        if(session.State!="Needs verification"||scope.Read("app.js").Content!="const value=2;\n// preserve this line\n"||session.Changes.Count!=1||session.Activities[1].State!="Failed")throw new Exception("Snippet recovery changed the wrong file or permitted the unavailable tool");
         Console.WriteLine("PASS snippet conflict withdraws snippet tools, rejects bypass and recovers through current-hash replacement");
     }
     sealed class RecoveryModel(CodeWorkspace scope):ICodeModel

@@ -19,7 +19,7 @@ static class CodeNativeChecks
     }
     public static async Task Run(string root,Action<bool,string> check)
     {
-        var definitions=CodeSchema.NativeTools();check(definitions.GetArrayLength()==13&&definitions.EnumerateArray().All(t=>!string.IsNullOrWhiteSpace(t.GetProperty("function").GetProperty("description").GetString())),"every registered native tool has a complete description and executable argument schema");
+        var definitions=CodeSchema.NativeTools();check(definitions.GetArrayLength()==14&&definitions.EnumerateArray().All(t=>!string.IsNullOrWhiteSpace(t.GetProperty("function").GetProperty("description").GetString())),"every registered native tool has a complete description and executable argument schema");
         using(var unwrapped=JsonDocument.Parse(CodeNativeProtocol.Receipt(JsonSerializer.Serialize(new{tool_result="read_file",state="Completed",result=JsonSerializer.Serialize(new{Content="\"quoted\"\nλ",Sha256="abc"})}))))
             check(unwrapped.RootElement.GetProperty("result").GetProperty("Content").GetString()=="\"quoted\"\nλ"&&unwrapped.RootElement.GetProperty("state").GetString()=="Completed","native receipts remove double-encoded JSON while preserving exact source text and outcome");
         var profile=new AiEndpointProfile { Model="native-test",Endpoint="http://127.0.0.1:18139" };
@@ -106,7 +106,7 @@ static class CodeNativeChecks
                 using var json=JsonDocument.Parse(await request.Content.ReadAsStringAsync(ct));var value=json.RootElement;
                 if(path is "/apply-template" or "/v1/chat/completions")
                 {
-                    bool valid=value.GetProperty("tools").GetArrayLength()==13&&!value.TryGetProperty("response_format",out _)&&value.GetProperty("temperature").GetDouble()==1&&value.GetProperty("top_p").GetDouble()==.95&&value.GetProperty("top_k").GetInt32()==20&&!value.GetProperty("parallel_tool_calls").GetBoolean();
+                    bool valid=value.GetProperty("tools").GetArrayLength()==14&&!value.TryGetProperty("response_format",out _)&&value.GetProperty("temperature").GetDouble()==1&&value.GetProperty("top_p").GetDouble()==.95&&value.GetProperty("top_k").GetInt32()==20&&!value.GetProperty("parallel_tool_calls").GetBoolean();
                     if(path=="/apply-template")MeasuredWithTools=valid;else GenerationWithTools=valid;
                 }
             }

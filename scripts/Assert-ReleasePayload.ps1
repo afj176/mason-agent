@@ -18,3 +18,8 @@ if($forbidden.Count){
     throw "Release payload contains user runtime settings or profile data: $paths"
 }
 Write-Output 'PASS release payload contains no runtime settings or profile data'
+foreach ($file in @('Microsoft.Playwright.dll','.playwright/node/win32_x64/node.exe','.playwright/node/LICENSE','.playwright/package/cli.js','.playwright/package/LICENSE')) {
+    if (!(Test-Path -LiteralPath (Join-Path $payloadRoot $file) -PathType Leaf)) { throw "Missing browser verification dependency: $file" }
+}
+$platforms = @(Get-ChildItem -LiteralPath (Join-Path $payloadRoot '.playwright/node') -Directory)
+if ($platforms.Count -ne 1 -or $platforms[0].Name -ne 'win32_x64') { throw 'The Windows payload must include only the Windows x64 browser driver.' }

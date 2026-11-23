@@ -21,3 +21,6 @@ jobs:
       - name: Build
         shell: pwsh
         run: dotnet build src/MasonAgent/MasonAgent.csproj -c Release -p:Platform=x64 -nologo
+      - name: Verify coding harness recovery
+        shell: pwsh
+        run: dotnet run --project tests/Mason.CodeChecks -c Release -- --harness-recovery-checks "$env:RUNNER_TEMP"

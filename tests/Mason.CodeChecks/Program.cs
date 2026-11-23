@@ -6,6 +6,28 @@ using Mason;
 using Mason.Code;
 
 if (args.Length == 2 && args[0] == "--prepare-ui") { await UiFixture.Prepare(args[1]); return; }
+if (args.Length == 2 && args[0] == "--harness-recovery-checks")
+{
+    await HarnessRecoveryChecks.Run(Path.GetFullPath(args[1]), (passed, name) =>
+    {
+        if (!passed) throw new Exception("FAIL " + name);
+        Console.WriteLine("PASS " + name);
+    });
+    return;
+}
+if (args.Length is 4 or 5 && args[0] == "--evaluate-empty-project")
+{
+    await HarnessRecoveryChecks.EvaluateEmptyProject(args[1], args[2], Path.GetFullPath(args[3]), args.Length == 5 ? args[4] : null);
+    return;
+}
+if (args.Length == 4 && args[0] == "--evaluate-acceptance")
+{
+    await HarnessRecoveryChecks.EvaluateEmptyProject(args[1],args[2],Path.GetFullPath(args[3]),acceptanceTrial:true); return;
+}
+if (args.Length==2 && args[0]=="--acceptance-runner-checks")
+{
+    await HarnessRecoveryChecks.CheckNamedTests(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name); Console.WriteLine("PASS "+name);}); return;
+}
 if(args.Length==2&&args[0]=="--snippet-recovery-checks"){await SnippetRecoveryChecks.Run(Path.GetFullPath(args[1]));return;}
 if(args.Length==2&&args[0]=="--node-path-checks"){await NodePathChecks.Run(Path.GetFullPath(args[1]));return;}
 if(args.Length==4&&args[0]=="--evaluate-html"){await HtmlModelEvaluation.Run(args[1],args[2],args[3]);return;}
@@ -252,7 +274,8 @@ try
         Check(repair.State == "Completed" && repair.Activities.Count(a => a.Tool == "model_response") == 1 && !File.Exists(Path.Combine(workspace, "partial.txt")), "malformed response recorded and corrected without executing partial action");
         var failRepair = store.New(workspace);
         await new CodeEngine(store, new RepairModel(true), (_, _) => Task.FromResult(false), () => { }).Run(failRepair, "Bound correction attempts.", default);
-        Check(failRepair.State == "Failed" && failRepair.Activities.Count == 2, "malformed response recovery stops after two corrections");
+        Check(failRepair.State == "Failed" && failRepair.Activities.Count == 3 && failRepair.Messages.Count(m => m.Content.StartsWith(CodeProtocol.ResponseRepairPrefix, StringComparison.Ordinal)) == 2,
+            "malformed response recovery stops after two corrections and retains all three failed responses");
         var premature = store.New(workspace);
         await new CodeEngine(store, new ScriptedModel(Done("I will inspect it."), Done("I will start."), Done("Working on it.")), (_, _) => Task.FromResult(false), () => { }).Run(premature, "Implement the change.", default);
         Check(premature.State == "Failed" && premature.Activities.Count == 2 && premature.Detail.Contains("No work is claimed complete"), "Build rejects repeated completion without any tool evidence");
@@ -261,7 +284,7 @@ try
         Check(plannedOnly.State == "Failed" && plannedOnly.Changes.Count == 0, "reading and planning cannot complete a Build task");
         var openedOnly = store.New(workspace); openedOnly.Permission = CodePermission.WorkspaceEdits;
         await new CodeEngine(store, new ScriptedModel(Tool("open_file", new { path = "README.md" }), Done("Please review the file."), Tool("create_file", new { path = "completion-proof.txt", content = "implemented" }), Done("Implemented.")), (_, _) => Task.FromResult(true), () => { }).Run(openedOnly, "Implement the change and open the README.", default);
-        Check(openedOnly.State == "Completed" && openedOnly.Activities.Any(a => a.Tool == "completion_check" && a.State == "Failed") && File.ReadAllText(Path.Combine(workspace, "completion-proof.txt")) == "implemented", "opening a file cannot prematurely complete a writable Build task, and the agent can continue to an actual change");
+        Check(openedOnly.State == "Needs verification" && openedOnly.Activities.Any(a => a.Tool == "completion_check" && a.State == "Failed") && File.ReadAllText(Path.Combine(workspace, "completion-proof.txt")) == "implemented", "opening a file cannot prematurely complete a writable Build task and an unverified write still requires a feature check");
         var ask = store.New(workspace); ask.Mode = "ask"; ask.Permission = CodePermission.WorkspaceEdits;
         await new CodeEngine(store, new ScriptedModel(Tool("create_file", new { path = "ask-must-not-write.txt", content = "bad" }), Done("Ask is read-only.")), (_, _) => Task.FromResult(true), () => { }).Run(ask, "Explain the code.", default);
         Check(!File.Exists(Path.Combine(workspace, "ask-must-not-write.txt")) && ask.Activities[0].State == "Denied", "Ask cannot write despite a stored workspace-edit permission");
@@ -306,7 +329,7 @@ try
     using (var schemaJson = JsonDocument.Parse(JsonSerializer.Serialize(schemaBody)))
     {
         var toolOptions = schemaJson.RootElement.GetProperty("response_format").GetProperty("schema").GetProperty("properties").GetProperty("tool").GetProperty("anyOf");
-        Check(toolOptions.GetArrayLength() == 13 && toolOptions.EnumerateArray().All(t => t.GetProperty("properties").GetProperty("arguments").GetProperty("additionalProperties").ValueKind == JsonValueKind.False), "first Build schema requires a complete known tool with exact argument fields");
+        Check(toolOptions.GetArrayLength() == 14 && toolOptions.EnumerateArray().All(t => t.GetProperty("properties").GetProperty("arguments").GetProperty("additionalProperties").ValueKind == JsonValueKind.False), "first Build schema requires a complete known tool with exact argument fields");
     }
     Reject(() => new ChatGenerationOptions { ResponseSchema = CodeSchema.Action() }.Body(profile, [], 500, false), "response schema is not silently sent to an unverified provider");
     if (OperatingSystem.IsWindows())
@@ -354,6 +377,8 @@ try
         await new CodeEngine(loopStore,new ScriptedModel(read,read,read,Done()),(_,_)=>throw new Exception("Loop requested review"),()=>{}).Run(loop,"Inspect the read loop.",default);
         Check(loop.State=="Failed"&&loop.Activities.Count==3&&loop.Activities[^1].State=="Failed"&&loop.Detail.Contains("repeated-tool loop"),"identical tool loop stops before the third execution and retains failure evidence");
     }
+    await HarnessRecoveryChecks.Run(root, Check);
+    if (OperatingSystem.IsWindows()) await HarnessRecoveryChecks.CheckNamedTests(root,Check);
     await CodingCompactionChecks.Run(root, workspace, Check);
     await CodingPanelChecks.Run(root, workspace, Check);
     await CodingShellChecks.Run(root, workspace, Check);
@@ -378,8 +403,10 @@ try
 // Production identity/job/ACL cleanup remains asserted by the sandbox checks.
 finally { Console.WriteLine("Coding check artifacts: " + root); }
 
-sealed class ScriptedModel(params CodeAction[] actions) : ICodeModel
+sealed class ScriptedModel(params CodeAction[] actions) : ICodeModel, ICodeAcceptancePlanner
 {
+    public Task<List<AcceptanceCheck>> PlanAcceptance(string request, string[] units, CodeFiles files, CancellationToken ct) =>
+        Task.FromResult<List<AcceptanceCheck>>(request == "Document cursor pagination." ? [new(1, "Cursor pagination documented", "document_text", "README.md", "", "Cursor pagination")] : []);
     int index;
     public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages, Action<string> onMessage, CancellationToken cancellation)
     {

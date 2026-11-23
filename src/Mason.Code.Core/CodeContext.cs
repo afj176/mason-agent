@@ -42,8 +42,32 @@ public static class CodeContext
     public static int DigestOutput(int context) => Math.Clamp(context / 8, 512, 2048);
     public static string Hash<T>(T value) => CodeProtocol.Hash(JsonSerializer.SerializeToUtf8Bytes(value));
     public static bool FitsWire(IReadOnlyList<CodeMessage> messages) => messages.Count <= 180 && messages.Sum(m => (long)m.Content.Length+(m.ReasoningContent?.Length??0)) <= 160_000;
-    static int Reserve(CodeContextUsage usage) => Math.Clamp(usage.Context / 4, 512, 8192);
-    static bool Fits(CodeContextUsage usage) => usage.Context > 0 && usage.Prompt >= 0 && usage.Prompt <= usage.Context && usage.Available >= Reserve(usage);
+    static int Reserve(int context) => Math.Clamp(context / 4, 512, 8192);
+    static bool Fits(CodeContextUsage usage) => usage.Context > 0 && usage.Prompt >= 0 && usage.Prompt <= usage.Context && usage.Available >= Reserve(usage.Context);
+    static string Budget(CodeContextUsage usage) =>
+        $"Measured {usage.Prompt:N0} prompt tokens, {usage.Context:N0} loaded context tokens, {usage.Available:N0} available output tokens, and a {Reserve(usage.Context):N0}-token action reserve.";
+
+    internal static async Task CheckBuildHeadroom(CodeSession session, CodeMessage[] messages, ICodeModel model, CancellationToken ct)
+    {
+        if (model is not ICodeContextModel context || session.PromptTokens is not int prompt ||
+            session.ContextTokens is not int window || window - prompt > Reserve(window) + 256)
+            return;
+
+        // Count one short action and a receipt with the same tokenizer near the limit.
+        // These messages are used solely for measurement.
+        var continuation = messages.Concat(new CodeMessage[]
+        {
+            new("assistant", """{"version":1,"message":"Inspect the workspace.","tool":{"name":"list_files","arguments":{"path":".","limit":20}}}"""),
+            new("user", """{"tool_result":"list_files","activity_id":"00000000-0000-0000-0000-000000000000","state":"Completed","result":"{\"Files\":[],\"Truncated\":false}"}""")
+        }).ToArray();
+        var usage = FitsWire(continuation) ? await context.Measure(continuation, false, ct) : null;
+        if (usage != null && Fits(usage)) return;
+        string detail = "Build paused before its first action because even a short tool exchange would leave too little room for the next action. " +
+            (usage == null ? "The projected prompt exceeded the request size limit." : Budget(usage)) +
+            " Restart the model with a larger loaded context or shorten references.";
+        session.Activities.Add(new() { Tool = "context_preflight", State = "Failed", Result = detail });
+        throw new InvalidOperationException(detail);
+    }
     public static CodeCheckpoint? Active(CodeSession session)
     {
         foreach (var snapshot in session.Checkpoints.AsEnumerable().Reverse())
@@ -122,7 +146,11 @@ public static class CodeContext
         if (session.Messages.Count < 3 && !force)
         {
             if (before != null && Fits(before)) return messages;
-            throw new InvalidOperationException("The current request, references or repository instructions leave insufficient action space. Shorten references or load a larger context. Nothing was summarized or removed.");
+            string detail = "The current request, references or repository instructions leave insufficient action space. " +
+                (before == null ? "The prompt exceeded the request size limit. " : Budget(before) + " ") +
+                "Shorten references or load a larger context. Nothing was summarized or removed.";
+            session.Activities.Add(new() { Tool = "context_preflight", State = "Failed", Result = detail });
+            throw new InvalidOperationException(detail);
         }
         if (session.Checkpoints.Count >= 256) throw new InvalidOperationException("This session reached its 256-checkpoint storage bound. Start a new session; history is retained.");
         int consumed = active?.ThroughMessages ?? 0, batches = 0, attempts = 0;
@@ -137,7 +165,10 @@ public static class CodeContext
             var minimum = new CodeCheckpoint { ThroughMessages = session.Messages.Count, Summary = "Continuity notes pending.", SourceHash = Hash(session.Messages), SummaryHash = Hash("Continuity notes pending.") };
             var minimalMessages = Project(session, system, minimum);
             var minimumUsage = FitsWire(minimalMessages) ? await context.Measure(minimalMessages, false, ct) : null;
-            if (minimumUsage == null || !Fits(minimumUsage)) throw new InvalidOperationException("Retained user requests, tool evidence and repository instructions do not fit this model's action budget. No checkpoint was committed. Originals are retained; use a larger context or a new session.");
+            if (minimumUsage == null || !Fits(minimumUsage))
+                throw new InvalidOperationException("Retained user requests, tool evidence and repository instructions do not fit this model's action budget. " +
+                    (minimumUsage == null ? "The retained prompt exceeded the request size limit. " : Budget(minimumUsage) + " ") +
+                    "No checkpoint was committed. Originals are retained; use a larger context or a new session.");
             int target = Boundary(session.Messages, Math.Max(consumed + 1, session.Messages.Count - 6));
             while (true)
             {
@@ -177,7 +208,7 @@ public static class CodeContext
                 var compacted = Project(session, system, candidate);
                 var after = FitsWire(compacted) ? await context.Measure(compacted, false, ct) : null;
                 // Hysteresis avoids compacting back to just below the trigger after every action.
-                int targetPrompt = after == null ? 0 : Math.Min(after.Context - Reserve(after), Math.Max(after.Context * TargetPercent / 100, minimumUsage.Prompt + DigestOutput(after.Context)));
+                int targetPrompt = after == null ? 0 : Math.Min(after.Context - Reserve(after.Context), Math.Max(after.Context * TargetPercent / 100, minimumUsage.Prompt + DigestOutput(after.Context)));
                 if (after != null && Fits(after) && after.Prompt <= targetPrompt && (before == null || after.Prompt < before.Prompt))
                 {
                     ct.ThrowIfCancellationRequested(); candidate.AfterTokens = after.Prompt; candidate.ContextTokens = after.Context; candidate.Validate();

@@ -3,9 +3,13 @@ $ErrorActionPreference='Stop'
 $appRoot=Split-Path $PSScriptRoot -Parent
 $payload=Join-Path $appRoot "artifacts/MasonAgent-$Version-win-x64"
 if(Test-Path -LiteralPath $payload){throw "Release already exists: $payload"}
+dotnet build (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1
+if($LASTEXITCODE -ne 0){throw 'Coding checks build failed'}
+dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --harness-recovery-checks ([IO.Path]::GetTempPath())
+if($LASTEXITCODE -ne 0){throw 'Coding harness recovery checks failed'}
 & (Join-Path $PSScriptRoot 'Build-CodeHandoff.ps1')
 if($LASTEXITCODE -ne 0){throw 'Native coding handoff build failed'}
-dotnet publish (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Platform=x64 -p:UseSharedCompilation=false -p:NuGetAudit=false -p:Version=$Version -o $payload -m:1
+dotnet publish (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Platform=x64 -p:PlaywrightPlatform=win-x64 -p:UseSharedCompilation=false -p:NuGetAudit=false -p:Version=$Version -o $payload -m:1
 if($LASTEXITCODE -ne 0){throw 'App publish failed'}
 dotnet publish (Join-Path $appRoot 'src/Mason.SandboxSetup') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Version=$Version -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1 -o (Join-Path $payload 'sandbox-setup')
 if($LASTEXITCODE -ne 0){throw 'Mason.SandboxSetup publish failed'}

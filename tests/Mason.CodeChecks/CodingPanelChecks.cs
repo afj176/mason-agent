@@ -34,7 +34,7 @@ static class CodingPanelChecks
         check(!legacy.ViewerDismissed && !legacy.SidebarVisible, "legacy sessions load without a dismissal migration");
 
         using var store = new CodeStore(Path.Combine(root, "panel-lifecycle"));
-        var run = store.New(workspace); bool dismissed = false;
+        var run = store.New(workspace); run.Mode="ask"; bool dismissed = false;
         await new CodeEngine(store, new PanelModel("README.md", "AGENTS.md"), (_, _) => Task.FromResult(false), () =>
         {
             if (!dismissed && run.ViewerVisible) { dismissed = true; CodePanels.Hide(run); }

@@ -280,7 +280,7 @@ public sealed partial class MainWindow
                 "Awaiting review" or "Waiting for input" => (MoodChecking, "waiting for you"),
                 // "Well played" when the session left reviewable changes, "we're good" when it only answered.
                 "Completed" => session.Changes.Any(c => !c.Restored) ? (MoodPleased, "finished with changes") : (MoodDone, "finished"),
-                "Failed" or "Blocked" => (MoodTrouble, "ran into a problem"),
+                "Failed" or "Blocked" or "Needs verification" => (MoodTrouble, "ran into a problem"),
                 _ => ("", "")
             };
             stateMood.Visibility = mood.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -292,7 +292,14 @@ public sealed partial class MainWindow
             FadeIn(stateMood);
         }
         state.VerticalAlignment = VerticalAlignment.Center;
-        var stateRow = Toolbar(Row(stateMood, spinner, state), stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow); Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
+        state.TextWrapping = TextWrapping.Wrap;
+        var progressRow = new Grid { ColumnSpacing = 8 };
+        progressRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        progressRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        progressRow.Children.Add(Row(stateMood, spinner));
+        Grid.SetColumn(state, 1);
+        progressRow.Children.Add(state);
+        var stateRow = Toolbar(progressRow, stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow); Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
         var sessionTools=ChatIcon("Session settings","\uE713",(_,_)=>{});
         sessionTools.Flyout=Fluent.Acrylic(new Flyout{Content=Stack(Text("Session settings",18),Text("Reasoning",12),reasoning,deleteSession)});
         sessionTools.Content=MotifIcon(Fluent.Motif.Settings,16);
@@ -657,6 +664,7 @@ public sealed partial class MainWindow
                 // Keep the opening intent; repeated file-read narration remains in activity/history.
                 if (turn.Role == "assistant" && activityShown && turn.ActivityCount == 1 && turn.FirstActivity < session.Activities.Count && session.Activities[turn.FirstActivity].Tool is "read_file" or "list_files" or "search_text") continue;
                 string viewKey = turn.Role + "|" + (turn.Role != previousRole) + "|" + turn.Text;
+                if (turn.Acceptance is {} plan) viewKey += $"|{plan.Checks.Count}|{plan.Results.Count}|{plan.Results.Count(r=>r.Passed)}";
                 if (!turnViews.TryGetValue(index, out var view) || view.Key != viewKey)
                 {
                     var body = CodeMarkdown(turn.Text, a => OpenTextArtifact(a));
@@ -672,6 +680,20 @@ public sealed partial class MainWindow
                             speaker = Row(MortarImage(28), name); speaker.Spacing = 12;
                         }
                         var content = Stack(speaker, body); content.Spacing = 10; container = content;
+                    }
+                    if (turn.Acceptance is {} contract)
+                    {
+                        var lines = new StackPanel { Spacing=5 };
+                        foreach(var criterion in contract.Checks)
+                        {
+                            var observed=contract.Results.FirstOrDefault(r=>r.Check==criterion);
+                            var status=observed==null ? "Pending" : observed.Passed ? "Passed" : "Unverified";
+                            var item=CodeNote($"{status} · {criterion.Feature}\n{criterion.Kind} · {criterion.Path} · {criterion.Target} {criterion.Expected}".Trim(),12);
+                            item.TextWrapping=TextWrapping.Wrap; lines.Children.Add(item);
+                        }
+                        var details=new Expander { Header=$"Feature checks · {contract.Results.Count(r=>r.Passed)}/{contract.Checks.Count} passed", Content=lines,
+                            HorizontalAlignment=HorizontalAlignment.Stretch, HorizontalContentAlignment=HorizontalAlignment.Stretch, Margin=new Thickness(40,8,0,0) };
+                        container=Stack(container,details);
                     }
                     // A finished answer takes over from its live view in place, so it does not enter a second time.
                     if (animateNew && index >= shownTurns && !(turn.Role == "assistant" && shownLive)) FadeIn(container);

@@ -27,7 +27,7 @@ static class CodingProjectChecks
             check(cross&&store.SelectedSession==first&&first.Workspace==a&&other.Workspace==b,"cross-project session selection is rejected before changing folder context");
             var model=new EditModel(new CodeWorkspace(a).Read("route.txt").Sha256);
             store.ActivateProject(bProject.Id,other.Id);
-            await new CodeEngine(store,model,(_,_)=>throw new Exception("Unexpected review"),()=>{}).Run(first,"Edit A while preserving the other project.",default);
+            await new CodeEngine(store,model,(_,_)=>throw new Exception("Unexpected review"),()=>{}).Run(first,"Edit route.txt in A while preserving the other project.",default);
             check(first.State=="Completed"&&File.ReadAllText(Path.Combine(a,"route.txt"))=="project A edited"&&File.ReadAllText(Path.Combine(b,"route.txt"))=="project B","the real engine remains bound to its session folder even when another project is selected");
             // A run consumes its draft and resets viewer dismissal for its new
             // request. Persist a new unsent draft/dismissal before restart.
@@ -87,8 +87,10 @@ static class CodingProjectChecks
         RejectCatalog(JsonNode.Parse(JsonSerializer.Serialize(new{Version=1,Projects=new[]{new{Id=Guid.NewGuid(),Workspace=a},new{Id=Guid.NewGuid(),Workspace=Path.Combine(a,".")}}}))!.AsObject());
         RejectCatalog(JsonNode.Parse(JsonSerializer.Serialize(new{Version=1,Projects=new[]{new{Id=Guid.NewGuid(),Workspace="relative"}}}))!.AsObject());
     }
-    sealed class EditModel(string hash):ICodeModel
+    sealed class EditModel(string hash):ICodeModel, ICodeAcceptancePlanner
     {
+        public Task<List<AcceptanceCheck>> PlanAcceptance(string request,string[] units,CodeFiles files,CancellationToken ct) =>
+            Task.FromResult<List<AcceptanceCheck>>([new(1,"Route in A","document_text","route.txt","","project A edited")]);
         int action;
         public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages,Action<string> update,CancellationToken cancellation)=>Task.FromResult(action++==0
             ?new CodeAction("Updating the selected session's file.","edit_file",JsonSerializer.SerializeToElement(new{path="route.txt",expected_sha256=hash,old_text="project A",new_text="project A edited"}))

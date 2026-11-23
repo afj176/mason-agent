@@ -1,0 +1,170 @@
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace Mason.Code;
+
+public sealed record AcceptanceCheck(int Unit, string Feature, string Kind, string Path, string Target, string Expected);
+public sealed record AcceptanceResult(AcceptanceCheck Check, bool Passed, string Detail);
+public sealed record CodePageRepair(CodeFile File, string Request, string Evidence, string Instructions);
+public sealed class CodeAcceptancePlan
+{
+    public string Request { get; set; } = "";
+    public string[] Units { get; set; } = [];
+    public List<AcceptanceCheck> Checks { get; set; } = [];
+    public Dictionary<string,string> TestHashes { get; set; } = [];
+    public List<AcceptanceResult> Results { get; set; } = [];
+}
+public interface ICodeAcceptancePlanner
+{
+    Task<List<AcceptanceCheck>> PlanAcceptance(string request, string[] units, CodeFiles inventory, CancellationToken ct);
+}
+public static class CodeAcceptance
+{
+    public static bool IsContinuation(string input) => Regex.IsMatch(input.Trim(), @"^(?:(?:please|yes)[ ,]+)?(?:continue|resume|retry|try again|keep going|go on)(?:[ .!]| please)*$", RegexOptions.IgnoreCase);
+
+    public static string SubstantiveRequest(IEnumerable<CodeMessage> history)
+    {
+        foreach (var m in history.Reverse().Where(m => m.Role == "user" && m.Content.StartsWith("{\"request\":", StringComparison.Ordinal)))
+        {
+            using var doc = JsonDocument.Parse(m.Content);
+            var request = doc.RootElement.GetProperty("request").GetString();
+            if (!string.IsNullOrWhiteSpace(request) && !IsContinuation(request)) return request;
+        }
+        return "";
+    }
+
+    // Keep quoted UI literals intact, including punctuation and conjunctions inside the label.
+    static string[] Units(string input)
+    {
+        var units = new List<string>();
+        var delimiter = new Regex("""("(?:\\.|[^"\\])*"|‘[^’]*’|“[^”]*”|'[^'\r\n]+')|(?:[;\r\n]+|[.!?](?=\s|$)|,\s+|\s+(?:and(?: also| then)?|as well as|plus)\s+)""", RegexOptions.IgnoreCase);
+        int start = 0;
+        foreach (Match m in delimiter.Matches(input))
+        {
+            if (m.Groups[1].Success) continue;
+            if (input[start..m.Index].Trim() is { Length: > 0 } unit) units.Add(unit);
+            start = m.Index + m.Length;
+        }
+        if (input[start..].Trim() is { Length: > 0 } tail) units.Add(tail);
+        return units.ToArray();
+    }
+
+    public static async Task<CodeAcceptancePlan> Prepare(string request, ICodeModel model, CodeWorkspace scope, CodeFiles files, CancellationToken ct)
+    {
+        var plan = new CodeAcceptancePlan { Request = request, Units = Units(request) };
+        if (plan.Units.Length == 0) plan.Units = ["Specify the requested features."];
+        List<AcceptanceCheck> proposed = [];
+        var reason = "A measurable acceptance criterion is needed.";
+        var pages = Regex.Matches(request, @"(?<![\w/\\:.-])(?:[\w-]+/)*[\w-]+\.html?\b", RegexOptions.IgnoreCase)
+            .Select(m=>m.Value).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var exact = plan.Units.Select((s,i)=>ExplicitCheck(s,i+1,pages)).Where(c=>c!=null).Cast<AcceptanceCheck>().ToList();
+        if (exact.Count != plan.Units.Length && plan.Units.Length <= 32 && model is ICodeAcceptancePlanner planner)
+        {
+            try { proposed = await planner.PlanAcceptance(request, plan.Units, files, ct); }
+            catch (Exception e) when (e is not OperationCanceledException) { reason = "Acceptance planning failed: " + e.Message; }
+        }
+        else if (plan.Units.Length > 32) reason = "The request exceeds the 32-clause acceptance planning limit.";
+        for (int i = 0; i < plan.Units.Length; i++)
+        {
+            var matches = exact.Where(c => c.Unit == i+1).ToList();
+            if (matches.Count == 0) matches = proposed.Where(c => c.Unit == i+1).Distinct().ToList();
+            if (matches.Count == 0 || proposed.Count > 64)
+                plan.Checks.Add(new(i+1, plan.Units[i], "unverified", "", "", reason));
+            else foreach (var c in matches)
+            {
+                bool valid = !string.IsNullOrWhiteSpace(c.Feature) && c.Feature.Length <= 400 && c.Target is { Length: <= 200 } &&
+                    c.Expected is { Length: > 0 and <= 500 } && c.Path is { Length: > 0 and <= 260 };
+                bool browser = c.Kind is "browser_heading" or "browser_text" or "browser_click" or "browser_layout";
+                bool page = browser && Path.GetExtension(c.Path)?.ToLowerInvariant() is ".html" or ".htm";
+                bool document = c.Kind == "document_text" && Path.GetExtension(c.Path)?.ToLowerInvariant() is ".txt" or ".md" or ".csv";
+                bool test = false;
+                if (valid && c.Kind == "python_test" && files.Files.Contains(c.Path) &&
+                    Regex.IsMatch(c.Path, @"^(?:[A-Za-z_]\w*/)*test\w*\.py$") &&
+                    Regex.IsMatch(c.Target ?? "", @"^[A-Za-z_]\w*$") && Regex.IsMatch(c.Expected ?? "", @"^test_\w+$"))
+                {
+                    try { plan.TestHashes[c.Path] = scope.Read(c.Path).Sha256; test = true; }
+                    catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { }
+                }
+                var unit = plan.Units[i];
+                if (document && !Regex.IsMatch(request,@"\.(?:txt|md|csv)\b|\b(?:documentation|document|readme|notes|file|text)\b",RegexOptions.IgnoreCase))
+                    valid = false;
+                if (c.Kind=="browser_layout" && !Regex.IsMatch(unit,@"\b(?:responsive|layout|mobile|desktop|width|overflow|viewport|screen)\b",RegexOptions.IgnoreCase))
+                    valid = false;
+                if (valid)
+                {
+                    try { scope.Resolve(c.Path); }
+                    catch (Exception e) when (e is UnauthorizedAccessException or IOException or ArgumentException) { valid = false; }
+                }
+                if (browser && c.Kind != "browser_layout" && Regex.IsMatch(c.Expected ?? "", @"^(?:visible|true|passed|successfully displayed)$",RegexOptions.IgnoreCase) &&
+                    !unit.Contains("\""+c.Expected+"\"",StringComparison.OrdinalIgnoreCase)) valid = false;
+                bool interaction = Regex.IsMatch(unit, @"\b(click(?:ing|ed)?|press(?:ing|ed)?|tapp?(?:ing|ed)?|toggl(?:e|ing))\b", RegexOptions.IgnoreCase);
+                if (!valid || !(page || document || test) || interaction && c.Kind != "browser_click" || c.Kind == "browser_click" && string.IsNullOrWhiteSpace(c.Target))
+                    plan.Checks.Add(new(i+1, c.Feature ?? unit, "unverified", "", "", c.Kind == "unverified" && !string.IsNullOrWhiteSpace(c.Expected) ? c.Expected : reason));
+                else plan.Checks.Add(c);
+            }
+            var mapped = plan.Checks.Where(c=>c.Unit==i+1).ToList();
+            if (!mapped.Any(c=>c.Kind is "unverified" or "python_test"))
+            {
+                var literals = Regex.Matches(plan.Units[i],"""["“]([^"”]+)["”]""").Select(m=>m.Groups[1].Value);
+                foreach(var literal in literals.Where(s=>!mapped.Any(c=>c.Expected.Contains(s,StringComparison.Ordinal) || c.Target==s || c.Path==s)))
+                    plan.Checks.Add(new(i+1, plan.Units[i],"unverified","","",$"No acceptance assertion covers the requested literal '{literal}'."));
+            }
+        }
+        return plan;
+    }
+
+    // For fully specified observable requirements bind the user's literal directly. Anchor the
+    // entire clause so an additional condition can never disappear into a loosely matched prefix.
+    static AcceptanceCheck? ExplicitCheck(string clause, int unit, string[] pages)
+    {
+        if (pages.Length > 1) return null;
+        var page = pages.SingleOrDefault() ?? "index.html";
+        var options = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+        var heading = Regex.Match(clause, """^(?:in\s+[\w./-]+\.html?\s+)?(?:show|display|add|create)\s+(?:a|the|an)\s+(?:page\s+)?heading\s+(?:(?:named|reading|labeled|saying|with (?:the )?text)\s+)?"([^"]+)"$""",options);
+        if (heading.Success) return new(unit,clause,"browser_heading",page,"",heading.Groups[1].Value);
+        var click = Regex.Match(clause, """^(?:clicking|pressing|tapping)\s+(?:(?:the|a)\s+)?(?:(?:button|link)\s+)?"([^"]+)"\s+(?:must\s+|should\s+)?(?:show|display|reveal)s?\s+"([^"]+)"(?:\s+on (?:the )?page)?$""",options);
+        return click.Success ? new(unit,clause,"browser_click",page,click.Groups[1].Value,click.Groups[2].Value) : null;
+    }
+
+    public static async Task Verify(CodeAcceptancePlan plan, CodeWorkspace scope, CodePermission permission, CancellationToken ct, bool browserApproved = false)
+    {
+        plan.Results.Clear();
+        var browserChecks = plan.Checks.Where(c => c.Kind.StartsWith("browser_", StringComparison.Ordinal)).Distinct().ToArray();
+        // Workspace tests can write files. Observe document bytes and browser behavior only after
+        // every test process has exited, including a process that failed or rewrote an artifact.
+        foreach (var check in plan.Checks.Where(c=>c.Kind=="python_test"))
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (permission != CodePermission.Auto) throw new InvalidOperationException("Use Auto to run this isolated Python acceptance check.");
+                if (!plan.TestHashes.TryGetValue(check.Path, out var hash) || scope.Read(check.Path).Sha256 != hash)
+                    throw new InvalidDataException("The acceptance test changed after planning.");
+                string name = check.Path[..^3].Replace('/','.') + "." + check.Target + "." + check.Expected;
+                var run = await CodeCommand.Run(CodeCommand.ResolveExecutable("python",scope.Root), ["-B","-m","unittest","-v",name], scope.Root,ct,scope.Root);
+                bool ok = run.ExitCode == 0 && !run.Truncated && Regex.IsMatch(run.Output, @"(?m)^"+Regex.Escape(check.Expected)+@" \([^\r\n]*\) \.\.\. ok\s*$") &&
+                    Regex.IsMatch(run.Output, @"(?m)^Ran 1 test in ") && Regex.IsMatch(run.Output, @"(?m)^OK\s*$") && scope.Read(check.Path).Sha256 == hash;
+                plan.Results.Add(new(check,ok,$"{name} · exit {run.ExitCode} · {run.Output[..Math.Min(run.Output.Length,800)]}"));
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { plan.Results.Add(new(check,false,e.Message)); }
+        }
+        var browser = browserChecks.Length > 0 && (permission == CodePermission.Auto || browserApproved) ? await CodeBrowserVerification.Run(scope, browserChecks, ct) : [];
+        foreach (var check in plan.Checks.Where(c=>c.Kind!="python_test"))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (browser.TryGetValue(check, out var observed)) { plan.Results.Add(observed); continue; }
+            if (check.Kind.StartsWith("browser_", StringComparison.Ordinal)) { plan.Results.Add(new(check,false,"Browser verification requires Auto or approval to run the local page.")); continue; }
+            if (check.Kind != "document_text") { plan.Results.Add(new(check, false, check.Expected)); continue; }
+            try
+            {
+                var file = scope.Read(check.Path);
+                bool found = file.Content.Contains(check.Expected, StringComparison.Ordinal);
+                plan.Results.Add(new(check, found, $"{file.Path} · SHA-256 {file.Sha256} · text {(found ? "found" : "missing")}: {check.Expected}"));
+            }
+            catch (Exception e) when (e is not OperationCanceledException) { plan.Results.Add(new(check, false, e.Message)); }
+        }
+    }
+    public static string Receipt(CodeAcceptancePlan plan) => string.Join("\n", plan.Results.Select(r =>
+        $"{(r.Passed ? "PASS" : "UNVERIFIED")} · {r.Check.Feature} [{r.Check.Kind}] · {r.Detail}"));
+}
+

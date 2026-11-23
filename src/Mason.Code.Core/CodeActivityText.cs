@@ -30,7 +30,13 @@ public static class CodeActivityText
                     return summary.GetString()+"\n\n"+guidance.GetString()+"\n\nCommand output:\n"+raw;
                 return raw;
             }
-            if(root.TryGetProperty("Files",out var files))return files.GetArrayLength()==0?"No files found in this workspace.":string.Join('\n',files.EnumerateArray().Select(f=>f.GetString()));
+            if(root.TryGetProperty("Files",out var files))
+            {
+                var text = files.GetArrayLength()==0 ? "No files found in the listed directory." : string.Join('\n',files.EnumerateArray().Select(f=>f.GetString()));
+                if(root.TryGetProperty("Truncated",out var truncated) && truncated.ValueKind == JsonValueKind.True) text += "\nListing is incomplete.";
+                if(root.TryGetProperty("requested_path",out _) && root.TryGetProperty("path",out var actual)) text = "Listed " + actual.GetString() + " (selected workspace root).\n" + text;
+                return text;
+            }
             if(root.TryGetProperty("state",out var state))return state.GetString()??"";
             if(root.TryGetProperty("Content",out var content))return content.GetString()??"";
             return JsonSerializer.Serialize(root,new JsonSerializerOptions{WriteIndented=true});

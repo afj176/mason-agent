@@ -15,7 +15,7 @@ static class CodingShellChecks
             var session = store.New(workspace); session.Shell = CodeShellKind.GitBash; session.ShellExecutable = bash; session.Permission = CodePermission.WorkspaceEdits;
             int approvals = 0;
             var command = Action("run_shell", new { command = "printf '%s\\n' 'shell value with spaces' > 'shell output.txt'; pwd; cat 'shell output.txt'", directory = "." });
-            await new CodeEngine(store, new Actions(command), (_, _) => { approvals++; return Task.FromResult(true); }, () => { }).Run(session, "Exercise Git Bash in this disposable workspace.", default);
+            await new CodeEngine(store, new Actions(command), (_, _) => { approvals++; return Task.FromResult(true); }, () => { }).Run(session, "Exercise Git Bash by writing shell output.txt in this disposable workspace.", default);
             check(session.State == "Completed" && approvals == 1 && File.ReadAllText(Path.Combine(workspace, "shell output.txt")).Contains("shell value with spaces"), "selected Git Bash executes quoting, redirection and a real workspace write after one review: " + session.Detail + " / " + JsonSerializer.Serialize(session.Activities));
             check(session.Activities[0].Authorization == "Allowed once" && session.Activities[0].Result.Contains("shell value with spaces"), "review decision and actual shell stdout are retained");
             session.Permission = CodePermission.Auto;
@@ -30,7 +30,7 @@ static class CodingShellChecks
             check(session.Activities.Last(a=>a.Tool=="open_preview").State=="Denied"&&!session.Tabs.Any(t=>t.Kind=="web"), "Auto cannot bypass network isolation through agent-initiated web previews");
             var cmd = CodeCommand.ResolveExecutable("cmd.exe", workspace);
             await new CodeEngine(store, new Actions(Action("run_command", new { executable = cmd, arguments = new[] { "/d", "/c", "echo auto-direct-ok" }, directory = "." })), (_, _) => throw new Exception("Auto unexpectedly requested review"), () => { }).Run(session, "Run the Auto executable fixture.", default);
-            check(session.State == "Completed" && session.Activities.Last().Result.Contains("auto-direct-ok"), "Auto also supports direct executable tools");
+            check(session.State == "Needs verification" && session.Activities.Last(a=>a.Tool=="run_command").Result.Contains("auto-direct-ok"), "Auto executes direct tools and keeps unverified features outstanding");
             await new CodeEngine(store, new Actions(Action("run_shell", new { command = "exit /b 7", directory = "." })), (_, _) => throw new Exception(), () => { }).Run(session, "Record a failing shell command.", default);
             check(session.Activities.Last(a => a.Tool == "run_shell").State == "Failed" && session.Activities.Last(a => a.Tool == "run_shell").Result.Contains("\"ExitCode\":7"), "Auto retains a failed exit code rather than claiming success");
             await new CodeEngine(store, new Actions(Action("create_file", new { path = "../escape-auto.txt", content = "must not write" }), Action("run_shell", new { command = "printf 'must-not-run'", directory = ".." })), (_, _) => throw new Exception(), () => { }).Run(session, "Verify Auto path validation.", default);
@@ -70,8 +70,10 @@ static class CodingShellChecks
         using var reopened = new CodeStore(state);
         check(reopened.Sessions.Any(s => s.Permission == CodePermission.Auto && s.Shell == CodeShellKind.GitBash && s.Activities.Any(a => a.Authorization.StartsWith("Auto"))), "Auto, preferred shell and command authorization receipts survive restart");
     }
-    sealed class Actions(params CodeAction[] actions) : ICodeModel
+    sealed class Actions(params CodeAction[] actions) : ICodeModel, ICodeAcceptancePlanner
     {
+        public Task<List<AcceptanceCheck>> PlanAcceptance(string request,string[] units,CodeFiles files,CancellationToken ct) =>
+            Task.FromResult<List<AcceptanceCheck>>(request.StartsWith("Exercise Git Bash") ? [new(1,"Shell output","document_text","shell output.txt","","shell value with spaces")] : []);
         int index;
         public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages, Action<string> onMessage, CancellationToken cancellation)
             => Task.FromResult(index < actions.Length ? actions[index++] : new CodeAction("Fixture steps finished; inspect receipts for any failures.", null, default));

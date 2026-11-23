@@ -1,0 +1,131 @@
+using System.Collections.Concurrent;
+using Microsoft.Playwright;
+
+namespace Mason.Code;
+
+internal static class CodeBrowserVerification
+{
+    const string Origin = "https://workspace.mason.invalid";
+    const string Policy = "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; worker-src 'none'; sandbox allow-scripts allow-same-origin";
+    static readonly Dictionary<string, string> Types = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".html"]="text/html", [".htm"]="text/html", [".js"]="text/javascript", [".mjs"]="text/javascript",
+        [".css"]="text/css", [".png"]="image/png", [".jpg"]="image/jpeg", [".jpeg"]="image/jpeg",
+        [".webp"]="image/webp", [".gif"]="image/gif", [".svg"]="image/svg+xml", [".ico"]="image/x-icon",
+        [".woff"]="font/woff", [".woff2"]="font/woff2"
+    };
+
+    public static async Task<Dictionary<AcceptanceCheck, AcceptanceResult>> Run(CodeWorkspace scope, AcceptanceCheck[] checks, CancellationToken ct)
+    {
+        var results = new Dictionary<AcceptanceCheck, AcceptanceResult>();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromMinutes(2));
+        try
+        {
+            var edge = new[] { Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.ProgramFiles }
+                .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Microsoft", "Edge", "Application", "msedge.exe")).FirstOrDefault(File.Exists)
+                ?? throw new FileNotFoundException("Microsoft Edge is required for browser acceptance checks.");
+            using var driver = await Playwright.CreateAsync();
+            using var stop = deadline.Token.Register(driver.Dispose);
+            deadline.Token.ThrowIfCancellationRequested();
+            await using var browser = await driver.Chromium.LaunchAsync(new() { ExecutablePath = edge, Headless = true, ChromiumSandbox = true, Timeout = 15000,
+                Args = ["--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-quic", "--disable-features=ExternalProtocolDialogShowAlwaysOpenCheckbox",
+                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--proxy-server=http://discard.invalid:9", "--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND"] });
+            foreach (var check in checks)
+            {
+                try
+                {
+                    deadline.Token.ThrowIfCancellationRequested();
+                    var relative = scope.Relative(scope.Resolve(check.Path));
+                    var url = Origin + "/" + string.Join("/", relative.Split('/').Select(Uri.EscapeDataString));
+                    foreach (var width in new[] { 390, 1280 })
+                        await Observe(browser, scope, check, url, width);
+                    results[check] = new(check, true, $"{check.Path} · Edge {browser.Version} · 390px and 1280px · {check.Expected}");
+                }
+                catch (Exception e) when (!deadline.IsCancellationRequested) { results[check] = Failed(check, e); }
+            }
+        }
+        catch (Exception e)
+        {
+            ct.ThrowIfCancellationRequested();
+            foreach (var c in checks) results.TryAdd(c, Failed(c, deadline.IsCancellationRequested ? new TimeoutException("Browser verification exceeded two minutes.") : e));
+        }
+        return results;
+    }
+    static AcceptanceResult Failed(AcceptanceCheck c, Exception e)
+    {
+        var reason = e.Message.Split('\n')[0].Trim();
+        var assertion = c.Kind == "browser_click" ? $"click '{c.Target}' and observe new visible text '{c.Expected}'" : c.Expected;
+        return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}");
+    }
+
+    static async Task Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width)
+    {
+        await using var context = await browser.NewContextAsync(new() { Offline = true, ServiceWorkers = ServiceWorkerPolicy.Block,
+            AcceptDownloads = false, ViewportSize = new() { Width = width, Height = 850 } });
+        var errors = new ConcurrentQueue<string>();
+        void Record(string error) { if (errors.IsEmpty) errors.Enqueue(error); }
+        long served = 0;
+        int requests = 0;
+        await context.RouteWebSocketAsync("**/*", socket => socket.CloseAsync());
+        await context.RouteAsync("**/*", async route =>
+        {
+            try
+            {
+                var request = route.Request;
+                var uri = new Uri(request.Url);
+                if (Interlocked.Increment(ref requests) > 150 || request.Method != "GET" || uri.GetLeftPart(UriPartial.Authority) != Origin ||
+                    request.Frame.ParentFrame != null || request.IsNavigationRequest && request.Url != url)
+                    throw new InvalidDataException("Page requested a resource outside the isolated verification page.");
+                var path = scope.Resolve(Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/')));
+                if (!Types.TryGetValue(Path.GetExtension(path), out var type)) throw new InvalidDataException("Unsupported browser asset type.");
+                using var input = File.OpenRead(path);
+                if (input.Length > 4*1024*1024 || Interlocked.Add(ref served, input.Length) > 16*1024*1024)
+                    throw new InvalidDataException("Page exceeded the verification asset budget.");
+                var bytes = new byte[checked((int)input.Length)];
+                await input.ReadExactlyAsync(bytes);
+                await route.FulfillAsync(new() { Status = 200, BodyBytes = bytes, ContentType = type,
+                    Headers = new Dictionary<string,string> { ["Content-Security-Policy"] = Policy, ["X-Content-Type-Options"]="nosniff", ["Referrer-Policy"]="no-referrer" } });
+            }
+            catch (Exception e)
+            {
+                Record(e.Message);
+                try { await route.AbortAsync(); } catch (PlaywrightException) { }
+            }
+        });
+        var page = await context.NewPageAsync();
+        page.PageError += (_, msg) => Record(msg);
+        page.Popup += (_, _) => Record("Unexpected popup during browser verification.");
+        page.SetDefaultTimeout(2200);
+        await page.GotoAsync(url, new() { WaitUntil = WaitUntilState.Load, Timeout = 7500 });
+        if (errors.TryPeek(out var loadError)) throw new InvalidDataException(loadError);
+        ILocator VisibleText() => page.GetByText(check.Expected, new() { Exact = true }).Filter(new() { Visible = true });
+        switch (check.Kind)
+        {
+            case "browser_layout":
+                if (!await page.Locator("body").IsVisibleAsync() || string.IsNullOrWhiteSpace(await page.Locator("body").InnerTextAsync()) ||
+                    !await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth <= innerWidth + 1"))
+                    throw new InvalidDataException($"Page was empty or overflowed horizontally at {width}px.");
+                break;
+            case "browser_heading":
+                await page.GetByRole(AriaRole.Heading, new() { Name = check.Expected, Exact = true }).First.WaitForAsync();
+                break;
+            case "browser_click":
+                if (await VisibleText().CountAsync() != 0) throw new InvalidDataException($"The expected result '{check.Expected}' was already visible before the click.");
+                var control = page.GetByRole(AriaRole.Button, new() { Name = check.Target, Exact = true })
+                    .Or(page.GetByRole(AriaRole.Link, new() { Name = check.Target, Exact = true }));
+                try { await control.ClickAsync(); }
+                catch (Exception e) when (e is TimeoutException or PlaywrightException) { throw new InvalidDataException($"No unique clickable button or link named '{check.Target}' at {width}px."); }
+                try { await VisibleText().First.WaitForAsync(); }
+                catch (TimeoutException) { throw new InvalidDataException($"Clicked '{check.Target}' at {width}px. The page never displayed '{check.Expected}'."); }
+                break;
+            case "browser_text":
+                await VisibleText().First.WaitForAsync();
+                break;
+            default: throw new InvalidDataException("Unknown browser acceptance operation.");
+        }
+        if (page.Url != url) throw new InvalidDataException("The page navigated away from the verification target.");
+        if (errors.TryPeek(out var error)) throw new InvalidDataException(error);
+    }
+}
+

@@ -4,6 +4,8 @@ using System.Net.Sockets;
 namespace Mason;
 public enum ModelStartupPhase { Inspecting, Loading, Checking, Ready }
 
+public sealed class ModelCudaUnavailableException(string message) : InvalidOperationException(message) { }
+
 public sealed record ServedModel(Guid Id, LocalModel Model, AiEndpointProfile Profile, OwnedModelProcess Owner, string Log, ModelLaunchOptions? Options=null)
 {
     public override string ToString() => $"{Model.Name}\n{Model.Task} · {Profile.Endpoint} · {(!Owner.IsRunning ? "Stopped unexpectedly" : "Running · owned by Mason Agent")}";
@@ -12,6 +14,18 @@ public sealed class ModelServing : IDisposable
 {
     readonly List<ServedModel> running = [];
     public IReadOnlyList<ServedModel> Running => running;
+
+    static string RuntimePath(LocalModel model, ModelLibrarySettings settings) =>
+        ModelAdapters.IsQuantized(model) ? settings.QuantizedPython : ModelAdapters.UsesPython(model) ? settings.Python : settings.LlamaServer;
+
+    public static bool HasRuntime(LocalModel model, ModelLibrarySettings settings)
+    {
+        var path = RuntimePath(model, settings);
+        return !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path) && File.Exists(path) &&
+            (ModelAdapters.UsesPython(model) ? path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                : Path.GetFileName(path).Equals("llama-server.exe", StringComparison.OrdinalIgnoreCase));
+    }
+
     public static string[] Arguments(LocalModel model, string alias, int port, bool gpu, string scriptDirectory, string manifest, ModelLaunchOptions? options=null)
     {
         if(model.Task!="Chat")throw new ArgumentException("This app serves language models only.");
@@ -46,30 +60,14 @@ public sealed class ModelServing : IDisposable
         var folder = Path.Combine(Store.Root, "model-servers", id.ToString("N"));
         Directory.CreateDirectory(folder); var log = Path.Combine(folder, "runtime.log");
         var argv = Arguments(model, alias, port, gpu, scriptDirectory, Path.Combine(folder, "manifest.json"),options);
-        var runtime = ModelAdapters.IsQuantized(model) ? settings.QuantizedPython : ModelAdapters.UsesPython(model) ? settings.Python : settings.LlamaServer;
-        if (!ModelAdapters.UsesPython(model) && !Path.GetFileName(runtime).Equals("llama-server.exe",StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("Choose llama-server.exe, not the llama launcher or Ollama application.");
-        string? cudaLibraries=null;
-        if(gpu&&!ModelAdapters.UsesPython(model)&&!string.IsNullOrWhiteSpace(settings.Python))
-        {
-            var pythonFolder=Path.GetDirectoryName(settings.Python)!;
-            var pythonRoot=Path.GetFileName(pythonFolder).Equals("Scripts",StringComparison.OrdinalIgnoreCase)?Directory.GetParent(pythonFolder)!.FullName:pythonFolder;
-            var libraries=Path.Combine(pythonRoot,"Lib","site-packages","torch","lib");
-            if(File.Exists(Path.Combine(libraries,"cublas64_13.dll")))cudaLibraries=libraries;
-        }
+        var runtime = RuntimePath(model, settings);
+        if (!HasRuntime(model, settings))
+            throw new ArgumentException(ModelAdapters.UsesPython(model) ? "Choose an existing Python executable in Setup." : "Choose an existing llama-server.exe in Setup.");
+        var cudaLibraries = gpu && !ModelAdapters.UsesPython(model)
+            ? await CheckCuda(runtime, settings.Python, folder, progress, ct)
+            : null;
         File.WriteAllText(Path.Combine(folder,"launch.json"),System.Text.Json.JsonSerializer.Serialize(new { Runtime=runtime, Arguments=argv, CudaLibraries=cudaLibraries, Python=settings.Python, SettingsRead=SettingsReadDiagnostics(), AppVersion=typeof(ModelServing).Assembly.GetName().Version?.ToString() },new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));
-        if(gpu&&!ModelAdapters.UsesPython(model))
-        {
-            progress?.Invoke("Checking CUDA device in the selected runtime…");
-            var probeLog=Path.Combine(folder,"devices.log");
-            using var probe=OwnedModelProcess.Start(runtime,["--list-devices"],probeLog,cudaLibraries);
-            using var probeDeadline=CancellationTokenSource.CreateLinkedTokenSource(ct);probeDeadline.CancelAfter(TimeSpan.FromSeconds(30));
-            try { await probe.Process.WaitForExitAsync(probeDeadline.Token); }
-            catch(OperationCanceledException) when(!ct.IsCancellationRequested){throw new TimeoutException("Runtime device check exceeded 30 seconds. Log: "+probeLog);}
-            if(probe.ExitCode!=0)throw new InvalidOperationException(RuntimeFailure(probeLog,probe.ExitCode));
-            if(!System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(probeLog),@"(?m)^\s*CUDA0\s*:"))
-                throw new InvalidOperationException("The selected runtime did not report CUDA0. "+RuntimeFailure(probeLog,probe.ExitCode,"Device probe completed"));
-        }
+        ct.ThrowIfCancellationRequested();
         phase?.Invoke(ModelStartupPhase.Loading);
         var owner = OwnedModelProcess.Start(runtime, argv, log,cudaLibraries);
         var profileId = new Guid(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(model.Task + "\n" + Path.GetFullPath(model.Path).ToUpperInvariant()+(model.AdapterPath==null?"":"\n"+Path.GetFullPath(model.AdapterPath).ToUpperInvariant())))[..16]);
@@ -97,6 +95,31 @@ public sealed class ModelServing : IDisposable
         catch(OperationCanceledException) when(!ct.IsCancellationRequested) {owner.Dispose();throw new TimeoutException("Model startup exceeded five minutes. Try a smaller model or inspect the runtime log: "+log);}
         catch { owner.Dispose(); throw; }
     }
+    static async Task<string?> CheckCuda(string runtime, string python, string folder, Action<string>? progress, CancellationToken ct)
+    {
+        progress?.Invoke("Checking whether the selected GGUF runtime can use CUDA…");
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        string? detail = null;
+        int attempt = 0;
+        foreach (var libraries in RuntimeDiscovery.CudaLibraryCandidates(runtime, python))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (deadline.IsCancellationRequested) break;
+            var log = Path.Combine(folder, attempt++ == 0 ? "devices.log" : $"devices-retry-{attempt - 1}.log");
+            using var probe = OwnedModelProcess.Start(runtime, ["--list-devices"], log, libraries);
+            try { await probe.Process.WaitForExitAsync(deadline.Token); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new ModelCudaUnavailableException("The CUDA device check exceeded 30 seconds. Log: " + log);
+            }
+            if (probe.ExitCode == 0 && System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(log), @"(?m)^\s*CUDA0\s*:"))
+                return libraries;
+            detail = RuntimeFailure(log, probe.ExitCode, "CUDA device check");
+        }
+        throw new ModelCudaUnavailableException("The selected GGUF runtime could not use CUDA0. " + detail);
+    }
+
     static object SettingsReadDiagnostics()
     {
         var path=Path.Combine(Store.Root,"model-library.json");

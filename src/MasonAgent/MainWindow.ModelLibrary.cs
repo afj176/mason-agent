@@ -15,11 +15,22 @@ public sealed partial class MainWindow
 
     FrameworkElement BuildModelLibrary()
     {
-        var runtimes=RuntimeDiscovery.Find();
+        ModelLibrarySettings DiscoveredSettings()
+        {
+            var runtime = RuntimeDiscovery.Find();
+            return new([], runtime.LlamaServer, runtime.Python);
+        }
+        ModelLibrarySettings NormalizeRuntimePaths(ModelLibrarySettings selected) => selected with
+        {
+            LlamaServer = selected.LlamaServer ?? "",
+            Python = selected.Python ?? "",
+            QuantizedPython = string.IsNullOrEmpty(selected.QuantizedPython) && QuantizedRuntime.IsPrepared
+                ? QuantizedRuntime.ManagedPython : selected.QuantizedPython ?? ""
+        };
         ModelLibrarySettings settings; bool readable = true;
-        try { settings = ModelLibrarySettings.ReadSaved(Path.Combine(Store.Root,"model-library.json")) ?? new([],runtimes.LlamaServer,runtimes.Python);
+        try { settings = ModelLibrarySettings.ReadSaved(Path.Combine(Store.Root,"model-library.json")) ?? DiscoveredSettings();
             if(settings.Locations==null || settings.Locations.Count>30 || settings.Locations.Any(x=>x==null || string.IsNullOrWhiteSpace(x.Path) || !Path.IsPathFullyQualified(x.Path))) throw new InvalidDataException("Invalid model location settings.");
-            settings=settings with { LlamaServer=settings.LlamaServer ?? "",Python=settings.Python ?? "",QuantizedPython=string.IsNullOrEmpty(settings.QuantizedPython)&&QuantizedRuntime.IsPrepared?QuantizedRuntime.ManagedPython:settings.QuantizedPython??"" };
+            settings=NormalizeRuntimePaths(settings);
         }
         catch { settings = new([],"",""); readable = false; }
         Action? refreshRuntimeInventory=null;Action<bool>? runtimeBusy=null;Action<int>? selectRuntime=null;Button? setupCancel=null;
@@ -123,9 +134,8 @@ public sealed partial class MainWindow
         void ReloadRuntimePaths()
         {
             if(!readable)return;
-            var saved=ModelLibrarySettings.ReadSaved(Path.Combine(Store.Root,"model-library.json"));
-            if(saved==null)throw new InvalidOperationException("No saved runtime selection was found at "+Path.Combine(Store.Root,"model-library.json")+". Choose a runtime in Runtime setup before starting this model.");
-            settings=settings.MergeRuntimeSelection(saved);
+            var selected = ModelLibrarySettings.ReadSaved(Path.Combine(Store.Root,"model-library.json")) ?? DiscoveredSettings();
+            settings = settings.MergeRuntimeSelection(NormalizeRuntimePaths(selected));
             llama.Text=settings.LlamaServer;python.Text=settings.Python;quantizedPython.Text=settings.QuantizedPython;
             refreshRuntimeInventory?.Invoke();
         }
@@ -150,7 +160,7 @@ public sealed partial class MainWindow
             foreach (var entry in entries) entry.ChatProfileId = entry.Connection is {} connection && connection.Checks.Any(c => c.Capability == AiCapability.Chat && c.State == "Passed") ? connection.Id : modelServing.Running.FirstOrDefault(s => s.Owner.IsRunning && s.Model.Task == "Chat" && s.Model.Path == entry.File?.Model.Path && s.Model.AdapterPath == entry.File?.Model.AdapterPath && s.Profile.Checks.Any(c => c.Capability == AiCapability.Chat && c.State == "Passed"))?.Profile.Id;
             list.ItemsSource=entries; list.SelectedItem=entries.FirstOrDefault(x=>x.Key==path)??entries.FirstOrDefault();
             var liveCount=modelServing.Running.Count(x=>x.Owner.IsRunning);
-            summary.Text=$"{discovered.Length} local models and files · {discovered.Count(x=>x.Launchable)} can be started here · {liveCount} running";
+            summary.Text=$"{discovered.Length} local models and files · {discovered.Count(x=>x.Launchable)} supported for local serving · {liveCount} running";
             collectionStatus.Text=$"{cards.Length} local files · {entries.Length-cards.Length} saved connections shown"+(lastScan.HasValue?$" · Scanned {lastScan.Value.ToLocalTime():t}":"");
             noMatches.Visibility=entries.Length==0?Visibility.Visible:Visibility.Collapsed;resourceTable.Visibility=entries.Length==0?Visibility.Collapsed:Visibility.Visible;list.Visibility=entries.Length==0?Visibility.Collapsed:Visibility.Visible;
             noMatchesTitle.Text=discovered.Length==0?"Your collection starts here":"No models match";
@@ -213,7 +223,7 @@ public sealed partial class MainWindow
             if(connectionEdit!=null)connectionEdit.Visibility=connection!=null?Visibility.Visible:Visibility.Collapsed;
             if(fileOptions!=null)fileOptions.Visibility=m!=null?Visibility.Visible:Visibility.Collapsed;
             selectedPurpose.Text=connection==null?card?.Purpose??"":string.Join("\n",connection.Checks.GroupBy(c=>c.Capability).Select(g=>g.Last()).Select(c=>c.Capability+" · "+c.State+" · "+c.At.LocalDateTime.ToString("g")));
-            if(start!=null) { start.IsEnabled=m?.Launchable==true && aiOperation==null && !modelServing.Running.Any(x=>x.Model.Path==m.Path&&x.Model.AdapterPath==m.AdapterPath&&x.Owner.IsRunning);start.Visibility=m?.Launchable==true?Visibility.Visible:Visibility.Collapsed;start.Content=m!=null&&ModelAdapters.IsQuantized(m)&&!File.Exists(quantizedPython.Text)?"Set up runtime":"Start & connect"; }
+            if(start!=null) { start.IsEnabled=m?.Launchable==true && aiOperation==null && !modelServing.Running.Any(x=>x.Model.Path==m.Path&&x.Model.AdapterPath==m.AdapterPath&&x.Owner.IsRunning);start.Visibility=m?.Launchable==true?Visibility.Visible:Visibility.Collapsed;start.Content=m!=null&&readable&&!ModelServing.HasRuntime(m,settings)?"Set up runtime":"Start & connect"; }
             device.Visibility=m?.Launchable==true?Visibility.Visible:Visibility.Collapsed;
             if(m?.Task=="Chat"&&memoryProfiles.TryGetValue(m.Path,out var capacity)){contextChoice.Maximum=capacity.ContextDeclared?capacity.MaxContext:int.MaxValue;if(contextChoice.Value>contextChoice.Maximum)contextChoice.Value=contextChoice.Maximum;}
             UpdateFit();adaptive?.Invoke();
@@ -264,7 +274,7 @@ public sealed partial class MainWindow
         {
             if(aiOperation!=null)return;
             try { var picker=new FileOpenPicker(AppWindow.Id);picker.FileTypeFilter.Add(".exe");var file=await picker.PickSingleFileAsync();if(file==null)return;
-                if(isPython)python.Text=file.Path;else llama.Text=file.Path;Save(isPython?1:0);ShowLocations();runtimeStatus.Text="Runtime path saved. Models remain stopped until you start one.";
+                if(isPython)python.Text=file.Path;else llama.Text=file.Path;Save(isPython?1:0);ShowLocations();Selection();runtimeStatus.Text="Runtime path saved. Models remain stopped until you start one.";
             }catch(Exception e){await Notice("Runtime",e.Message);}
         }
         var runtimeSettings=new Expander { Header="Runtime setup",HorizontalAlignment=HorizontalAlignment.Stretch,
@@ -274,7 +284,17 @@ public sealed partial class MainWindow
             if((list.SelectedItem as LibraryEntry)?.File is not ModelLibraryCard card || aiOperation!=null)return;var m=card.Model;
             try{ReloadRuntimePaths();}catch(Exception error){await Notice("Model settings","Could not reload saved runtime paths: "+error.Message);return;}
             if(!readable){await Notice("Model settings","Repair the unreadable model settings before starting a server.");return;}
-            if(ModelAdapters.IsQuantized(m)) {if(!File.Exists(quantizedPython.Text)){views.SelectedIndex=2;quantizedSetup!.IsExpanded=true;selectRuntime?.Invoke(2);return;}}
+            if (!ModelServing.HasRuntime(m, settings))
+            {
+                bool quantized = ModelAdapters.IsQuantized(m);
+                views.SelectedIndex = 2;
+                selectRuntime?.Invoke(quantized ? 2 : ModelAdapters.UsesPython(m) ? 1 : 0);
+                if (quantized) quantizedSetup!.IsExpanded = true;
+                activity.Severity = InfoBarSeverity.Informational;
+                activity.Message = "Choose or prepare a runtime for " + card.Title + ", then return to Library to start it.";
+                activity.IsOpen = true;
+                return;
+            }
             else if(!File.Exists(ModelAdapters.UsesPython(m) ? python.Text : llama.Text)){runtimeSettings.IsExpanded=true;await PickRuntime(ModelAdapters.UsesPython(m));Selection();return;}
             using var ct=new CancellationTokenSource();activity.IsOpen=false;aiOperation=ct;start!.IsEnabled=false;scanProgress.Visibility=Visibility.Visible;if(cancelScan!=null)cancelScan.Visibility=Visibility.Visible;activity.Severity=InfoBarSeverity.Informational;activity.Message="Starting "+card.Title+"… Checking the server before saving its connection.";
             startupCancel.IsEnabled=true;startupAt=DateTimeOffset.UtcNow;startupElapsed.Text="Elapsed · 00:00";startupClock.Start();startupStage=0;foreach(var (label,index) in new[]{"Inspect","Load","Check","Ready"}.Select((label,index)=>(label,index)))startupStages.Label(index,label);startupStages.Set(0);startupHud.Visibility=Visibility.Visible;startupDetail.Text="Inspecting · "+card.Title;startupProgress.Visibility=Visibility.Visible;startupProgress.IsIndeterminate=Fluent.MotionOn;
@@ -283,7 +303,23 @@ public sealed partial class MainWindow
             try
             {
                 // Starting a model is a read of runtime selection, never a settings write.
-                var served=await modelServing.Start(m,settings,device.SelectedIndex==0,Path.Combine(AppContext.BaseDirectory,"model-runtime"),ct.Token,message=>{startupDetail.Text=message;activity.Message=card.Title+" · "+message;},new ModelLaunchOptions(Context()),phase=>{startupStage=(int)phase;startupStages.Set(phase==ModelStartupPhase.Ready?4:startupStage);startupDetail.Text=phase+" · "+card.Title;Render();Selection();});
+                var launchSettings = settings;
+                var launchOptions = new ModelLaunchOptions(Context());
+                Task<ServedModel> StartOnDevice(bool gpu) => modelServing.Start(
+                    m, launchSettings, gpu, Path.Combine(AppContext.BaseDirectory, "model-runtime"), ct.Token,
+                    message => { startupDetail.Text = message; activity.Message = card.Title + " · " + message; },
+                    launchOptions, phase => { startupStage = (int)phase; startupStages.Set(phase == ModelStartupPhase.Ready ? 4 : startupStage); startupDetail.Text = phase + " · " + card.Title; Render(); Selection(); });
+
+                ServedModel served;
+                try { served = await StartOnDevice(device.SelectedIndex == 0); }
+                catch (ModelCudaUnavailableException error)
+                {
+                    ct.Token.ThrowIfCancellationRequested();
+                    if (!await OfferModelCpuRetry(error.Message)) throw;
+                    ct.Token.ThrowIfCancellationRequested();
+                    device.SelectedIndex = 1;
+                    served = await StartOnDevice(gpu: false);
+                }
                 try
                 {
                     var saved=Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? [];
@@ -409,7 +445,7 @@ public sealed partial class MainWindow
         quantizedSetup=new Expander {Header="Quantized models · GPTQ & AWQ",HorizontalAlignment=HorizontalAlignment.Stretch,Content=Stack(Text("One setup for both formats",20),Text("Downloads Python packages into an isolated Mason Agent runtime using your selected Python as its base. Your existing Python installation and model files stay unchanged. Internet is needed for setup; serving uses local model files.",14),Text("Validated setup: Python 3.10–3.13, Transformers 5.5.0 and CUDA-enabled PyTorch 2.8+. Uses GPT-QModel 7.0.0 with its Windows-safe PyTorch backend. Keep the base Python environment installed.",12),quantizedPython,Stack(prepareQuantized,chooseQuantized),quantizedStatus,Text("Supported: 4-bit GPTQ/GPTQ-v2 and AWQ GEMM, group sizes 32/64/128 or -1. CPU and GPU are explicit choices. Other packed formats, mixed quantization and adapter-only folders need their own adapters.",12))};
         var runtimeList=new ListView{SelectionMode=ListViewSelectionMode.Single,Height=132};var runtimeInspector=new ContentControl();
         var folderTools=Button("Model locations",(_,_)=>openModelLocations?.Invoke());
-        var runtimeNotice=Text("Selected paths are settings. Compatibility is validated when a model starts; setup does not start a model.",12);
+        var runtimeNotice=Text("Models load when you choose Start. GGUF GPU launches check CUDA before loading weights and offer a CPU retry if CUDA is unavailable.",12);
         ((StackPanel)quantizedSetup.Content).Children.Remove(quantizedStatus);
         setupCancel=Button("Cancel setup",(_,_)=>aiOperation?.Cancel());setupCancel.IsEnabled=false;
         var setupHud=SurfaceCard(Stack(setupStages.View,setupProgress,quantizedStatus,setupCancel));setupHud.Padding=new Thickness(12);
