@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Mason;
 using Mason.Code;
 
 internal static class HarnessExtensionChecks
@@ -53,6 +54,14 @@ internal static class HarnessExtensionChecks
             .Run(session,"Show a heading \"Pantry\".",default);
         check(session.State=="Completed" && session.Turns[0].Acceptance?.Results.Any(r=>r.Check.Target=="label-price" && r.Passed)==true,
             "Auto completion accepts an independently observed shelf price");
+        var file=new CodeFile("index.html","<style>strong{color:red}</style><button>Count</button><script>old();</script>","observed-hash",false);
+        var repair=new CodePageRepair(file,"Implement the counter","The count is incorrect.",""){RebuildGeneratedPage=true,PreservePassingScenarios=true};
+        var script="document.querySelector('button').onclick=()=>document.title='2';";
+        var local=new CodeLocalModel(new AiEndpointProfile{Model="test-coder",Endpoint="http://127.0.0.1:5179"},"","default",_=>{},()=>new LocalAiClient(new ModelHandler(script)));
+        var action=await local.Next([new("system",""){AvailableTools=new HashSet<string>{"replace_file"},PageRepair=repair}],_=>{},default);
+        check(action.Tool=="replace_file" && action.Arguments.GetProperty("expected_sha256").GetString()==file.Sha256 &&
+            action.Arguments.GetProperty("content").GetString()==file.Content.Replace("old();","\n"+script+"\n"),
+            "A fresh behavior repair preserves the generated shell and pins the observed source hash");
     }
 
     sealed class ShelfReviewer : ICodeModel, ICodeBrowserOperator
