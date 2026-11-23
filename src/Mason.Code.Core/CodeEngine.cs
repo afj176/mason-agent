@@ -27,7 +27,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         var references = session.References.Select(p => { var file = scope.Read(p); return new { file.Path, file.Content, file.Sha256, instructions = scope.Instructions(p) }; }).ToArray();
         int firstActivity = session.Activities.Count;
         var user = new CodeTurn { Text = input, FirstActivity = firstActivity }; session.Turns.Add(user);
-        string? handoff = session.State is "Blocked" or "Interrupted" or "Failed" or "Stopped" or "Needs verification"
+        string? handoff = newTask ? "The user explicitly started a new task. The current request defines its requirements." : session.State is "Blocked" or "Interrupted" or "Failed" or "Stopped" or "Needs verification"
             ? $"Previous run: {session.State}. Current workspace root: '.'. Use the current file inventory to resume. " +
               (listing.RootIsOnlyDirectory && listing.Files.Length == 0 ? "The selected project exists and is empty. Create the requested files here using bare filenames." : "")
             : null;
@@ -49,6 +49,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         var observedHashes = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
         bool repairingAcceptance = false;
         CodeFile? repairPage = null;
+        string repairFeedback="";
+        int repeatedPageRepairs=0;
         var callerCancellation=cancellation;using var runDeadline=CancellationTokenSource.CreateLinkedTokenSource(cancellation);runDeadline.CancelAfter(TimeSpan.FromMinutes(30));cancellation=runDeadline.Token;
         try
         {
@@ -118,7 +120,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     JsonSerializer.Serialize(acceptance.Checks) };
                 if(repairingAcceptance) system = system with { RepairingAcceptance=true, Content = system.Content + "\nThe previous implementation failed a host check. Inspect the failed receipt and repair the page. For a small page with broken HTML, use replace_file with the observed hash and complete valid HTML." };
                 if (repairPage is {} page && acceptance!=null) system = system with { ObservedHashes=[page.Sha256],
-                    PageRepair=new(page,acceptance.Request,CodeAcceptance.Receipt(acceptance),scope.Instructions(page.Path)), Content=system.Content+
+                    PageRepair=new(page,acceptance.Request,CodeAcceptance.Receipt(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
+                        FailedClicks=acceptance.Results.Where(r=>!r.Passed && r.Check.Path==page.Path && r.Check.Kind=="browser_click").Select(r=>r.Check).ToArray()}, Content=system.Content+
                     $"\nRepair the small self-contained page {page.Path} with replace_file now. Its current SHA-256 is {page.Sha256}. Write a complete HTML document. For click interactions start the output element empty and set its textContent inside an event listener when the button is clicked." };
                 if (revisitRead)
                     system = system with { Content = system.Content + "\nThe previous two reads returned identical evidence. That tool is paused for this response. If the request is satisfied, return your final answer now. Otherwise take the next distinct action needed for the user's request." };
@@ -144,6 +147,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     session.Detail = $"Correcting model response · {repairs}/2"; Save(); continue;
                 }
                 repairs = 0;
+                var attemptedPageRepair=repairPage;
                 repairPage = null;
                 cancellation.ThrowIfCancellationRequested();
                 bool prematureCompletion = action.Tool == null && session.Mode == "build" && !verificationOnly && !delivered && failedCommands.Count == 0;
@@ -295,6 +299,11 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     if (activity.State == "Failed") failedCommands.Add(action);
                 }
                 session.Messages.Add(new("user", JsonSerializer.Serialize(new { tool_result = action.Tool, activity_id = activity.Id, state = activity.State, result = modelReceipt })));
+                if(attemptedPageRepair!=null && activity.State=="Failed" && action.Tool=="replace_file" && activity.Result.Contains("makes no change",StringComparison.Ordinal) && ++repeatedPageRepairs<3)
+                {
+                    repairPage=attemptedPageRepair;
+                    repairFeedback="The previous candidate was byte-for-byte identical. Implement the specific behavior missing from the browser observation.";
+                }
                 if(acceptance?.LiteralRequirements==true && session.Permission==CodePermission.Auto && result.ChangedFile!=null &&
                     await ObserveLiteralRequirements(acceptance))return;
                 if(verificationOnly && action.Tool=="verify_acceptance" && acceptance!=null)

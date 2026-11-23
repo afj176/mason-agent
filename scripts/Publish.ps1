@@ -9,18 +9,25 @@ function Confirm-Source {
 }
 Confirm-Source
 $configured=[xml](Get-Content -LiteralPath (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -Raw)
-if($configured.Project.PropertyGroup.Version -ne $Version){throw "Requested version differs from the source version."}
+if($configured.SelectSingleNode('/Project/PropertyGroup/Version').InnerText -cne $Version){throw "Requested version differs from the source version."}
 & (Join-Path $PSScriptRoot 'Assert-ModelBenchmark.ps1') -Report $ModelEvidence -Commit $commit
 $payload=Join-Path $appRoot "artifacts/MasonAgent-$Version-win-x64"
 if(Test-Path -LiteralPath $payload){throw "Release already exists: $payload"}
+& (Join-Path $PSScriptRoot 'Build-CodeCompat.ps1')
+& (Join-Path $PSScriptRoot 'Build-CodeHandoff.ps1')
+& (Join-Path $PSScriptRoot 'Build-CodeSandboxProbe.ps1')
 dotnet build (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1
 if($LASTEXITCODE -ne 0){throw 'Coding checks build failed'}
-dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --harness-recovery-checks ([IO.Path]::GetTempPath())
-if($LASTEXITCODE -ne 0){throw 'Coding harness recovery checks failed'}
-dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --checkout-controls (Join-Path ([IO.Path]::GetTempPath()) ('mason-checkout-'+[guid]::NewGuid().ToString('N')))
-if($LASTEXITCODE -ne 0){throw 'Positive/negative checkout control matrix failed'}
-& (Join-Path $PSScriptRoot 'Build-CodeHandoff.ps1')
-if($LASTEXITCODE -ne 0){throw 'Native coding handoff build failed'}
+$previousProbe=$env:MASON_SANDBOX_PROBE
+$previousData=$env:MASON_DATA_HOME
+try {
+    $env:MASON_SANDBOX_PROBE=Join-Path $appRoot '.cache/code-sandbox-probe/SandboxNativeProbe.exe'
+    if(!$previousData){$env:MASON_DATA_HOME=Join-Path $appRoot '.cache/release-test-profile'}
+    dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release
+    if($LASTEXITCODE -ne 0){throw 'Full coding harness regression suite failed'}
+    dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --checkout-controls (Join-Path ([IO.Path]::GetTempPath()) ('mason-checkout-'+[guid]::NewGuid().ToString('N')))
+    if($LASTEXITCODE -ne 0){throw 'Positive/negative checkout control matrix failed'}
+} finally {$env:MASON_SANDBOX_PROBE=$previousProbe;$env:MASON_DATA_HOME=$previousData}
 dotnet publish (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Platform=x64 -p:PlaywrightPlatform=win-x64 -p:UseSharedCompilation=false -p:NuGetAudit=false -p:Version=$Version -o $payload -m:1
 if($LASTEXITCODE -ne 0){throw 'App publish failed'}
 dotnet publish (Join-Path $appRoot 'src/Mason.SandboxSetup') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Version=$Version -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1 -o (Join-Path $payload 'sandbox-setup')

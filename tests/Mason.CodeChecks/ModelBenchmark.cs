@@ -10,15 +10,16 @@ internal static class ModelBenchmark
     sealed record Trial(string Scenario,int Repetition,string State,bool OraclePass,bool Completed,bool Correct,int Calls,
         long? PromptTokens,long? OutputTokens,double Seconds,int Tools,string[] FailedFeatures,string Detail);
 
-    public static async Task Run(string endpoint,string modelId,string root,int repetitions,string commit)
+    public static async Task Run(string endpoint,string modelId,string root,int repetitions,string commit,string? scenarioFilter=null)
     {
         if(repetitions is <1 or >10 || Directory.Exists(root))throw new ArgumentException("Use a fresh output directory and 1 to 10 repetitions.");
         if(commit!="development" && !FileVersionInfo.GetVersionInfo(typeof(CodeEngine).Assembly.Location).ProductVersion!.EndsWith("+"+commit,StringComparison.Ordinal))
             throw new InvalidOperationException("The evaluated harness binary does not match the supplied source commit.");
         Directory.CreateDirectory(root);
+        if(scenarioFilter!=null && !Cases.Contains(scenarioFilter))throw new ArgumentException("Unknown benchmark case.");
         var trials=new List<Trial>();
         foreach(int repetition in Enumerable.Range(1,repetitions))
-        foreach(string scenario in Cases)
+        foreach(string scenario in Cases.Where(c=>scenarioFilter==null || c==scenarioFilter))
         {
             var area=Directory.CreateDirectory(Path.Combine(root,$"{repetition}-{scenario}")).FullName;
             var workspace=Directory.CreateDirectory(Path.Combine(area,"workspace")).FullName;

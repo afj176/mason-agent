@@ -9,7 +9,10 @@ public sealed record AcceptanceCheck(int Unit, string Feature, string Kind, stri
     public string? Application {get;init;}
 }
 public sealed record AcceptanceResult(AcceptanceCheck Check, bool Passed, string Detail);
-public sealed record CodePageRepair(CodeFile File, string Request, string Evidence, string Instructions);
+public sealed record CodePageRepair(CodeFile File, string Request, string Evidence, string Instructions)
+{
+    public AcceptanceCheck[] FailedClicks {get;init;}=[];
+}
 public sealed class CodeAcceptancePlan
 {
     public Guid TaskId { get; set; }

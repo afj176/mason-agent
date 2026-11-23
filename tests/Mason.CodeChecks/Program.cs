@@ -7,6 +7,7 @@ using Mason.Code;
 
 if(args.Length==2 && args[0]=="--checkout-controls"){await CheckoutEvaluation.Run(Path.GetFullPath(args[1]),new ScriptedModel());return;}
 if(args.Length==6 && args[0]=="--model-benchmark"){await ModelBenchmark.Run(args[1],args[2],Path.GetFullPath(args[3]),int.Parse(args[4]),args[5]);return;}
+if(args.Length==7 && args[0]=="--model-scenario"){await ModelBenchmark.Run(args[1],args[2],Path.GetFullPath(args[3]),int.Parse(args[4]),args[5],args[6]);return;}
 
 if (args.Length == 2 && args[0] == "--prepare-ui") { await UiFixture.Prepare(args[1]); return; }
 if (args.Length == 2 && args[0] == "--harness-recovery-checks")

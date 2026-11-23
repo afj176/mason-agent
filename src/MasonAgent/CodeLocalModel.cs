@@ -201,8 +201,15 @@ public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string
             """), new AiMessage("user",$"Current {repair.File.Path}\n{repair.File.Content}\n\nUser request\n{repair.Request}\n\nRepository instructions\n{repair.Instructions}\n\nBrowser observations\n{repair.Evidence}\n\n"+
                 (repair.Evidence.Contains("already visible before the click",StringComparison.Ordinal) ?
                     "Remove the initial confirmation text between the output element's opening and closing tags. Keep the string ONLY in the click handler.\n" : "") +
-                (repair.Evidence.Contains("[browser_click]",StringComparison.Ordinal) ?
-                    """A simple working interaction with different labels is <button onclick="document.getElementById('status').textContent='Ready'">Go</button><output id="status"></output>. Use the user's actual labels. Preserve the rest of the page."""+"\n" : "") +
+                (repair.Evidence.Contains("JavaScript dialog",StringComparison.Ordinal) ?
+                    "Replace the alert() or confirm() call. Insert an empty <output id=\"feedback\"></output> after the button. Replace the dialog call with document.getElementById('feedback').textContent assigned to the message from the failed check. The finished document must contain no call to alert or confirm.\n" : "") +
+                (repair.Evidence.Contains("null",StringComparison.OrdinalIgnoreCase) && repair.Evidence.Contains("textContent",StringComparison.Ordinal) ?
+                    "The handler attempted to write textContent on a missing element. Keep the existing handler. Add the missing empty HTML element immediately after the button. Its id must match the string in getElementById in the handler.\n" : "") +
+                string.Join("\n",repair.FailedClicks.Select((click,i)=>{
+                    var target=System.Net.WebUtility.HtmlEncode(click.Target);
+                    var expected=System.Net.WebUtility.HtmlEncode(click.Expected);
+                    return $"Implement this observed interaction. Replace its broken control/handler and include both elements in the returned page: <button type=\"button\" data-result=\"{expected}\" onclick=\"document.getElementById('result-{i}').textContent=this.dataset.result\">{target}</button><output id=\"result-{i}\"></output>";
+                }))+"\n"+
                 "Return the corrected full HTML document now.") };
         var options = new ChatGenerationOptions { Temperature=0, Reasoning=server.Reasoning?"off":"default", TimeoutMinutes=2 };
         var usage=await client.MeasureChat(profile,key,messages,options,server,ct) ?? throw new InvalidDataException("Unable to measure page-repair context.");
