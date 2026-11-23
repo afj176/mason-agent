@@ -16,6 +16,7 @@ public sealed record CodePageRepair(CodeFile File, string Request, string Eviden
 {
     public AcceptanceCheck[] FailedClicks {get;init;}=[];
     public string RelatedSource {get;init;}="";
+    public bool RebuildGeneratedPage {get;init;}
 }
 public sealed class CodeAcceptancePlan
 {

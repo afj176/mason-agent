@@ -46,6 +46,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         var failedAttempts = new List<(CodeAction Action, string Result)>();
         bool snippetRecovery = false, delivered = false, commandSucceeded = false;
         var changedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var createdFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var attemptedRepairs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var observedHashes = new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
         bool repairingAcceptance = false;
         CodeFile? repairPage = null;
@@ -123,6 +125,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if (repairPage is {} page && acceptance!=null) system = system with { ObservedHashes=[page.Sha256],
                     PageRepair=new(page,acceptance.Request,RepairEvidence(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
                         RelatedSource=RelatedSource(page,acceptance),
+                        RebuildGeneratedPage=createdFiles.Contains(page.Path) && attemptedRepairs.Contains(page.Path) &&
+                            session.Changes.Any(c=>c.Path==page.Path && c.Before==null && !c.Restored && c.AfterHash==page.Sha256),
                         FailedClicks=acceptance.Results.Where(r=>!r.Passed && r.Check.Path==page.Path && r.Check.Kind=="browser_click").Select(r=>r.Check).ToArray()}, Content=system.Content+
                     $"\nRepair {page.Path} with replace_file using its current SHA-256 {page.Sha256}. Preserve working behavior and return complete source for that file." };
                 if (revisitRead)
@@ -150,6 +154,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 }
                 repairs = 0;
                 var attemptedPageRepair=repairPage;
+                if(attemptedPageRepair!=null)attemptedRepairs.Add(attemptedPageRepair.Path);
                 repairPage = null;
                 cancellation.ThrowIfCancellationRequested();
                 bool prematureCompletion = action.Tool == null && session.Mode == "build" && !verificationOnly && !delivered && failedCommands.Count == 0;
@@ -253,7 +258,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     // Commands can create files even when they exit with an error.
                     refreshInventory = result.ChangedFile != null || result.CreatedDirectory || action.Tool is "run_command" or "run_shell";
                     activity.State = result.Failed ? "Failed" : "Completed"; activity.Result = result.Content;
-                    if (result.ChangedFile is { } path) changedFiles.Add(path);
+                    if (result.ChangedFile is { } path) {
+                        changedFiles.Add(path);
+                        if(action.Tool=="create_file")createdFiles.Add(path);
+                    }
                     if (result.ChangedFile != null || action.Tool is "run_command" or "run_shell") repairingAcceptance = false;
                     bool commandExecuted = !result.Failed && action.Tool is ("run_command" or "run_shell");
                     commandSucceeded |= commandExecuted;
