@@ -344,7 +344,7 @@ try
     using (var schemaJson = JsonDocument.Parse(JsonSerializer.Serialize(schemaBody)))
     {
         var toolOptions = schemaJson.RootElement.GetProperty("response_format").GetProperty("schema").GetProperty("properties").GetProperty("tool").GetProperty("anyOf");
-        Check(toolOptions.GetArrayLength() == 15 && toolOptions.EnumerateArray().All(t => t.GetProperty("properties").GetProperty("arguments").GetProperty("additionalProperties").ValueKind == JsonValueKind.False), "first Build schema requires a complete known tool with exact argument fields");
+        Check(CodeNativeChecks.PublicTools.SetEquals(toolOptions.EnumerateArray().Select(t=>t.GetProperty("properties").GetProperty("name").GetProperty("const").GetString()!)) && toolOptions.EnumerateArray().All(t => t.GetProperty("properties").GetProperty("arguments").GetProperty("additionalProperties").ValueKind == JsonValueKind.False), "first Build schema requires a complete known tool with exact argument fields");
     }
     Reject(() => new ChatGenerationOptions { ResponseSchema = CodeSchema.Action() }.Body(profile, [], 500, false), "response schema is not silently sent to an unverified provider");
     if (OperatingSystem.IsWindows())
