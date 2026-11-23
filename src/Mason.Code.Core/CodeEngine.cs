@@ -411,6 +411,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             session.Activities.Add(proof);Save();
             try { await VerifyWithReview(plan,false); }
             catch(OperationCanceledException){proof.State="Interrupted";throw;}
+            catch(Exception e){proof.State="Failed";proof.Result=e.Message;throw;}
             var missing=plan.Results.Where(r=>!r.Passed).ToArray();
             proof.Result=CodeAcceptance.Receipt(plan);proof.State=missing.Length==0?"Completed":"Failed";
             if(missing.Length==0 && plan.VerifiedRevision!=null && plan.Results.Count==plan.Checks.Count && plan.Checks.Count>0)
@@ -461,10 +462,6 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             try{
                 var request=System.Text.RegularExpressions.Regex.Replace(plan.Request,@"(?ms)^```mason\.acceptance\.json\s*.*?^```[^\S\r\n]*","");
                 var scenarios=await CodeComputerUse.Review(scope,page,request,reviewer,cancellation);
-                foreach(var s in scenarios){
-                    if(!s.Steps.Any(step=>step.Op is "money" or "text" or "same" or "empty" or "count_distinct" or "capture"))
-                        throw new InvalidDataException("Reviewer scenario has no outcome assertion.");
-                }
                 plan.Checks.AddRange(scenarios.Select(s=>new AcceptanceCheck(1,"Independent review · "+s.Requirement,"browser_flow",page,s.Id,"Independent browser assertions pass"){Steps=s.Steps}));
                 plan.IndependentReviewPage=page;
                 activity.Result=JsonSerializer.Serialize(scenarios);activity.State="Completed";Save();

@@ -229,7 +229,7 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
         var requestText=repair.Request;
         int contractStart=requestText.IndexOf("```mason.acceptance.json",StringComparison.Ordinal);
         if(contractStart>=0)requestText=requestText[..contractStart].TrimEnd();
-        if(repair.PreservePassingScenarios && server.Llama &&
+        if(repair.PreservePassingScenarios && !repair.RebuildGeneratedPage && server.Llama &&
             await RepairLines(client,server,repair,requestText,ct) is {} edit)return edit;
         bool rebuild=html && repair.RebuildGeneratedPage && !repair.PreservePassingScenarios && repair.Evidence.Contains(" -> ",StringComparison.Ordinal) &&
             !System.Text.RegularExpressions.Regex.IsMatch(repair.File.Content,@"<script\b[^>]*\bsrc\s*=",System.Text.RegularExpressions.RegexOptions.IgnoreCase);

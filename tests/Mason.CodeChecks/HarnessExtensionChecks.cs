@@ -44,5 +44,22 @@ internal static class HarnessExtensionChecks
         File.WriteAllText(Path.Combine(tree,"a.txt"),"isolated");
         check(File.ReadAllText(Path.Combine(repo,"a.txt"))=="base","A Git worktree edit is isolated from its original checkout");
         await McpIntegration.Run(check);
+        var shop=Directory.CreateDirectory(Path.Combine(root,"reviewed-shop")).FullName;
+        File.WriteAllText(Path.Combine(shop,"index.html"),"<h1>Pantry</h1><p id='item'>Rice $4.00</p>");
+        using var store=new CodeStore(Path.Combine(root,"review-profile"));
+        var session=store.New(shop);
+        session.Permission=CodePermission.Auto;
+        await new CodeEngine(store,new ShelfReviewer(),(_,_)=>throw new Exception("Unexpected approval"),()=>{})
+            .Run(session,"Show a heading \"Pantry\".",default);
+        check(session.State=="Completed" && session.Turns[0].Acceptance?.Results.Any(r=>r.Check.Target=="label-price" && r.Passed)==true,
+            "Auto completion accepts an independently observed shelf price");
+    }
+
+    sealed class ShelfReviewer : ICodeModel, ICodeBrowserOperator
+    {
+        public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages,Action<string> notify,CancellationToken ct)=>throw new Exception("Existing page should be verified directly");
+        public Task<ComputerAction> ChooseAction(string task,ComputerObservation page,IReadOnlyList<string> history,CancellationToken ct)=>throw new NotSupportedException();
+        public Task<BrowserScenario[]> DesignReview(string task,string path,ComputerObservation page,CancellationToken ct)=>
+            Task.FromResult<BrowserScenario[]>([new("label-price","Check the displayed price",path,[new("shelf_price","#item","4.00")])]);
     }
 }
