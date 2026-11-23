@@ -79,7 +79,8 @@ internal static class CodeStorefrontPlan
             if(Regex.IsMatch(text,@"\b(?:persist\w*|reload\w*)\b")&&!spec.PersistReceipt)return false;
             if(Regex.IsMatch(text,@"\bclear\w*\b")&&!spec.ClearCart)return false;
             if(Regex.IsMatch(text,@"\b(?:discount\w*|three or more|threshold)\b")&&!spec.Items.Any(i=>i.Threshold>0))return false;
-            foreach(var i in spec.Items)text=text.Replace(i.Name.ToLowerInvariant()," ");
+            foreach(var i in spec.Items)
+                text=Regex.Replace(text,@"(?<![\p{L}\p{N}_])"+Regex.Escape(i.Name.ToLowerInvariant())+@"(?![\p{L}\p{N}_])"," ");
             text=Regex.Replace(text,@"\bindex\.html\b|\$?\d+(?:\.\d+)?"," ");
             var known=new HashSet<string>("a an the product products item items food foods store shop single offline html in build create website at each cost costs shelf prices price for of and to their cart basket shoppers can add per unit units jar jars when there are one two three four five six seven eight or more charge show total new id order issue must checkout check out receipt clear clears that persists persist after reload see every other keep own sum is line totals issues same page reloaded on its counts quantity quantities discounted discount only applies threshold".Split(' '));
             if(!string.IsNullOrWhiteSpace(spec.ReceiptPrefix))text=text.Replace(spec.ReceiptPrefix.ToLowerInvariant()," ");
