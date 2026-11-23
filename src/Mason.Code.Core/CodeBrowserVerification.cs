@@ -28,22 +28,16 @@ internal static class CodeBrowserVerification
         deadline.CancelAfter(checks.Any(c=>c.Application!=null)?TimeSpan.FromMinutes(6):TimeSpan.FromMinutes(2));
         try
         {
-            var edge = new[] { Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.ProgramFiles }
-                .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Microsoft", "Edge", "Application", "msedge.exe")).FirstOrDefault(File.Exists)
-                ?? throw new FileNotFoundException("Microsoft Edge is required for browser acceptance checks.");
             using var driver = await Playwright.CreateAsync();
             using var stop = deadline.Token.Register(driver.Dispose);
             deadline.Token.ThrowIfCancellationRequested();
-            await using var browser = await driver.Chromium.LaunchAsync(new() { ExecutablePath = edge, Headless = true, ChromiumSandbox = true, Timeout = 15000,
-                Args = ["--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-quic", "--disable-features=ExternalProtocolDialogShowAlwaysOpenCheckbox",
-                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--proxy-server=http://discard.invalid:9", "--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND"] });
+            await using var browser = await Launch(driver);
             foreach (var check in checks)
             {
                 try
                 {
                     deadline.Token.ThrowIfCancellationRequested();
-                    var relative = scope.Relative(scope.Resolve(check.Path));
-                    var url = Origin + "/" + string.Join("/", relative.Split('/').Select(Uri.EscapeDataString));
+                    var url = Url(scope, check.Path);
                     string observed="";
                     foreach (var width in new[] { 390, 1280 })
                         observed=await Observe(browser, scope, check, url, width,deadline.Token);
@@ -59,6 +53,29 @@ internal static class CodeBrowserVerification
         }
         return results;
     }
+
+    static string Url(CodeWorkspace scope,string path) => Origin + "/" + string.Join("/",scope.Relative(scope.Resolve(path)).Split('/').Select(Uri.EscapeDataString));
+
+    internal static async Task<string> Interact(CodeWorkspace scope,string path,Func<IPage,CancellationToken,Task<string>> act,CancellationToken ct,CodePreviewServer? live=null)
+    {
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromMinutes(4));
+        using var driver=await Playwright.CreateAsync();
+        using var stop=deadline.Token.Register(driver.Dispose);
+        await using var browser=await Launch(driver);
+        var url=live!=null && path=="/"?Origin+"/":Url(scope,path);
+        return await Observe(browser,scope,new(1,"Interactive project browser","browser_flow",path,"",""),url,1280,deadline.Token,act,live);
+    }
+
+    static Task<IBrowser> Launch(IPlaywright driver)
+    {
+            var edge = new[] { Environment.SpecialFolder.ProgramFilesX86, Environment.SpecialFolder.ProgramFiles }
+                .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Microsoft", "Edge", "Application", "msedge.exe")).FirstOrDefault(File.Exists)
+                ?? throw new FileNotFoundException("Microsoft Edge is required for browser acceptance checks.");
+            return driver.Chromium.LaunchAsync(new() { ExecutablePath = edge, Headless = true, ChromiumSandbox = true, Timeout = 15000,
+                Args = ["--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-quic", "--disable-features=ExternalProtocolDialogShowAlwaysOpenCheckbox",
+                    "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--proxy-server=http://discard.invalid:9", "--proxy-bypass-list=<-loopback>", "--host-resolver-rules=MAP * ~NOTFOUND"] });
+    }
     static AcceptanceResult Failed(AcceptanceCheck c, Exception e)
     {
         var reason = e.Message.Split('\n')[0].Trim();
@@ -67,7 +84,7 @@ internal static class CodeBrowserVerification
         return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}") {ScriptPath=script?.Path,ScriptLine=script?.Line,ScriptError=script?.Error};
     }
 
-    static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct)
+    static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct,Func<IPage,CancellationToken,Task<string>>? interact=null,CodePreviewServer? live=null)
     {
         await using var app=check.Application==null?null:await CodeVerificationApp.Start(scope,check.Application,ct);
         await using var context = await browser.NewContextAsync(new() { Offline = true, ServiceWorkers = ServiceWorkerPolicy.Block,
@@ -86,11 +103,11 @@ internal static class CodeBrowserVerification
                 var request = route.Request;
                 var uri = new Uri(request.Url);
                 if (Interlocked.Increment(ref requests) > 150 || uri.GetLeftPart(UriPartial.Authority) != Origin ||
-                    request.Frame.ParentFrame != null || app==null && (request.Method!="GET" || check.Kind!="browser_flow" && request.IsNavigationRequest && request.Url != url))
+                    request.Frame.ParentFrame != null || app==null && live==null && (request.Method!="GET" || check.Kind!="browser_flow" && request.IsNavigationRequest && request.Url != url))
                     throw new InvalidDataException("Page requested a resource outside the isolated verification page.");
-                if(app!=null)
+                if(app!=null || live!=null)
                 {
-                    var response=await app.Request(request,uri,ct);
+                    var response=live!=null?await live.Request(request,uri,ct):await app!.Request(request,uri,ct);
                     if(Interlocked.Add(ref served,response.Body.Length)>16*1024*1024) throw new InvalidDataException("App exceeded response budget.");
                     response.Headers["Content-Security-Policy"]=Policy.Replace("connect-src 'none'","connect-src 'self'").Replace("form-action 'none'","form-action 'self'").Replace("sandbox allow-scripts","sandbox allow-forms allow-scripts");
                     response.Headers["X-Content-Type-Options"]="nosniff";
@@ -157,7 +174,8 @@ internal static class CodeBrowserVerification
         if (errors.TryPeek(out var loadError)) throw new InvalidDataException(loadError);
         ILocator VisibleText() => page.GetByText(check.Expected, new() { Exact = true }).Filter(new() { Visible = true });
         string observed=check.Expected;
-        switch (check.Kind)
+        if(interact!=null) observed=await interact(page,ct);
+        else switch (check.Kind)
         {
             case "browser_load": break;
             case "browser_flow":

@@ -37,16 +37,16 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         foreach (var s in steps)
         {
             if (s is null || s.Target==null || s.Value==null || s.Target.Length>180 || s.Value.Length>300 ||
-                s.Op is not ("count_distinct" or "fill" or "click" or "click_if_enabled" or "money" or "text" or "empty" or "capture" or "reload" or "same"))
+                s.Op is not ("count_distinct" or "fill" or "click" or "click_if_enabled" or "money" or "shelf_price" or "text" or "empty" or "capture" or "reload" or "same"))
                 throw new InvalidDataException("Unknown or oversized browser step.");
             if(s.Op!="reload" && string.IsNullOrWhiteSpace(s.Target)) throw new InvalidDataException("A browser step needs a target.");
             if(s.Op=="count_distinct" && !(int.TryParse(s.Value,out var n) && n is >0 and <=1000)) throw new InvalidDataException("Specify a positive distinct item count.");
-            if(s.Op=="money" && !decimal.TryParse(s.Value,NumberStyles.AllowDecimalPoint|NumberStyles.AllowLeadingSign,CultureInfo.InvariantCulture,out _)) throw new InvalidDataException("Specify the expected decimal amount.");
+            if(s.Op is ("money" or "shelf_price") && !decimal.TryParse(s.Value,NumberStyles.AllowDecimalPoint|NumberStyles.AllowLeadingSign,CultureInfo.InvariantCulture,out _)) throw new InvalidDataException("Specify the expected decimal amount.");
             if(s.Op=="text" && string.IsNullOrWhiteSpace(s.Value)) throw new InvalidDataException("Specify exact visible text.");
             if(s.Op=="same" && !captured) throw new InvalidDataException("Capture a value before comparing it.");
             if(s.Op=="capture") captured=true;
         }
-        if(steps[^1].Op is not ("count_distinct" or "money" or "text" or "same" or "empty")) throw new InvalidDataException("End each scenario with an assertion.");
+        if(steps[^1].Op is not ("count_distinct" or "money" or "shelf_price" or "text" or "same" or "empty")) throw new InvalidDataException("End each scenario with an assertion.");
     }
     internal static bool CoversBehavior(string text,BrowserStep[] steps)
     {
@@ -94,6 +94,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
                 {
                     "count_distinct"=>values.Length==int.Parse(step.Value,CultureInfo.InvariantCulture) && values.All(v=>v.Length>0) && values.Distinct(StringComparer.OrdinalIgnoreCase).Count()==values.Length,
                     "empty"=>values.Length==0 || values.Length==1 && actual.Length==0,
+                    "shelf_price"=>values.Length==1 && Regex.Match(actual,@"\$\s*(\d+(?:\.\d{1,2})?)") is {Success:true} price && decimal.Parse(price.Groups[1].Value,CultureInfo.InvariantCulture)==decimal.Parse(step.Value,CultureInfo.InvariantCulture),
                     "money"=>values.Length==1 && Amount(actual,out var amount) && amount==decimal.Parse(step.Value,CultureInfo.InvariantCulture),
                     "text"=>values.Length==1 && actual==step.Value,
                     "capture"=>values.Length==1 && HasIdentifier(actual,step.Value),

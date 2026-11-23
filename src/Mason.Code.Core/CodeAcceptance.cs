@@ -28,6 +28,8 @@ public sealed class CodeAcceptancePlan
     public int? FirstActivity { get; set; }
     public string? VerifiedRevision { get; set; }
     public bool LiteralRequirements {get;set;}
+    public string? IndependentReviewPage {get;set;}
+    public bool Storefront {get;set;}
     public string[] RequirementIds => Units.Select((u,i)=>CodeProtocol.Hash(System.Text.Encoding.UTF8.GetBytes($"{TaskId:N}|{i+1}|{u}"))[..16]).ToArray();
     public string Request { get; set; } = "";
     public string[] Units { get; set; } = [];
@@ -36,10 +38,11 @@ public sealed class CodeAcceptancePlan
     public List<AcceptanceResult> Results { get; set; } = [];
     public string? ContractHash { get; set; }
     public CodeAcceptancePlan Continue() => new() { TaskId=TaskId,FirstActivity=FirstActivity,Request=Request,Units=[..Units],
-        Checks=[..Checks],ContractHash=ContractHash,LiteralRequirements=LiteralRequirements,TestHashes=new(TestHashes) };
+        Checks=[..Checks],ContractHash=ContractHash,LiteralRequirements=LiteralRequirements,IndependentReviewPage=IndependentReviewPage,Storefront=Storefront,TestHashes=new(TestHashes) };
 
     public void Append(CodeAcceptancePlan next)
     {
+        IndependentReviewPage=null;
         if(Request.Length+next.Request.Length>60000 || Units.Length+next.Units.Length>128) throw new InvalidOperationException("Task exceeds the retained requirement budget. Start a new task with /new or split the request.");
         if(ContractHash!=null && next.ContractHash!=null && ContractHash!=next.ContractHash) throw new InvalidOperationException("The pinned acceptance contract changed. Start a new task to adopt it.");
         foreach(var pair in next.TestHashes)
@@ -108,6 +111,7 @@ public static class CodeAcceptance
             plan.Checks=contract.Scenarios.Select((s,i)=>new AcceptanceCheck(i+1,s.Requirement,"browser_flow",s.Page,s.Id,"All scenario assertions pass"){Steps=s.Steps,Application=contract.Application}).ToList();
             return plan;
         }
+        if(CodeStorefrontPlan.Applies(request,files,model) && await CodeStorefrontPlan.Prepare(request,(ICodeCatalogPlanner)model,ct) is {} catalog)return catalog;
         if (plan.Units.Length == 0) plan.Units = ["Specify the requested features."];
         List<AcceptanceCheck> proposed = [];
         var repositoryChecks = new List<AcceptanceCheck>();
@@ -283,6 +287,7 @@ public static class CodeAcceptance
         if(check.Kind!="browser_flow" || check.Steps==null)return JsonSerializer.Serialize(check);
         return $"{check.Path} · {check.Feature}\n"+string.Join(" -> ",check.Steps.Select(s=>s.Op switch {
             "money"=>$"expect amount {s.Value} at {s.Target}", "fill"=>$"enter {s.Value} in {s.Target}",
+            "shelf_price"=>$"show the original unit price ${s.Value} in {s.Target}",
             "same"=>$"expect the previously captured value at {s.Target}", "capture"=>$"save the displayed ID from {s.Target} (prefix {s.Value})",
             "text"=>$"expect text {JsonSerializer.Serialize(s.Value)} at {s.Target}","count_distinct"=>$"expect {s.Value} distinct visible items matching {s.Target}",
             _=>$"{s.Op} {s.Target}".TrimEnd()

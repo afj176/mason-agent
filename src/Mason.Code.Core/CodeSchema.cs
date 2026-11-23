@@ -9,6 +9,8 @@ public static class CodeSchema
     public static IReadOnlySet<string> Available(CodeSession session)
     {
         var names=new HashSet<string>(["list_files","search_text","read_file","open_file","ask_user","navigate_code"]);
+        names.Add("enable_tools");
+        if(session.Desktop!=null){names.Add("desktop_observe");if(session.Mode=="build"&&session.Permission!=CodePermission.ReadOnly)names.Add("desktop_act");}
         if(session.Mode=="ask"||session.Permission==CodePermission.ReadOnly)return names;
         names.UnionWith(["edit_file","apply_edits","replace_file","create_file","create_directory","run_command"]);
         if(session.Shell!=CodeShellKind.Direct&&CodeShells.Unavailable(session)==null)names.Add("run_shell");
@@ -28,6 +30,18 @@ public static class CodeSchema
     static string Description(string name)=>name switch
     {
         "navigate_code"=>"Find symbol definitions, references, related tests or compiler diagnostics in a workspace directory. C# uses compiler binding. Other supported source languages return labeled text candidates.",
+        "inspect_symbol"=>"Resolve TypeScript/JavaScript or Python definitions, references or diagnostics at a 1-based source position.",
+        "enable_tools"=>"Load specialized tools for code (TS/Python symbol navigation), workflows (named tasks and skills), jobs (background processes), browser (interactive project Edge), or mcp (registered tools).",
+        "computer_use"=>"Operate the project page in disposable offline Edge using a fresh accessibility observation after each click or fill. Supply a workspace HTML path and task.",
+        "desktop_observe"=>"Read the control names and available actions from the native window the user attached for this session.",
+        "desktop_act"=>"Ask the user to invoke or set a control from the most recent attached-window observation. Receives a fresh observation.",
+        "start_job"=>"Start a long-running offline sandboxed executable for this run. Returns a job ID. Read output with poll_job, stop a service before finishing.",
+        "poll_job"=>"Read a background job's current output or collect its exit status.",
+        "stop_job"=>"Stop this run's owned background job and collect the result.",
+        "run_workflow"=>"Run a named project workflow from the pinned mason.workflows.json in the workspace sandbox.",
+        "read_skill"=>"Read a project's named .mason/skills/<name>/SKILL.md workflow on demand.",
+        "mcp_tools"=>"Discover allowed tools on a user-registered local MCP server.",
+        "mcp_call"=>"Request individual user approval to call a specific registered MCP tool with JSON object arguments.",
         "list_files"=>"List workspace files recursively, limit 1–1000. Use the supplied inventory first.",
         "search_text"=>"Search literal text in allowed workspace files. Use focused queries to locate existing behavior before reading and editing the relevant files.",
         "read_file"=>"Read the exact UTF-8 file, applicable repository instructions and current byte SHA-256. Use this fresh hash for edits or replacement.",
@@ -84,6 +98,19 @@ public static class CodeSchema
         tools.Add(Tool("open_preview", Fields(("url", Text()))));
         tools.Add(Tool("verify_acceptance", Fields()));
         tools.Add(Tool("ask_user", Fields(("question", Text()))));
+        object integer=new{type="integer",minimum=1,maximum=1000000};
+        tools.Add(Tool("enable_tools",Fields(("group",new{type="string",@enum=new[]{"code","workflows","jobs","browser","mcp"}}))));
+        tools.Add(Tool("inspect_symbol",Fields(("path",Text()),("line",integer),("column",integer),("mode",new{type="string",@enum=new[]{"definitions","references","diagnostics"}}))));
+        tools.Add(Tool("computer_use",Fields(("path",Text()),("task",Text()))));
+        tools.Add(Tool("desktop_observe",Fields()));
+        tools.Add(Tool("desktop_act",Fields(("operation",new{type="string",@enum=new[]{"invoke","set"}}),("id",Text()),("value",Text()))));
+        tools.Add(Tool("start_job",Fields(("executable",Text()),("arguments",new{type="array",items=Text(),maxItems=40}),("directory",existingDirectory))));
+        tools.Add(Tool("poll_job",Fields(("id",Text()),("wait_ms",new{type="integer",minimum=0,maximum=10000}))));
+        tools.Add(Tool("stop_job",Fields(("id",Text()))));
+        tools.Add(Tool("run_workflow",Fields(("name",Text()))));
+        tools.Add(Tool("read_skill",Fields(("name",Text()))));
+        tools.Add(Tool("mcp_tools",Fields(("server",Text()))));
+        tools.Add(Tool("mcp_call",Fields(("server",Text()),("tool",Text()),("arguments_json",Text()))));
         if (available != null) tools = tools.Where(t =>
         {
             var item = JsonSerializer.SerializeToElement(t);

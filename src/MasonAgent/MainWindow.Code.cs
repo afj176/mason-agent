@@ -302,7 +302,22 @@ public sealed partial class MainWindow
         progressRow.Children.Add(state);
         var stateRow = Toolbar(progressRow, stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow); Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
         var sessionTools=ChatIcon("Session settings","\uE713",(_,_)=>{});
-        sessionTools.Flyout=Fluent.Acrylic(new Flyout{Content=Stack(Text("Session settings",18),Text("Reasoning",12),reasoning,deleteSession)});
+        var attach=Button("Attach or detach a window",async (_,_)=>{
+            if(session==null||codeOperation!=null||dialogOpen)return;
+            sessionTools.Flyout.Hide();dialogOpen=true;
+            try{
+                var windows=CodeDesktop.Windows();
+                var picker=new ComboBox{ItemsSource=windows,PlaceholderText="Choose an open window",MinWidth=280};
+                var dialog=new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Computer use",
+                    Content=Stack(CodeNote(session.Desktop?.Target.Title??"No window attached"),CodeNote("Mason can read control names in the selected window. You review each click or text entry."),picker),
+                    PrimaryButtonText="Attach",SecondaryButtonText="Detach",CloseButtonText="Cancel",IsPrimaryButtonEnabled=false};
+                picker.SelectionChanged+=(_,_)=>dialog.IsPrimaryButtonEnabled=picker.SelectedItem!=null;
+                var result=await dialog.ShowAsync();
+                if(result==ContentDialogResult.Primary && picker.SelectedItem is DesktopTarget selected)session.Desktop=new CodeDesktop(selected);
+                else if(result==ContentDialogResult.Secondary)session.Desktop=null;
+            }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
+        });
+        sessionTools.Flyout=Fluent.Acrylic(new Flyout{Content=Stack(Text("Session settings",18),Text("Reasoning",12),reasoning,attach,deleteSession)});
         sessionTools.Content=MotifIcon(Fluent.Motif.Settings,16);
         ToolTipService.SetToolTip(sessionTools,"Reasoning and session actions");
         var titleBlock = Stack(title, folderPath); titleBlock.Spacing = 1; titleBlock.VerticalAlignment = VerticalAlignment.Center;
@@ -444,6 +459,24 @@ public sealed partial class MainWindow
                 ToolTipService.SetToolTip(item,owner.Workspace);item.Click+=(_,_)=>SelectProject(owner);projectMenu.Items.Add(item);
             }
             if(projectMenu.Items.Count>0)projectMenu.Items.Add(new MenuFlyoutSeparator());
+            if(session!=null){
+                var tree=new MenuFlyoutItem{Text="New isolated worktree…",IsEnabled=codeOperation==null};
+                tree.Click+=async(_,_)=>{
+                    if(session==null||codeOperation!=null||dialogOpen)return;
+                    dialogOpen=true;
+                    try{
+                        var name=new TextBox{PlaceholderText="Task name"};
+                        var dlg=new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Create a Git worktree",Content=Stack(CodeNote("Use a new branch in a sibling folder beside the selected project."),name),PrimaryButtonText="Create",CloseButtonText="Cancel"};
+                        if(await dlg.ShowAsync()!=ContentDialogResult.Primary)return;
+                        var slug=name.Text.Trim();
+                        if(!System.Text.RegularExpressions.Regex.IsMatch(slug,@"\A[A-Za-z0-9][A-Za-z0-9_-]{0,48}\z"))throw new ArgumentException("Use a short task name with letters, digits, hyphens or underscores.");
+                        var dest=session.Workspace+"-"+slug;
+                        var path=await CodeWorktree.Create(session.Workspace,dest,"mason/"+slug,CancellationToken.None);
+                        Select(store.New(path),store.ProjectForWorkspace(path));
+                    }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
+                };
+                projectMenu.Items.Add(tree);
+            }
             var add=new MenuFlyoutItem{Text="Add project…",Icon=new FontIcon{Glyph="\uE710"},IsEnabled=codeOperation==null};add.Click+=async(_,_)=>await OpenWorkspace();projectMenu.Items.Add(add);
         }
         void SelectProject(CodeProject owner)=>Select(store.LastSession(owner.Id),owner);

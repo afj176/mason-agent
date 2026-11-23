@@ -6,7 +6,7 @@ using Mason.Code;
 namespace Mason;
 
 /// <summary>First-party action protocol over the existing checked local chat transport. No external harness/SDK.</summary>
-public sealed class CodeLocalModel(AiEndpointProfile profile, string key, string reasoning, Action<string> budget, Func<LocalAiClient>? clientFactory = null, Action<string>? progress = null) : ICodeContextModel, ICodeAcceptancePlanner
+public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key, string reasoning, Action<string> budget, Func<LocalAiClient>? clientFactory = null, Action<string>? progress = null) : ICodeContextModel, ICodeAcceptancePlanner, ICodeBrowserOperator, ICodeCatalogPlanner, ICodeChangeReviewer
 {
     public event Action<AiChatResult>? InferenceCompleted;
     public async Task<List<AcceptanceCheck>> PlanAcceptance(string request, string[] units, CodeFiles inventory, CancellationToken ct)

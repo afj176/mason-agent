@@ -57,8 +57,11 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         int repeatedPageRepairs=0;
         int conflictRepairs=0, browserRepairs=0;
         var callerCancellation=cancellation;using var runDeadline=CancellationTokenSource.CreateLinkedTokenSource(cancellation);runDeadline.CancelAfter(TimeSpan.FromMinutes(30));cancellation=runDeadline.Token;
+        if(newTask)session.UnverifiedJobs.Clear();
+        await using var services=new CodeRunServices(scope,cancellation,session.UnverifiedJobs);
         try
         {
+            _=services.Workflows;
             CodeAcceptancePlan? acceptance = null;
             int acceptanceAttempts = 0;
             bool? browserApproved = null;
@@ -81,7 +84,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 }
                 if(acceptance.TaskId==Guid.Empty) acceptance.TaskId=Guid.NewGuid();
                 acceptance.FirstActivity??=previousTurn?.FirstActivity??firstActivity;
-                foreach(var receipt in session.Activities.Skip(acceptance.FirstActivity.Value).Where(a=>a.Tool is "run_command" or "run_shell"))
+                foreach(var receipt in session.Activities.Skip(acceptance.FirstActivity.Value).Where(a=>a.Tool is "run_command" or "run_shell" or "run_workflow"))
                 {
                     if(receipt.State is not ("Failed" or "Completed" or "Interrupted" or "Outcome unknown" or "Pending" or "Running"))continue;
                     using var args=JsonDocument.Parse(receipt.Arguments);
@@ -99,6 +102,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             {
                 cancellation.ThrowIfCancellationRequested(); session.Detail = "Working · Preparing the next response"; changed();
                 var available=new HashSet<string>(CodeSchema.Available(session));
+                available.UnionWith(services.Enabled);
                 if (repairingAcceptance && session.Permission != CodePermission.ReadOnly)
                 {
                     available.Remove("open_file"); available.Remove("list_files"); available.Remove("verify_acceptance");
@@ -118,11 +122,14 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     refreshInventory = false;
                 }
                 var system = WorkspacePrompt(session, listing, instructions, available, snippetRecovery);
+                if(services.Workflows.Workflows.Count>0||services.Skills.Length>0)
+                    system=system with{Content=system.Content+"\nProject workflow names: "+string.Join(", ",services.Workflows.Workflows.Keys)+"; project skills: "+string.Join(", ",services.Skills)+". Use enable_tools group workflows to access these."};
                 if(step==0 && acceptance!=null && session.Permission==CodePermission.Auto && !verificationOnly && listing.RootIsOnlyDirectory && listing.Files.Length==0 &&
-                    acceptance.Checks.Count>0 && acceptance.Checks.All(c=>c.Kind=="browser_flow" && c.Application==null && c.Path=="index.html") &&
+                    acceptance.Checks.Count>0 && (acceptance.Storefront || acceptance.Checks.All(c=>c.Kind=="browser_flow" && c.Application==null && c.Path=="index.html")) &&
                     System.Text.RegularExpressions.Regex.IsMatch(input,@"\b(?:single|self-contained)\b[^.\r\n]{0,60}\bindex\.html\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))
                 {
-                    system=system with {PageDraft=new("index.html",input.Split("```mason.acceptance.json",2)[0].Trim(),string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)),instructions)};
+                    var guidance=acceptance.Storefront?"\nUse one numeric quantity per food and a price table. Derive the total anew from all quantities at render time. A discounted line uses its requested unit price at its threshold. After checkout remove all visible cart rows, set total to zero, and save the exact receipt. Render the same saved receipt after reload. Implement the full visual brief.":"";
+                    system=system with {PageDraft=new("index.html",input.Split("```mason.acceptance.json",2)[0].Trim()+guidance,string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)),instructions)};
                 }
                 if(failedCommands.Count>0)system=system with {Content=system.Content+"\nOutstanding command checks from this task. Inspect the workspace and explicitly rerun the affected check when appropriate: "+JsonSerializer.Serialize(failedCommands.Select(c=>new{c.Tool,c.Arguments}))};
                 if (observedHashes.Count > 0) system = system with { ObservedHashes=observedHashes.Values.Distinct().TakeLast(32).ToArray() };
@@ -180,6 +187,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 Save();
                 if (action.Tool == null)
                 {
+                    if(services.NeedsCollection){
+                        session.Messages.Add(new("user","Collect completed background jobs or stop running services before finishing. Use poll_job or stop_job."));Save();continue;
+                    }
+                    if(session.UnverifiedJobs.Count>0){session.State="Needs verification";session.Detail="Background command needs a successful rerun: "+string.Join(", ",session.UnverifiedJobs.Keys);turn.Text=session.Detail;Save();return;}
                     if (failedCommands.Count > 0)
                     {
                         session.State = "Needs verification";
@@ -208,7 +219,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                                 "Run the requested page checks in a disposable offline browser.\n"+string.Join("\n",acceptance.Checks.Select(c=>c.Feature))),cancellation);
                             cancellation.ThrowIfCancellationRequested(); session.State="Running";
                         }
-                        try { await CodeAcceptance.Verify(acceptance, scope, session.Permission, cancellation, browserApproved==true); }
+                        try { await VerifyWithReview(acceptance,browserApproved==true); }
                         catch (OperationCanceledException) { proof.State="Interrupted"; proof.Result="Acceptance verification was interrupted. Resume to check the current workspace."; throw; }
                         var passed = acceptance.Results.Count(r => r.Passed);
                         bool complete = passed > 0 && passed == acceptance.Checks.Count;
@@ -267,7 +278,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         throw new UnauthorizedAccessException("This exact operation was already declined during this run. Ask the user for a new instruction instead of repeating it.");
                     }
                     if(repeatedActions>=3)throw new InvalidOperationException("The same tool request was repeated three times without an intervening action. Execution stopped before this repeat; inspect the receipts and change strategy.");
-                    result = await Execute(scope, session, action, activity, cancellation);
+                    result = await Execute(scope, session, action, activity, services, cancellation);
                     // Commands can create files even when they exit with an error.
                     refreshInventory = result.ChangedFile != null || result.CreatedDirectory || action.Tool is "run_command" or "run_shell";
                     activity.State = result.Failed ? "Failed" : "Completed"; activity.Result = result.Content;
@@ -276,7 +287,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         if(action.Tool=="create_file")createdFiles.Add(path);
                     }
                     if (result.ChangedFile != null || action.Tool is "run_command" or "run_shell") repairingAcceptance = false;
-                    bool commandExecuted = !result.Failed && action.Tool is ("run_command" or "run_shell");
+                    bool commandExecuted = !result.Failed && action.Tool is ("run_command" or "run_shell" or "run_workflow");
                     commandSucceeded |= commandExecuted;
                     delivered |= !result.Failed && (result.ChangedFile != null || result.CreatedDirectory || commandExecuted ||
                         (session.Permission == CodePermission.ReadOnly && action.Tool is ("open_file" or "open_preview")));
@@ -321,7 +332,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 }
                 previousFileRead = fileRead ? activity.Id : null;
                 previousReadResult = successfulRead ? result.Content : null;
-                if (action.Tool is ("run_command" or "run_shell") && activity.State is ("Completed" or "Failed"))
+                if (action.Tool is ("run_command" or "run_shell" or "run_workflow") && activity.State is ("Completed" or "Failed"))
                 {
                     failedCommands.RemoveAll(previous => SameOperation(previous, action));
                     if (activity.State == "Failed") failedCommands.Add(action);
@@ -345,7 +356,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         session.Messages.Add(new("user","Edge observed a JavaScript error in the edited page. "+observed.Detail));
                     }
                 }
-                if(acceptance!=null && (acceptance.LiteralRequirements || attemptedPageRepair!=null) && session.Permission==CodePermission.Auto && result.ChangedFile!=null &&
+                if(acceptance!=null && (acceptance.LiteralRequirements || acceptance.Storefront || attemptedPageRepair!=null) && session.Permission==CodePermission.Auto && result.ChangedFile!=null &&
                     await VerifyCurrentWork(acceptance))return;
                 if(!verificationOnly && action.Tool=="verify_acceptance" && activity.State=="Failed" && acceptance!=null)
                     QueueBrowserRepair(acceptance);
@@ -354,6 +365,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 {
                     var passed=acceptance.Results.Count(r=>r.Passed);
                     bool complete=failedCommands.Count==0 && activity.State=="Completed" && passed==acceptance.Checks.Count && passed>0;
+                    if(complete&&!verificationOnly){if(await VerifyCurrentWork(acceptance))return;continue;}
                     session.State=complete?"Completed":"Needs verification";
                     session.Detail=$"{passed}/{acceptance.Checks.Count} feature checks passed."+(failedCommands.Count==0?"":" Outstanding command checks remain.");
                     turn.Text=session.Detail; Save();return;
@@ -394,10 +406,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         catch (Exception error) { try{diagnostic?.Invoke(error);}catch{ /* Diagnostics cannot suppress the failure receipt. */ }session.LiveMessage = ""; session.State = "Failed"; session.Detail = error.Message; Save(); }
         async Task<bool> VerifyCurrentWork(CodeAcceptancePlan plan)
         {
-            if(failedCommands.Count>0)return false;
+            if(failedCommands.Count>0||session.UnverifiedJobs.Count>0)return false;
             var proof=new CodeActivity{Tool="acceptance_checks",State="Running"};
             session.Activities.Add(proof);Save();
-            try { await CodeAcceptance.Verify(plan,scope,CodePermission.Auto,cancellation); }
+            try { await VerifyWithReview(plan,false); }
             catch(OperationCanceledException){proof.State="Interrupted";throw;}
             var missing=plan.Results.Where(r=>!r.Passed).ToArray();
             proof.Result=CodeAcceptance.Receipt(plan);proof.State=missing.Length==0?"Completed":"Failed";
@@ -411,6 +423,53 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             session.Messages.Add(new("user","Host verification on the current files. Work only on the unmet requirements.\n"+proof.Result));
             QueueBrowserRepair(plan);
             Save();return false;
+        }
+        async Task VerifyWithReview(CodeAcceptancePlan plan,bool approved)
+        {
+            if(services.NeedsCollection||session.UnverifiedJobs.Count!=0)throw new InvalidOperationException("Collect, stop or successfully rerun outstanding jobs before final verification.");
+            foreach(var (name,wf) in services.Workflows.Workflows.Where(w=>w.Value.BeforeVerify)){
+                if(session.Permission!=CodePermission.Auto)throw new UnauthorizedAccessException("Project verification workflows require Auto.");
+                var hook=new CodeActivity{Tool="workflow_before_verify",Arguments=JsonSerializer.Serialize(new{name}),State="Running"};
+                session.Activities.Add(hook);Save();
+                try{
+                    var run=await services.Workflow(name,cancellation);hook.Result=JsonSerializer.Serialize(run);
+                    if(run.ExitCode!=0||run.Truncated)throw new InvalidDataException("Project verification workflow failed: "+name);
+                    hook.State="Completed";
+                }catch{hook.State="Failed";throw;}finally{Save();}
+            }
+            await CodeAcceptance.Verify(plan,scope,session.Permission,cancellation,approved);
+            if(!verificationOnly && session.Permission==CodePermission.Auto && model is ICodeChangeReviewer codeReviewer &&
+                plan.Results.Count>0 && plan.Results.All(r=>r.Passed) && !plan.Checks.Any(c=>c.Kind.StartsWith("browser_"))){
+                foreach(var change in session.Changes.Where(c=>!c.Restored && changedFiles.Contains(c.Path) && CodeChangeReview.Supported(c.Path))){
+                    var current=scope.Read(change.Path);
+                    var receipt=new CodeActivity{Tool="independent_source_review",State="Running",Arguments=JsonSerializer.Serialize(new{path=change.Path,current.Sha256})};
+                    session.Activities.Add(receipt);Save();
+                    try{
+                        var findings=await CodeChangeReview.Review(codeReviewer,plan.Request,[new(change.Path,change.Before,current.Content,current.Sha256)],cancellation);
+                        if(scope.Read(change.Path).Sha256!=current.Sha256)throw new InvalidDataException("Source changed during review.");
+                        receipt.Result=JsonSerializer.Serialize(findings);receipt.State=findings.Length==0?"Completed":"Failed";
+                        if(findings.Length>0)throw new InvalidDataException("Independent code review found a defect: "+receipt.Result);
+                    }catch(Exception e){receipt.State="Failed";receipt.Result=e.Message;throw;}finally{Save();}
+                }
+            }
+            if(verificationOnly || session.Permission!=CodePermission.Auto || model is not ICodeBrowserOperator reviewer ||
+                plan.Results.Count==0 || plan.Results.Any(r=>!r.Passed) || plan.IndependentReviewPage!=null)return;
+            var page=plan.Checks.FirstOrDefault(c=>c.Application==null && c.Kind.StartsWith("browser_"))?.Path;
+            if(page==null)return;
+            session.Detail="Independent browser review";changed();
+            var activity=new CodeActivity{Tool="independent_review",State="Running"};session.Activities.Add(activity);Save();
+            try{
+                var request=System.Text.RegularExpressions.Regex.Replace(plan.Request,@"(?ms)^```mason\.acceptance\.json\s*.*?^```[^\S\r\n]*","");
+                var scenarios=await CodeComputerUse.Review(scope,page,request,reviewer,cancellation);
+                foreach(var s in scenarios){
+                    if(!s.Steps.Any(step=>step.Op is "money" or "text" or "same" or "empty" or "count_distinct" or "capture"))
+                        throw new InvalidDataException("Reviewer scenario has no outcome assertion.");
+                }
+                plan.Checks.AddRange(scenarios.Select(s=>new AcceptanceCheck(1,"Independent review · "+s.Requirement,"browser_flow",page,s.Id,"Independent browser assertions pass"){Steps=s.Steps}));
+                plan.IndependentReviewPage=page;
+                activity.Result=JsonSerializer.Serialize(scenarios);activity.State="Completed";Save();
+                await CodeAcceptance.Verify(plan,scope,session.Permission,cancellation,approved);
+            }catch(Exception e){activity.State="Failed";activity.Result=e.Message;Save();throw;}
         }
         void QueueBrowserRepair(CodeAcceptancePlan plan)
         {
@@ -500,11 +559,61 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             "\nRepository instructions:\n" + instructions + recovery) { AvailableTools = available, RootIsOnlyDirectory = listing.RootIsOnlyDirectory };
     }
 
-    async Task<CodeToolResult> Execute(CodeWorkspace scope, CodeSession session, CodeAction action, CodeActivity activity, CancellationToken ct)
+    async Task<CodeToolResult> Execute(CodeWorkspace scope, CodeSession session, CodeAction action, CodeActivity activity, CodeRunServices services, CancellationToken ct)
     {
         var a = action.Arguments; var tool = action.Tool!;
         switch (tool)
         {
+            case "desktop_observe":
+                CodeProtocol.Exact(a);
+                return new(await (session.Desktop??throw new UnauthorizedAccessException("Attach a window in session settings.")).Act("observe","",null,ct));
+            case "desktop_act":
+                CodeProtocol.Exact(a,"operation","id","value");
+                if(session.Mode!="build" || session.Permission==CodePermission.ReadOnly || session.Desktop is not {} desktop)
+                    throw new UnauthorizedAccessException("Attach a window in a writable Build session.");
+                string opName=S(a,"operation"),controlId=S(a,"id"),value=S(a,"value");
+                var target=desktop.Resolve(controlId,opName);
+                await Review(new(tool,"Operate "+desktop.Target.Title+"?",opName+" "+target.Type+" "+target.Name+(opName=="set"?"\n"+value:"")));
+                if(!ReferenceEquals(desktop,session.Desktop))throw new UnauthorizedAccessException("Window was detached.");
+                return new(await desktop.Act(opName,controlId,value,ct));
+            case "enable_tools":
+                CodeProtocol.Exact(a,"group");services.Enable(S(a,"group"),session);
+                return new(CodeSchema.ToolGuide(services.Enabled)+(S(a,"group")=="mcp"?"\nRegistered servers: "+string.Join(", ",CodeMcp.Read(store.Root).Select(s=>s.Name)):""));
+            case "read_skill":
+                CodeProtocol.Exact(a,"name");var skill=S(a,"name");
+                if(!services.Skills.Contains(skill))throw new ArgumentException("Unknown project skill.");
+                return new(scope.Read($".mason/skills/{skill}/SKILL.md").Content);
+            case "inspect_symbol":
+                CodeProtocol.Exact(a,"path","line","column","mode");
+                return new(await CodeSemantic.Query(scope,S(a,"path"),a.GetProperty("line").GetInt32(),a.GetProperty("column").GetInt32(),S(a,"mode"),ct));
+            case "computer_use": case "start_job": case "poll_job": case "stop_job": case "run_workflow": case "mcp_tools": case "mcp_call":
+                if(session.Mode!="build"||session.Permission!=CodePermission.Auto||!services.Enabled.Contains(tool))throw new UnauthorizedAccessException("Enable the tool in an Auto build session.");
+                if(tool=="computer_use"){
+                    CodeProtocol.Exact(a,"path","task");
+                    if(model is not ICodeBrowserOperator op)throw new InvalidOperationException("The connected model does not support computer use.");
+                    return new(await CodeComputerUse.Run(scope,S(a,"path"),S(a,"task"),op,Path.Combine(store.Root,"browser-artifacts",session.Id.ToString("N"),activity.Id.ToString("N")),ct));
+                }
+                if(tool=="start_job"){
+                    CodeProtocol.Exact(a,"executable","arguments","directory");
+                    var argv=a.GetProperty("arguments").EnumerateArray().Select(x=>x.GetString()??throw new ArgumentException("Expected argument string.")).ToArray();
+                    return new(JsonSerializer.Serialize(new{id=services.Start(S(a,"executable"),argv,S(a,"directory")),state="Starting"}));
+                }
+                if(tool is "poll_job" or "stop_job"){
+                    CodeProtocol.Exact(a,tool=="poll_job"?["id","wait_ms"]:["id"]);
+                    return await services.Observe(S(a,"id"),tool=="stop_job",tool=="poll_job"?a.GetProperty("wait_ms").GetInt32():0,ct);
+                }
+                if(tool=="run_workflow"){
+                    CodeProtocol.Exact(a,"name");var run=await services.Workflow(S(a,"name"),ct);
+                    return new(JsonSerializer.Serialize(run),Failed:run.ExitCode!=0||run.Truncated);
+                }
+                CodeProtocol.Exact(a,tool=="mcp_call"?["server","tool","arguments_json"]:["server"]);
+                var server=CodeMcp.Read(store.Root).SingleOrDefault(s=>s.Name==S(a,"server"))??throw new ArgumentException("Unknown user-registered MCP server.");
+                if(tool=="mcp_tools")return new(await CodeMcp.Request(server,null,default,ct));
+                var externalTool=S(a,"tool");using(var args=JsonDocument.Parse(S(a,"arguments_json"))){
+                    if(args.RootElement.ValueKind!=JsonValueKind.Object || !server.Tools.Contains(externalTool))throw new ArgumentException("Choose a registered tool and JSON object arguments.");
+                    await Review(new(tool,"Call "+server.Name+" / "+externalTool+"?",server.Endpoint+"\n"+args.RootElement.GetRawText()));
+                    return new(await CodeMcp.Request(server,externalTool,args.RootElement,ct));
+                }
             case "navigate_code":
                 CodeProtocol.Exact(a,"path","symbol","mode");
                 return new(JsonSerializer.Serialize(await Task.Run(()=>CodeNavigation.Query(scope,S(a,"path"),S(a,"symbol"),S(a,"mode"),session.Activities,ct),ct)));

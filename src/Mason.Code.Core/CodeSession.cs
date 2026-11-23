@@ -83,6 +83,7 @@ public sealed class CodeSession
     public int? PromptTokens { get; set; }
     public int? ContextTokens { get; set; }
     public List<CodeActivity> Activities { get; set; } = [];
+    public Dictionary<string,string> UnverifiedJobs {get;set;}=[];
     public List<CodeChange> Changes { get; set; } = [];
     public List<CodeTab> Tabs { get; set; } = [];
     public string? SelectedTab { get; set; }
@@ -95,6 +96,7 @@ public sealed class CodeSession
     public double ViewerFraction { get; set; } = .53;
     public List<string> References { get; set; } = [];
     [JsonIgnore] public string LiveMessage { get; set; } = "";
+    [JsonIgnore] public CodeDesktop? Desktop {get;set;}
     public override string ToString() => Title;
 }
 

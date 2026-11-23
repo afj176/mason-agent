@@ -31,6 +31,10 @@ if(args.Length==6 && args[0]=="--evaluate-empty-project" && args[4]=="--request-
 if(args.Length==2 && args[0]=="--harness-contract-checks"){
     await HarnessContractChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
 }
+if(args.Length==2 && args[0]=="--extension-checks"){
+    await HarnessExtensionChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
+}
+if(args.Length==1 && args[0]=="--native-window-check"){await DesktopIntegration.Run();return;}
 if (args.Length == 4 && args[0] == "--evaluate-acceptance")
 {
     await HarnessRecoveryChecks.EvaluateEmptyProject(args[1],args[2],Path.GetFullPath(args[3]),acceptanceTrial:true); return;

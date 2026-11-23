@@ -34,6 +34,35 @@ For an empty project, you can end the Build request with a fenced code block lab
 
 The `navigate_code` tool finds C# definitions, bound references, related tests and compiler diagnostics using framework references. For Python, JavaScript/TypeScript, Go, Ruby and Dart it returns labeled text candidates. Project-specific compiler output is available in command receipts.
 
+### Agent tools in 2.0
+
+Auto builds of static browser features get a separate read-only review after the original checks pass. The reviewer receives the user's brief and the rendered page, with its own context. Mason pins its executable checks and runs them in fresh Edge profiles at both viewport widths. For explicit catalog prices it calculates independent basket totals. It also checks displayed prices and durable receipts when requested. Review results and failed steps appear in Activity.
+
+In **Session settings → Attach or detach a window**, select an open Windows application to let Mason observe accessible controls. Build sessions ask you before invoking a control or setting a value. Attachments end when Mason closes. For project websites, the browser tool can operate a disposable Edge page, observe after each action and save a screenshot under the session profile. Desktop controls depend on the target application's Windows accessibility support.
+
+Ask for TypeScript, JavaScript or Python symbol inspection at a file, line and column. TypeScript provides compiler diagnostics and bound definitions/references. Jedi provides Python definitions/references and syntax diagnostics. Both operate on a bounded source snapshot. Dependency-specific checks still use your project's build. Python inspection requires a local Python installation.
+
+Store reusable instructions in `.mason/skills/NAME/SKILL.md`. Named workflows live in `mason.workflows.json`. Auto executes them inside the project sandbox. Setting `BeforeVerify` runs a workflow before final verification and a failed hook blocks completion. The agent can also start, poll and stop offline background jobs during a run. Jobs share the run's 30-minute deadline.
+
+```json
+{"Version":1,"Workflows":{"test":{"Executable":"python","Arguments":["-B","-m","unittest"],"Directory":".","BeforeVerify":true},"preview":{"Executable":"python","Arguments":["-m","http.server","8123","--bind","127.0.0.1"],"Directory":"."}}}
+```
+
+Register local MCP tools in the Mason profile's `mcp-servers.json`, for example `[{"Name":"docs","Endpoint":"http://127.0.0.1:8088/mcp","Tools":["search_docs"]}]`. Mason negotiates MCP 2025-06-18 over HTTP, lists allowlisted tools, and shows the tool arguments for approval before a call. An unattended run declines approvals.
+
+### Command line and parallel tasks
+
+Launch `mason.exe` beside `MasonAgent.exe` in the install directory. The CLI emits JSON Lines and uses the desktop engine and local model adapter. Each run gets its own journal. Supply a running local endpoint and its exact model ID. The default for `exec` is read-only. Pass `--auto` for a sandboxed build.
+
+```powershell
+.\mason.exe exec --workspace D:\src\shop --endpoint http://127.0.0.1:8080 --model YOUR_MODEL --auto --prompt-file brief.txt
+.\mason.exe review --workspace D:\src\shop --endpoint http://127.0.0.1:8080 --model YOUR_MODEL --prompt-file brief.txt
+.\mason.exe worktree --workspace D:\src\shop --destination D:\src\shop-pricing --branch mason/pricing
+.\mason.exe symbol --workspace D:\src\shop --path src/cart.ts --line 12 --column 8 --mode references
+```
+
+The project menu also offers **New isolated worktree**. Start builds concurrently with the CLI against separate worktrees. Run `mason.exe --help` for browser tasks and session resume. For a real development server, invoke `serve --workflow preview --port 8123` with the same workspace, endpoint, model and prompt options. This explicit CLI operation runs the named workflow under your Windows account, verifies the loopback listener belongs to its process tree, proxies the disposable browser to that service, then stops the tree.
+
 | Review changes | Chat |
 | --- | --- |
 | <img src="docs/images/changes-dark.png" alt="Changes viewer showing a unified diff beside the session"> | <img src="docs/images/chat-light.png" alt="Chat with a code block answer in the light theme"> |
@@ -73,10 +102,10 @@ dotnet build src\MasonAgent\MasonAgent.csproj -c Debug -p:Platform=x64
 
 # Release payload and ZIP in artifacts\MasonAgent-<version>-win-x64
 .\scripts\Invoke-ModelBenchmark.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -OutputDirectory .cache\qualification
-.\scripts\Publish.ps1 -Version 1.9.2 -ModelEvidence .cache\qualification\report.json
+.\scripts\Publish.ps1 -Version 2.0.0 -ModelEvidence .cache\qualification\report.json
 
 # ... plus the installer
-.\scripts\Publish.ps1 -Version 1.9.2 -ModelEvidence .cache\qualification\report.json -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+.\scripts\Publish.ps1 -Version 2.0.0 -ModelEvidence .cache\qualification\report.json -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
 `Publish.ps1` requires a clean checkout, two passing real-model trials per scenario and the exact commit in the benchmark, binary and release manifest. Both packages include the model benchmark and SHA-256 payload manifest. The GitHub release workflow runs the benchmark on a Windows runner labeled `mason-model-evals` with repository variables `MASON_EVAL_ENDPOINT` and `MASON_EVAL_MODEL` for a running local model.

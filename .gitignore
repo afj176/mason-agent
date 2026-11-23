@@ -2,6 +2,7 @@
 **/bin/
 **/obj/
 .cache/
+node_modules/
 artifacts/
 TestResults/
 .vs/
