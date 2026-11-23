@@ -211,7 +211,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         if (!complete)
                         {
                             turn.Text = $"{passed}/{acceptance.Checks.Count} feature checks passed. See activity for each result.";
-                            if (!verificationOnly && session.Permission!=CodePermission.ReadOnly && browserApproved!=false && acceptance.Results.Any(r => !r.Passed && r.Check.Kind != "unverified") && ++acceptanceAttempts <= 3 && step+1 < session.ActionLimit)
+                            if (!verificationOnly && session.Permission!=CodePermission.ReadOnly && browserApproved!=false && acceptance.Results.Any(r => !r.Passed && r.Check.Kind != "unverified") && ++acceptanceAttempts < 3 && step+1 < session.ActionLimit)
                             {
                                 repairingAcceptance = true;
                                 var sources = new List<object>();
