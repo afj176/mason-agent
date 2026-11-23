@@ -96,7 +96,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
                     "empty"=>values.Length==0 || values.Length==1 && actual.Length==0,
                     "money"=>values.Length==1 && Amount(actual,out var amount) && amount==decimal.Parse(step.Value,CultureInfo.InvariantCulture),
                     "text"=>values.Length==1 && actual==step.Value,
-                    "capture"=>values.Length==1 && actual.Length is >0 and <=200 && actual.StartsWith(step.Value,StringComparison.Ordinal) && actual.Length>step.Value.Length,
+                    "capture"=>values.Length==1 && HasIdentifier(actual,step.Value),
                     "same"=>values.Length==1 && actual==captured,
                     _=>false
                 };
@@ -113,6 +113,20 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         return string.Join("; ",observations);
     }
     static string Clip(string s)=>s.Length>160?s[..160]+"…":s;
-    static bool Amount(string value,out decimal result) =>
-        decimal.TryParse(value,NumberStyles.Currency,CultureInfo.GetCultureInfo("en-US"),out result);
+    // Accept a short display label such as "Order total:". Digits or multiple amounts in the
+    // label would make extraction ambiguous. Preserve the full observed text in the receipt.
+    static string WithoutLabel(string value)
+    {
+        int separator=value.IndexOf(':');
+        return separator is >0 and <=64 && value[..separator].All(c=>char.IsLetter(c) || c==' ' || c=='-')
+            ? value[(separator+1)..].Trim() : value;
+    }
+    internal static bool HasIdentifier(string value,string prefix)
+    {
+        if(value.Length is 0 or >200)return false;
+        var id=value.StartsWith(prefix,StringComparison.Ordinal)?value:WithoutLabel(value);
+        return id.StartsWith(prefix,StringComparison.Ordinal) && id.Length>prefix.Length;
+    }
+    internal static bool Amount(string value,out decimal result) =>
+        decimal.TryParse(WithoutLabel(value),NumberStyles.Currency,CultureInfo.GetCultureInfo("en-US"),out result);
 }
