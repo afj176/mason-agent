@@ -38,11 +38,11 @@ public sealed partial class MainWindow
                 if(Uri.TryCreate(input,UriKind.Absolute,out var absolute)){
                     var url=CodeProtocol.PreviewUri(absolute.AbsoluteUri);
                     if(!project && CodeWebsite.SameOrigin(origin,url))view.CoreWebView2?.Navigate(url.AbsoluteUri);
-                    else open("web",url.AbsoluteUri);
+                    else {address.Text=Display(current);open("web",url.AbsoluteUri);}
                 }else{
                     var page=site.Page(input);
                     if(project)view.CoreWebView2?.Navigate(page.AbsoluteUri);
-                    else open("site",workspace.Relative(workspace.Resolve(input)));
+                    else {address.Text=Display(current);open("site",workspace.Relative(workspace.Resolve(input)));}
                 }
             }catch(Exception error){Status(error.Message);}
         }
