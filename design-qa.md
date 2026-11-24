@@ -12,7 +12,7 @@ The visual pass compared native captures at 1707 × 1020 against all three refer
 
 ## Design deviations
 
-- Notebook applies its paper theme to the session surface. The native title bar and window status strip retain the user's appearance settings.
+- In 2.1.0 Notebook applied a light theme to the session surface. Starting in 2.1.1 it inherits the window theme, including when the user selects System.
 - Projects, line contents, receipts and model labels come from the open session. The captured diff shows an entirely new HTML file, so most lines are additions. The WinUI flyout positions itself against the selected line and available space.
 - All three views keep explicit navigation and native keyboard-accessible controls. Workbench retains the actual request, intermediate messages and preview controls, so content density varies with the conversation and window size.
 

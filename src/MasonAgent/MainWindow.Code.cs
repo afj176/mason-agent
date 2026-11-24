@@ -80,7 +80,6 @@ public sealed partial class MainWindow
         Thumb splitter = null!;
         var draftSave = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
         var viewerEntries = new Dictionary<string, CodeViewerEntry>();
-        var notebookPaper = new SolidColorBrush(BrandPaper);
         var page = new Grid { RowSpacing = 12, ColumnSpacing = 12 };
         page.ColumnDefinitions.Add(new() { Width = new GridLength(projectPanelWidth) }); page.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         page.RowDefinitions.Add(new() { Height = GridLength.Auto }); page.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
@@ -929,9 +928,6 @@ public sealed partial class MainWindow
             viewPicker.Visibility = session != null && width < 845 ? Visibility.Visible : Visibility.Collapsed;
             if (viewPicker.SelectedItem is not CodeWorkspaceView picked || picked != View()) viewPicker.SelectedItem = View();
             foreach (ToggleButton choice in viewModes.Children) choice.IsChecked = (CodeWorkspaceView)choice.Tag == View();
-            var readingTheme = notebook && !BrandHighContrast ? ElementTheme.Light : ElementTheme.Default;
-            if (page.RequestedTheme != readingTheme) page.RequestedTheme = readingTheme;
-            page.Background = notebook && !BrandHighContrast ? notebookPaper : null;
             title.FontSize = notebook ? 38 : 24;
             center.MaxWidth = notebook ? 1320 : double.PositiveInfinity;
             center.Padding = notebook && width >= 900 ? new Thickness(28, 0, 28, 0) : new Thickness(0);
