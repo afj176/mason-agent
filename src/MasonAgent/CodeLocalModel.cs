@@ -203,6 +203,8 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
     }
     async Task<CodeAction> DraftPage(LocalAiClient client,ChatServerInfo server,CodePageDraft draft,CancellationToken ct)
     {
+        if(draft.Catalog is {} catalog && string.IsNullOrWhiteSpace(draft.Instructions))
+            return await DraftOfflineCatalog(draft,catalog,ct);
         var messages=new[]{new AiMessage("system","You are implementing a complete self-contained offline website in an empty directory. Return just the full HTML document with styling and JavaScript. Use the precise UI selectors in the supplied tests. Walk through every user interaction, derived value and required storage transition before returning the implementation. No placeholders, explanation or Markdown."),
             new AiMessage("user",$"User request\n{draft.Request}\nRepository instructions\n{draft.Instructions}\nAcceptance scenarios\n{draft.Checks}")};
         var options=new ChatGenerationOptions{Temperature=.15,Reasoning=server.Reasoning?"off":"default",TimeoutMinutes=2};
@@ -229,6 +231,8 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
         var requestText=repair.Request;
         int contractStart=requestText.IndexOf("```mason.acceptance.json",StringComparison.Ordinal);
         if(contractStart>=0)requestText=requestText[..contractStart].TrimEnd();
+        if((repair.PreviousEditUnchanged || repair.PreservePassingScenarios && !repair.RebuildGeneratedPage) && server.Llama &&
+            await RepairByAnchor(repair,requestText,ct) is {} anchored)return anchored;
         if(html && repair.RebuildGeneratedPage && repair.PreservePassingScenarios &&
             await RebuildInlineBehavior(client,server,repair,requestText,ct) is {} behavior)return behavior;
         if(repair.PreservePassingScenarios && !repair.RebuildGeneratedPage && server.Llama &&

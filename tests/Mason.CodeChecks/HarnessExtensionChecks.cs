@@ -62,16 +62,61 @@ internal static class HarnessExtensionChecks
         check(action.Tool=="replace_file" && action.Arguments.GetProperty("expected_sha256").GetString()==file.Sha256 &&
             action.Arguments.GetProperty("content").GetString()==file.Content.Replace("old();","\n"+script+"\n"),
             "A fresh behavior repair preserves the generated shell and pins the observed source hash");
+        var replacement=JsonSerializer.Serialize(new{Before="old();",After="update();"});
+        var patcher=new CodeLocalModel(new AiEndpointProfile{Model="test-coder",Endpoint="http://127.0.0.1:5179"},"","default",_=>{},()=>new LocalAiClient(new ModelHandler(replacement)));
+        var patched=await patcher.Next([new("system",""){AvailableTools=new HashSet<string>{"replace_file"},PageRepair=repair with{PreviousEditUnchanged=true}}],_=>{},default);
+        check(patched.Arguments.GetProperty("content").GetString()==file.Content.Replace("old();","update();") &&
+            patched.Arguments.GetProperty("expected_sha256").GetString()==file.Sha256 &&
+            CodeLocalModel.ApplyExactRepair("x x","x","y")==null && CodeLocalModel.ApplyExactRepair("x","x","x")==null &&
+            CodeLocalModel.ApplyExactRepair("one\r\ntwo","one\ntwo","one\nthree")=="one\r\nthree",
+            "An unchanged edit switches to a unique, revision-pinned source replacement");
         const string brief="Build a store. Rice costs $4 each, three or more cost 3 dollars each. Add Oats for $2. Show the cart total.";
         var catalog=await CodeStorefrontPlan.Prepare(brief,new PantryPlanner(),default);
         check(catalog!=null && catalog.Checks.Where(c=>c.Kind=="unverified").Select(c=>c.Feature).SequenceEqual(["Email the receipt"]) &&
             catalog.BuildFacts.Contains("q * (q >= 3 ? 3 : 4)"),"Covered catalog paraphrases retain real feature checks and unknown requirements remain outstanding");
+        check(CatalogSpec.ExplicitReceiptPrefix("On checkout issue a new BOX_ receipt.")=="BOX_" &&
+            CatalogSpec.ExplicitReceiptPrefix("Give each receipt a value starting with 'INV-'.")=="INV-" &&
+            CatalogSpec.ExplicitReceiptPrefix("Create an offline food-store receipt.")==null,
+            "Receipt IDs use the literal prefix supplied by the requester");
+        var prices=CatalogPriceGrounding.Bind("Rice costs $4 each. Tea is $7 each. Charge $3 per Rice bag when buying two or more Rice bags.",
+            [new("Rice",4,3,2),new("Tea",4,3,2)]);
+        check(prices.SequenceEqual([new CatalogItem("Rice",4,3,2),new CatalogItem("Tea",7,7,0)]),
+            "A reviewer cannot copy a named product's quantity promotion onto other shelf items");
+        await CheckCatalogComponent(root,check);
         var reply=JsonSerializer.Serialize(new {Items=new[]{new{Name="Rice",UnitPrice=4,DiscountedPrice=3,Threshold=3,Button=1},
             new{Name="Oats",UnitPrice=2,DiscountedPrice=2,Threshold=0,Button=2}},Total="#amount-due div"});
         var reviewer=new CodeLocalModel(new AiEndpointProfile{Model="test-coder",Endpoint="http://127.0.0.1:5179"},"","default",_=>{},()=>new LocalAiClient(new ModelHandler(reply)));
         var scenarios=await reviewer.DesignReview(brief,"index.html",new("","",["#rice | Add","#oats | Add"]){ElementIds=["#amount-due"]},default);
         check(scenarios.Single().Steps.Where(s=>s.Op=="money").All(s=>s.Target=="#amount-due"),
             "Independent prices use the observed total element even if a model appends its HTML tag");
+    }
+
+    static async Task CheckCatalogComponent(string root,Action<bool,string> check)
+    {
+        var spec=new CatalogSpec([new("Muesli",2.45m,1.75m,2),new("Tea",1.20m,1.20m,0)],"BOX_",true,true,[]);
+        var source=CodeLocalModel.RenderCatalog(spec,new("Pantry <special>","Choose a snack.","#123456","#fffef0",["Oats","Leaves"]));
+        var directory=Directory.CreateDirectory(Path.Combine(root,"decimal-store")).FullName;
+        var page=Path.Combine(directory,"index.html");
+        File.WriteAllText(page,source);
+        var flow=new AcceptanceCheck(1,"Fractional prices and repeat checkout","browser_flow","index.html","orders","Requested behavior"){Steps=[
+            new("click","#product-1 button"),new("money","#cart-total","2.45"),new("click","#product-1 button"),new("money","#cart-total","3.50"),
+            new("click","#product-1 button"),new("click","#product-2 button"),new("money","#cart-total","6.45"),
+            new("click","#checkout"),new("capture","#receipt","BOX_"),new("reload"),new("same","#receipt"),
+            new("click","#product-2 button"),new("click","#checkout"),new("new_id","#receipt","BOX_"),new("reload"),new("same","#receipt")]};
+        var scope=new CodeWorkspace(directory);
+        check((await CodeBrowserVerification.Run(scope,[flow],default))[flow].Passed,"Edge verifies fractional pricing, a different threshold, mixed cart and fresh receipts");
+        var invalid=new CodeBrowserVerification.Candidate("index.html",System.Text.Encoding.UTF8.GetBytes(source.Replace("let total = 0;","let total = ;")));
+        check(!(await CodeBrowserVerification.Run(scope,[flow],default,invalid))[flow].Passed && File.ReadAllText(page)==source,
+            "Edge evaluates a defective candidate in memory and leaves the passing workspace revision intact");
+        File.WriteAllText(page,source.Replace("const subtotal = quantity * unit;",
+            "const subtotal = quantity * (quantity === 2 ? quantity * unit : unit);"));
+        var mispriced=(await CodeBrowserVerification.Run(scope,[flow],default))[flow];
+        check(!mispriced.Passed && mispriced.Detail.Contains("3.50") && mispriced.Detail.Contains("7.00"),
+            "Edge rejects a line total used as a unit price at quantity two");
+        File.WriteAllText(page,source.Replace("localStorage.setItem(receiptKey, id);","localStorage.setItem(receiptKey, prefix + 'fixed');")
+            .Replace("receipt.textContent = id;","receipt.textContent = prefix + 'fixed';"));
+        var failed=(await CodeBrowserVerification.Run(scope,[flow],default))[flow];
+        check(!failed.Passed && failed.Detail.Contains("new_id"),"Edge rejects a reused receipt even when the first checkout persisted");
     }
 
     sealed class PantryPlanner : ICodeCatalogPlanner

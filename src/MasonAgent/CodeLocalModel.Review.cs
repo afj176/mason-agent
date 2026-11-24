@@ -80,8 +80,12 @@ public sealed partial class CodeLocalModel
         if(totalIds.Length==1)basket=basket with{Total=totalIds[0]};
         if(totalIds.Length>1 && !totalIds.Contains(basket.Total))throw new InvalidDataException("Reviewer did not select an observed total.");
         if(basket.Items.Length<2)return null;
+        if(basket.Items.Any(i=>i==null||string.IsNullOrWhiteSpace(i.Name)))throw new InvalidDataException("Independent review requires named offers.");
+        var grounded=CatalogPriceGrounding.Bind(request,basket.Items.Select(i=>new CatalogItem(i.Name,i.UnitPrice,i.DiscountedPrice,i.Threshold)).ToArray());
         // Prefer a unique product heading/section over the model's list ordinal.
-        var items=basket.Items.Select(i=>{
+        var items=basket.Items.Select((raw,index)=>{
+            var offer=grounded[index];
+            var i=raw with{UnitPrice=offer.Price,DiscountedPrice=offer.SalePrice,Threshold=offer.Threshold};
             var matches=observation.ProductSections.Select((s,n)=>(s,n)).Where(p=>p.s.Split(" | ")[0].Equals(i.Name,StringComparison.OrdinalIgnoreCase)).ToArray();
             return matches.Length==1?i with {Button=matches[0].n+1}:i;
         }).ToArray();
@@ -111,13 +115,17 @@ public sealed partial class CodeLocalModel
             }).ToArray();
             scenarios.Add(new("independent-shelf","Advertised unit prices match the request",path,labels));
         }
-        if(Regex.IsMatch(request,@"\b(reload|persist\w*|refresh)\b",RegexOptions.IgnoreCase)&&Regex.IsMatch(request,@"\b(order|receipt|confirmation)\b",RegexOptions.IgnoreCase)){
+        if(Regex.IsMatch(request,@"\b(reload\w*|persist\w*|refresh\w*)\b",RegexOptions.IgnoreCase)&&Regex.IsMatch(request,@"\b(order|receipt|confirmation)\b",RegexOptions.IgnoreCase)){
             var pay=observation.Selectors.FirstOrDefault(s=>Regex.IsMatch(s,@"\|\s*(checkout|check out|place order)\s*$",RegexOptions.IgnoreCase))?.Split(" | ")[0];
             var receipt=observation.ElementIds.FirstOrDefault(s=>Regex.IsMatch(s,@"(order|receipt).*(id|num)|#(receipt|order|confirmation)$",RegexOptions.IgnoreCase));
             if(pay==null || receipt==null)return null;
-            scenarios.Add(new("independent-receipt","Checkout produces an order identifier that survives reload",path,[
-                new("click",observation.Selectors[items[0].Button-1].Split(" | ")[0]),new("click",pay),
-                new("capture",receipt,request.Contains("ORD-")?"ORD-":""),new("reload"),new("same",receipt)]));
+            var prefix=CatalogSpec.ExplicitReceiptPrefix(request)??"";
+            var add=observation.Selectors[items[0].Button-1].Split(" | ")[0];
+            var orderSteps=new List<BrowserStep>{new("click",add),new("click",pay),new("capture",receipt,prefix),new("reload"),new("same",receipt)};
+            if(CatalogSpec.RequiresFreshReceipt(request)){
+                orderSteps.AddRange([new("click",add),new("click",pay),new("new_id",receipt,prefix),new("reload"),new("same",receipt)]);
+            }
+            scenarios.Add(new("independent-receipt","Checkout produces the requested identifier and retains it on reload",path,[..orderSteps]));
         }
         return scenarios.ToArray();
     }

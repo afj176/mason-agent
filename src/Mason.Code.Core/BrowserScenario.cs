@@ -37,16 +37,16 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         foreach (var s in steps)
         {
             if (s is null || s.Target==null || s.Value==null || s.Target.Length>180 || s.Value.Length>300 ||
-                s.Op is not ("count_distinct" or "fill" or "click" or "click_if_enabled" or "money" or "shelf_price" or "text" or "empty" or "capture" or "reload" or "same"))
+                s.Op is not ("count_distinct" or "fill" or "click" or "click_if_enabled" or "money" or "shelf_price" or "text" or "empty" or "capture" or "reload" or "same" or "new_id"))
                 throw new InvalidDataException("Unknown or oversized browser step.");
             if(s.Op!="reload" && string.IsNullOrWhiteSpace(s.Target)) throw new InvalidDataException("A browser step needs a target.");
             if(s.Op=="count_distinct" && !(int.TryParse(s.Value,out var n) && n is >0 and <=1000)) throw new InvalidDataException("Specify a positive distinct item count.");
             if(s.Op is ("money" or "shelf_price") && !decimal.TryParse(s.Value,NumberStyles.AllowDecimalPoint|NumberStyles.AllowLeadingSign,CultureInfo.InvariantCulture,out _)) throw new InvalidDataException("Specify the expected decimal amount.");
             if(s.Op=="text" && string.IsNullOrWhiteSpace(s.Value)) throw new InvalidDataException("Specify exact visible text.");
-            if(s.Op=="same" && !captured) throw new InvalidDataException("Capture a value before comparing it.");
+            if(s.Op is ("same" or "new_id") && !captured) throw new InvalidDataException("Capture a value before comparing it.");
             if(s.Op=="capture") captured=true;
         }
-        if(steps[^1].Op is not ("count_distinct" or "money" or "shelf_price" or "text" or "same" or "empty")) throw new InvalidDataException("End each scenario with an assertion.");
+        if(steps[^1].Op is not ("count_distinct" or "money" or "shelf_price" or "text" or "same" or "new_id" or "empty")) throw new InvalidDataException("End each scenario with an assertion.");
     }
     internal static bool CoversBehavior(string text,BrowserStep[] steps)
     {
@@ -99,6 +99,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
                     "text"=>values.Length==1 && actual==step.Value,
                     "capture"=>values.Length==1 && HasIdentifier(actual,step.Value),
                     "same"=>values.Length==1 && actual==captured,
+                    "new_id"=>values.Length==1 && HasIdentifier(actual,step.Value) && WithoutLabel(actual)!=WithoutLabel(captured!),
                     _=>false
                 };
                 if(pass) break;
@@ -108,7 +109,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
                 }
                 await Task.Delay(75,ct);
             }
-            if(step.Op=="capture") captured=actual;
+            if(step.Op is "capture" or "new_id") captured=actual;
             observations.Add($"{step.Op} {step.Target} = {Clip(actual)}");
         }
         return string.Join("; ",observations);
@@ -129,7 +130,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
     internal static bool HasIdentifier(string value,string prefix)
     {
         if(value.Length is 0 or >200)return false;
-        var id=value.StartsWith(prefix,StringComparison.Ordinal)?value:WithoutLabel(value);
+        var id=prefix.Length>0 && value.StartsWith(prefix,StringComparison.Ordinal)?value:WithoutLabel(value);
         return id.StartsWith(prefix,StringComparison.Ordinal) && id.Length>prefix.Length;
     }
     internal static bool Amount(string value,out decimal result) =>

@@ -20,8 +20,12 @@ public sealed record CodePageRepair(CodeFile File, string Request, string Eviden
     public string RelatedSource {get;init;}="";
     public bool RebuildGeneratedPage {get;init;}
     public bool PreservePassingScenarios {get;init;}
+    public bool PreviousEditUnchanged {get;init;}
 }
-public sealed record CodePageDraft(string Path,string Request,string Checks,string Instructions);
+public sealed record CodePageDraft(string Path,string Request,string Checks,string Instructions)
+{
+    public CatalogSpec? Catalog {get;init;}
+}
 public sealed class CodeAcceptancePlan
 {
     public Guid TaskId { get; set; }
@@ -31,6 +35,7 @@ public sealed class CodeAcceptancePlan
     public string? IndependentReviewPage {get;set;}
     public bool Storefront {get;set;}
     [System.Text.Json.Serialization.JsonIgnore] public string BuildFacts {get;set;}="";
+    [System.Text.Json.Serialization.JsonIgnore] public CatalogSpec? Catalog {get;set;}
     public string[] RequirementIds => Units.Select((u,i)=>CodeProtocol.Hash(System.Text.Encoding.UTF8.GetBytes($"{TaskId:N}|{i+1}|{u}"))[..16]).ToArray();
     public string Request { get; set; } = "";
     public string[] Units { get; set; } = [];
@@ -290,6 +295,7 @@ public static class CodeAcceptance
             "money"=>$"expect amount {s.Value} at {s.Target}", "fill"=>$"enter {s.Value} in {s.Target}",
             "shelf_price"=>$"show the original unit price ${s.Value} in {s.Target}",
             "same"=>$"expect the previously captured value at {s.Target}", "capture"=>$"save the displayed ID from {s.Target} (prefix {s.Value})",
+            "new_id"=>$"expect a different ID at {s.Target} (prefix {s.Value}) and save it",
             "text"=>$"expect text {JsonSerializer.Serialize(s.Value)} at {s.Target}","count_distinct"=>$"expect {s.Value} distinct visible items matching {s.Target}",
             _=>$"{s.Op} {s.Target}".TrimEnd()
         }));

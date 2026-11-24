@@ -6,6 +6,15 @@ namespace Mason.Code;
 public sealed record CatalogItem(string Name,decimal Price,decimal SalePrice,int Threshold);
 public sealed record CatalogSpec(CatalogItem[] Items,string ReceiptPrefix,bool PersistReceipt,bool ClearCart,string[] OtherRequirements)
 {
+    public static bool RequiresFreshReceipt(string request)=>Regex.IsMatch(request,
+        @"\b(?:new|distinct|fresh|unique)\b[^.!?\n]{0,35}\b(?:receipt|order|identifier)\b",RegexOptions.IgnoreCase);
+    public static string? ExplicitReceiptPrefix(string request)
+    {
+        const string token=@"(?<prefix>[A-Za-z][A-Za-z0-9]{0,22}[-_])";
+        var prefixes=Regex.Matches(request,@"(?<![\w-])"+token+@"(?=['""`]?\s+(?i:receipt|order\b|confirmation))|(?i:\b(?:prefix(?:ed)?(?:\s+with)?|(?:start|begin)(?:s|ning|ing)?\s+with))\s+['""`]?"+token)
+            .Select(m=>m.Groups["prefix"].Value).Distinct(StringComparer.Ordinal).ToArray();
+        return prefixes.Length==1?prefixes[0]:null;
+    }
     public static HashSet<decimal> Amounts(string request)
     {
         var amounts=new HashSet<decimal>();
@@ -30,6 +39,13 @@ internal static class CodeStorefrontPlan
     {
         var spec=await planner.ExtractCatalog(request,ct);
         if(spec.Items is not {Length:>=2 and <=8}||spec.OtherRequirements==null)return null;
+        if(spec.Items.Any(i=>i==null||string.IsNullOrWhiteSpace(i.Name)))return null;
+        spec=spec with{Items=CatalogPriceGrounding.Bind(request,spec.Items)};
+        if(CatalogSpec.ExplicitReceiptPrefix(request) is {} prefix)spec=spec with{ReceiptPrefix=prefix};
+        else if(!string.IsNullOrEmpty(spec.ReceiptPrefix) && !request.Contains(spec.ReceiptPrefix,StringComparison.Ordinal)){
+            if(Regex.IsMatch(request,@"\bprefix\w*|\b(?:start|begin)\w* with",RegexOptions.IgnoreCase))return null;
+            spec=spec with{ReceiptPrefix=""};
+        }
         var amounts=CatalogSpec.Amounts(request);
         if(spec.Items.Any(i=>i==null||string.IsNullOrWhiteSpace(i.Name)||!request.Contains(i.Name,StringComparison.OrdinalIgnoreCase)||
             !amounts.Contains(i.Price)||i.Threshold is <0 or >8||i.Threshold>0&&!amounts.Contains(i.SalePrice))||
@@ -68,6 +84,11 @@ internal static class CodeStorefrontPlan
             var steps=new List<BrowserStep>{new("click","#product-1 button"),new("click","#checkout"),new("capture","#receipt",spec.ReceiptPrefix??"")};
             if(spec.ClearCart){steps.Add(new("money","#cart-total","0.00"));steps.Add(new("empty","#cart-items"));}
             if(spec.PersistReceipt){steps.Add(new("reload"));steps.Add(new("same","#receipt"));}
+            if(CatalogSpec.RequiresFreshReceipt(request)){
+                steps.Add(new("click","#product-1 button"));steps.Add(new("click","#checkout"));
+                steps.Add(new("new_id","#receipt",spec.ReceiptPrefix??""));
+                if(spec.PersistReceipt){steps.Add(new("reload"));steps.Add(new("same","#receipt"));}
+            }
             if(steps[^1].Op=="capture")steps.Add(new("same","#receipt"));
             Add("Checkout issues the requested receipt"+(spec.PersistReceipt?" and retains it on reload":""),"order",[..steps]);
         }
@@ -75,6 +96,10 @@ internal static class CodeStorefrontPlan
         // clauses made entirely of vocabulary for the specific checks compiled above.
         bool Covered(string clause){
             var text=clause.ToLowerInvariant();
+            if(Regex.IsMatch(text,@"^(?:add[- ]to[- ]cart functionality for each (?:item|product)|cart total calculation)[.!]?$"))return true;
+            if(spec.ClearCart && !string.IsNullOrWhiteSpace(spec.ReceiptPrefix) && Regex.IsMatch(text,
+                @"^checkout process that clears the cart and generates an? "+Regex.Escape(spec.ReceiptPrefix.TrimEnd('-').ToLowerInvariant())+@"-? receipt[.!]?$"))return true;
+            if(spec.PersistReceipt && Regex.IsMatch(text,@"^receipt persistence after (?:page )?reload[.!]?$"))return true;
             if(Regex.IsMatch(text,@"^(?:(?:build|create|make) )?(?:a|an|the) (?:(?:whimsical|playful|colorful|colourful|rustic|modern|cozy|cosy|minimal|food|bear) ){0,5}(?:store|shop|market)(?: design)?(?: for [\p{L}-]+)?[.!]?$"))return true;
             if(Regex.IsMatch(text,@"\b(?:persist\w*|reload\w*)\b")&&!spec.PersistReceipt)return false;
             if(Regex.IsMatch(text,@"\bclear\w*\b")&&!spec.ClearCart)return false;
@@ -89,6 +114,12 @@ internal static class CodeStorefrontPlan
         foreach(var other in spec.OtherRequirements.Where(s=>!string.IsNullOrWhiteSpace(s)&&!Covered(s))){
             plan.Units=[..plan.Units,other];plan.Checks.Add(new(plan.Units.Length,other,"unverified","","","Requires an additional acceptance check: "+other));
         }
+        // The component implements only these interactions in a fresh, explicitly offline checkout.
+        if(plan.Checks.All(c=>c.Kind=="browser_flow") && plan.Checks.Any(c=>c.Target=="order") &&
+            Regex.IsMatch(request,@"\boffline\b",RegexOptions.IgnoreCase) && spec.ClearCart && spec.PersistReceipt &&
+            (string.IsNullOrEmpty(spec.ReceiptPrefix)||request.Contains(spec.ReceiptPrefix,StringComparison.Ordinal)) &&
+            spec.Items.All(i=>i.Price is >=0 and <=1000000 && i.SalePrice is >=0 and <=1000000))
+            plan.Catalog=spec;
         return plan;
     }
 }

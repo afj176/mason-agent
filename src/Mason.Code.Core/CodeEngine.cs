@@ -95,7 +95,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if (resume && previous?.Results.Count > 0) delivered = true;
                 user.Acceptance = acceptance;
                 Save();
-                if(acceptance.LiteralRequirements && session.Permission==CodePermission.Auto && acceptance.Checks.Any(c=>File.Exists(scope.Resolve(c.Path))) &&
+                bool existingBrowserContract=!verificationOnly && acceptance.Checks.Count>0 &&
+                    (acceptance.ContractHash!=null || input.Contains("```mason.acceptance.json",StringComparison.Ordinal)) &&
+                    acceptance.Checks.All(c=>c.Kind=="browser_flow" && c.Application==null && File.Exists(scope.Resolve(c.Path)));
+                if((acceptance.LiteralRequirements || existingBrowserContract) && session.Permission==CodePermission.Auto && acceptance.Checks.Any(c=>File.Exists(scope.Resolve(c.Path))) &&
                     await VerifyCurrentWork(acceptance))return;
             }
             for (int step = 0; step < session.ActionLimit; step++)
@@ -129,7 +132,9 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     System.Text.RegularExpressions.Regex.IsMatch(input,@"\b(?:single|self-contained)\b[^.\r\n]{0,60}\bindex\.html\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase))
                 {
                     var guidance=acceptance.Storefront?"\nUse one numeric quantity per food and a price table. Derive the total anew from all quantities at render time. A discounted line uses its requested unit price at its threshold. After checkout remove all visible cart rows, set total to zero, and save the exact receipt. Render the same saved receipt after reload. Implement the full visual brief.":"";
-                    system=system with {PageDraft=new("index.html",input.Split("```mason.acceptance.json",2)[0].Trim()+guidance+"\n"+acceptance.BuildFacts,string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)),instructions)};
+                    var brief=input.Split("```mason.acceptance.json",2)[0].Trim();
+                    system=system with {PageDraft=new("index.html",acceptance.Catalog==null?brief+guidance+"\n"+acceptance.BuildFacts:brief,string.Join("\n",acceptance.Checks.Select(CodeAcceptance.Describe)),instructions){
+                        Catalog=acceptance.Catalog}};
                 }
                 if(failedCommands.Count>0)system=system with {Content=system.Content+"\nOutstanding command checks from this task. Inspect the workspace and explicitly rerun the affected check when appropriate: "+JsonSerializer.Serialize(failedCommands.Select(c=>new{c.Tool,c.Arguments}))};
                 if (observedHashes.Count > 0) system = system with { ObservedHashes=observedHashes.Values.Distinct().TakeLast(32).ToArray() };
@@ -140,6 +145,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if (repairPage is {} page && acceptance!=null) system = system with { ObservedHashes=[page.Sha256],
                     PageRepair=new(page,acceptance.Request,acceptance.BuildFacts+"\n"+RepairEvidence(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
                         RelatedSource=RelatedSource(page,acceptance),
+                        PreviousEditUnchanged=repeatedPageRepairs>0,
                         PreservePassingScenarios=acceptance.Results.Any(r=>r.Passed && r.Check.Kind=="browser_flow") &&
                             acceptance.Results.Any(r=>!r.Passed && r.Check.Kind=="browser_flow"),
                         RebuildGeneratedPage=createdFiles.Contains(page.Path) && attemptedRepairs.Contains(page.Path) &&
@@ -278,6 +284,20 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         throw new UnauthorizedAccessException("This exact operation was already declined during this run. Ask the user for a new instruction instead of repeating it.");
                     }
                     if(repeatedActions>=3)throw new InvalidOperationException("The same tool request was repeated three times without an intervening action. Execution stopped before this repeat; inspect the receipts and change strategy.");
+                    if(attemptedPageRepair!=null && acceptance!=null && session.Permission==CodePermission.Auto &&
+                        S(action.Arguments,"expected_sha256")==attemptedPageRepair.Sha256 && S(action.Arguments,"content") is {} candidate &&
+                        candidate!=attemptedPageRepair.Content && candidate.Length<=128*1024){
+                        var passing=acceptance.Results.Where(r=>r.Passed && r.Check.Application==null && r.Check.Kind.StartsWith("browser_"))
+                            .Select(r=>r.Check).ToArray();
+                        if(passing.Length>0){
+                            var preview=new CodeBrowserVerification.Candidate(attemptedPageRepair.Path,System.Text.Encoding.UTF8.GetBytes(candidate));
+                            var checks=await CodeBrowserVerification.Run(scope,passing,cancellation,preview);
+                            if(checks.Values.FirstOrDefault(r=>!r.Passed) is {} regression){
+                                if(++repeatedPageRepairs<=3)QueueFile(attemptedPageRepair.Path,"The last proposed edit broke a passing check in preview. Keep the working implementation. "+regression.Detail);
+                                throw new InvalidDataException("Candidate broke a previously passing browser check before the write: "+regression.Detail);
+                            }
+                        }
+                    }
                     result = await Execute(scope, session, action, activity, services, cancellation);
                     // Commands can create files even when they exit with an error.
                     refreshInventory = result.ChangedFile != null || result.CreatedDirectory || action.Tool is "run_command" or "run_shell";
@@ -338,6 +358,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     if (activity.State == "Failed") failedCommands.Add(action);
                 }
                 session.Messages.Add(new("user", JsonSerializer.Serialize(new { tool_result = action.Tool, activity_id = activity.Id, state = activity.State, result = modelReceipt })));
+                if(result.ChangedFile!=null)repeatedPageRepairs=0;
                 if(attemptedPageRepair!=null && activity.State=="Failed" && action.Tool=="replace_file" && activity.Result.Contains("makes no change",StringComparison.Ordinal) && ++repeatedPageRepairs<3)
                 {
                     repairPage=attemptedPageRepair;

@@ -21,7 +21,9 @@ internal static class CodeBrowserVerification
         [".woff"]="font/woff", [".woff2"]="font/woff2"
     };
 
-    public static async Task<Dictionary<AcceptanceCheck, AcceptanceResult>> Run(CodeWorkspace scope, AcceptanceCheck[] checks, CancellationToken ct)
+    internal sealed record Candidate(string Path,byte[] Content);
+
+    public static async Task<Dictionary<AcceptanceCheck, AcceptanceResult>> Run(CodeWorkspace scope, AcceptanceCheck[] checks, CancellationToken ct,Candidate? candidate=null)
     {
         var results = new Dictionary<AcceptanceCheck, AcceptanceResult>();
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -40,7 +42,7 @@ internal static class CodeBrowserVerification
                     var url = Url(scope, check.Path);
                     string observed="";
                     foreach (var width in new[] { 390, 1280 })
-                        observed=await Observe(browser, scope, check, url, width,deadline.Token);
+                        observed=await Observe(browser, scope, check, url, width,deadline.Token,candidate:candidate);
                     results[check] = new(check, true, $"{check.Path} · Edge {browser.Version} · 390px and 1280px · {observed}");
                 }
                 catch (Exception e) when (!deadline.IsCancellationRequested) { results[check] = Failed(check, e); }
@@ -84,7 +86,7 @@ internal static class CodeBrowserVerification
         return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}") {ScriptPath=script?.Path,ScriptLine=script?.Line,ScriptError=script?.Error};
     }
 
-    static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct,Func<IPage,CancellationToken,Task<string>>? interact=null,CodePreviewServer? live=null)
+    static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct,Func<IPage,CancellationToken,Task<string>>? interact=null,CodePreviewServer? live=null,Candidate? candidate=null)
     {
         await using var app=check.Application==null?null:await CodeVerificationApp.Start(scope,check.Application,ct);
         await using var context = await browser.NewContextAsync(new() { Offline = true, ServiceWorkers = ServiceWorkerPolicy.Block,
@@ -116,7 +118,9 @@ internal static class CodeBrowserVerification
                 }
                 var path = scope.Resolve(Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/')));
                 if (!Types.TryGetValue(Path.GetExtension(path), out var type)) throw new InvalidDataException("Unsupported browser asset type.");
-                using var input = File.OpenRead(path);
+                var relative=scope.Relative(path);
+                using Stream input = candidate!=null && relative.Equals(candidate.Path,OperatingSystem.IsWindows()?StringComparison.OrdinalIgnoreCase:StringComparison.Ordinal)
+                    ? new MemoryStream(candidate.Content,false) : File.OpenRead(path);
                 if (input.Length > 4*1024*1024 || Interlocked.Add(ref served, input.Length) > 16*1024*1024)
                     throw new InvalidDataException("Page exceeded the verification asset budget.");
                 var bytes = new byte[checked((int)input.Length)];
