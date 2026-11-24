@@ -79,7 +79,7 @@ internal static class HarnessExtensionChecks
             corrected.Arguments.GetProperty("expected_sha256").GetString()==pricing.Sha256,"A numeric counterexample changes only the selected expression");
         const string brief="Build a store. Rice costs $4 each, three or more cost 3 dollars each. Add Oats for $2. Show the cart total.";
         var catalog=await CodeStorefrontPlan.Prepare(brief,new PantryPlanner(),default);
-        check(catalog!=null && catalog.Checks.Where(c=>c.Kind=="unverified").Select(c=>c.Feature).SequenceEqual(["Email the receipt"]) &&
+        check(catalog!=null && catalog.Checks.Where(c=>c.Kind=="unverified").Select(c=>c.Feature).SequenceEqual(["Email the receipt","Display the cart total in euros"]) &&
             catalog.BuildFacts.Contains("q * (q >= 3 ? 3 : 4)"),"Covered catalog paraphrases retain real feature checks and unknown requirements remain outstanding");
         check(CatalogSpec.ExplicitReceiptPrefix("On checkout issue a new BOX_ receipt.")=="BOX_" &&
             CatalogSpec.ExplicitReceiptPrefix("Give each receipt a value starting with 'INV-'.")=="INV-" &&
@@ -138,7 +138,8 @@ internal static class HarnessExtensionChecks
             [new("Rice",4,3,3),new("Oats",2,2,0)],"ORD-",true,true,
             ["A whimsical food store design for bears","Shoppers can add each food to the cart and see the cart total",
              "Other foods keep their own shelf prices","The cart total is the sum of the three food line totals",
-             "Show the same receipt after the page is reloaded","Email the receipt"]));
+             "Show the same receipt after the page is reloaded","Ability to add each food to the cart","Display the cart total",
+             "Email the receipt","Display the cart total in euros"]));
     }
 
     sealed class ShelfReviewer : ICodeModel, ICodeBrowserOperator

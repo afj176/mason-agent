@@ -148,8 +148,9 @@ public sealed partial class CodeLocalModel
     {
         var number=new{type="number",minimum=0};
         var item=Shape(("Name",Str(80)),("Price",number),("SalePrice",number),("Threshold",new{type="integer",minimum=0,maximum=8}));
-        return IsolatedDecision<CatalogSpec>("Extract the explicitly requested catalog rules, using original product names and unit prices. For regular items use Threshold=0, SalePrice=Price. A quantity discount applies only to its named product. Use an empty ReceiptPrefix unless a prefix is specified. PersistReceipt and ClearCart describe explicit checkout rules. OtherRequirements must list every additional functional feature outside product listings, per-product prices, add-to-cart, quantity discounts, total, checkout, clearing the cart and receipt persistence. The page design brief is passed separately to the implementer. Never add unrequested features.",new{request},
-            Shape(("Items",new{type="array",maxItems=8,items=item}),("ReceiptPrefix",Str(30)),("PersistReceipt",new{type="boolean"}),("ClearCart",new{type="boolean"}),("OtherRequirements",new{type="array",maxItems=12,items=Str(250)})),ct);
+        var clauses=Regex.Split(request,@"(?<=[.!?])\s+|[;\r\n]+").Select(s=>s.Trim()).Where(s=>s.Length>0).Distinct().ToArray();
+        return IsolatedDecision<CatalogSpec>("Extract the explicitly requested catalog rules, using original product names and unit prices. For regular items use Threshold=0, SalePrice=Price. A quantity discount applies only to its named product. Use an empty ReceiptPrefix unless a prefix is specified. PersistReceipt and ClearCart describe explicit checkout rules. In OtherRequirements select each original clause containing an additional functional feature outside listings, unit prices, add-to-cart, quantity discounts, totals, checkout, cart clearing and receipt persistence. Return [] when those cover the requested functionality. Preserve the entire original clause for an additional feature. The design brief is passed separately.",new{request},
+            Shape(("Items",new{type="array",maxItems=8,items=item}),("ReceiptPrefix",Str(30)),("PersistReceipt",new{type="boolean"}),("ClearCart",new{type="boolean"}),("OtherRequirements",new{type="array",maxItems=clauses.Length,items=EnumOf(clauses)})),ct);
     }
     sealed record Probes(Probe[] Scenarios);
 }

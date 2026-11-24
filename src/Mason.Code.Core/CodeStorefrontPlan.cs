@@ -95,7 +95,10 @@ internal static class CodeStorefrontPlan
         // Some small models copy already-covered clauses into OtherRequirements. Remove only
         // clauses made entirely of vocabulary for the specific checks compiled above.
         bool Covered(string clause){
-            var text=clause.ToLowerInvariant();
+            var text=Regex.Replace(clause.ToLowerInvariant(),@"^(?:(?:the )?ability to |allow (?:users|shoppers) to )","");
+            text=Regex.Replace(text,@"\b(?:display|view)\b","show");
+            if(Regex.IsMatch(text,@"^build a single offline index\.html in (?:this|the current) directory[.!]?$"))return true;
+            if(Regex.IsMatch(text,@"^(?:build|make(?: it)?|create) (?:a|an) (?:(?:whimsical|playful|colorful|colourful|rustic|modern|cozy|cosy|minimal|food|bear) ){0,6}(?:store|shop|market)(?: for [\p{L}-]+(?: to go shopping)?| in a single offline index\.html)?[.!]?$"))return true;
             if(Regex.IsMatch(text,@"^(?:add[- ]to[- ]cart functionality for each (?:item|product)|cart total calculation)[.!]?$"))return true;
             if(spec.ClearCart && !string.IsNullOrWhiteSpace(spec.ReceiptPrefix) && Regex.IsMatch(text,
                 @"^checkout process that clears the cart and generates an? "+Regex.Escape(spec.ReceiptPrefix.TrimEnd('-').ToLowerInvariant())+@"-? receipt[.!]?$"))return true;
@@ -111,7 +114,7 @@ internal static class CodeStorefrontPlan
             if(!string.IsNullOrWhiteSpace(spec.ReceiptPrefix))text=text.Replace(spec.ReceiptPrefix.ToLowerInvariant()," ");
             return Regex.Matches(text,@"[a-z]+").All(t=>known.Contains(t.Value));
         }
-        foreach(var other in spec.OtherRequirements.Where(s=>!string.IsNullOrWhiteSpace(s)&&!Covered(s))){
+        foreach(var other in spec.OtherRequirements.Distinct(StringComparer.OrdinalIgnoreCase).Where(s=>!string.IsNullOrWhiteSpace(s)&&!Covered(s))){
             plan.Units=[..plan.Units,other];plan.Checks.Add(new(plan.Units.Length,other,"unverified","","","Requires an additional acceptance check: "+other));
         }
         // The component implements only these interactions in a fresh, explicitly offline checkout.
