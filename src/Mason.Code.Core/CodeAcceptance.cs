@@ -18,6 +18,7 @@ public sealed record CodePageRepair(CodeFile File, string Request, string Eviden
 {
     public AcceptanceCheck[] FailedClicks {get;init;}=[];
     public string RelatedSource {get;init;}="";
+    public AcceptanceResult? ScriptFailure {get;init;}
     public bool RebuildGeneratedPage {get;init;}
     public bool PreservePassingScenarios {get;init;}
     public bool PreviousEditUnchanged {get;init;}

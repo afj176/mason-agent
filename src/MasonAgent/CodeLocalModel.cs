@@ -231,6 +231,7 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
         var requestText=repair.Request;
         int contractStart=requestText.IndexOf("```mason.acceptance.json",StringComparison.Ordinal);
         if(contractStart>=0)requestText=requestText[..contractStart].TrimEnd();
+        if(server.Llama && await RepairDomTarget(repair,requestText,ct) is {} target)return target;
         if(repair.NumericMismatch!=null && server.Llama && !repair.PreviousEditUnchanged &&
             await RepairCalculation(repair,requestText,ct) is {} calculation)return calculation;
         if((repair.PreviousEditUnchanged || repair.PreservePassingScenarios && !repair.RebuildGeneratedPage) && server.Llama &&

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,[Parameter(Mandatory)][string]$ModelEvidence,[switch]$Installer,[string]$InnoCompiler='')
+param([Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,[Parameter(Mandatory)][string]$ModelEvidence,[Parameter(Mandatory)][string]$WorkflowEvidence,[switch]$Installer,[string]$InnoCompiler='')
 $ErrorActionPreference='Stop'
 $appRoot=Split-Path $PSScriptRoot -Parent
 $commit=git -C $appRoot rev-parse --verify HEAD
@@ -11,6 +11,8 @@ Confirm-Source
 $configured=[xml](Get-Content -LiteralPath (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -Raw)
 if($configured.SelectSingleNode('/Project/PropertyGroup/Version').InnerText -cne $Version){throw "Requested version differs from the source version."}
 & (Join-Path $PSScriptRoot 'Assert-ModelBenchmark.ps1') -Report $ModelEvidence -Commit $commit
+$primaryModel=(Get-Content -LiteralPath $ModelEvidence -Raw | ConvertFrom-Json).Model
+& (Join-Path $PSScriptRoot 'Assert-WorkflowQualification.ps1') -Report $WorkflowEvidence -Commit $commit -PrimaryModel $primaryModel
 & (Join-Path $PSScriptRoot 'Prepare-LanguageTools.ps1')
 $payload=Join-Path $appRoot "artifacts/MasonAgent-$Version-win-x64"
 if(Test-Path -LiteralPath $payload){throw "Release already exists: $payload"}
@@ -46,8 +48,11 @@ if($LASTEXITCODE -ne 0){throw 'Mason.SandboxSetup publish failed'}
 & (Join-Path $PSScriptRoot 'Assert-ReleasePayload.ps1') -Payload $payload
 Confirm-Source
 Copy-Item -LiteralPath $ModelEvidence -Destination (Join-Path $payload 'model-benchmark.json')
+Copy-Item -LiteralPath $WorkflowEvidence -Destination (Join-Path $payload 'workflow-evidence.json')
+& (Join-Path $PSScriptRoot 'Assert-ModelBenchmark.ps1') -Report "$payload/model-benchmark.json" -Commit $commit
+& (Join-Path $PSScriptRoot 'Assert-WorkflowQualification.ps1') -Report "$payload/workflow-evidence.json" -Commit $commit -PrimaryModel (Get-Content "$payload/model-benchmark.json" -Raw | ConvertFrom-Json).Model
 if(!([Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $payload 'MasonAgent.dll')).ProductVersion).EndsWith("+$commit")){throw 'Published app has the wrong source revision.'}
-[pscustomobject]@{Version=$Version;Commit=$commit;Tree=(git -C $appRoot rev-parse 'HEAD^{tree}');BenchmarkSha256=(Get-FileHash -LiteralPath (Join-Path $payload 'model-benchmark.json')).Hash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payload 'release-source.json') -Encoding utf8
+[pscustomobject]@{Version=$Version;Commit=$commit;Tree=(git -C $appRoot rev-parse 'HEAD^{tree}');BenchmarkSha256=(Get-FileHash -LiteralPath (Join-Path $payload 'model-benchmark.json')).Hash;WorkflowSha256=(Get-FileHash -LiteralPath (Join-Path $payload 'workflow-evidence.json')).Hash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payload 'release-source.json') -Encoding utf8
 Copy-Item -LiteralPath (Join-Path $appRoot 'README.md') -Destination $payload
 Copy-Item -LiteralPath (Join-Path $appRoot 'LICENSE') -Destination $payload
 $notices=Join-Path $appRoot 'THIRD-PARTY-NOTICES.md'

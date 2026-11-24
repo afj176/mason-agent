@@ -104,13 +104,13 @@ dotnet build src\MasonAgent\MasonAgent.csproj -c Debug -p:Platform=x64
 
 # Release payload and ZIP in artifacts\MasonAgent-<version>-win-x64
 .\scripts\Invoke-ModelBenchmark.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -OutputDirectory .cache\qualification
-.\scripts\Publish.ps1 -Version 2.0.3 -ModelEvidence .cache\qualification\report.json
+.\scripts\Invoke-WorkflowQualification.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -SecondaryEndpoint http://127.0.0.1:8081 -SecondaryModel SECOND_MODEL -OutputDirectory .cache\workflow
 
-# ... plus the installer
-.\scripts\Publish.ps1 -Version 2.0.3 -ModelEvidence .cache\qualification\report.json -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+# Omit -Installer and -InnoCompiler for the portable package alone.
+.\scripts\Publish.ps1 -Version 2.0.4 -ModelEvidence .cache\qualification\report.json -WorkflowEvidence .cache\workflow\workflow-evidence.json -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
-`Publish.ps1` requires a clean checkout, two passing real-model trials per scenario and the exact commit in the benchmark, binary and release manifest. Both packages include the model benchmark and SHA-256 payload manifest. The GitHub release workflow runs the benchmark on a Windows runner labeled `mason-model-evals` with repository variables `MASON_EVAL_ENDPOINT` and `MASON_EVAL_MODEL` for a running local model.
+`Publish.ps1` requires a clean checkout and passing evidence for the exact source commit. Each model builds a store from an empty directory four times, reviews a working store and six single-defect variants, and repairs a separate JavaScript application during a concurrent edit. Edge exercises discount boundaries and two checkouts at phone and desktop widths. Both packages include the two reports and their SHA-256 hashes. Configure two running local llama.cpp servers on the Windows runner labeled `mason-model-evals` using `MASON_EVAL_ENDPOINT`, `MASON_EVAL_MODEL`, `MASON_SECONDARY_EVAL_ENDPOINT` and `MASON_SECONDARY_EVAL_MODEL`.
 
 ### Checks
 

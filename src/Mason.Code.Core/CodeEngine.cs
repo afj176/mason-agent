@@ -145,6 +145,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if (repairPage is {} page && acceptance!=null) system = system with { ObservedHashes=[page.Sha256],
                     PageRepair=new(page,acceptance.Request,acceptance.BuildFacts+"\n"+RepairEvidence(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
                         RelatedSource=RelatedSource(page,acceptance),
+                        ScriptFailure=acceptance.Results.FirstOrDefault(r=>!r.Passed && r.ScriptPath==page.Path && r.ScriptLine>0),
                         PreviousEditUnchanged=repeatedPageRepairs>0,
                         NumericMismatch=acceptance.Results.FirstOrDefault(r=>!r.Passed && r.Check.Path==page.Path && r.Detail.Contains(", money ",StringComparison.Ordinal) && r.Detail.Contains("expected '",StringComparison.Ordinal))?.Detail,
                         PreservePassingScenarios=acceptance.Results.Any(r=>r.Passed && r.Check.Kind=="browser_flow") &&
@@ -285,6 +286,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         throw new UnauthorizedAccessException("This exact operation was already declined during this run. Ask the user for a new instruction instead of repeating it.");
                     }
                     if(repeatedActions>=3)throw new InvalidOperationException("The same tool request was repeated three times without an intervening action. Execution stopped before this repeat; inspect the receipts and change strategy.");
+                    if(attemptedPageRepair!=null && scope.Read(attemptedPageRepair.Path).Sha256!=S(action.Arguments,"expected_sha256"))
+                        throw new CodeStaleEditException("The file changed; read it again before previewing the correction.");
                     if(attemptedPageRepair!=null && acceptance!=null && session.Permission==CodePermission.Auto &&
                         S(action.Arguments,"expected_sha256")==attemptedPageRepair.Sha256 && S(action.Arguments,"content") is {} candidate &&
                         candidate!=attemptedPageRepair.Content && candidate.Length<=128*1024){
