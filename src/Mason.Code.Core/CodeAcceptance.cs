@@ -34,6 +34,7 @@ public sealed class CodeAcceptancePlan
     public Guid TaskId { get; set; }
     public int? FirstActivity { get; set; }
     public string? VerifiedRevision { get; set; }
+    public string? VisualRevision { get; set; }
     public bool LiteralRequirements {get;set;}
     public string? IndependentReviewPage {get;set;}
     public bool Storefront {get;set;}
@@ -43,11 +44,12 @@ public sealed class CodeAcceptancePlan
     public string Request { get; set; } = "";
     public string[] Units { get; set; } = [];
     public List<AcceptanceCheck> Checks { get; set; } = [];
+    public Dictionary<string,PinnedProjectTest> ProjectTests { get; set; } = [];
     public Dictionary<string,string> TestHashes { get; set; } = [];
     public List<AcceptanceResult> Results { get; set; } = [];
     public string? ContractHash { get; set; }
     public CodeAcceptancePlan Continue() => new() { TaskId=TaskId,FirstActivity=FirstActivity,Request=Request,Units=[..Units],
-        Checks=[..Checks],ContractHash=ContractHash,LiteralRequirements=LiteralRequirements,IndependentReviewPage=IndependentReviewPage,Storefront=Storefront,TestHashes=new(TestHashes) };
+        Checks=[..Checks],ContractHash=ContractHash,LiteralRequirements=LiteralRequirements,IndependentReviewPage=IndependentReviewPage,Storefront=Storefront,ProjectTests=new(ProjectTests),TestHashes=new(TestHashes) };
 
     public void Append(CodeAcceptancePlan next)
     {
@@ -67,6 +69,7 @@ public sealed class CodeAcceptancePlan
         }
         Request+="\n"+next.Request; ContractHash??=next.ContractHash;
         LiteralRequirements &= next.LiteralRequirements;
+        foreach(var pair in next.ProjectTests) ProjectTests.TryAdd(pair.Key,pair.Value);
         foreach(var entry in next.TestHashes) TestHashes[entry.Key]=entry.Value;
     }
 }
@@ -124,6 +127,7 @@ public static class CodeAcceptance
         if (plan.Units.Length == 0) plan.Units = ["Specify the requested features."];
         List<AcceptanceCheck> proposed = [];
         var repositoryChecks = new List<AcceptanceCheck>();
+        CodeProjectTests.Bind(scope,plan,repositoryChecks);
         if (files.Files.Contains(BrowserContract.Filename) || File.Exists(scope.Resolve(BrowserContract.Filename)))
         {
             try
@@ -133,10 +137,11 @@ public static class CodeAcceptance
                 if(scope.Read(BrowserContract.Filename).Sha256!=pinned.Sha256) throw new IOException("The acceptance contract changed during planning.");
                 bool whole=Regex.IsMatch(request.Trim(),@"^(?:verify|run|implement|fix|check)\s+(?:(?:the|all|features|checks|scenarios|in|from|specified|by|using)\s+)*mason\.acceptance\.json[.!]?$",RegexOptions.IgnoreCase);
                 if(whole) plan.Units=contract.Scenarios.Select(s=>s.Requirement).ToArray();
+                int previousCount=repositoryChecks.Count;
                 for(int i=0;i<plan.Units.Length;i++)
                     foreach(var scenario in contract.Scenarios.Where(s=>s.Requirement.TrimEnd('.').Equals(plan.Units[i].TrimEnd('.'),StringComparison.OrdinalIgnoreCase)))
                         repositoryChecks.Add(new(i+1,scenario.Requirement,"browser_flow",scenario.Page,scenario.Id,"All scenario assertions pass"){Steps=scenario.Steps,Application=contract.Application,FromContract=true});
-                if(repositoryChecks.Count>0) plan.ContractHash=pinned.Sha256;
+                if(repositoryChecks.Count>previousCount) plan.ContractHash=pinned.Sha256;
             }
             catch(Exception e) when (e is JsonException or InvalidDataException or ArgumentException or IOException)
             {
@@ -271,6 +276,7 @@ public static class CodeAcceptance
         foreach (var check in plan.Checks.Where(c=>c.Kind!="python_test"))
         {
             ct.ThrowIfCancellationRequested();
+            if (check.Kind=="project_test") { plan.Results.Add(await CodeProjectTests.Verify(scope,check,plan,permission,ct)); continue; }
             if (browser.TryGetValue(check, out var observed)) { plan.Results.Add(observed); continue; }
             if (check.Kind.StartsWith("browser_", StringComparison.Ordinal)) { plan.Results.Add(new(check,false,"Browser verification requires Auto or approval to run the local page.")); continue; }
             if (check.Kind != "document_text") { plan.Results.Add(new(check, false, check.Expected)); continue; }

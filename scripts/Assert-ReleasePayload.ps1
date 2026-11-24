@@ -16,6 +16,15 @@ if($forbidden.Count){
     throw "Release payload contains user runtime settings or profile data: $paths"
 }
 Write-Output 'PASS release payload contains no runtime settings or profile data'
+$extension=Join-Path $payloadRoot 'integrations/mason-workspace.vsix'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip=[IO.Compression.ZipFile]::OpenRead($extension)
+try {
+    foreach($entry in 'extension.vsixmanifest','extension/package.json','extension/extension.js'){
+        if(!$zip.GetEntry($entry)){throw "Incomplete bundled editor bridge: $entry"}
+    }
+}finally{$zip.Dispose()}
+if(!(Test-Path -LiteralPath (Join-Path $payloadRoot 'System.Security.Cryptography.ProtectedData.dll') -PathType Leaf)){throw 'Missing protected background-connection dependency.'}
 foreach($file in 'Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.Core.Projection.dll','WebView2Loader.dll'){
     if(!(Test-Path -LiteralPath (Join-Path $payloadRoot $file) -PathType Leaf)){throw "Missing embedded Website viewer dependency: $file"}
 }

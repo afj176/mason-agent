@@ -43,6 +43,7 @@ if($LASTEXITCODE -ne 0){throw 'Headless CLI publish failed'}
 foreach($name in 'mason.exe','mason.dll','mason.deps.json','mason.runtimeconfig.json'){
     Copy-Item -LiteralPath (Join-Path $cliOutput $name) -Destination $payload
 }
+& (Join-Path $PSScriptRoot 'Build-EditorBridge.ps1') -OutputFile (Join-Path $payload 'integrations/mason-workspace.vsix')
 & (Join-Path $payload 'mason.exe') --help
 if($LASTEXITCODE -ne 0){throw 'Published CLI failed startup'}
 dotnet publish (Join-Path $appRoot 'src/Mason.SandboxSetup') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Version=$Version -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1 -o (Join-Path $payload 'sandbox-setup')

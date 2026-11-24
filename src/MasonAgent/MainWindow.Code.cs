@@ -542,22 +542,52 @@ public sealed partial class MainWindow
             }
             if(projectMenu.Items.Count>0)projectMenu.Items.Add(new MenuFlyoutSeparator());
             if(session!=null){
-                var tree=new MenuFlyoutItem{Text="New isolated worktree…",IsEnabled=codeOperation==null};
+                var plan = new MenuFlyoutItem { Text = "Plan & repository map", Icon = new FontIcon { Glyph = "\uE8FD" } };
+                plan.Click += (_, _) => OpenTab("plan", "", true);
+                projectMenu.Items.Add(plan);
+                var selection = new MenuFlyoutItem {Text = "Attach editor selection", IsEnabled = codeOperation == null};
+                selection.Click += (_, _) => {
+                    try {
+                        if (session == null || codeOperation != null) return;
+                        var scope = new CodeWorkspace(session.Workspace);
+                        string key = CodeProtocol.Hash(System.Text.Encoding.UTF8.GetBytes(Path.TrimEndingDirectorySeparator(scope.Root).ToLowerInvariant()));
+                        string path = Path.Combine(Store.Root, "editor-inbox", key + ".json");
+                        if (!File.Exists(path)) throw new InvalidOperationException("Use Mason: Share Selection with Local Project in VS Code first.");
+                        if (new FileInfo(path).Length > 120000) throw new InvalidDataException("Editor selection exceeds the limit.");
+                        AttachEvidence(session, DeveloperEvidence.Editor(scope, File.ReadAllText(path)));
+                    } catch (Exception ex) { state.Text = ex.Message; }
+                };
+                projectMenu.Items.Add(selection);
+                var delivery=new MenuFlyoutItem{Text="Git delivery & CI feedback"};delivery.Click+=(_,_)=>OpenTab("delivery","",true);projectMenu.Items.Add(delivery);
+                var settingsItem=new MenuFlyoutItem{Text="Project policy & extensions"};settingsItem.Click+=(_,_)=>OpenTab("harness","",true);projectMenu.Items.Add(settingsItem);
+                var roles=new MenuFlyoutItem{Text="Model roles & decision inspector"};
+                roles.Click+=(_,_)=>OpenTab("roles","",true);projectMenu.Items.Add(roles);
+                var jobs = new MenuFlyoutItem {Text="Background tasks"};
+                jobs.Click += (_,_) => OpenTab("tasks","",true); projectMenu.Items.Add(jobs);
+                var tree=new MenuFlyoutItem{Text="Fork session in an isolated worktree…",IsEnabled=codeOperation==null};
                 tree.Click+=async(_,_)=>{
                     if(session==null||codeOperation!=null||dialogOpen)return;
                     dialogOpen=true;
                     try{
                         var name=new TextBox{PlaceholderText="Task name"};
-                        var dlg=new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Create a Git worktree",Content=Stack(CodeNote("Use a new branch in a sibling folder beside the selected project."),name),PrimaryButtonText="Create",CloseButtonText="Cancel"};
+                        var dlg=new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Create a Git worktree",Content=Stack(CodeNote("Fork the current checkout, including pending file edits, and continue in a sibling worktree."),name),PrimaryButtonText="Create",CloseButtonText="Cancel"};
                         if(await dlg.ShowAsync()!=ContentDialogResult.Primary)return;
                         var slug=name.Text.Trim();
                         if(!System.Text.RegularExpressions.Regex.IsMatch(slug,@"\A[A-Za-z0-9][A-Za-z0-9_-]{0,48}\z"))throw new ArgumentException("Use a short task name with letters, digits, hyphens or underscores.");
                         var dest=session.Workspace+"-"+slug;
-                        var path=await CodeWorktree.Create(session.Workspace,dest,"mason/"+slug,CancellationToken.None);
-                        Select(store.New(path),store.ProjectForWorkspace(path));
+                        var origin=await CodeExperiment.Fork(session,dest,"mason/"+slug,CancellationToken.None);
+                        var fork=store.New(dest);fork.Experiment=origin;fork.Model=session.Model;fork.ReviewerModel=session.ReviewerModel;fork.VisualModel=session.VisualModel;
+                        fork.Permission=session.Permission;fork.Mode=session.Mode;fork.Milestones=session.Milestones.ToArray();
+                        fork.Messages.AddRange(session.Messages);
+                        fork.Turns.AddRange(session.Turns.Where(t=>!t.Rewound).Select(t=>new CodeTurn{Role=t.Role,Text=t.Text,Evidence=t.Evidence}));
+                        fork.Shell=session.Shell;fork.ShellExecutable=session.ShellExecutable;fork.Reasoning=session.Reasoning;
+                        fork.ManageRoleMemory=session.ManageRoleMemory;fork.RoleCallLimit=session.RoleCallLimit;fork.RecordModelDecisions=session.RecordModelDecisions;
+                        fork.Title=slug;store.Save(fork);
+                        Select(fork,store.ProjectForWorkspace(dest));
                     }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
                 };
                 projectMenu.Items.Add(tree);
+                if(session.Experiment!=null){var compare=new MenuFlyoutItem{Text="Review experiment patch"};compare.Click+=(_,_)=>OpenTab("experiment","",true);projectMenu.Items.Add(compare);}
             }
             var add=new MenuFlyoutItem{Text="Add project…",Icon=new FontIcon{Glyph="\uE710"},IsEnabled=codeOperation==null};add.Click+=async(_,_)=>await OpenWorkspace();projectMenu.Items.Add(add);
         }
@@ -641,6 +671,7 @@ public sealed partial class MainWindow
             yield return Command("Review session changes", () => OpenTab("changes", "", true));
             yield return Command("View activity", () => OpenTab("activity", "", true));
             yield return Command("View context checkpoints", () => OpenTab("context", "", true));
+            yield return Command("Plan & repository map", () => OpenTab("plan", "", true));
             yield return Command("Repository status", () => OpenTab("git", "", true));
             yield return Command("Open website", async () => await OpenWebsite());
             if (session.Tabs.Count > 0) yield return Command("Toggle task viewer", ToggleViewer);
@@ -717,12 +748,29 @@ public sealed partial class MainWindow
             }
             else fileSkeleton.Visibility = Visibility.Collapsed;
         }
+        void AttachEvidence(CodeSession owner, DeveloperEvidence item)
+        {
+            if (owner != session || codeOperation != null) throw new InvalidOperationException("Return to the idle session before attaching evidence.");
+            if (owner.Evidence.Count >= 4) throw new InvalidOperationException("Send or remove an attachment first.");
+            owner.Evidence.Add(item);
+            try { store.Save(owner); } catch { owner.Evidence.Remove(item); throw; }
+            RenderReferences();
+        }
         void RenderReferences()
         {
             SetReviewMenu(reviewButton, session, RenderReferences);
             reviewDesk?.Refresh();
             references.Children.Clear();
             if (session == null) return;
+            foreach (var item in session.Evidence.ToArray())
+            {
+                var chip = Button(item.Label + " ×", (_, _) => {
+                    if (codeOperation != null) return;
+                    session.Evidence.Remove(item); RenderReferences(); Save();
+                });
+                ToolTipService.SetToolTip(chip, item.Kind + (item.Unsaved ? " · unsaved buffer" : "") + "\n" + item.Details);
+                references.Children.Add(chip);
+            }
             foreach (var path in session.References.ToArray())
             {
                 var button = Button("@" + Path.GetFileName(path) + " ×", (_, _) => { if (codeOperation == null) { session.References.Remove(path); RenderReferences(); Save(); } });
@@ -796,6 +844,23 @@ public sealed partial class MainWindow
                             speaker = Row(MortarImage(28), name); speaker.Spacing = 12;
                         }
                         var content = Stack(speaker, body); content.Spacing = 10; container = content;
+                    }
+                    if (turn.Evidence.Length > 0)
+                    {
+                        var captured = Stack(container);
+                        foreach (var item in turn.Evidence)
+                        {
+                            var panel = Stack(CodeNote(item.Details));
+                            if(item.HasScreenshot) panel.Children.Add(new Image{Source=new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(DeveloperEvidence.ImageFile(Store.Root,session.Id,item.Id))),MaxHeight=200});
+                            if(item.Source.Length>0 && item.Line>0) {
+                                var scope=new CodeWorkspace(session.Workspace);
+                                panel.Children.Add(CodeLink("Open source in VS Code",async (_,_)=>{
+                                    try { await Windows.System.Launcher.LaunchUriAsync(new Uri("vscode://file/"+string.Join("/",scope.Resolve(item.Source).Replace('\\','/').Split('/').Select(Uri.EscapeDataString))+":"+item.Line+":1")); } catch(Exception ex){state.Text=ex.Message;}
+                                }));
+                            }
+                            captured.Children.Add(new Expander{Header=item.Kind+" · "+item.Label,Content=panel});
+                        }
+                        container=captured;
                     }
                     // A finished answer takes over from its live view in place, so it does not enter a second time.
                     if (animateNew && index >= shownTurns && !(turn.Role == "assistant" && shownLive)) FadeIn(container);
@@ -887,7 +952,7 @@ public sealed partial class MainWindow
                 {
                     if (!viewerEntries.TryGetValue(tab.Key, out var entry))
                     {
-                        entry = BuildCodeViewer(session!, tab, Save, () => { RenderTabs(); viewerChanged?.Invoke(); Save(); }, (kind, target) => OpenTab(kind, target, true), RenderReferences); viewerEntries[tab.Key] = entry;
+                        entry = BuildCodeViewer(session!, tab, Save, () => { RenderTabs(); viewerChanged?.Invoke(); Save(); }, (kind, target) => OpenTab(kind, target, true), RenderReferences, attach: AttachEvidence); viewerEntries[tab.Key] = entry;
                     }
                     entry.Refresh?.Invoke(); desired.Add(entry.Tab);
                 }
@@ -1061,8 +1126,7 @@ public sealed partial class MainWindow
             var active = session; using var cancellation = new CancellationTokenSource(); codeOperation = cancellation; aiOperation = cancellation; draftSave.Stop(); Enable();
             try
             {
-                var key = aiSessionKeys.GetValueOrDefault(profile.Id) ?? Store.Unprotect(profile.Secret);
-                var model = new CodeLocalModel(profile, key, active.Reasoning, value => { context.Text = value; }, progress: value => { active.Detail = value; if (active == session) state.Text = value; });
+                var model = SessionModels(active, profile, value => context.Text = value, value => { active.Detail = value; if (active == session) state.Text = value; });
                 var engine = new CodeEngine(store, model, Approve, RefreshRun);
                 liveEngine=engine;liveOwner=active;Enable();
                 submittedDraft = draft.Text;

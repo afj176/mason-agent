@@ -24,7 +24,7 @@ public sealed partial class MainWindow
         public CancellationTokenSource Cancellation { get; } = new();
         public void Dispose() { ReleaseTheme?.Invoke();ReleaseTheme=null;Cancellation.Cancel(); ReleaseBrowser?.Invoke(); ReleaseBrowser=null; Cancellation.Dispose(); }
     }
-    CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open, Action reviewChanged, Func<Task>? sendReview = null)
+    CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open, Action reviewChanged, Func<Task>? sendReview = null, Action<CodeSession, DeveloperEvidence>? attach = null)
     {
         var host = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
         var entry = new CodeViewerEntry { Tab = new TabViewItem { Header = TabLabel(model.Title), IconSource = new FontIconSource { Glyph = model.Kind switch { "web" or "site" => "\uE774", "context" => "\uE9D9", "git" => "\uE8A5", "changes" => "\uE8A5", "activity" => "\uE9D9", _ => "\uE8A5" } }, Tag = model, Content = host, IsClosable = true, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch } };
@@ -36,9 +36,15 @@ public sealed partial class MainWindow
         try
         {
             var scope = new CodeWorkspace(session.Workspace);
+            if(model.Kind=="delivery"){host.Content=DeliveryView(session,scope,entry,attach);return entry;}
+            if (model.Kind == "harness") { host.Content=HarnessSettings(session,entry);return entry; }
+            if (model.Kind == "experiment") { host.Content = ExperimentReview(session,scope,entry); return entry; }
+            if (model.Kind == "roles") { host.Content = ModelRolesView(session,entry); return entry; }
+            if (model.Kind == "tasks") { host.Content = BackgroundTasksView(session,entry); return entry; }
+            if (model.Kind == "plan") { host.Content = BuildMilestoneViewer(session, scope, entry, open); return entry; }
             if (model.Kind == "context") { host.Content = CodeContextViewer(session, entry, save, open); return entry; }
             if (model.Kind == "git") { host.Content = CodeGitViewer(session, entry, open); return entry; }
-            if (model.Kind is "web" or "site") { BuildCodeBrowser(entry, host, model, scope, save, open); return entry; }
+            if (model.Kind is "web" or "site") { BuildCodeBrowser(entry, host, model, scope, save, open, session, attach); return entry; }
             if (model.Kind == "changes")
             {
                 string revision = "", selected = "";

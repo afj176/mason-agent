@@ -10,6 +10,7 @@ public sealed record DesktopTarget(int ProcessId,long Handle,long Started,string
 public sealed record DesktopControl(string Id,string Name,string Type,bool Invoke,bool SetValue);
 public sealed record DesktopFrame(int Width,int Height,string Hash,string Image);
 public sealed record PixelDecision(string Action,int X,int Y,int EndX,int EndY,string Observation);
+public interface ICodeVisualVerifier : IDesktopVision { bool Enabled {get;} string VisualModel {get;} }
 public interface IDesktopVision
 {
     Task<PixelDecision> See(string task,DesktopFrame frame,bool observeOnly,CancellationToken ct);

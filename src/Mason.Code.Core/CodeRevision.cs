@@ -10,6 +10,10 @@ internal static class CodeRevision
         var files=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach(var c in plan.Checks.Where(c=>c.Kind!="unverified" && (!pythonSourcesOnly || c.Kind=="python_test")))
             if(File.Exists(scope.Resolve(c.Path)))files.Add(scope.Relative(scope.Resolve(c.Path)));
+        if(!pythonSourcesOnly && plan.ProjectTests.Count>0) {
+            files.Add("mason.workflows.json");
+            foreach(var test in plan.ProjectTests.Values) {files.UnionWith(test.TestHashes.Keys);files.UnionWith(test.Definition.Inputs);}
+        }
         if(plan.ContractHash!=null) files.Add(BrowserContract.Filename);
         if(plan.Checks.Any(c=>c.Kind.StartsWith("browser_") || c.Kind=="python_test")){
             var inventory=scope.VerificationFiles();

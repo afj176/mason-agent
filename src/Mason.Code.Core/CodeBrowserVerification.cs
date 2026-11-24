@@ -58,6 +58,14 @@ internal static class CodeBrowserVerification
 
     static string Url(CodeWorkspace scope,string path) => Origin + "/" + string.Join("/",scope.Relative(scope.Resolve(path)).Split('/').Select(Uri.EscapeDataString));
 
+    public static async Task<DesktopFrame> CaptureVerifiedState(CodeWorkspace scope,AcceptanceCheck check,CancellationToken ct)
+    {
+        using var driver=await Playwright.CreateAsync();using var stop=ct.Register(driver.Dispose);await using var browser=await Launch(driver);
+        DesktopFrame? frame=null;
+        await Observe(browser,scope,check,Url(scope,check.Path),1280,ct,capture:value=>frame=value);
+        return frame??throw new InvalidDataException("No visual evidence was captured.");
+    }
+
     internal static async Task<string> Interact(CodeWorkspace scope,string path,Func<IPage,CancellationToken,Task<string>> act,CancellationToken ct,CodePreviewServer? live=null,string? application=null)
     {
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -86,7 +94,7 @@ internal static class CodeBrowserVerification
         return new(c,false,$"{c.Path} · {assertion} · {reason[..Math.Min(350,reason.Length)]}") {ScriptPath=script?.Path,ScriptLine=script?.Line,ScriptError=script?.Error};
     }
 
-    static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct,Func<IPage,CancellationToken,Task<string>>? interact=null,CodePreviewServer? live=null,Candidate? candidate=null)
+    static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct,Func<IPage,CancellationToken,Task<string>>? interact=null,CodePreviewServer? live=null,Candidate? candidate=null,Action<DesktopFrame>? capture=null)
     {
         await using var app=check.Application==null?null:await CodeVerificationApp.Start(scope,check.Application,ct,candidate);
         await using var context = await browser.NewContextAsync(new() { Offline = true, ServiceWorkers = ServiceWorkerPolicy.Block,
@@ -218,6 +226,11 @@ internal static class CodeBrowserVerification
         if (page.Url != url && (check.Kind!="browser_flow" || !Uri.TryCreate(page.Url,UriKind.Absolute,out var final) || final.GetLeftPart(UriPartial.Authority)!=Origin)) throw new InvalidDataException("The page navigated away from the verification target.");
         if(scriptFailure!=null)throw scriptFailure;
         if (errors.TryPeek(out var error)) throw new InvalidDataException(error);
+        if(capture!=null){
+            var bytes=await page.ScreenshotAsync(new(){Type=ScreenshotType.Jpeg,Quality=70,Timeout=6000});
+            if(bytes.Length>2*1024*1024)throw new InvalidDataException("Visual evidence exceeds 2 MiB.");
+            capture(new(width,850,CodeProtocol.Hash(bytes),Convert.ToBase64String(bytes)));
+        }
         return app==null ? observed : observed+" · app: "+app.Observations;
     }
 }

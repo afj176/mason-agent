@@ -2,6 +2,7 @@
   <PropertyGroup><OutputType>Exe</OutputType><AssemblyName>mason</AssemblyName><TargetFramework>net10.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><PlaywrightPlatform>win-x64</PlaywrightPlatform></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Mason.Code.Core/Mason.Code.Core.csproj"/>
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0"/>
     <Compile Include="../MasonAgent/CodeLocalModel*.cs;../MasonAgent/AiChat.cs;../MasonAgent/AiConnections.cs;../MasonAgent/HubModels.cs;../MasonAgent/OwnedModelProcess.cs" Link="Model/%(Filename)%(Extension)"/>
   </ItemGroup>
 </Project>

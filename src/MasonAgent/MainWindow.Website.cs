@@ -10,7 +10,7 @@ namespace Mason;
 
 public sealed partial class MainWindow
 {
-    void BuildCodeBrowser(CodeViewerEntry entry,ContentControl host,CodeTab tab,CodeWorkspace workspace,Action save,Action<string,string> open)
+    void BuildCodeBrowser(CodeViewerEntry entry,ContentControl host,CodeTab tab,CodeWorkspace workspace,Action save,Action<string,string> open, CodeSession owner, Action<CodeSession,DeveloperEvidence>? attach)
     {
         var site=new CodeWebsite(workspace);
         bool project=tab.Kind=="site";
@@ -25,6 +25,8 @@ public sealed partial class MainWindow
         AutomationProperties.SetName(view,"Project website");
         var token=entry.Cancellation.Token;
         bool started=false;
+        var pick = new Button {Content="Pick element",IsEnabled=false};
+        var check = new Button {Content="Verify click",IsEnabled=false};
         var back=ChatIcon("Back", "\uE72B",(_,_)=>{if(view.CoreWebView2?.CanGoBack==true)view.GoBack();});
         var forward=ChatIcon("Forward", "\uE72A",(_,_)=>{if(view.CoreWebView2?.CanGoForward==true)view.GoForward();});
         var reload=ChatIcon("Reload website", "\uE72C",(_,_)=>{if(view.CoreWebView2!=null)view.Reload();else _=Initialize();});
@@ -55,6 +57,7 @@ public sealed partial class MainWindow
         bar.Children.Add(Row(back,forward,reload));Grid.SetColumn(address,1);bar.Children.Add(address);
         Grid.SetColumn(go,2);bar.Children.Add(go);
         var controls=Stack(bar,status);
+        if(attach!=null)controls.Children.Add(Row(pick,check));
         if(!project){
             var external=CodeLink("Open in browser",async (_,_)=>{try{await Launcher.LaunchUriAsync(current);}catch(Exception e){Status(e.Message);}});
             var links=Row(external);
@@ -124,7 +127,11 @@ public sealed partial class MainWindow
                         current=location;address.Text=Display(location);tab.Location=location.AbsoluteUri;Status("");save();
                     }
                 };
-                core.Navigate(current.AbsoluteUri);
+                if (attach != null) {
+                    try { await WirePreviewPicker(core,owner,workspace,origin,project,pick,check,Status,attach,token); }
+                    catch(Exception e) when(!token.IsCancellationRequested) { Status("Element picker unavailable. " + e.Message); }
+                }
+                if(!token.IsCancellationRequested)core.Navigate(current.AbsoluteUri);
             }catch(Exception error) when(!token.IsCancellationRequested){
                 started=false;
                 Status(error.HResult==unchecked((int)0x80070002)

@@ -62,7 +62,7 @@ public sealed class ChatGenerationOptions
         if (AnswerReservePercent is < 1 or > 100 || EffectiveReasoningBudget < 0) throw new ArgumentException("Reserve between 1% and 100% of output for the answer.");
         if (Stop is null || Stop.Length > 8 || Stop.Any(s => string.IsNullOrEmpty(s) || s.Length > 256)) throw new ArgumentException("Use up to eight nonempty stop sequences, at most 256 characters each.");
         if (ResponseSchema is { } schema && (schema.ValueKind != JsonValueKind.Object || schema.GetRawText().Length > 32000)) throw new ArgumentException("Use an object response schema up to 32,000 characters.");
-        if(ToolDefinitions is { } tools && (tools.ValueKind!=JsonValueKind.Array||tools.GetArrayLength() is <1 or >32||tools.GetRawText().Length>32000||JsonOutput||ResponseSchema.HasValue))throw new ArgumentException("Use 1–32 native tool definitions up to 32,000 characters, without a response format.");
+        if(ToolDefinitions is { } tools && (tools.ValueKind!=JsonValueKind.Array||tools.GetArrayLength() is <1 or >64||tools.GetRawText().Length>32000||JsonOutput||ResponseSchema.HasValue))throw new ArgumentException("Use 1–64 native tool definitions up to 32,000 characters, without a response format.");
     }
     public Dictionary<string, object> Body(AiEndpointProfile profile, IReadOnlyList<AiMessage> messages, int? maxTokens, bool llama, bool restrictedTextAdapter = false)
     {
@@ -176,6 +176,7 @@ public sealed record ChatTokenBudget(int Prompt, int Context, int Output, int? D
 
 public sealed partial class LocalAiClient
 {
+    internal static readonly AsyncLocal<Action<string,string,string>?> TraceSink = new();
     public const int ChatTextLimit = 4 * 1024 * 1024;
     public static void ValidateChatMessages(IReadOnlyList<AiMessage> messages)
     {
@@ -286,7 +287,15 @@ public sealed partial class LocalAiClient
         timeout.CancelAfter(TimeSpan.FromMinutes(options.TimeoutMinutes));
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(endpoint, "v1/chat/completions"));
         if (key.Length > 0) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-        request.Content = new StringContent(JsonSerializer.Serialize(options.Body(profile, messages, maxTokens, server?.Llama == true, server?.RestrictedTextAdapter == true)), Encoding.UTF8, "application/json");
+        var body = JsonSerializer.Serialize(options.Body(profile, messages, maxTokens, server?.Llama == true, server?.RestrictedTextAdapter == true));
+        request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        var trace = TraceSink.Value;
+        var captured = trace == null ? null : new StringBuilder();
+        void Record(string receipt)
+        {
+            try { trace?.Invoke(body,captured?.ToString() ?? "",receipt); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { System.Diagnostics.Debug.WriteLine(e.Message); }
+        }
         var requestClock = System.Diagnostics.Stopwatch.StartNew();
         try
         {
@@ -296,11 +305,16 @@ public sealed partial class LocalAiClient
                 throw new InvalidDataException("The endpoint did not return an event stream.");
             await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
             double headersSeconds = requestClock.Elapsed.TotalSeconds;
-            var result = await ReadChatStream(stream, onText, timeout.Token, onReasoning,options.ToolDefinitions.HasValue,onToolArguments);
+            var result = await ReadChatStream(stream, part=>{
+                if(captured!=null && captured.Length<100000)captured.Append(part.AsSpan(0,Math.Min(part.Length,100000-captured.Length)));
+                onText(part);
+            }, timeout.Token, onReasoning,options.ToolDefinitions.HasValue,onToolArguments);
+            if(trace!=null)Record(JsonSerializer.Serialize(new{result.ObservedModel,result.FinishReason,result.ToolCalls,result.PromptTokens,result.CompletionTokens,elapsedMs=requestClock.ElapsedMilliseconds}));
             return result with { TimeToFirstTokenSeconds = result.TimeToFirstTokenSeconds + headersSeconds, RequestSeconds = requestClock.Elapsed.TotalSeconds };
         }
         catch (OperationCanceledException) when (!cancellation.IsCancellationRequested)
-        { throw new TimeoutException($"Local chat exceeded its {options.TimeoutMinutes}-minute deadline. Partial output is incomplete."); }
+        { Record("Request timed out."); throw new TimeoutException($"Local chat exceeded its {options.TimeoutMinutes}-minute deadline. Partial output is incomplete."); }
+        catch(Exception e) { Record(e.Message); throw; }
     }
 
     // Incremental UTF-8 and SSE parsing. No ReadLineAsync allocation on an unbounded peer line.

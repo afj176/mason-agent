@@ -6,12 +6,14 @@ using System.Text.Json.Serialization;
 namespace Mason.Code;
 
 public enum CodePermission { ReadOnly, ReviewEdits, WorkspaceEdits, Auto }
+public sealed record SourceEditTask(CodeFile File,string Request,string Evidence);
 public sealed record CodeMessage(string Role, string Content)
 {
     [JsonIgnore] public IReadOnlySet<string>? AvailableTools { get; init; }
     [JsonIgnore] public bool RootIsOnlyDirectory { get; init; }
     [JsonIgnore] public string[]? ObservedHashes { get; init; }
     [JsonIgnore] public bool RepairingAcceptance { get; init; }
+    [JsonIgnore] public SourceEditTask? SourceEdit { get; init; }
     [JsonIgnore] public CodePageRepair? PageRepair { get; init; }
     [JsonIgnore] public CodePageDraft? PageDraft { get; init; }
     [JsonIgnore(Condition=JsonIgnoreCondition.WhenWritingNull)]
@@ -29,6 +31,7 @@ public sealed class CodeTurn
     public int FirstActivity { get; set; }
     public string PerformanceSummary { get; set; } = "";
     public int ActivityCount { get; set; }
+    public DeveloperEvidence[] Evidence { get; set; } = [];
     public CodeReviewComment[] SubmittedReview { get; set; } = [];
     public CodeAcceptancePlan? Acceptance { get; set; }
 }
@@ -64,12 +67,14 @@ public sealed class CodeTab
     public string ViewMode { get; set; } = "";
     public string? DisplayTitle { get; set; }
     [JsonIgnore] public string Key => Kind + ":" + Target;
-    [JsonIgnore] public string Title => Kind switch { "changes" => "Changes", "context" => "Context", "git" => "Repository", "activity" => "Activity", "answer" => "Answer", "web" => DisplayTitle ?? new Uri(Target).Authority, _ => System.IO.Path.GetFileName(Target) };
+    [JsonIgnore] public string Title => Kind switch { "changes" => "Changes", "context" => "Context", "plan" => "Plan & map", "tasks" => "Background tasks", "roles" => "Model roles", "experiment" => "Experiment patch", "harness" => "Harness settings", "delivery" => "Git delivery", "git" => "Repository", "activity" => "Activity", "answer" => "Answer", "web" => DisplayTitle ?? new Uri(Target).Authority, _ => System.IO.Path.GetFileName(Target) };
 }
 public enum CodeWorkspaceView { Workbench, Review, Notebook }
 
 public sealed class CodeSession
 {
+    public List<DeveloperEvidence> Evidence { get; set; } = [];
+    public CodeMilestone[] Milestones { get; set; } = [];
     public CodeWorkspaceView WorkspaceView { get; set; } = CodeWorkspaceView.Workbench;
     [JsonIgnore] public string? RepairingFile { get; set; }
     public List<CodeReviewComment> ReviewComments { get; set; } = [];
@@ -78,6 +83,14 @@ public sealed class CodeSession
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Title { get; set; } = "New session";
     public string Workspace { get; set; } = "";
+    public List<Guid> Terminals { get; set; } = [];
+    public DeliveryDraft? Delivery {get;set;}
+    public ExperimentOrigin? Experiment { get; set; }
+    public Guid? ReviewerModel { get; set; }
+    public Guid? VisualModel { get; set; }
+    public bool ManageRoleMemory { get; set; }
+    public int RoleCallLimit { get; set; } = 64;
+    public bool RecordModelDecisions { get; set; }
     public Guid? Model { get; set; }
     public CodePermission Permission { get; set; } = CodePermission.ReadOnly;
     public CodeNetworkMode Network { get; set; } = CodeNetworkMode.Offline;
@@ -120,13 +133,15 @@ public sealed partial class CodeStore : IDisposable
 {
     readonly string directory;
     public string Root { get; }
+    public string SettingsRoot { get; }
     readonly FileStream owner;
     readonly HashSet<Guid> deleted = [];
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true, UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
     public List<CodeSession> Sessions { get; } = [];
-    public CodeStore(string root)
+    public CodeStore(string root,string? settingsRoot=null)
     {
         Root = System.IO.Path.GetFullPath(root);
+        SettingsRoot = settingsRoot==null?Root:Path.GetFullPath(settingsRoot);
         directory = System.IO.Path.Combine(Root, "code-sessions"); Directory.CreateDirectory(directory);
         owner = new FileStream(System.IO.Path.Combine(directory, "writer.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         try

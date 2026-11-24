@@ -5,6 +5,14 @@ using System.Text.Json;
 using Mason;
 using Mason.Code;
 
+if(args.Length==3 && args[0]=="--maintenance-oracle"){
+    var ws=new CodeWorkspace(args[1]);
+    var marker="oracle-finished-"+Guid.NewGuid().ToString("N");
+    var run=await CodeCommand.Run(CodeCommand.ResolveExecutable("node",ws.Root),["-e","(async()=>{\n"+args[2]+"\nconsole.log('"+marker+"');\n})().catch(e=>{console.error(e);process.exitCode=1;});"],ws.Root,default,ws.Root);
+    Console.WriteLine(run.Output);
+    Environment.ExitCode=run.ExitCode==0 && !run.Truncated && run.Output.Split('\n').Any(line=>line.TrimEnd('\r')==marker)?0:1;
+    return;
+}
 if(args.Length==2 && args[0]=="--modern-checks"){await ModernHarnessChecks.Run(Path.GetFullPath(args[1]));return;}
 if(args.Length==4 && args[0]=="--worker-check"){await ModernHarnessChecks.LiveWorker(args[1],args[2],Path.GetFullPath(args[3]));return;}
 

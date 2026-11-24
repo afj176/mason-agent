@@ -9,7 +9,7 @@ internal static class CodeNavigation
 {
     internal sealed record Hit(string Path,int Line,string Kind,string Description);
     static readonly HashSet<string> Extensions=new(StringComparer.OrdinalIgnoreCase){".cs",".py",".js",".jsx",".ts",".tsx",".go",".rb",".dart"};
-    static readonly Lazy<MetadataReference[]> Framework=new(()=> ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")??"")
+    internal static readonly Lazy<MetadataReference[]> Framework=new(()=> ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")??"")
         .Split(Path.PathSeparator).Where(p=>Path.GetFileNameWithoutExtension(p) is "System.Private.CoreLib" or "System.Runtime" or "System.Collections" or "System.Linq" or "System.Console" or "netstandard")
         .Select(p=>(MetadataReference)MetadataReference.CreateFromFile(p)).ToArray());
     internal static object Query(CodeWorkspace scope,string dir,string symbol,string mode,IEnumerable<CodeActivity> history,CancellationToken ct)

@@ -13,13 +13,45 @@ function Assert-Checks($Checks,[string[]]$Targets,[string]$ExpectedFailure,[stri
             $match[0].Passed -eq ($target -cne $ExpectedFailure)) "$Label / $target"
     }
 }
-Assert-That ($r.Version -eq 2 -and $Commit -cmatch '^[0-9a-f]{40}$' -and $r.Commit -ceq $Commit) 'source identity'
+Assert-That ($r.Version -eq 3 -and $Commit -cmatch '^[0-9a-f]{40}$' -and $r.Commit -ceq $Commit) 'source identity'
 Assert-That ($r.Models.Count -eq 2 -and $r.Models[0].Id -ceq $PrimaryModel -and
     $r.Models[0].Id -ne $r.Models[1].Id -and $r.Models[0].Weights -ne $r.Models[1].Weights) 'two distinct model identities'
 Assert-That ($r.Builds.Count -eq 8 -and $r.Controls.Count -eq 14 -and $r.Repairs.Count -eq 2) 'matrix size'
 $reviews=@('independent-basket','independent-shelf','independent-receipt')
 $buildChecks=@('offer-0','offer-1','offer-2','discount-0','order')+$reviews
 $failures=@{working=''; quantity=$reviews[0]; mixed=$reviews[0]; shelf=$reviews[1]; uncleared=$reviews[2]; receipt=$reviews[2]; reused=$reviews[2]}
+$profiles=@('single','paired')
+Assert-That ($r.RoleComparison.Count -eq 2 -and @($r.RoleComparison.startingRevision|Select-Object -Unique).Count -eq 1) 'identical role comparison inputs'
+foreach($profile in $profiles){
+    $run=@($r.RoleComparison|Where-Object configuration -ceq $profile)
+    Assert-That ($run.Count -eq 1 -and $run[0].model -ceq $PrimaryModel -and $run[0].state -ceq 'Completed' -and $run[0].browserPassed -eq $true -and
+        $run[0].elapsedSeconds -gt 0 -and $run[0].checks.Count -gt 0 -and @($run[0].checks|Where-Object { !$_.Passed }).Count -eq 0) "role comparison $profile"
+    if($profile -eq 'paired'){
+        Assert-That (@($r.Models|Where-Object { $_.Vision -and $_.Id -ceq $run[0].visualModel }).Count -eq 1 -and $run[0].visualEvidence.Count -gt 0) 'visual verifier observation'
+        $observation=$run[0].visualEvidence[-1]|ConvertFrom-Json
+        Assert-That ($observation.VisualModel -ceq $run[0].visualModel -and $observation.Hash -match '^[0-9a-f]{64}$' -and $observation.Observation.Length -gt 0) 'visual evidence identity'
+    }
+}
+Assert-That ($r.Maintenance.Count -eq 16) 'two models and two repetitions of four maintenance cases'
+foreach($case in 'regression','refactor','interruption','release-site'){
+    $group=@($r.Maintenance|Where-Object case -ceq $case)
+    Assert-That (@($group.revision|Select-Object -Unique).Count -eq 1) "same checkout for $case"
+    foreach($identity in $r.Models){
+        foreach($trial in 1,2){
+            $row=@($group|Where-Object { $_.model -ceq $identity.Id -and $_.replica -eq $trial })
+            Assert-That ($row.Count -eq 1 -and $row[0].revision -match '^[0-9a-f]{64}$' -and $row[0].oraclePassed -is [bool] -and
+                $row[0].seconds -gt 0 -and $row[0].humanInterventions -eq 0 -and !$row[0].falseCompletion -and
+                ($row[0].state -cne 'Completed' -or $row[0].oraclePassed)) "maintenance $case trial $trial for $($identity.Id)"
+            if($case -eq 'release-site'){Assert-That ($row[0].sourceCommit -ceq 'd64948f5c7760a56b00bc5ce48a2e76a244bca62') 'historical checkout'}
+        }
+    }
+    if($case -eq 'interruption'){
+        Assert-That (@($group|Where-Object { $_.model -ceq $PrimaryModel -and $_.interrupted }).Count -gt 0) 'real interrupted primary run'
+    }
+    if($case -eq 'regression'){
+        Assert-That (@($group|Where-Object { $_.model -ceq $PrimaryModel -and $_.state -ceq 'Completed' -and $_.oraclePassed }).Count -gt 0) 'verified primary maintenance repair'
+    }
+}
 foreach ($identity in $r.Models) {
     $id=$identity.Id
     $double=@($r.DoubleCheckouts|Where-Object Model -CEQ $id)

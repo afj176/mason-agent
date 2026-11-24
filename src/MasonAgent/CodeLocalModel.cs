@@ -137,6 +137,8 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
         using var client = clientFactory?.Invoke() ?? new LocalAiClient();
         var server = await client.ChatServer(profile, key, cancellation);
         Verify(server);
+        if (messages.FirstOrDefault()?.SourceEdit is {} source && CodeSchema.Available(messages)?.Contains("replace_file")==true)
+            return await ProposeSourceEdit(client,server,source,cancellation);
         if (messages.FirstOrDefault()?.PageRepair is {} repair && CodeSchema.Available(messages)?.Contains("replace_file")==true)
             return await RepairPage(client,server,repair,cancellation);
         if(messages.FirstOrDefault()?.PageDraft is {} draft && CodeSchema.Available(messages)?.Contains("create_file")==true)

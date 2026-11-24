@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace Mason.Code;
 
-internal sealed record ProjectWorkflow(string Executable,string[] Arguments,string Directory=".",bool BeforeVerify=false);
+internal sealed record ProjectWorkflow(string Executable,string[] Arguments,string Directory=".",bool BeforeVerify=false,string[]? Events=null);
 internal sealed record ProjectWorkflows(int Version,Dictionary<string,ProjectWorkflow> Workflows)
 {
     internal static ProjectWorkflows Load(CodeWorkspace scope)
@@ -17,13 +17,14 @@ internal sealed record ProjectWorkflows(int Version,Dictionary<string,ProjectWor
         foreach(var (name,flow) in config.Workflows){
             if(!Regex.IsMatch(name,@"\A[a-zA-Z][\w-]{0,49}\z")||flow is null||string.IsNullOrWhiteSpace(flow.Executable)||flow.Arguments is not {Length:<=40}||flow.Arguments.Any(a=>a==null||a.Length>4000))
                 throw new InvalidDataException("Invalid named project workflow.");
+            if(flow.Events?.Any(e=>e is not ("afterPlan" or "afterEdit" or "beforeVerify"))==true)throw new InvalidDataException("Unknown project workflow event.");
             scope.Resolve(flow.Directory,true);
         }
         return config;
     }
 }
 
-internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken lifetime,Dictionary<string,string> unverified):IAsyncDisposable
+internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken lifetime,Dictionary<string,string> unverified,string? settingsRoot=null):IAsyncDisposable
 {
     sealed class Job(CancellationTokenSource stop,string key)
     {
@@ -68,21 +69,25 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
         }catch(OperationCanceledException)when(stop&&!ct.IsCancellationRequested){if(unverified.GetValueOrDefault(job.Key)=="Outcome pending")unverified.Remove(job.Key);return new(JsonSerializer.Serialize(new{id,state="Stopped"}));}
     }
     public bool NeedsCollection=>jobs.Values.Any(j=>!j.Collected);
+    public CodeRepositoryMap Map { get; } = new(scope);
     public CodeRepositorySearch Search {get;}=new(scope);
     public int WorkerCalls {get;set;}
     public HashSet<string> Enabled {get;}=new(StringComparer.Ordinal);
     readonly Lazy<string[]> skills=new(()=>Directory.Exists(scope.Resolve(".mason/skills"))?
         scope.Files(".mason/skills",200).Files.Where(p=>Regex.IsMatch(p,@"^\.mason/skills/[\w-]+/SKILL\.md$")).Select(p=>p.Split('/')[2]).ToArray():[]);
-    public string[] Skills=>skills.Value;
+    Dictionary<string,string> BundleSkills()=>settingsRoot==null?[]:CodeBundles.Enabled(settingsRoot).SelectMany(b=>b.Skills.Select(s=>(key:b.Name+"/"+s.Key,body:s.Value))).ToDictionary(s=>s.key,s=>s.body);
+    public string[] Skills=>skills.Value.Concat(BundleSkills().Keys).ToArray();
+    public string Skill(string name)=>BundleSkills().TryGetValue(name,out var body)?body:skills.Value.Contains(name)?scope.Read($".mason/skills/{name}/SKILL.md").Content:throw new ArgumentException("Unknown enabled skill.");
     public void Enable(string group,CodeSession session)
     {
         bool auto=session.Mode=="build" && session.Permission==CodePermission.Auto;
         string[] tools=group switch{
-            "code"=>["inspect_symbol","git_status","delegate_readonly"],
+            "code"=>["repository_map","inspect_symbol","git_status","delegate_readonly"],
+            "docs"=>["read_documentation"],
             "workflows"=>auto?["read_skill","run_workflow"]:["read_skill"],
-            "jobs" when auto=>["start_job","poll_job","stop_job"],
+            "jobs" when auto=>["start_job","poll_job","stop_job","start_terminal","terminal_input","terminal_status","terminal_stop"],
             "browser" when auto=>["computer_use"],
-            "mcp" when auto=>["mcp_tools","mcp_call"],
+            "mcp" when auto=>["mcp_tools","mcp_call","mcp_resources","mcp_read"],
             _=>throw new UnauthorizedAccessException("Capability is unavailable in this session mode.")
         };
         Enabled.UnionWith(tools);

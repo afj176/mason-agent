@@ -133,7 +133,17 @@ foreach ($index in 0,1) {
     $repairs+=Get-Content "$area/repair/result.json" -Raw | ConvertFrom-Json
 }
 Assert-Source
+$visionIndex=if($models[1].Vision){1}else{0}
+$visionServer=@($Endpoint,$SecondaryEndpoint)[$visionIndex]
+$visionId=$models[$visionIndex].Id
+& python "$PSScriptRoot/bench_model_roles.py" --cli $cli --endpoint $Endpoint --model $Model --vision-endpoint $visionServer --vision-model $visionId --output "$output/role-comparison"
+if($LASTEXITCODE){throw 'Local model role comparison failed.'}
+& python "$PSScriptRoot/bench_maintenance.py" --cli $cli --checks "$output/checks/Mason.CodeChecks.exe" --endpoint primary $Endpoint $Model --endpoint secondary $SecondaryEndpoint $SecondaryModel --output "$output/maintenance" --repeats 2
+if($LASTEXITCODE){throw 'Maintenance evaluation did not finish.'}
+$roles=Get-Content -LiteralPath "$output/role-comparison/comparison.json" -Raw|ConvertFrom-Json
+$maintenance=Get-Content -LiteralPath "$output/maintenance/results.json" -Raw|ConvertFrom-Json
+Assert-Source
 $report=Join-Path $output 'workflow-evidence.json'
-[ordered]@{ Version=2; Commit=$commit; Models=$models; Builds=$builds; Controls=$controls; Repairs=$repairs; DoubleCheckouts=$doubleCheckouts; Workers=$workers; NativeVision=$visual } |
+[ordered]@{ Version=3; RoleComparison=$roles; Maintenance=$maintenance; Commit=$commit; Models=$models; Builds=$builds; Controls=$controls; Repairs=$repairs; DoubleCheckouts=$doubleCheckouts; Workers=$workers; NativeVision=$visual } |
     ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $report -Encoding utf8
 & "$PSScriptRoot/Assert-WorkflowQualification.ps1" -Report $report -Commit $commit -PrimaryModel $Model

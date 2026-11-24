@@ -10,6 +10,7 @@ static class CodeNativeChecks
         "list_files","search_text","navigate_code","read_file","open_file","create_directory","edit_file","apply_edits",
         "create_file","replace_file","run_command","run_shell","open_preview","verify_acceptance","ask_user","enable_tools",
         "inspect_symbol","computer_use","desktop_observe","desktop_act","start_job","poll_job","stop_job","run_workflow",
+        "repository_map","start_terminal","terminal_input","terminal_status","terminal_stop","mcp_resources","mcp_read","read_documentation",
         "read_skill","mcp_tools","mcp_call","search_next","read_lines","git_status","desktop_visual","delegate_readonly"
     };
     public static async Task Replay(string original,string destination)

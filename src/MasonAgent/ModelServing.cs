@@ -12,6 +12,9 @@ public sealed record ServedModel(Guid Id, LocalModel Model, AiEndpointProfile Pr
 }
 public sealed class ModelServing : IDisposable
 {
+    public sealed record LaunchRecipe(LocalModel Model,bool Gpu,ModelLaunchOptions Options);
+    public static string RecipePath(Guid id)=>Path.Combine(Store.Root,"model-launches",id.ToString("N")+".json");
+    public void ReleaseRole(ServedModel server){if(running.Remove(server))server.Owner.Dispose();}
     readonly List<ServedModel> running = [];
     public IReadOnlyList<ServedModel> Running => running;
 
@@ -94,7 +97,14 @@ public sealed class ModelServing : IDisposable
             phase?.Invoke(ModelStartupPhase.Checking);
             var inference = await client.Check(profile, capability, "", deadline.Token);
             profile = profile with { Checks = [listing, inference] };
-            var served = new ServedModel(id, model, profile, owner, log,options??new(4096)); running.Add(served);if(inference.State=="Passed")phase?.Invoke(ModelStartupPhase.Ready); return served;
+            var served = new ServedModel(id, model, profile, owner, log,options??new(4096));
+            if(inference.State=="Passed"){
+                var path=RecipePath(profile.Id);Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                string tmp=path+"."+Guid.NewGuid().ToString("N")+".tmp";
+                try{File.WriteAllText(tmp,System.Text.Json.JsonSerializer.Serialize(new LaunchRecipe(model,gpu,served.Options!)));File.Move(tmp,path,true);}
+                finally{if(File.Exists(tmp))File.Delete(tmp);}
+            }
+            running.Add(served);if(inference.State=="Passed")phase?.Invoke(ModelStartupPhase.Ready); return served;
         }
         catch(OperationCanceledException) when(!ct.IsCancellationRequested) {owner.Dispose();throw new TimeoutException("Model startup exceeded five minutes. Try a smaller model or inspect the runtime log: "+log);}
         catch { owner.Dispose(); throw; }
@@ -159,6 +169,6 @@ public sealed class ModelServing : IDisposable
         catch(Exception e) when(e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException){return null;}
     }
     static bool Available(int port) { try { var listener = new TcpListener(IPAddress.Loopback,port); listener.Start(); listener.Stop(); return true; } catch (SocketException) { return false; } }
-    public void Stop(ServedModel server) { if (!running.Remove(server)) throw new InvalidOperationException("This server is not owned by this app session."); server.Owner.Dispose(); }
+    public void Stop(ServedModel server) { if (!running.Remove(server)) throw new InvalidOperationException("This server is not owned by this app session."); server.Owner.Stop(); }
     public void Dispose() { foreach (var server in running) server.Owner.Dispose(); running.Clear(); }
 }

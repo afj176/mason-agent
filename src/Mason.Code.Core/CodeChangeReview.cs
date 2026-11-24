@@ -24,5 +24,5 @@ public static class CodeChangeReview
         }
         return findings;
     }
-    internal static bool Supported(string path)=>Path.GetExtension(path).ToLowerInvariant() is ".cs" or ".ts" or ".tsx" or ".js" or ".jsx" or ".py" or ".go" or ".rb" or ".dart";
+    internal static bool Supported(string path)=>Path.GetExtension(path).ToLowerInvariant() is ".cs" or ".ts" or ".tsx" or ".js" or ".cjs" or ".mjs" or ".jsx" or ".py" or ".go" or ".rb" or ".dart";
 }

@@ -13,6 +13,10 @@ internal static class ModernHarnessChecks
     public static async Task Run(string area)
     {
         if(Directory.Exists(area))throw new IOException("Select a fresh check directory.");
+        await MilestoneChecks.Run(Path.Combine(area, "milestones"));
+        await ProjectEvidenceChecks.Run(Path.Combine(area,"named-tests"));
+        await ExperimentChecks.Run(Path.Combine(area,"experiment"));
+        await HarnessIntegrationChecks.Run(Path.Combine(area,"extensions-policy"));
         var root=Directory.CreateDirectory(Path.Combine(area,"repo")).FullName;
         var scope=new CodeWorkspace(root);
         for(int i=0;i<1040;i++)File.WriteAllText(Path.Combine(root,$"sample-{i:D4}.cs"),"unused");

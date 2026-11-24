@@ -32,8 +32,9 @@ public static class CodeSchema
     static string Description(string name)=>name switch
     {
         "navigate_code"=>"Find symbol definitions, references, related tests or compiler diagnostics in a workspace directory. C# uses compiler binding. Other supported source languages return labeled text candidates.",
+        "repository_map"=>"Find ranked definitions, callers, import and test references by identifier or qualified name. C# references are compiler bound. Exact JavaScript, TypeScript and Python declarations can include language-service references. Other matches are labelled as candidates.",
         "inspect_symbol"=>"Resolve TypeScript/JavaScript or Python definitions, references or diagnostics at a 1-based source position.",
-        "enable_tools"=>"Load specialized tools for code (TS/Python symbol navigation), workflows (named tasks and skills), jobs (background processes), browser (interactive project Edge), or mcp (registered tools).",
+        "enable_tools"=>"Load specialized tools for code (repository map and symbol navigation), workflows (named tasks and skills), jobs (background processes), browser (interactive project Edge), or mcp (registered tools).",
         "computer_use"=>"Operate the project page in disposable offline Edge using a fresh accessibility observation after each click or fill. Supply a workspace HTML path and task.",
         "desktop_observe"=>"Read the control names and available actions from the native window the user attached for this session.",
         "desktop_visual"=>"Inspect the attached window with a local vision model. For a canvas operation specify one requested click or drag. Every action needs approval and a fresh matching frame.",
@@ -43,7 +44,14 @@ public static class CodeSchema
         "stop_job"=>"Stop this run's owned background job and collect the result.",
         "run_workflow"=>"Run a named project workflow from the pinned mason.workflows.json in the workspace sandbox.",
         "read_skill"=>"Read a project's named .mason/skills/<name>/SKILL.md workflow on demand.",
+        "start_terminal"=>"Start a reconnectable line-oriented workspace terminal in the offline sandbox.",
+        "terminal_input"=>"Send one line to an owned terminal. Use eof=true to close input.",
+        "terminal_status"=>"Read recent output and exit status from an owned terminal.",
+        "terminal_stop"=>"Stop an owned workspace terminal.",
         "mcp_tools"=>"Discover allowed tools on a user-registered local MCP server.",
+        "mcp_resources"=>"Discover user-registered resource URIs.",
+        "read_documentation"=>"Find a literal phrase in a registered versioned documentation source. Cite the returned URL, line and excerpt.",
+        "mcp_read"=>"Read one explicit resource from a registered MCP server.",
         "mcp_call"=>"Request individual user approval to call a specific registered MCP tool with JSON object arguments.",
         "list_files"=>"List workspace files recursively, limit 1–1000. Use the supplied inventory first.",
         "search_text"=>"Search literal text in allowed workspace files. Use focused queries to locate existing behavior before reading and editing the relevant files.",
@@ -108,9 +116,10 @@ public static class CodeSchema
         object integer=new{type="integer",minimum=1,maximum=1000000};
         tools.Add(Tool("search_next",Fields(("cursor",Text()))));
         tools.Add(Tool("git_status",Fields()));
+        tools.Add(Tool("repository_map",Fields(("query",Text()))));
         tools.Add(Tool("delegate_readonly",Fields(("question",Text()),("paths",new{type="array",minItems=1,maxItems=8,items=Text()}))));
         tools.Add(Tool("read_lines",Fields(("path",Text()),("start",integer),("count",new{type="integer",minimum=1,maximum=200}))));
-        tools.Add(Tool("enable_tools",Fields(("group",new{type="string",@enum=new[]{"code","workflows","jobs","browser","mcp"}}))));
+        tools.Add(Tool("enable_tools",Fields(("group",new{type="string",@enum=new[]{"code","workflows","jobs","browser","mcp","docs"}}))));
         tools.Add(Tool("inspect_symbol",Fields(("path",Text()),("line",integer),("column",integer),("mode",new{type="string",@enum=new[]{"definitions","references","diagnostics"}}))));
         tools.Add(Tool("computer_use",Fields(("path",Text()),("task",Text()))));
         tools.Add(Tool("desktop_observe",Fields()));
@@ -121,7 +130,13 @@ public static class CodeSchema
         tools.Add(Tool("stop_job",Fields(("id",Text()))));
         tools.Add(Tool("run_workflow",Fields(("name",Text()))));
         tools.Add(Tool("read_skill",Fields(("name",Text()))));
+        tools.Add(Tool("start_terminal",Fields(("executable",Text()),("arguments",new{type="array",items=Text(),maxItems=40}),("directory",existingDirectory))));
+        tools.Add(Tool("terminal_input",Fields(("id",Text()),("line",Text()),("eof",new{type="boolean"}))));
+        foreach(var terminal in new[]{"terminal_status","terminal_stop"})tools.Add(Tool(terminal,Fields(("id",Text()))));
         tools.Add(Tool("mcp_tools",Fields(("server",Text()))));
+        tools.Add(Tool("read_documentation",Fields(("source",Text()),("path",Text()),("query",Text()))));
+        tools.Add(Tool("mcp_resources",Fields(("server",Text()))));
+        tools.Add(Tool("mcp_read",Fields(("server",Text()),("uri",Text()))));
         tools.Add(Tool("mcp_call",Fields(("server",Text()),("tool",Text()),("arguments_json",Text()))));
         if (available != null) tools = tools.Where(t =>
         {

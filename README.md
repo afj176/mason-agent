@@ -102,6 +102,38 @@ With a window attached and a local vision model loaded, Mason can inspect a scre
 
 For a local WSGI application, an acceptance scenario can combine Edge interactions, observed HTTP responses and an independent count of a SQLite table in the disposable application copy. The release trials exercise repeated checkout of one basket and separate checkout of two baskets. The two-model workflow qualification requires an interactive Windows desktop and at least one model serving images with a compatible projector.
 
+### Plan and inspect a project
+
+Open **Plan & repository map** in the project menu. Search for a qualified symbol to see definitions and callers. C# uses Roslyn. TypeScript, JavaScript and Python use their language services for supported declarations. Other matches carry a candidate label. Add milestones with files, dependencies and a verification workflow. A source change invalidates the affected receipt and blocks dependent milestones. A manual review has its own status. Project notes can be edited or forgotten and carry a source revision.
+
+### Connect the preview and editor
+
+Use the element picker in **Website** to attach an accessible control, its screenshot and recent console diagnostics. **Verify click** repeats the interaction in disposable Edge at mobile and desktop widths. For VS Code, install `integrations/mason-workspace.vsix` from the Mason installation directory. Run **Mason: Share Selection with Local Project**, then **Attach editor selection** in Mason. The attachment records the editor buffer version, selected text, diagnostics and disk hash. **Mason: Toggle Project Task Notifications** follows this folder’s background tasks in VS Code.
+
+### Run tasks and review changes
+
+**Background tasks** starts a detached local worker and reopens its progress and pending approvals after the desktop closes. The CLI supports `task-list`, `task-show`, `task-allow`, `task-deny` and `task-cancel`. An approval identifies both the task and the pending request. The workspace terminal supports line input, EOF, scrollback and cancellation. **Model roles & decision inspector** assigns the implementer’s review and vision partners and limits model calls. The optional trace recorder supports prediction-only comparisons of saved requests. GPU memory management applies to role models launched by the desktop.
+
+**Fork session in an isolated worktree** starts an experiment from the current checkout, including uncommitted files. Compare experiments from the same turn, inspect their checks and apply a selected hunk. **Git delivery & CI feedback** prepares a local draft from the reviewed hunks. Publishing to the configured GitHub repository requires an explicit action and a configured GitHub CLI.
+
+### Use a project's test suite
+
+In `.mason/tests.json`, register the named test, the workflow that runs it, the files that define the test and the implementation inputs. For example, this entry uses a Node test named `discount` reported by a workflow named `test` in `mason.workflows.json`.
+
+```json
+[{
+  "requirement": "Apply the loyalty discount",
+  "workflow": "test",
+  "format": "tap",
+  "report": "",
+  "test": "discount",
+  "testFiles": ["price.test.cjs"],
+  "inputs": ["price.cjs"]
+}]
+```
+
+Auto records a baseline and reruns the pinned check before completion. Results distinguish new regressions, missing tests and failures present at baseline. CommonJS codec projects can also declare a `roundTrip` property on a named test with `module`, `encode`, `decode` and `alphabet`. The module must be a declared input. Mason exercises every string of length zero through three over that alphabet in the same workspace sandbox and returns the first counterexample. Supported reporters include TAP, TRX, JUnit XML, Go test JSON and Flutter test JSON. Use **Project policy & extensions** for tool restrictions, workflow allowlists, event hooks and versioned skill, documentation and MCP bundles. Installed bundles start disabled. Documentation excerpts include the source, version and location.
+
 ## Build from source
 
 Prerequisites:
@@ -119,7 +151,7 @@ dotnet build src\MasonAgent\MasonAgent.csproj -c Debug -p:Platform=x64
 .\scripts\Invoke-WorkflowQualification.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -SecondaryEndpoint http://127.0.0.1:8081 -SecondaryModel SECOND_MODEL -OutputDirectory .cache\workflow
 
 # Omit -Installer and -InnoCompiler for the portable package alone.
-.\scripts\Publish.ps1 -Version 2.1.1 -ModelEvidence .cache\qualification\report.json -WorkflowEvidence .cache\workflow\workflow-evidence.json -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+.\scripts\Publish.ps1 -Version 2.2.0 -ModelEvidence .cache\qualification\report.json -WorkflowEvidence .cache\workflow\workflow-evidence.json -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
 `Publish.ps1` requires a clean checkout and passing evidence for the exact source commit. Each model builds a store from an empty directory four times, reviews a working store and six single-defect variants, and repairs a separate JavaScript application during a concurrent edit. Edge exercises discount boundaries and two checkouts at phone and desktop widths. Both packages include the two reports and their SHA-256 hashes. Configure two running local llama.cpp servers on the Windows runner labeled `mason-model-evals` using `MASON_EVAL_ENDPOINT`, `MASON_EVAL_MODEL`, `MASON_SECONDARY_EVAL_ENDPOINT` and `MASON_SECONDARY_EVAL_MODEL`.

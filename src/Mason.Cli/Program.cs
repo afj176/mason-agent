@@ -17,6 +17,16 @@ try{
             serve explicitly launches the named development workflow under your Windows account and stops it after browser interaction.
             mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics
             mason worktree --workspace PATH --destination NEW_PATH --branch NEW_BRANCH
+            mason map --workspace PATH --query SYMBOL
+            mason task-start --workspace PATH --endpoint LOOPBACK --model ID --prompt TEXT [--auto]
+            mason compare-decision --trace FILE --endpoint LOOPBACK --model ID
+            exec accepts --review-model ID --review-endpoint LOOPBACK --visual-model ID --visual-endpoint LOOPBACK and --trace-dir LOCAL_FOLDER.
+            mason terminal-start --workspace PATH --executable PROGRAM --arguments JSON_ARRAY [--directory RELATIVE_PATH]
+            mason terminal-send --id TASK_ID --line TEXT
+            mason terminal-eof --id TASK_ID
+            mason task-list --workspace PATH
+            mason task-show|task-cancel --id TASK_ID
+            mason task-allow|task-deny --id TASK_ID --request APPROVAL_ID
             mason git-status --workspace PATH
             Use --prompt-file PATH to read a UTF-8 task. Output is JSON Lines. Exit 0 means completed.
             Each invocation uses a separate journal by default. Use --profile PATH --resume SESSION_ID to continue.
@@ -28,10 +38,13 @@ try{
         if(!args[i].StartsWith("--")||i+1>=args.Length||!values.TryAdd(args[i][2..],args[++i]))throw new ArgumentException("Expected unique --option value pairs.");
     }
     string Get(string name)=>values.TryGetValue(name,out var value)?value:throw new ArgumentException("--"+name+" is required.");
+    if(args[0]=="compare-decision"){Event("decision.comparison",await ModelTrace.Predict(Get("trace"),new AiEndpointProfile{Endpoint=Get("endpoint"),Model=Get("model")},"",stop.Token));return 0;}
+    if(args[0].StartsWith("task-",StringComparison.Ordinal) || args[0].StartsWith("terminal-",StringComparison.Ordinal))return await TaskCommands.Run(args[0],values,auto,Event,stop.Token);
     var scope=new CodeWorkspace(Get("workspace"));var ct=stop.Token;
     if(args[0]=="worktree"){
         var path=await CodeWorktree.Create(scope.Root,Get("destination"),Get("branch"),ct);Event("worktree.created",new{path});return 0;
     }
+    if(args[0]=="map"){ Event("map.result",await new CodeRepositoryMap(scope).Query(Get("query"),32,ct)); return 0; }
     if(args[0]=="git-status"){Event("git.status",await CodeGit.FullStatus(scope.Root,ct));return 0;}
     if(args[0]=="symbol"){
         var result=await CodeSemantic.Query(scope,Get("path"),int.Parse(Get("line")),int.Parse(Get("column")),Get("mode"),ct);
@@ -62,7 +75,8 @@ try{
         await CodeAcceptance.Verify(plan,scope,CodePermission.Auto,ct);
         Event("review.result",new{checks,plan.Results,plan.VerifiedRevision});return plan.Results.All(r=>r.Passed)?0:2;
     }
-    using var store=new CodeStore(profile);
+    var host=Environment.GetEnvironmentVariable("MASON_DATA_HOME")??Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"MasonAgent");
+    using var store=new CodeStore(profile,host);
     var session=values.TryGetValue("resume",out var id)?store.Sessions.Single(s=>s.Id==Guid.Parse(id)):store.New(scope.Root);
     if(!scope.Root.Equals(session.Workspace,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Resumed workspace mismatch.");
     session.Mode=auto?"build":"ask";session.Permission=auto?CodePermission.Auto:CodePermission.ReadOnly;
@@ -72,7 +86,11 @@ try{
             var a=session.Activities[emitted++];Event("tool.result",new{a.Id,a.Tool,a.State,a.Result});
         }
     }
-    var engine=new CodeEngine(store,model,(approval,_)=>{Event("approval.required",approval);return Task.FromResult(false);},Progress);
+    CodeLocalModel Role(string role)=>values.TryGetValue(role+"-model",out var id)?new CodeLocalModel(new AiEndpointProfile{Endpoint=values.GetValueOrDefault(role+"-endpoint")??Get("endpoint"),Model=id,ManagedCapability=AiCapability.Chat},"","default",_=>{}):model;
+    var trace=values.GetValueOrDefault("trace-dir");
+    if(trace!=null && CodeSandbox.ContainsHost(scope.Root,Path.GetFullPath(trace)))throw new ArgumentException("Keep decision traces outside the project.");
+    var roles=new RoleModels(model,Role("review"),Role("visual"),host,traceDirectory:trace,inspectBrowserFrames:values.ContainsKey("visual-model"));
+    var engine=new CodeEngine(store,roles,(approval,_)=>{Event("approval.required",approval);return Task.FromResult(false);},Progress);
     await engine.Run(session,prompt,ct);Progress();
     Event("run.finished",new{session.Id,session.State,session.Detail,answer=session.Turns.LastOrDefault(t=>t.Role=="assistant")?.Text});
     return session.State=="Completed"?0:2;

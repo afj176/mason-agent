@@ -103,7 +103,26 @@ public static class CodeComputerUse
         BrowserScenario[]? scenarios=null;
         await CodeBrowserVerification.Interact(scope,path,async(page,token)=>{
             var (observation,handles)=await Observe(page);
-            try{scenarios=await model.DesignReview(request,path,observation,token);}
+            try{
+                var input=observation;
+                for(int attempt=0;attempt<2;attempt++){
+                    scenarios=await model.DesignReview(request,path,input,token);
+                    try{
+                        foreach(var scenario in scenarios){
+                            BrowserContract.Validate(scenario.Steps);
+                            foreach(var step in scenario.Steps.Where(s=>s.Op!="reload" && !BrowserContract.ApplicationStep(s.Op)))
+                                await page.Locator(step.Target).CountAsync();
+                            var first=scenario.Steps[0];
+                            if(first.Op is "click" or "fill" && await page.Locator(first.Target).CountAsync()!=1)
+                                throw new InvalidDataException("The first action must identify exactly one observed control: "+first.Target);
+                        }
+                        break;
+                    }catch(Exception e) when(e is PlaywrightException or InvalidDataException){
+                        if(attempt==1)throw new InvalidDataException("Independent reviewer produced an unusable browser check: "+e.Message,e);
+                        input=observation with{Text=observation.Text+"\nHost rejected the test design: "+e.Message};
+                    }
+                }
+            }
             finally{foreach(var h in handles)await h.DisposeAsync();}
             return "Observed";
         },ct,application:application);
