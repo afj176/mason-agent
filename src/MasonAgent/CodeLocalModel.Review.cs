@@ -100,7 +100,7 @@ public sealed partial class CodeLocalModel
             int qty=i.Threshold>0?i.Threshold+1:2;
             for(int n=1;n<=qty;n++){
                 steps.Add(new("click",observation.Selectors[i.Button-1].Split(" | ")[0]));
-                if(n==1||n==qty||n==i.Threshold)
+                if(n==1||n==qty||n==i.Threshold||n==i.Threshold-1)
                     steps.Add(new("money",basket.Total,(subtotal+n*(i.Threshold>0 && n>=i.Threshold?i.DiscountedPrice:i.UnitPrice)).ToString("0.00",CultureInfo.InvariantCulture)));
             }
             subtotal+=qty*(i.Threshold>0?i.DiscountedPrice:i.UnitPrice);
@@ -121,7 +121,13 @@ public sealed partial class CodeLocalModel
             if(pay==null || receipt==null)return null;
             var prefix=CatalogSpec.ExplicitReceiptPrefix(request)??"";
             var add=observation.Selectors[items[0].Button-1].Split(" | ")[0];
-            var orderSteps=new List<BrowserStep>{new("click",add),new("click",pay),new("capture",receipt,prefix),new("reload"),new("same",receipt)};
+            var orderSteps=new List<BrowserStep>{new("click",add),new("click",pay),new("capture",receipt,prefix)};
+            if(Regex.IsMatch(request,@"\b(?:clear|reset|empt(?:y|ie))\w*\s+(?:the |your |my )?(?:cart|basket)\b",RegexOptions.IgnoreCase)){
+                orderSteps.Add(new("money",basket.Total,"0.00"));
+                var rows=observation.ElementIds.FirstOrDefault(id=>id is "#cart-items" or "#basket-items");
+                if(rows!=null)orderSteps.Add(new("empty",rows));
+            }
+            orderSteps.AddRange([new("reload"),new("same",receipt)]);
             if(CatalogSpec.RequiresFreshReceipt(request)){
                 orderSteps.AddRange([new("click",add),new("click",pay),new("new_id",receipt,prefix),new("reload"),new("same",receipt)]);
             }

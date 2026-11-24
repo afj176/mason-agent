@@ -70,6 +70,13 @@ internal static class HarnessExtensionChecks
             CodeLocalModel.ApplyExactRepair("x x","x","y")==null && CodeLocalModel.ApplyExactRepair("x","x","x")==null &&
             CodeLocalModel.ApplyExactRepair("one\r\ntwo","one\ntwo","one\nthree")=="one\r\nthree",
             "An unchanged edit switches to a unique, revision-pinned source replacement");
+        var pricing=new CodeFile("price.js","function cost(n, unit) {\r\n  const amount = n * n * unit;\r\n  return amount;\r\n}","priced-hash",false);
+        var calculator=new CodeLocalModel(new AiEndpointProfile{Model="test-coder",Endpoint="http://127.0.0.1:5179"},"","default",_=>{},
+            ()=>new LocalAiClient(new ModelHandler(JsonSerializer.Serialize(new{Target="amount",Expression="n * unit"}))));
+        var corrected=await calculator.Next([new("system",""){AvailableTools=new HashSet<string>{"replace_file"},
+            PageRepair=new(pricing,"Multiply units by the unit price.","",""){NumericMismatch="expected 20, observed 40"}}],_=>{},default);
+        check(corrected.Arguments.GetProperty("content").GetString()==pricing.Content.Replace("n * n * unit","n * unit") &&
+            corrected.Arguments.GetProperty("expected_sha256").GetString()==pricing.Sha256,"A numeric counterexample changes only the selected expression");
         const string brief="Build a store. Rice costs $4 each, three or more cost 3 dollars each. Add Oats for $2. Show the cart total.";
         var catalog=await CodeStorefrontPlan.Prepare(brief,new PantryPlanner(),default);
         check(catalog!=null && catalog.Checks.Where(c=>c.Kind=="unverified").Select(c=>c.Feature).SequenceEqual(["Email the receipt"]) &&
@@ -82,6 +89,12 @@ internal static class HarnessExtensionChecks
             [new("Rice",4,3,2),new("Tea",4,3,2)]);
         check(prices.SequenceEqual([new CatalogItem("Rice",4,3,2),new CatalogItem("Tea",7,7,0)]),
             "A reviewer cannot copy a named product's quantity promotion onto other shelf items");
+        const string lookup="units * (offer.tiers[units] || offer.base)";
+        var fixedTier=CatalogPriceGrounding.CorrectExactQuantityLookup(lookup,"const items = [{name:'Rice'}];",
+            "Rice costs $4 each. Charge $3 per Rice bag when buying two or more Rice bags.");
+        check(fixedTier?.Contains("units >= 2 ? 3 : offer.base")==true &&
+            CatalogPriceGrounding.CorrectExactQuantityLookup(lookup,"const items = [{name:'Rice'}];","List the prices.")==null,
+            "Repair an exact-quantity table only when the original request establishes the named open-ended tier");
         await CheckCatalogComponent(root,check);
         var reply=JsonSerializer.Serialize(new {Items=new[]{new{Name="Rice",UnitPrice=4,DiscountedPrice=3,Threshold=3,Button=1},
             new{Name="Oats",UnitPrice=2,DiscountedPrice=2,Threshold=0,Button=2}},Total="#amount-due div"});

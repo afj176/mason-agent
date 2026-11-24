@@ -146,6 +146,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     PageRepair=new(page,acceptance.Request,acceptance.BuildFacts+"\n"+RepairEvidence(acceptance)+"\n"+repairFeedback,scope.Instructions(page.Path)){
                         RelatedSource=RelatedSource(page,acceptance),
                         PreviousEditUnchanged=repeatedPageRepairs>0,
+                        NumericMismatch=acceptance.Results.FirstOrDefault(r=>!r.Passed && r.Check.Path==page.Path && r.Detail.Contains(", money ",StringComparison.Ordinal) && r.Detail.Contains("expected '",StringComparison.Ordinal))?.Detail,
                         PreservePassingScenarios=acceptance.Results.Any(r=>r.Passed && r.Check.Kind=="browser_flow") &&
                             acceptance.Results.Any(r=>!r.Passed && r.Check.Kind=="browser_flow"),
                         RebuildGeneratedPage=createdFiles.Contains(page.Path) && attemptedRepairs.Contains(page.Path) &&

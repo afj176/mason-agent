@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Mason.Code;
@@ -10,6 +11,27 @@ public static class CatalogPriceGrounding
     const string Count=@"(?<count>\d+|one|two|three|four|five|six|seven|eight|nine|ten)";
     static readonly Regex Threshold=new(@"\b(?:at least\s+"+Count+@"|"+Count+@"\s+or more)\b",RegexOptions.IgnoreCase);
     static readonly string[] Numbers=["zero","one","two","three","four","five","six","seven","eight","nine","ten"];
+
+    // A lookup by exact quantity cannot implement an open-ended tier. Rewrite just
+    // that expression when the source names and a threshold can be bound to the brief.
+    public static string? CorrectExactQuantityLookup(string expression,string script,string request)
+    {
+        const string ident=@"[a-zA-Z_$][\w$]*";
+        var match=Regex.Match(expression,@"^(?<q>"+ident+@")\s*\*\s*\(\s*(?<unit>(?<item>"+ident+@")\."+ident+
+            @"\[\s*\k<q>\s*\]\s*\|\|\s*(?<base>\k<item>\."+ident+@"))\s*\)$");
+        if(!match.Success)return null;
+        var names=Regex.Matches(script,"""\bname\s*:\s*(?<quote>['"])(?<value>[^'"\\\r\n]{1,80})\k<quote>""")
+            .Select(m=>m.Groups["value"].Value).Where(n=>request.Contains(n,StringComparison.OrdinalIgnoreCase)).Distinct().ToArray();
+        if(names.Length is 0 or >8)return null;
+        var tiers=Bind(request,names.Select(n=>new CatalogItem(n,0,0,0)).ToArray()).Where(i=>i.Threshold>0 && i.Price>0).ToArray();
+        if(tiers.Length==0)return null;
+        string unit=match.Groups["unit"].Value, q=match.Groups["q"].Value, item=match.Groups["item"].Value;
+        foreach(var t in tiers){
+            var sale=t.SalePrice.ToString(CultureInfo.InvariantCulture);
+            unit=$"{item}.name === {JsonSerializer.Serialize(t.Name)} ? ({q} >= {t.Threshold} ? {sale} : {match.Groups["base"].Value}) : ({unit})";
+        }
+        return $"{q} * ({unit})";
+    }
 
     public static CatalogItem[] Bind(string request,CatalogItem[] proposed)
     {
