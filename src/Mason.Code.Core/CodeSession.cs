@@ -29,9 +29,13 @@ public sealed class CodeTurn
     public int FirstActivity { get; set; }
     public string PerformanceSummary { get; set; } = "";
     public int ActivityCount { get; set; }
+    public CodeReviewComment[] SubmittedReview { get; set; } = [];
     public CodeAcceptancePlan? Acceptance { get; set; }
 }
-public sealed record CodeFollowUp(Guid Id,string Text,bool Steer);
+public sealed record CodeFollowUp(Guid Id,string Text,bool Steer)
+{
+    public CodeReviewComment[] Review { get; init; } = [];
+}
 public sealed class CodeActivity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -64,6 +68,7 @@ public sealed class CodeTab
 }
 public sealed class CodeSession
 {
+    public List<CodeReviewComment> ReviewComments { get; set; } = [];
     public List<CodeFollowUp> PendingInput {get;set;}=[];
     public int Version { get; set; } = 1;
     public Guid Id { get; set; } = Guid.NewGuid();

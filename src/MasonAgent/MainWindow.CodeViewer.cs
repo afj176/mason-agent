@@ -24,7 +24,7 @@ public sealed partial class MainWindow
         public CancellationTokenSource Cancellation { get; } = new();
         public void Dispose() { ReleaseTheme?.Invoke();ReleaseTheme=null;Cancellation.Cancel(); ReleaseBrowser?.Invoke(); ReleaseBrowser=null; Cancellation.Dispose(); }
     }
-    CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open)
+    CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open, Action reviewChanged)
     {
         var host = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
         var entry = new CodeViewerEntry { Tab = new TabViewItem { Header = TabLabel(model.Title), IconSource = new FontIconSource { Glyph = model.Kind switch { "web" or "site" => "\uE774", "context" => "\uE9D9", "git" => "\uE8A5", "changes" => "\uE8A5", "activity" => "\uE9D9", _ => "\uE8A5" } }, Tag = model, Content = host, IsClosable = true, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch } };
@@ -56,7 +56,21 @@ public sealed partial class MainWindow
                     host.Content = changesView;
                     void Show(string path)
                     {
-                        selected = path; var change = changes.First(c => c.Path == path); var rows = new StackPanel { Spacing = 0 };
+                        selected = path; var change = changes.First(c => c.Path == path); var rows = new ListView { SelectionMode = ListViewSelectionMode.Single, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(rows, "Diff lines");
+                        ScrollViewer.SetHorizontalScrollMode(rows, ScrollMode.Enabled);
+                        ScrollViewer.SetHorizontalScrollBarVisibility(rows, ScrollBarVisibility.Auto);
+                        async Task Comment(CodeDiffLine line)
+                        {
+                            if (dialogOpen || line.Kind == '@') return;
+                            var pending = CodeReviewComment.OnDiff(change, line, "");
+                            await EditReviewComment(session, pending, true, reviewChanged);
+                        }
+                        rows.KeyDown += async (_, e) =>
+                        {
+                            if (e.Key == VirtualKey.Enter && rows.SelectedItem is ListViewItem { Tag: CodeDiffLine line })
+                            { e.Handled = true; await Comment(line); }
+                        };
                         model.Location = path;
                         bool current = false; try { current = scope.Read(path).Sha256 == change.AfterHash; } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
                         var caption = CodeNote(current ? "Changes against this session's original file snapshot" : "Saved session snapshot · the file has changed or is unavailable. Later edits will not be overwritten.");
@@ -64,11 +78,10 @@ public sealed partial class MainWindow
                         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(mode, "Diff layout");
                         void RenderDiff()
                         {
-                            rows.Width = mode.SelectedIndex == 1 ? Math.Max(200, host.ActualWidth) : double.NaN;
-                            rows.Children.Clear(); int count = 0;
+                            rows.Items.Clear(); int count = 0;
                             foreach (var line in CodeProtocol.Diff(change.Before, change.After))
                             {
-                                if (++count > 800) { rows.Children.Add(CodeNote("Preview capped at 800 lines. Open the complete file in your editor.")); break; }
+                                if (++count > 800) { rows.Items.Add(CodeNote("Preview capped at 800 lines. Open the complete file in your editor.")); break; }
                                 var text = CodeSource(line.Kind == '@' ? "⋯ " + line.Text : $"{line.Before?.ToString() ?? "",5} {line.After?.ToString() ?? "",5} {line.Kind}  {line.Text}", 13);
                                 text.TextWrapping = TextWrapping.NoWrap; text.Padding = new Thickness(8, 1, 8, 1);
                                 var row = new Border { Child = text };
@@ -88,13 +101,41 @@ public sealed partial class MainWindow
                                     bool high = new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast;
                                     row.Background = high || line.Kind is ' ' or '@' ? null : new SolidColorBrush(line.Kind == '+' ? Windows.UI.Color.FromArgb(36, 40, 174, 112) : Windows.UI.Color.FromArgb(40, 218, 70, 75));
                                 }
-                                row.Loaded += (_, _) => Theme(); row.ActualThemeChanged += (_, _) => Theme(); rows.Children.Add(row);
+                                row.Loaded += (_, _) => Theme(); row.ActualThemeChanged += (_, _) => Theme();
+                                var grid = new Grid { ColumnSpacing = 4 };
+                                grid.ColumnDefinitions.Add(new() { Width = new GridLength(30) });
+                                grid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+                                Grid.SetColumn(row, 1); grid.Children.Add(row);
+                                string location = (line.After.HasValue ? "updated line " : "original line ") + (line.After ?? line.Before);
+                                if (line.Kind != '@')
+                                {
+                                    var add = ChatIcon("Comment on " + location, "\uE710", async (_, _) => await Comment(line));
+                                    add.Padding = new Thickness(0); add.MinHeight = 22; add.MinWidth = 24; add.IsTabStop = false;
+                                    ToolTipService.SetToolTip(add, "Comment on " + location);
+                                    grid.Children.Add(add);
+                                }
+                                var item = new ListViewItem { Content = grid, Tag = line, MinHeight = 24, Padding = new Thickness(0),
+                                    HorizontalContentAlignment = HorizontalAlignment.Stretch, IsEnabled = line.Kind != '@' };
+                                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(item, location + " · " + line.Text);
+                                rows.Items.Add(item);
                             }
                         }
                         mode.SelectionChanged += (_, _) => { model.ViewMode = mode.SelectedIndex == 1 ? "split" : "unified"; RenderDiff(); save(); }; RenderDiff();
-                        var scroll = new ScrollViewer { Content = rows, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-                        scroll.SizeChanged += (_, _) => { if (mode.SelectedIndex == 1 && scroll.ViewportWidth > 0) rows.Width = scroll.ViewportWidth; };
-                        scroll.Loaded += (_, _) => scroll.ChangeView(null, model.Scroll, null, true); scroll.ViewChanged += (_, _) => model.Scroll = scroll.VerticalOffset;
+                        rows.Loaded += (_, _) =>
+                        {
+                            ScrollViewer? FindScroll(DependencyObject node)
+                            {
+                                if (node is ScrollViewer viewer) return viewer;
+                                for (int i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+                                    if (FindScroll(VisualTreeHelper.GetChild(node, i)) is {} child) return child;
+                                return null;
+                            }
+                            if (FindScroll(rows) is {} scroll)
+                            {
+                                scroll.ChangeView(null, model.Scroll, null, true);
+                                scroll.ViewChanged += (_, _) => model.Scroll = scroll.VerticalOffset;
+                            }
+                        };
                         var external = CodeLink("Open in editor", async (_, _) => { try { await Launcher.LaunchFileAsync(await Windows.Storage.StorageFile.GetFileFromPathAsync(scope.Resolve(path)), new LauncherOptions { DisplayApplicationPicker = true }); } catch (Exception error) { caption.Text = error.Message; } });
                         var restore = CodeLink("Restore original", async (_, _) =>
                         {
@@ -109,7 +150,7 @@ public sealed partial class MainWindow
                             finally { dialogOpen = false; }
                         });
                         restore.IsEnabled = current && change.Before != null;
-                        content.Content = Vertical(Stack(Toolbar(Text(path, 14), Row(mode, external, restore)), caption), scroll);
+                        content.Content = Vertical(Stack(Toolbar(Text(path, 14), Row(mode, external, restore)), caption), rows);
                     }
                     choices.ItemClick += (_, args) => Show(labels.First(p => p.Value == (string)args.ClickedItem).Key);
                     selected = changes.FirstOrDefault(c => c.Path == (selected.Length > 0 ? selected : model.Location))?.Path ?? changes[0].Path;

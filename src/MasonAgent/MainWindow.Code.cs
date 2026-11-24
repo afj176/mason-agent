@@ -18,7 +18,7 @@ public sealed partial class MainWindow
     CancellationTokenSource? codeOperation;
     Action? refreshCodeProfiles;
     Action<Guid>? selectCodingModel;
-    Action? openCodeSearch;
+    Func<IEnumerable<TitleHit>>? codeSearchHits;
     Func<Task>? compactCodeContext;
 
     static TextBlock CodeNote(string text, double size = 12)
@@ -38,15 +38,19 @@ public sealed partial class MainWindow
         try { codeStore = new CodeStore(Store.Root); }
         catch (Exception error) { return TroubleNotice("Code sessions are unavailable", error.Message, "Close another Mason Agent instance using this profile, or inspect the saved session files. Existing sessions have not been replaced."); }
         var store = codeStore!;
+        var references = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+        var reviewButton = Button("Review comments", (_, _) => {});
+        FrameworkElement stateRow = null!;
         CodeSession? session = store.SelectedSession;
         CodeEngine? liveEngine=null;
         CodeSession? liveOwner=null;
+        string? submittedDraft = null;
         StackPanel followUpButtons=null!;
         CodeProject? project = store.SelectedProject;
         const double projectPanelWidth=260;
         Action? viewerChanged = null; // assigned once the page exists; refreshes counts outside the viewer
         bool updating = false, refreshQueued = false, emptySidebarVisible = true; string[] allFiles = []; int fileGeneration = 0; string? forcedPanel = null; CodeGitStatus? gitStatus = null;
-        Button send = null!, openFolder = null!, branch = null!, search = null!, changeButton = null!, preview = null!;
+        Button send = null!, openFolder = null!, branch = null!, changeButton = null!, preview = null!;
         Button websiteShortcut=null!;
         FrameworkElement composer = null!, sessionHeader = null!;
         Grid toolbar = null!; TextBlock viewerLabel = null!; Image stateMood = null!; string shownMood = "";
@@ -136,14 +140,12 @@ public sealed partial class MainWindow
         var transcript = new StackPanel { Spacing = 20, Margin = new Thickness(28, 32, 28, 20), MaxWidth = 820, HorizontalAlignment = HorizontalAlignment.Center };
         StackPanel? resultActions = null;
         var transcriptScroll = CodeScroll(transcript); bool followTail = true, pendingTranscriptTail = true;
-        // Built once: the magnifier is an animated icon, and Arrange only swaps between the two layouts.
-        var searchCompact = MotifIcon(Fluent.Motif.Find, 15);
-        var searchWide = Row(MotifIcon(Fluent.Motif.Find, 15), new TextBlock { Text = "Search files or commands", VerticalAlignment = VerticalAlignment.Center });
         // The shape of a file list while the project's files are being listed (added to the Files area below).
         var fileSkeleton = Fluent.Skeleton(.5, .72, .62, .8, .44, .68, .56); fileSkeleton.Margin = new Thickness(6, 8, 6, 0); fileSkeleton.Visibility = Visibility.Collapsed;
         // Behind the onboarding and intro states only, across the whole conversation area rather than the reading column.
         var welcomeArt = MasonryBackdrop(transcriptScroll); Grid.SetRow(welcomeArt, 1);
         // What the transcript showed last time, so only messages new to this session's view animate in (RenderTranscript).
+        var evidenceViews = new Dictionary<CodeTurn, (AcceptanceCheck[] Checks, AcceptanceResult[] Results, string? Revision, Expander View)>();
         CodeSession? shownSession = null; int shownTurns = 0; bool shownLive = false;
         var turnViews = new Dictionary<int, (string Key, UIElement View)>();
         (bool Continues, UIElement View, Border Body, string Text)? liveView = null;
@@ -168,7 +170,6 @@ public sealed partial class MainWindow
         var draft = new TextBox { PlaceholderText = "Describe a change, ask about the repo, or @ a file…", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 76, MaxHeight = 170, MaxLength = 16000, BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
         ToolTipService.SetToolTip(draft,"Build keeps the current task’s requirements across follow-ups. Type /new followed by a request to start a separate task.");
         AutomationProperties.SetName(draft, "Coding message"); ComposerBox(draft);
-        var references = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
         var reasoning = new ComboBox { ItemsSource = new[] { "Default", "Off", "Low", "Medium", "High" }, SelectedIndex = 0, MinWidth = 95 }; AutomationProperties.SetName(reasoning, "Coding reasoning");
         var agentMode = new ComboBox { ItemsSource = new[] { "Build", "Ask" }, SelectedIndex = 0, MinWidth = 85 };
         AutomationProperties.SetName(agentMode, "Coding mode"); ToolTipService.SetToolTip(agentMode, "Build performs workspace work. Ask explores without file writes or commands.");
@@ -278,7 +279,9 @@ public sealed partial class MainWindow
         followUpButtons=Row(Button("Steer",(_,_)=>SubmitFollowUp(true)),Button("Queue",(_,_)=>SubmitFollowUp(false)));
         followUpButtons.Visibility=Visibility.Collapsed;
         var composerFooter = Toolbar(composerHint, contextLink, Row(followUpButtons,send));
-        var composerBody = Stack(references, draft, composerTools, composerFooter, autoNotice);
+        reviewButton.HorizontalAlignment = HorizontalAlignment.Left;
+        reviewButton.Visibility = Visibility.Collapsed;
+        var composerBody = Stack(references, reviewButton, draft, composerTools, composerFooter, autoNotice);
         composerBody.Spacing = 8;
         // The composer floats above the transcript, with the window's shared soft shadow beneath it.
         var composerSurface = Fluent.Float(ChatSurface(composerBody, new Thickness(12, 8, 10, 10)), 24);
@@ -316,7 +319,10 @@ public sealed partial class MainWindow
         progressRow.Children.Add(Row(stateMood, spinner));
         Grid.SetColumn(state, 1);
         progressRow.Children.Add(state);
-        var stateRow = Toolbar(progressRow, stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow); Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
+        stateRow = Toolbar(progressRow, stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow); Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
+        void UpdateStatusRow() => stateRow.Visibility = session?.State == "Completed" && state.Text == session.Detail
+            ? Visibility.Collapsed : Visibility.Visible;
+        state.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) => UpdateStatusRow());
         var sessionTools=ChatIcon("Session settings","\uE713",(_,_)=>{});
         var attach=Button("Attach or detach a window",async (_,_)=>{
             if(session==null||codeOperation!=null||dialogOpen)return;
@@ -380,19 +386,18 @@ public sealed partial class MainWindow
         splitter.DragCompleted += (_, _) => Save();
         branch = Button("Repository", (_, _) => OpenTab("git", "", true)); branch.MaxWidth = 200;
         ToolTipService.SetToolTip(branch, "Repository information for the selected project; this does not switch folders.");
-        search = Button("Search files or commands", async (_, _) => await Search()); search.MaxWidth = 290;
         models.Visibility = Visibility.Collapsed;
-        // One toolbar row at every width: where you are on the left, find and viewer on the right.
+        // One toolbar row at every width: where you are on the left, preview and viewer on the right.
         // Labels shrink to icons in Arrange instead of wrapping onto a second row.
         toolbarLeft = Row(sideToggle, projectSwitcher, branch);
-        toolbarRight = Row(search, websiteShortcut,viewerToggle);
+        toolbarRight = Row(websiteShortcut,viewerToggle);
         toolbar = new Grid { ColumnSpacing = 8 };
         toolbar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         toolbar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         Grid.SetColumn(toolbarRight, 1);
         toolbar.Children.Add(toolbarLeft); toolbar.Children.Add(toolbarRight);
         Grid.SetColumnSpan(toolbar, 2);
-        openCodeSearch = async () => await Search();
+        codeSearchHits = WorkspaceSearch;
         // The title bar search opens projects and sessions, and adds projects, through these.
         openCodeSession = chosen => { if (codeOperation != null) { state.Text = "Finish or stop the current run before switching sessions."; return; } Navigate("Code"); if (chosen != session) Select(chosen); };
         openCodeProject = owner => { if (codeOperation != null) { state.Text = "Finish or stop the current run before switching projects."; return; } Navigate("Code"); if (owner != project) SelectProject(owner); };
@@ -478,8 +483,7 @@ public sealed partial class MainWindow
             projectMenu.Items.Clear();
             foreach(var owner in store.Projects)
             {
-                bool ambiguous=store.Projects.Count(p=>p.Name.Equals(owner.Name,StringComparison.OrdinalIgnoreCase))>1;
-                var item=new MenuFlyoutItem{Text=ambiguous?owner.Name+" · "+Path.GetDirectoryName(owner.Workspace):owner.Name,Icon=new FontIcon{Glyph="\uE8B7"},IsEnabled=codeOperation==null};
+                var item=new MenuFlyoutItem{Text=ProjectLabel(owner,store.Projects),Icon=new FontIcon{Glyph="\uE8B7"},IsEnabled=codeOperation==null};
                 ToolTipService.SetToolTip(item,owner.Workspace);item.Click+=(_,_)=>SelectProject(owner);projectMenu.Items.Add(item);
             }
             if(projectMenu.Items.Count>0)projectMenu.Items.Add(new MenuFlyoutSeparator());
@@ -571,41 +575,26 @@ public sealed partial class MainWindow
             gitStatus = observed; branch.Content = observed.Branch=="Folder workspace"?"Repository":observed.Branch; ToolTipService.SetToolTip(branch, observed.Detail);
             footerText.Text = (project?.Name??Path.GetFileName(owner.Workspace))+" · "+observed.Branch + " · Session saved locally"; RenderFiles();
         }
-        async Task Search()
+        IEnumerable<TitleHit> WorkspaceSearch()
         {
-            if (dialogOpen) return; dialogOpen = true; Action? chosen = null;
-            var input = new TextBox { PlaceholderText = "Search files, sessions or commands…", MinWidth = 420 };
-            AutomationProperties.SetName(input, "Search coding workspace");
-            var results = new ListView { MaxHeight = 420, IsItemClickEnabled = true, SelectionMode = ListViewSelectionMode.Single };
-            var commands = new Dictionary<string, Action> {
-                ["Command · Add project"] = async () => await OpenWorkspace(),
-                ["Command · Toggle projects panel"] = ToggleWorkspace,
-                ["Command · Models and connections"] = () => Navigate("Models and connections") };
-            if (session != null)
+            TitleHit Command(string name, Action run) => new("\uE756", name, "Command", () => { Navigate("Code"); run(); });
+            yield return Command("Toggle projects panel", ToggleWorkspace);
+            if (project is {} owner && codeOperation == null)
+                yield return Command("New session in " + ProjectLabel(owner, store.Projects), () => NewProjectSession(owner));
+            if (session == null) yield break;
+            yield return Command("Review session changes", () => OpenTab("changes", "", true));
+            yield return Command("View activity", () => OpenTab("activity", "", true));
+            yield return Command("View context checkpoints", () => OpenTab("context", "", true));
+            yield return Command("Repository status", () => OpenTab("git", "", true));
+            yield return Command("Open website", async () => await OpenWebsite());
+            if (session.Tabs.Count > 0) yield return Command("Toggle task viewer", ToggleViewer);
+            if (codeOperation == null)
             {
-                commands["Command · Delete selected session"] = async () => await DeleteSession();
-                commands["Command · Review session changes"] = () => OpenTab("changes", "", true);
-                commands["Command · View activity"] = () => OpenTab("activity", "", true);
-                commands["Command · View context checkpoints"] = () => OpenTab("context", "", true);
-                commands["Command · Repository status"] = () => OpenTab("git", "", true);
-                if (session.Tabs.Count > 0) commands["Command · Toggle task viewer"] = ToggleViewer;
+                yield return Command("Delete selected session", async () => await DeleteSession());
+                if (session.Messages.Count > 0) yield return Command("Compact context now", async () => await CompactContext());
             }
-            if (project != null && codeOperation == null) commands["Command · New session in "+project.Name] = () => NewProjectSession(project);
-            if (session?.Messages.Count > 0 && codeOperation == null) commands["Command · Compact context now"] = async () => await CompactContext();
-            foreach (var path in allFiles) commands["File · " + path] = () => OpenTab("file", path, true);
-            if(codeOperation==null)
-            {
-                foreach(var owner in store.Projects)commands["Project · "+owner.Name+" · "+owner.Workspace]=()=>SelectProject(owner);
-                foreach(var item in store.Sessions)commands["Session · "+(store.ProjectFor(item)?.Name??Path.GetFileName(item.Workspace))+" · "+item.Title+" · "+item.Id.ToString("N")[..6]]=()=>Select(item);
-            }
-            void Filter() { results.ItemsSource = commands.Keys.Where(k => k.Contains(input.Text, StringComparison.OrdinalIgnoreCase)).Take(80).ToArray(); results.SelectedIndex = 0; }
-            var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme, Title = "Search files and commands", Content = Stack(input, results), CloseButtonText = "Close" };
-            input.TextChanged += (_, _) => Filter();
-            results.ItemClick += (_, e) => { chosen = commands[e.ClickedItem.ToString()!]; dialog.Hide(); };
-            input.KeyDown += (_, e) => { if (e.Key == VirtualKey.Down) { e.Handled = true; results.Focus(FocusState.Keyboard); } else if (e.Key == VirtualKey.Enter && results.SelectedItem is string key) { e.Handled = true; chosen = commands[key]; dialog.Hide(); } };
-            results.KeyDown += (_, e) => { if (e.Key == VirtualKey.Enter && results.SelectedItem is string key) { e.Handled = true; chosen = commands[key]; dialog.Hide(); } };
-            dialog.Opened += (_, _) => input.Focus(FocusState.Programmatic); Filter();
-            try { await dialog.ShowAsync(); } finally { dialogOpen = false; } chosen?.Invoke();
+            foreach (var path in allFiles)
+                yield return new TitleHit("\uE8A5", path, "File", () => { Navigate("Code"); OpenTab("file", path, true); });
         }
         bool TrySaveCurrent()
         {
@@ -673,6 +662,7 @@ public sealed partial class MainWindow
         }
         void RenderReferences()
         {
+            SetReviewMenu(reviewButton, session, RenderReferences);
             references.Children.Clear();
             if (session == null) return;
             foreach (var path in session.References.ToArray())
@@ -686,7 +676,7 @@ public sealed partial class MainWindow
             // The composer cannot be used until a session exists. Give the empty
             // project state the space instead of showing a disabled input panel.
             composer.Visibility = sessionHeader.Visibility = session == null ? Visibility.Collapsed : Visibility.Visible;
-            ShowMood();
+            ShowMood(); UpdateStatusRow();
             double offset = transcriptScroll.VerticalOffset; transcript.Children.Clear(); emptyHost = null; resultActions = null;
             if (session == null || session.Turns.Count == 0)
             {
@@ -711,18 +701,28 @@ public sealed partial class MainWindow
             // between refreshes, so a message only animates in when it is new to this session's view, and streaming
             // only replaces the text inside the live message (its container, and its entrance, stay put).
             bool animateNew = shownSession == session;
-            if (!animateNew) { turnViews.Clear(); liveView = null; }
+            if (!animateNew) { turnViews.Clear(); evidenceViews.Clear(); liveView = null; }
             var keptViews = new Dictionary<int, (string Key, UIElement View)>();
             string previousRole = ""; bool activityShown = false; int segmentStart = 0, segmentEnd = session.Activities.Count;
+            CodeTurn? requestTurn = null;
+            void AddTurnEvidence()
+            {
+                if (requestTurn?.Acceptance is not { Checks.Count: > 0 } plan) return;
+                if (!evidenceViews.TryGetValue(requestTurn, out var cached) || cached.Revision != plan.VerifiedRevision ||
+                    !plan.Checks.SequenceEqual(cached.Checks) || !plan.Results.SequenceEqual(cached.Results))
+                    evidenceViews[requestTurn] = cached = (plan.Checks.ToArray(), plan.Results.ToArray(), plan.VerifiedRevision,
+                        CheckEvidence(plan, cached.View?.IsExpanded == true));
+                transcript.Children.Add(cached.View);
+            }
             for (int index = 0; index < session.Turns.Count; index++)
             {
                 var turn = session.Turns[index];
-                if (turn.Role == "user") { activityShown = false; segmentStart = turn.FirstActivity; segmentEnd = session.Turns.Skip(index + 1).FirstOrDefault(t => t.Role == "user")?.FirstActivity ?? session.Activities.Count; }
-                if (turn.Text.Length == 0) continue;
+                if (turn.Role == "user") { AddTurnEvidence(); requestTurn = turn; activityShown = false; segmentStart = turn.FirstActivity; segmentEnd = session.Turns.Skip(index + 1).FirstOrDefault(t => t.Role == "user")?.FirstActivity ?? session.Activities.Count; }
+                if (turn.Text.Length == 0 || (requestTurn?.Acceptance != null && turn.Role == "assistant" &&
+                    System.Text.RegularExpressions.Regex.IsMatch(turn.Text, @"^Completed · \d+ feature checks? passed · \d+ files? changed$"))) continue;
                 // Keep the opening intent; repeated file-read narration remains in activity/history.
                 if (turn.Role == "assistant" && activityShown && turn.ActivityCount == 1 && turn.FirstActivity < session.Activities.Count && session.Activities[turn.FirstActivity].Tool is "read_file" or "list_files" or "search_text") continue;
                 string viewKey = turn.Role + "|" + (turn.Role != previousRole) + "|" + turn.Text;
-                if (turn.Acceptance is {} plan) viewKey += $"|{plan.Checks.Count}|{plan.Results.Count}|{plan.Results.Count(r=>r.Passed)}";
                 if (!turnViews.TryGetValue(index, out var view) || view.Key != viewKey)
                 {
                     var body = CodeMarkdown(turn.Text, a => OpenTextArtifact(a));
@@ -739,20 +739,6 @@ public sealed partial class MainWindow
                         }
                         var content = Stack(speaker, body); content.Spacing = 10; container = content;
                     }
-                    if (turn.Acceptance is {} contract)
-                    {
-                        var lines = new StackPanel { Spacing=5 };
-                        foreach(var criterion in contract.Checks)
-                        {
-                            var observed=contract.Results.FirstOrDefault(r=>r.Check==criterion || System.Text.Json.JsonSerializer.Serialize(r.Check)==System.Text.Json.JsonSerializer.Serialize(criterion));
-                            var status=observed==null ? "Pending" : observed.Passed ? "Passed" : "Unverified";
-                            var item=CodeNote($"{status} · {criterion.Feature}\n{criterion.Kind} · {criterion.Path} · {criterion.Target} {criterion.Expected}\n{contract.RequirementIds.ElementAtOrDefault(criterion.Unit-1)} · {contract.VerifiedRevision?[..12] ?? "awaiting verification"}".Trim(),12);
-                            item.TextWrapping=TextWrapping.Wrap; lines.Children.Add(item);
-                        }
-                        var details=new Expander { Header=$"Feature checks · {contract.Results.Count(r=>r.Passed)}/{contract.Checks.Count} passed", Content=lines,
-                            HorizontalAlignment=HorizontalAlignment.Stretch, HorizontalContentAlignment=HorizontalAlignment.Stretch, Margin=new Thickness(40,8,0,0) };
-                        container=Stack(container,details);
-                    }
                     // A finished answer takes over from its live view in place, so it does not enter a second time.
                     if (animateNew && index >= shownTurns && !(turn.Role == "assistant" && shownLive)) FadeIn(container);
                     view = (viewKey, container);
@@ -765,6 +751,7 @@ public sealed partial class MainWindow
                     transcript.Children.Add(Toolbar(CodeNote(CodeProtocol.ActivitySummary(session.Activities.Skip(segmentStart).Take(segmentEnd - segmentStart))), CodeLink("View activity", (_, _) => OpenTab("activity", "", true)))); activityShown = true;
                 }
             }
+            AddTurnEvidence();
             if (session.State is not ("Running" or "Awaiting review"))
             {
                 resultActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
@@ -840,7 +827,7 @@ public sealed partial class MainWindow
                 {
                     if (!viewerEntries.TryGetValue(tab.Key, out var entry))
                     {
-                        entry = BuildCodeViewer(session!, tab, Save, () => { RenderTabs(); viewerChanged?.Invoke(); Save(); }, (kind, target) => OpenTab(kind, target, true)); viewerEntries[tab.Key] = entry;
+                        entry = BuildCodeViewer(session!, tab, Save, () => { RenderTabs(); viewerChanged?.Invoke(); Save(); }, (kind, target) => OpenTab(kind, target, true), RenderReferences); viewerEntries[tab.Key] = entry;
                     }
                     entry.Refresh?.Invoke(); desired.Add(entry.Tab);
                 }
@@ -860,10 +847,6 @@ public sealed partial class MainWindow
             bool anyProject = store.Projects.Count > 0;
             // Before the first project there is nothing to switch, search or view: onboarding gets the page.
             toolbar.Visibility = anyProject ? Visibility.Visible : Visibility.Collapsed;
-            UIElement searchContent = width < 1100 ? searchCompact : searchWide;
-            if (search.Content != searchContent) search.Content = searchContent;
-            search.MinHeight = 36; ToolTipService.SetToolTip(search, "Search files, sessions or commands");
-            AutomationProperties.SetName(search, "Search files or commands");
             viewerLabel.Visibility = width < 620 ? Visibility.Collapsed : Visibility.Visible;
             branch.MaxWidth = 180; branch.Visibility = width < 700 ? Visibility.Collapsed : Visibility.Visible;
             profiles.MinWidth=130;permissions.MinWidth=140;
@@ -940,7 +923,13 @@ public sealed partial class MainWindow
             DispatcherQueue.TryEnqueue(() => { refreshQueued = false; if (session == null) return;
                 // A first run renames "New session"; the project tree binds a snapshot, so rebuild it when the title changes.
                 if (title.Text != session.Title) { title.Text = session.Title; RenderProjects(); }
-                state.Text = session.Detail; context.Text = ContextCaption(session); ContextLabel(); RenderTranscript(); RenderTabs(); RenderFiles(); Arrange(); _ = RefreshWorkspaceFiles(session); });
+                state.Text = session.Detail; context.Text = ContextCaption(session); ContextLabel();
+                if (liveOwner == session && submittedDraft != null && session.Draft.Length == 0)
+                {
+                    if (draft.Text == submittedDraft) { updating = true; draft.Text = ""; updating = false; }
+                    submittedDraft = null; RenderReferences();
+                }
+                RenderTranscript(); RenderTabs(); RenderFiles(); Arrange(); _ = RefreshWorkspaceFiles(session); });
         }
         async Task<bool> Approve(CodeApproval request, CancellationToken cancellation)
         {
@@ -983,7 +972,7 @@ public sealed partial class MainWindow
         {
             if(liveEngine==null || session!=liveOwner || session==null)return;
             try{
-                liveEngine.SendWhileRunning(session,draft.Text,steer);draft.Text="";state.Text=steer?"Steering the current run":"Follow-up queued";
+                liveEngine.SendWhileRunning(session,draft.Text,steer,includeReview: true);draft.Text="";RenderReferences();state.Text=steer?"Steering the current run":"Follow-up queued";
             }catch(Exception error){state.Text=error.Message;}
         }
         async Task Send()
@@ -992,7 +981,7 @@ public sealed partial class MainWindow
             if (codeOperation != null || aiOperation != null) { state.Text = "Finish or stop the active AI operation first."; return; }
             if (session == null) { state.Text = "Open a workspace folder first."; return; }
             if (SelectedChatProfile(profiles) is not AiEndpointProfile profile) { state.Text = "Select a coding model from Models & endpoints."; return; }
-            string input = draft.Text.Trim(); if (input.Length == 0) return;
+            string input = draft.Text.Trim(); if (input.Length == 0 && session.ReviewComments.Count == 0) return;
             followTail = true; pendingTranscriptTail = true;
             var active = session; using var cancellation = new CancellationTokenSource(); codeOperation = cancellation; aiOperation = cancellation; draftSave.Stop(); Enable();
             try
@@ -1001,7 +990,8 @@ public sealed partial class MainWindow
                 var model = new CodeLocalModel(profile, key, active.Reasoning, value => { context.Text = value; }, progress: value => { active.Detail = value; if (active == session) state.Text = value; });
                 var engine = new CodeEngine(store, model, Approve, RefreshRun);
                 liveEngine=engine;liveOwner=active;Enable();
-                var task = engine.Run(active, input, cancellation.Token); updating = true; draft.Text = ""; updating = false;
+                submittedDraft = draft.Text;
+                var task = engine.Run(active, input, cancellation.Token, includeReview: true);
                 await task; updating = true; draft.Text = active.Draft; updating = false; RenderTranscript(); RenderTabs(); Arrange(); state.Text = active.Detail; title.Text = active.Title;
                 try
                 {
@@ -1016,7 +1006,7 @@ public sealed partial class MainWindow
                 catch (Exception error) { fileState.Text = "File listing refresh failed · " + error.Message; }
             }
             catch (Exception error) { state.Text = error.Message; }
-            finally { liveEngine=null;liveOwner=null;codeOperation = null; if (aiOperation == cancellation) aiOperation = null; Enable(); updating = true; draft.Text = active.Draft; RenderProjects(); updating = false; ShowMood(); footerText.Text = (project?.Name??Path.GetFileName(active.Workspace)) + " · Session saved locally"; Save(); }
+            finally { submittedDraft=null;liveEngine=null;liveOwner=null;RenderReferences();codeOperation = null; if (aiOperation == cancellation) aiOperation = null; Enable(); updating = true; draft.Text = active.Draft; RenderProjects(); updating = false; ShowMood(); footerText.Text = (project?.Name??Path.GetFileName(active.Workspace)) + " · Session saved locally"; Save(); }
         }
     }
 }

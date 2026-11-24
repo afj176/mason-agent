@@ -8,8 +8,7 @@ namespace Mason;
 
 public sealed partial class MainWindow : Window
 {
-    // Below this window width (in effective pixels) the sidebar collapses to an icon rail.
-    const double CompactShellWidth = 900;
+    readonly DropDownButton routeSwitcher = new();
 
     readonly Grid root = new() { RequestedTheme = ElementTheme.Default };
     readonly NavigationView nav = new()
@@ -18,7 +17,7 @@ public sealed partial class MainWindow : Window
         IsSettingsVisible = false,
         IsPaneToggleButtonVisible = false,
         PaneDisplayMode = NavigationViewPaneDisplayMode.Left,
-        OpenPaneLength = 228
+        IsPaneVisible = false
     };
     // One status line for the whole window. Pages may add their own context on the right.
     readonly TextBlock status = Muted("Ready", 12), pageContext = Muted("", 12);
@@ -72,13 +71,6 @@ public sealed partial class MainWindow : Window
         brandSystemColors.ColorValuesChanged += (_, _) => DispatcherQueue.TryEnqueue(ApplyWindowTheme);
         Fluent.FollowContrast(root, ApplyWindowTheme);
         Grid.SetRow(nav, 1); root.Children.Add(nav);
-        BuildNavigation();
-        nav.ItemInvoked += (_, e) =>
-        {
-            if (e.InvokedItemContainer is not NavigationViewItem { Tag: string route } item) return;
-            DispatcherQueue.TryEnqueue(() => Navigate(route));
-        };
-
         pages["Code"] = BuildCodeWorkspace();
         pages["Chat"] = BuildChatWorkspace();
         var endpoints = BuildAiConnections();
@@ -98,7 +90,6 @@ public sealed partial class MainWindow : Window
         nav.Content = BuildShell(content);
         Navigate("Code");
 
-        root.SizeChanged += (_, _) => ArrangeShell();
         root.KeyboardAccelerators.Add(Shortcut(VirtualKey.Escape, VirtualKeyModifiers.None, () => { codeOperation?.Cancel(); aiOperation?.Cancel(); }));
         root.KeyboardAccelerators.Add(Shortcut(VirtualKey.K, VirtualKeyModifiers.Control, FocusTitleSearch));
         AppWindow.Closing += async (_, e) =>
@@ -122,23 +113,23 @@ public sealed partial class MainWindow : Window
 
     Action<Guid>? openCodeWithModel;
 
-    void BuildNavigation()
+    FrameworkElement BuildRouteSwitcher()
     {
-        NavigationViewItem Item(string key, string label, string glyph, string tip, bool selectable = true)
+        var menu = new Flyout();
+        var choices = new StackPanel { Spacing = 4, MinWidth = 160 };
+        foreach (var route in new[] { "Code", "Chat", "Models and connections" })
         {
-            var item = new NavigationViewItem
-            {
-                Content = label, Tag = key, Icon = new FontIcon { Glyph = glyph },
-                Height = 40, MinHeight = 40, FontSize = 14, SelectsOnInvoked = selectable
-            };
-            AutomationProperties.SetName(item, label);
-            ToolTipService.SetToolTip(item, tip);
-            return BrandControl(item);
+            var choice = Button(route == "Models and connections" ? "Models & endpoints" : route,
+                (_, _) => { menu.Hide(); Navigate(route); });
+            choice.HorizontalAlignment = HorizontalAlignment.Stretch;
+            choice.HorizontalContentAlignment = HorizontalAlignment.Left;
+            choices.Children.Add(choice);
         }
-        nav.MenuItems.Add(Item("Code", "Code", "", "Projects, sessions, files and changes"));
-        nav.MenuItems.Add(Item("Chat", "Chat", "", "Conversations with a model, without a project"));
-        nav.FooterMenuItems.Add(Item("Models and connections", "Models & endpoints", "", "Local models and saved server connections"));
-        nav.PaneFooter = BuildThemeSwitch();
+        choices.Children.Add(BuildThemeSwitch());
+        menu.Content = choices;
+        routeSwitcher.Flyout = menu;
+        ToolTipService.SetToolTip(routeSwitcher, "Switch between Code, Chat and Models");
+        return BrandControl(routeSwitcher);
     }
 
     /// <summary>Content area above a slim status strip: window status on the left, page context on the right.</summary>
@@ -174,12 +165,6 @@ public sealed partial class MainWindow : Window
         Grid.SetRow(stripFrame, 2); shell.Children.Add(stripFrame);
         shellDivider.Child = shell;
         return shellDivider;
-    }
-
-    void ArrangeShell()
-    {
-        var mode = root.ActualWidth < CompactShellWidth ? NavigationViewPaneDisplayMode.LeftCompact : NavigationViewPaneDisplayMode.Left;
-        if (nav.PaneDisplayMode != mode) nav.PaneDisplayMode = mode;
     }
 
     /// <summary>The Auto / Light / Dark choice at the foot of the sidebar. It applies at once and is saved.</summary>
@@ -223,6 +208,7 @@ public sealed partial class MainWindow : Window
         if(name is "Models" or "AI connections") { selectResources?.Invoke(name == "AI connections" ? 2 : 0); name = "Models and connections"; }
         if(!pages.ContainsKey(name)) return;
         ShowPage(name);
-        nav.SelectedItem = nav.MenuItems.Concat(nav.FooterMenuItems).OfType<NavigationViewItem>().FirstOrDefault(x => Equals(x.Tag, name));
+        routeSwitcher.Content = name == "Models and connections" ? "Models" : name;
+        AutomationProperties.SetName(routeSwitcher, $"Switch workspace · {routeSwitcher.Content}");
     }
 }

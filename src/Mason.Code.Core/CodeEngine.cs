@@ -9,21 +9,28 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
     static string S(JsonElement a, string key) => a.GetProperty(key).GetString() ?? throw new ArgumentException(key + " must be text.");
     CancellationTokenSource? activeTurn;
     CodeSession? activeSession;
-    public void SendWhileRunning(CodeSession session,string text,bool steer)
+    public void SendWhileRunning(CodeSession session,string text,bool steer,bool includeReview = false)
     {
         if(activeSession!=session || activeTurn==null)throw new InvalidOperationException("No active turn in this session.");
-        text=text.Trim();
+        var review = includeReview ? session.ReviewComments.ToArray() : [];
+        if (review.Length > 0) CodeReviewComment.Validate(new CodeWorkspace(session.Workspace), review);
+        text=CodeReviewComment.Request(text, review).Trim();
         if(text.Length is 0 or >16000 || session.PendingInput.Count>=16)throw new ArgumentException("Use 1–16,000 characters and at most 16 pending messages.");
-        var message=new CodeFollowUp(Guid.NewGuid(),text,steer);
+        var message=new CodeFollowUp(Guid.NewGuid(),text,steer) { Review = review };
         session.PendingInput.Add(message);
-        try{store.Save(session);}catch{session.PendingInput.Remove(message);throw;}
+        if (includeReview) session.ReviewComments.Clear();
+        try{store.Save(session);}catch{session.PendingInput.Remove(message);session.ReviewComments.AddRange(review);throw;}
         if(steer)activeTurn.Cancel();
         changed();
     }
-    public async Task Run(CodeSession session,string input,CancellationToken cancellation)
+    public async Task Run(CodeSession session,string input,CancellationToken cancellation,bool includeReview = false)
     {
         if(activeSession!=null)throw new InvalidOperationException("This engine already has an active session.");
         if(session.Turns.Any(t=>t.RewindPending))throw new InvalidOperationException("Finish the pending turn rewind before starting more work.");
+        var review = includeReview ? session.ReviewComments.ToArray() : [];
+        if (review.Length > 0 && input.Trim().Equals("/queue", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Send the review comments separately from /queue.");
+        input = CodeReviewComment.Request(input, review);
         bool resumeQueue=input.Trim().Equals("/queue",StringComparison.OrdinalIgnoreCase);
         CodeFollowUp? Next()=>session.PendingInput.FirstOrDefault(m=>m.Steer)??session.PendingInput.FirstOrDefault();
         var next=resumeQueue?Next()??throw new InvalidOperationException("The input queue is empty."):null;
@@ -32,7 +39,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             do{
                 using var turn=CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 activeTurn=turn;
-                try{await RunTurn(session,next?.Text??input,turn.Token,next);}
+                try{await RunTurn(session,next?.Text??input,turn.Token,next,next?.Review ?? review);}
                 catch(OperationCanceledException) when(turn.IsCancellationRequested && !cancellation.IsCancellationRequested){session.State="Stopped";store.Save(session);}
                 activeTurn=null;
                 if(cancellation.IsCancellationRequested)return;
@@ -41,7 +48,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             }while(next!=null);
         }finally{activeTurn=null;activeSession=null;}
     }
-    async Task RunTurn(CodeSession session,string input,CancellationToken cancellation,CodeFollowUp? followUp)
+    async Task RunTurn(CodeSession session,string input,CancellationToken cancellation,CodeFollowUp? followUp,CodeReviewComment[] review)
     {
         // WinUI TextBox uses CR for paragraph breaks, while files and API callers use LF or CRLF.
         input=input?.ReplaceLineEndings("\n")??"";
@@ -62,17 +69,37 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         bool refreshInventory = false;
         var references = session.References.Select(p => { var file = scope.Read(p); return new { file.Path, file.Content, file.Sha256, instructions = scope.Instructions(p) }; }).ToArray();
         int firstActivity = session.Activities.Count;
-        var user = new CodeTurn { Text = input, FirstActivity = firstActivity }; session.Turns.Add(user);
-        if(followUp!=null)session.PendingInput.RemoveAll(m=>m.Id==followUp.Id);
+        if (followUp == null) CodeReviewComment.Validate(scope, review);
+        var beforeSubmission = (session.Title, session.ViewerDismissed, session.Draft, session.State, session.Detail, session.Updated);
+        int queueIndex = followUp == null ? -1 : session.PendingInput.FindIndex(m => m.Id == followUp.Id);
+        var user = new CodeTurn { Text = input, FirstActivity = firstActivity, SubmittedReview = review }; session.Turns.Add(user);
+        if(queueIndex >= 0) session.PendingInput.RemoveAt(queueIndex);
         string? handoff = newTask ? "The user explicitly started a new task. The current request defines its requirements." : session.State is "Blocked" or "Interrupted" or "Failed" or "Stopped" or "Needs verification"
             ? $"Previous run: {session.State}. Current workspace root: '.'. Use the current file inventory to resume. " +
               (listing.RootIsOnlyDirectory && listing.Files.Length == 0 ? "The selected project exists and is empty. Create the requested files here using bare filenames." : "")
             : null;
-        session.Messages.Add(new("user", handoff == null ? JsonSerializer.Serialize(new { request = input, references })
+        session.Messages.Add(new("user", review.Length > 0 ? JsonSerializer.Serialize(new {
+            request = input, references, host_resume_context = handoff,
+            review_comments = review.Select(c => new { c.Path, c.Line, side = c.Original ? "original" : "updated", Quote = c.Quote.Length <= 1500 ? c.Quote : c.Quote[..1500], quote_truncated = c.Quote.Length > 1500, revision_at_submission = c.Revision, feedback = c.Note }),
+            review_context = "Quoted source is a snapshot. Read the current file before making edits."
+        }) : handoff == null ? JsonSerializer.Serialize(new { request = input, references })
             : JsonSerializer.Serialize(new { request = input, references, host_resume_context = handoff })));
         if (session.Title == "New session") session.Title = input.Length > 55 ? input[..55] + "…" : input;
         session.ViewerDismissed = false;
-        session.Draft = ""; session.State = "Running"; session.Detail = "Preparing workspace context…"; Save();
+        session.Draft = ""; session.State = "Running"; session.Detail = "Preparing workspace context…";
+        if (followUp == null) session.ReviewComments.RemoveAll(c => review.Any(sent => sent.Id == c.Id));
+        session.Updated = DateTimeOffset.UtcNow;
+        try { store.Save(session); }
+        catch
+        {
+            session.Turns.Remove(user);
+            session.Messages.RemoveAt(session.Messages.Count - 1);
+            if (queueIndex >= 0) session.PendingInput.Insert(queueIndex, followUp!);
+            if (followUp == null) session.ReviewComments.AddRange(review);
+            (session.Title, session.ViewerDismissed, session.Draft, session.State, session.Detail, session.Updated) = beforeSubmission;
+            throw;
+        }
+        changed();
         int repairs = 0, completionCorrections = 0, repeatedActions = 0, pathErrors = 0;
         CodeAction? lastAction = null;
         string? previousReadResult = null;

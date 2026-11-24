@@ -77,6 +77,7 @@ internal static class ModernHarnessChecks
         await engine.Run(chat,"/queue",default);
         Require(chat.PendingInput.Count==0 && chat.Turns.Any(t=>t.Text=="saved follow-up"),"Explicit resume consumes a saved follow-up");
 
+        await ReviewWorkspaceChecks.Run(Path.Combine(area, "review"), Require);
         var fixture=edits.Create("shift.js","// policy\nconst LIMIT = 17;\n");
         foreach(var finding in new[]{new WorkerFinding("17","untouched.txt",2,"17"),new WorkerFinding("17","shift.js",1,"17")}){
             try{await CodeInvestigation.Run(edits,new Worker(()=>[finding]),"What is the limit?",[fixture.Path],default);throw new Exception("Invalid citation accepted");}

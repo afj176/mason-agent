@@ -11,13 +11,36 @@ public sealed partial class MainWindow
 {
     sealed record CodeProjectItem(CodeProject Project,CodeSession? Session=null,bool NewSession=false,string? Label=null)
     {
-        public string Name=>NewSession?"New session":Session?.Title??Label??Project.Name;
+        public string Name=>NewSession?"New session":Session?.Title??Project.Name;
+        public Visibility QualifierVisibility => string.IsNullOrEmpty(Label) ? Visibility.Collapsed : Visibility.Visible;
         public string Glyph=>NewSession?"\uE710":Session==null?"\uE8B7":"\uE8BD";
         public double TextSize=>Session==null&&!NewSession?14:13;
         public Windows.UI.Text.FontWeight Weight=>Session==null&&!NewSession?Microsoft.UI.Text.FontWeights.SemiBold:Microsoft.UI.Text.FontWeights.Normal;
         public string Description=>NewSession?"New session in "+Project.Name:Session==null?Project.Workspace:Session.Title+"\n"+Project.Workspace+"\n"+Session.State;
-        public override string ToString()=>Name;
+        public override string ToString()=>string.IsNullOrEmpty(Label) ? Name : Name+" · "+Label;
     }
+    static string ProjectQualifier(CodeProject project, IEnumerable<CodeProject> projects)
+    {
+        var others = projects.Where(p => p.Id != project.Id && p.Name.Equals(project.Name, StringComparison.OrdinalIgnoreCase))
+            .Select(p => System.IO.Path.GetDirectoryName(p.Workspace) ?? p.Workspace).ToArray();
+        if (others.Length == 0) return "";
+        var parent = System.IO.Path.GetDirectoryName(project.Workspace) ?? project.Workspace;
+        var parts = parent.Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        for (int n = 1; n <= parts.Length; n++)
+        {
+            var suffix = string.Join("\\", parts.TakeLast(n));
+            if (!others.Any(path => path.Equals(suffix, StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith("\\" + suffix, StringComparison.OrdinalIgnoreCase))) return suffix;
+        }
+        return parent;
+    }
+
+    static string ProjectLabel(CodeProject project, IEnumerable<CodeProject> projects)
+    {
+        var qualifier = ProjectQualifier(project, projects);
+        return qualifier.Length == 0 ? project.Name : project.Name + " · " + qualifier;
+    }
+
     static TreeView CodeProjectNavigation()
     {
         var tree=new TreeView{SelectionMode=TreeViewSelectionMode.Single,HorizontalContentAlignment=HorizontalAlignment.Stretch};
@@ -27,7 +50,8 @@ public sealed partial class MainWindow
               <Grid ColumnSpacing="8" Padding="0,3" ToolTipService.ToolTip="{Binding Content.Description}">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="22"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <FontIcon Glyph="{Binding Content.Glyph}" FontSize="14" Opacity=".8"/>
-                <TextBlock Grid.Column="1" Text="{Binding Content.Name}" FontSize="{Binding Content.TextSize}" FontWeight="{Binding Content.Weight}" TextTrimming="CharacterEllipsis" MaxLines="1" VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock Text="{Binding Content.Name}" FontSize="{Binding Content.TextSize}" FontWeight="{Binding Content.Weight}" TextTrimming="CharacterEllipsis" MaxLines="1" VerticalAlignment="Center"/>
+                <TextBlock Text="{Binding Content.Label}" Visibility="{Binding Content.QualifierVisibility}" FontSize="12" TextWrapping="Wrap" Opacity=".8"/></StackPanel>
               </Grid>
             </DataTemplate>
             """);
@@ -38,9 +62,7 @@ public sealed partial class MainWindow
         tree.SelectedNode=null;tree.RootNodes.Clear();TreeViewNode? selection=null;
         foreach(var project in store.Projects)
         {
-            bool ambiguous=store.Projects.Count(p=>p.Name.Equals(project.Name,StringComparison.OrdinalIgnoreCase))>1;
-            string label=ambiguous?project.Name+" · "+System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(project.Workspace)):project.Name;
-            var group=new TreeViewNode{Content=new CodeProjectItem(project,Label:label),IsExpanded=project.Expanded};
+            var group=new TreeViewNode{Content=new CodeProjectItem(project,Label:ProjectQualifier(project,store.Projects)),IsExpanded=project.Expanded};
             if(selected==null&&store.SelectedProject?.Id==project.Id)selection=group;
             foreach(var session in store.SessionsFor(project.Id))
             {
