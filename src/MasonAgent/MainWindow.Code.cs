@@ -436,6 +436,20 @@ public sealed partial class MainWindow
         void Shortcuts() { workspaceShortcut.IsEnabled = page.Visibility == Visibility.Visible; viewerShortcut.IsEnabled = page.Visibility == Visibility.Visible && session?.Tabs.Count > 0; }
         deleteSession.Click += async (_, _) => await DeleteSession();
         projectMenu.Opening+=(_,_)=>RefreshProjectMenu();
+        sessions.ContextRequested += (_, e) =>
+        {
+            bool pointer = e.TryGetPosition(sessions, out var point);
+            var source = e.OriginalSource as DependencyObject;
+            while (source != null && source != sessions && source is not TreeViewItem)
+                source = VisualTreeHelper.GetParent(source);
+            var node = source is TreeViewItem row ? sessions.NodeFromContainer(row) : pointer ? null : sessions.SelectedNode;
+            if (node?.Content is not CodeProjectItem { Session: null } item) return;
+            var menu = Fluent.Acrylic(new MenuFlyout());
+            menu.Items.Add(RemoveProjectItem(item.Project));
+            if (pointer) menu.ShowAt(sessions, point);
+            else menu.ShowAt(source as FrameworkElement ?? sessions);
+            e.Handled = true;
+        };
         sessions.ItemInvoked+=(_,e)=>
         {
             if(updating||codeOperation!=null||(e.InvokedItem as TreeViewNode)?.Content is not CodeProjectItem item)return;
@@ -590,6 +604,38 @@ public sealed partial class MainWindow
                 if(session.Experiment!=null){var compare=new MenuFlyoutItem{Text="Review experiment patch"};compare.Click+=(_,_)=>OpenTab("experiment","",true);projectMenu.Items.Add(compare);}
             }
             var add=new MenuFlyoutItem{Text="Add project…",Icon=new FontIcon{Glyph="\uE710"},IsEnabled=codeOperation==null};add.Click+=async(_,_)=>await OpenWorkspace();projectMenu.Items.Add(add);
+            if (project != null) projectMenu.Items.Add(RemoveProjectItem(project));
+        }
+        MenuFlyoutItem RemoveProjectItem(CodeProject target)
+        {
+            var item = new MenuFlyoutItem { Text = "Remove project from Mason…", IsEnabled = codeOperation == null };
+            item.Click += async (_, _) => await RemoveProject(target);
+            return item;
+        }
+        async Task RemoveProject(CodeProject target)
+        {
+            if (codeOperation != null || dialogOpen) return;
+            dialogOpen = true;
+            try
+            {
+                var dialog = new ContentDialog
+                {
+                    XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme,
+                    Title = $"Remove {target.Name} from Mason?",
+                    Content = Stack(CodeNote(target.Workspace),
+                        Text("Your files stay on disk. Add this folder again to restore its sessions and project notes.", 14)),
+                    PrimaryButtonText = "Remove from Mason", CloseButtonText = "Cancel",
+                    DefaultButton = ContentDialogButton.Close
+                };
+                if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+                bool current = project?.Id == target.Id;
+                if (current && !TrySaveCurrent()) return;
+                store.RemoveProject(target.Id);
+                if (current) Select(store.SelectedSession, store.SelectedProject, selectionSaved: true);
+                else RenderProjects();
+            }
+            catch (Exception error) { state.Text = "Could not remove the project from Mason · " + error.Message; }
+            finally { dialogOpen = false; Enable(); }
         }
         void SelectProject(CodeProject owner)=>Select(store.LastSession(owner.Id),owner);
         void NewProjectSession(CodeProject owner)
@@ -664,7 +710,10 @@ public sealed partial class MainWindow
             TitleHit Command(string name, Action run) => new("\uE756", name, "Command", () => { Navigate("Code"); run(); });
             yield return Command("Toggle projects panel", ToggleWorkspace);
             if (project is {} owner && codeOperation == null)
+            {
                 yield return Command("New session in " + ProjectLabel(owner, store.Projects), () => NewProjectSession(owner));
+                yield return Command("Remove project from Mason · " + ProjectLabel(owner, store.Projects), async () => await RemoveProject(owner));
+            }
             if (session == null) yield break;
             foreach (var view in Enum.GetValues<CodeWorkspaceView>())
                 yield return Command(view + " view", () => SelectView(view));
@@ -703,12 +752,12 @@ public sealed partial class MainWindow
             catch (Exception error) { state.Text = "Models unavailable · " + error.Message; }
             finally { updating = false; }
         }
-        async void Select(CodeSession? selected,CodeProject? selectedProject=null)
+        async void Select(CodeSession? selected,CodeProject? selectedProject=null,bool selectionSaved=false)
         {
             if (codeOperation != null) return;
-            draftSave.Stop();if(!TrySaveCurrent())return;
+            draftSave.Stop();if(!selectionSaved && !TrySaveCurrent())return;
             var owner=selected==null?selectedProject??store.SelectedProject:store.ProjectFor(selected);
-            try{if(owner!=null)store.ActivateProject(owner.Id,selected?.Id);}catch(Exception error){state.Text="Project switch failed · "+error.Message;return;}
+            try{if(!selectionSaved && owner!=null)store.ActivateProject(owner.Id,selected?.Id);}catch(Exception error){state.Text="Project switch failed · "+error.Message;return;}
             foreach (var entry in viewerEntries.Values) entry.Dispose(); viewerEntries.Clear();
             reviewDesk?.Dispose(); reviewDesk = null; reviewHost.Content = null;
             session = selected;project=owner; updating = true; pendingTranscriptTail = true; followTail = true;

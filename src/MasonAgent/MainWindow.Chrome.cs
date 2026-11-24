@@ -101,7 +101,8 @@ public sealed partial class MainWindow
                 hits.Add(new("", ProjectLabel(project, store.Projects), "Project", () => openCodeProject?.Invoke(project)));
             foreach (var session in store.Sessions.OrderByDescending(s => s.Updated))
             {
-                var owner = store.ProjectFor(session) is {} project ? ProjectLabel(project, store.Projects) : System.IO.Path.GetFileName(session.Workspace);
+                if (store.ProjectFor(session) is not {} project) continue;
+                var owner = ProjectLabel(project, store.Projects);
                 hits.Add(new("", session.Title + " · " + owner, "Session", () => openCodeSession?.Invoke(session)));
             }
         }
