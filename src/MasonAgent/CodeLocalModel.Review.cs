@@ -6,7 +6,7 @@ using Mason.Code;
 
 namespace Mason;
 
-public sealed partial class CodeLocalModel : ICodeInvestigator, IDesktopVision
+public sealed partial class CodeLocalModel : ICodeInvestigator, IDesktopVision, IReviewPrediction
 {
     public async Task<PixelDecision> See(string task,DesktopFrame frame,bool observeOnly,CancellationToken ct)
     {
@@ -194,6 +194,12 @@ public sealed partial class CodeLocalModel : ICodeInvestigator, IDesktopVision
         return confirmed.ToArray();
     }
     sealed record ReviewVerdict(string Evidence,string Verdict);
+    public Task<ReviewPrediction> Predict(ReviewFinding finding,IReadOnlyDictionary<string,AcceptanceCheck> cases,CancellationToken ct)
+    {
+        var scenarioAssertions=cases.Select(pair=>new{Id=pair.Key,pair.Value.Feature,InputsAndAssertions=pair.Value.Steps});
+        return IsolatedDecision<ReviewPrediction>("You wrote this bug report. Predict a specific existing acceptance scenario that MUST fail if your reported bug is real. The scenario must supply ALL the triggering inputs and measure the claimed incorrect outcome directly. Choose uncovered for concurrency, conditions, or behaviors the scenario does not exercise. Explain the predicted failed assertion. A fresh browser and database will run your prediction.",new{bugReport=finding,scenarioAssertions},
+            Shape(("Reason",Str(400)),("Assertion",EnumOf(cases.Keys.Prepend("uncovered").ToArray()))),ct);
+    }
     public Task<CatalogSpec> ExtractCatalog(string request,CancellationToken ct)
     {
         var number=new{type="number",minimum=0};

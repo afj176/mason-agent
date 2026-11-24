@@ -515,7 +515,12 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     try{
                         var brief=plan.Request.Split("```mason.acceptance.json",2)[0]+"\nObserved behavior on this revision:\n"+CodeAcceptance.Receipt(plan);
                         var findings=await CodeChangeReview.Review(codeReviewer,brief,[new(change.Path,change.Before,current.Content,current.Sha256)],cancellation);
-                        if(scope.Read(change.Path).Sha256!=current.Sha256)throw new InvalidDataException("Source changed during review.");
+                        if(findings.Length>0 && codeReviewer is IReviewPrediction predictor)
+                            findings=await ReproduceFindings(plan,predictor,findings);
+                        if(scope.Read(change.Path).Sha256!=current.Sha256 || plan.VerifiedRevision!=CodeRevision.Measure(scope,plan,cancellation)){
+                            plan.VerifiedRevision=null;
+                            throw new InvalidDataException("Verification inputs changed during review. Verify the current revision again.");
+                        }
                         receipt.Result=JsonSerializer.Serialize(findings);receipt.State=findings.Length==0?"Completed":"Failed";
                         if(findings.Length>0)throw new InvalidDataException("Independent code review found a defect: "+receipt.Result);
                     }catch(Exception e){receipt.State="Failed";receipt.Result=e.Message;throw;}finally{Save();}
@@ -541,6 +546,28 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 activity.Result=JsonSerializer.Serialize(additional);activity.State="Completed";Save();
                 await CodeAcceptance.Verify(plan,scope,session.Permission,cancellation,approved);
             }catch(Exception e){activity.State="Failed";activity.Result=e.Message;Save();throw;}
+        }
+        async Task<ReviewFinding[]> ReproduceFindings(CodeAcceptancePlan plan,IReviewPrediction predictor,ReviewFinding[] findings)
+        {
+            // Only pinned, individual scenarios with observable assertions can adjudicate a prediction.
+            // Uncovered counterexamples stay blocking. Each replay starts with a fresh app and browser.
+            var cases=plan.Checks.Where(c=>c.Kind=="browser_flow" && c.Steps is {Length:>0} && c.FromContract)
+                .Select((check,index)=>(key:"case-"+(index+1),check)).ToDictionary(x=>x.key,x=>x.check);
+            if(cases.Count==0)return findings;
+            var unresolved=new List<ReviewFinding>();
+            var observations=new Dictionary<AcceptanceCheck,AcceptanceResult>();
+            foreach(var finding in findings){
+                var prediction=await predictor.Predict(finding,cases,cancellation);
+                if(!cases.TryGetValue(prediction.Assertion,out var scenario)){unresolved.Add(finding);continue;}
+                if(!observations.TryGetValue(scenario,out var outcome)){
+                    outcome=(await CodeBrowserVerification.Run(scope,[scenario],cancellation))[scenario];
+                    observations.Add(scenario,outcome);
+                }
+                session.Activities.Add(new(){Tool="source_review_replay",State=outcome.Passed?"Completed":"Failed",
+                    Arguments=JsonSerializer.Serialize(new{finding,prediction,scenario.Target}),Result=outcome.Detail});Save();
+                if(!outcome.Passed)unresolved.Add(finding);
+            }
+            return unresolved.ToArray();
         }
         void QueueBrowserRepair(CodeAcceptancePlan plan)
         {

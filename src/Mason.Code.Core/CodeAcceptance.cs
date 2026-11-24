@@ -6,6 +6,7 @@ namespace Mason.Code;
 public sealed record AcceptanceCheck(int Unit, string Feature, string Kind, string Path, string Target, string Expected)
 {
     public BrowserStep[]? Steps {get;init;}
+    public bool FromContract {get;init;}
     public string? Application {get;init;}
 }
 public sealed record AcceptanceResult(AcceptanceCheck Check, bool Passed, string Detail)
@@ -116,7 +117,7 @@ public static class CodeAcceptance
             if(!block.EndsWith("\n```",StringComparison.Ordinal))throw new InvalidDataException("Close the acceptance contract with a final triple-backtick line.");
             var contract=BrowserContract.Parse(scope,block[..^3].Trim());
             plan.Units=contract.Scenarios.Select(s=>s.Requirement).ToArray();
-            plan.Checks=contract.Scenarios.Select((s,i)=>new AcceptanceCheck(i+1,s.Requirement,"browser_flow",s.Page,s.Id,"All scenario assertions pass"){Steps=s.Steps,Application=contract.Application}).ToList();
+            plan.Checks=contract.Scenarios.Select((s,i)=>new AcceptanceCheck(i+1,s.Requirement,"browser_flow",s.Page,s.Id,"All scenario assertions pass"){Steps=s.Steps,Application=contract.Application,FromContract=true}).ToList();
             return plan;
         }
         if(CodeStorefrontPlan.Applies(request,files,model) && await CodeStorefrontPlan.Prepare(request,(ICodeCatalogPlanner)model,ct) is {} catalog)return catalog;
@@ -134,7 +135,7 @@ public static class CodeAcceptance
                 if(whole) plan.Units=contract.Scenarios.Select(s=>s.Requirement).ToArray();
                 for(int i=0;i<plan.Units.Length;i++)
                     foreach(var scenario in contract.Scenarios.Where(s=>s.Requirement.TrimEnd('.').Equals(plan.Units[i].TrimEnd('.'),StringComparison.OrdinalIgnoreCase)))
-                        repositoryChecks.Add(new(i+1,scenario.Requirement,"browser_flow",scenario.Page,scenario.Id,"All scenario assertions pass"){Steps=scenario.Steps,Application=contract.Application});
+                        repositoryChecks.Add(new(i+1,scenario.Requirement,"browser_flow",scenario.Page,scenario.Id,"All scenario assertions pass"){Steps=scenario.Steps,Application=contract.Application,FromContract=true});
                 if(repositoryChecks.Count>0) plan.ContractHash=pinned.Sha256;
             }
             catch(Exception e) when (e is JsonException or InvalidDataException or ArgumentException or IOException)

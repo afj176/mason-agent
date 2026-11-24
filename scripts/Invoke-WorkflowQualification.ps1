@@ -113,6 +113,11 @@ foreach ($index in 0,1) {
         if($LASTEXITCODE){throw "Native-window visual qualification failed for $id."}
         $visual=Get-Content "$area/visual.json" -Raw | ConvertFrom-Json
     }
+}
+foreach ($index in 0,1) {
+    $server=@($Endpoint,$SecondaryEndpoint)[$index]
+    $id=$models[$index].Id
+    $area=Join-Path $output "model-$index"
     foreach ($round in 1,2) {
         foreach ($brief in 'brief','plain-rules') {
             Write-Host "Building $brief (round $round) with $id"

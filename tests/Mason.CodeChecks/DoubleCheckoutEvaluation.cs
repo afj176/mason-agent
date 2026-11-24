@@ -16,7 +16,11 @@ internal static class DoubleCheckoutEvaluation
             [new("double_click","#buy"),new("text","#done","2"),new("capture","#receipt","ORD-"),new("reload"),new("same","#receipt"),
              new("response_count","POST /checkout","2"),new("sqlite_count","orders.sqlite#orders","1"),new("response_same","POST /checkout","id")]);
         var policy=new BrowserScenario("policy","Keep the pickup policy working","index.html",[new("click","#policy"),new("text","#terms","Local pickup")]);
-        var contract=new BrowserContract(1,"store:application",[scenario,policy]);
+        var separate=new BrowserScenario("separate","Separate baskets get distinct orders","index.html",
+            [new("click","#buy"),new("text","#done","1"),new("capture","#receipt","ORD-"),new("click","#next"),
+             new("click","#buy"),new("text","#done","1"),new("response_count","POST /checkout","2"),
+             new("sqlite_count","orders.sqlite#orders","2"),new("new_id","#receipt","ORD-")]);
+        var contract=new BrowserContract(1,"store:application",[scenario,separate,policy]);
         var broken=scope.Create("store.py",good.Replace("WHERE request_key = ?","WHERE id = ?"));
         var request="Fix double checkout: two submissions of one basket must return the same receipt and commit one order. Separate baskets must get distinct orders. Preserve existing features. Clicking the button \"Show policy\" must show \"Local pickup\".\n```mason.acceptance.json\n"+JsonSerializer.Serialize(contract)+"\n```";
         using var store=new CodeStore(Path.Combine(area,"profile"));
@@ -43,6 +47,12 @@ internal static class DoubleCheckoutEvaluation
             new("click","#next"),new("double_click","#buy"),new("text","#done","2"),new("new_id","#receipt","ORD-"),new("reload"),new("same","#receipt"),
             new("response_count","POST /checkout","4"),new("sqlite_count","orders.sqlite#orders","2")]};
         var holdout=(await CodeBrowserVerification.Run(scope,[extra],timeout.Token))[extra];
+        var collapsed=new CodeWorkspace(Directory.CreateDirectory(Path.Combine(area,"collapsed-control")).FullName);
+        collapsed.Create("index.html",html.Content);
+        collapsed.Create("store.py",good.Replace("WHERE request_key = ?","WHERE ? IS NOT NULL"));
+        var separateCheck=plan.Checks.Single(c=>c.Target=="separate");
+        var control=(await CodeBrowserVerification.Run(collapsed,[separateCheck],timeout.Token))[separateCheck];
+        bool caughtReuse=!control.Passed && control.Detail.Contains("expected 2, observed 1 committed rows");
         var initial=session.Activities.First(a=>a.Tool=="acceptance_checks");
         bool conflict=session.Activities.Any(a=>a.Tool=="replace_file" && a.State=="Failed" && a.Result.Contains("file changed",StringComparison.OrdinalIgnoreCase));
         bool refreshed=session.Activities.Any(a=>a.Tool=="replace_file" && a.State=="Completed" && a.Arguments.Contains(concurrentHash??"no concurrent hash"));
@@ -51,10 +61,10 @@ internal static class DoubleCheckoutEvaluation
             LabelPreserved=scope.Read("store.py").Content.Contains(label),UntouchedPage=scope.Read("index.html").Sha256==html.Sha256,
             SourceReviewed=session.Activities.Any(a=>a.Tool=="independent_source_review" && a.State=="Completed"),
             Verified=plan.Results.All(r=>r.Passed) && plan.VerifiedRevision!=null && plan.IndependentReviewPage=="index.html",
-            DatabaseIsolated=!File.Exists(Path.Combine(root,"orders.sqlite")),HoldoutPassed=holdout.Passed,Holdout=holdout.Detail,Results=plan.Results};
+            DatabaseIsolated=!File.Exists(Path.Combine(root,"orders.sqlite")),CaughtReusedOrder=caughtReuse,CollapsedControl=control.Detail,HoldoutPassed=holdout.Passed,Holdout=holdout.Detail,Results=plan.Results};
         File.WriteAllText(Path.Combine(area,"double-checkout.json"),JsonSerializer.Serialize(result,new JsonSerializerOptions{WriteIndented=true}));
         if(calls<1 || session.State!="Completed" || !result.CaughtDuplicate || !conflict || !refreshed || !result.LabelPreserved ||
-            !result.UntouchedPage || !result.SourceReviewed || !result.Verified || !result.DatabaseIsolated || !holdout.Passed)
+            !result.UntouchedPage || !result.SourceReviewed || !result.Verified || !result.DatabaseIsolated || !holdout.Passed || !caughtReuse)
             throw new InvalidDataException("Double-checkout qualification failed. See "+area);
     }
 }

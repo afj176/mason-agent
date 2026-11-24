@@ -2,6 +2,11 @@ namespace Mason.Code;
 
 public sealed record ReviewSource(string Path,string? Before,string Current,string Hash);
 public sealed record ReviewFinding(string Path,int Line,string Evidence,string Problem);
+public sealed record ReviewPrediction(string Assertion,string Reason);
+public interface IReviewPrediction
+{
+    Task<ReviewPrediction> Predict(ReviewFinding finding,IReadOnlyDictionary<string,AcceptanceCheck> cases,CancellationToken ct);
+}
 public interface ICodeChangeReviewer
 {
     Task<ReviewFinding[]> ReviewChanges(string request,IReadOnlyList<ReviewSource> files,CancellationToken ct);

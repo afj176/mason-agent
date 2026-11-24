@@ -25,15 +25,17 @@ foreach ($identity in $r.Models) {
     $double=@($r.DoubleCheckouts|Where-Object Model -CEQ $id)
     Assert-That ($double.Count -eq 1 -and $double[0].Calls -gt 0 -and $double[0].State -ceq 'Completed') "$id double submission repair"
     $d=$double[0]
-    foreach ($field in 'CaughtDuplicate','StaleRejected','FreshHashUsed','LabelPreserved','UntouchedPage','SourceReviewed','Verified','DatabaseIsolated','HoldoutPassed'){
+    foreach ($field in 'CaughtDuplicate','CaughtReusedOrder','StaleRejected','FreshHashUsed','LabelPreserved','UntouchedPage','SourceReviewed','Verified','DatabaseIsolated','HoldoutPassed'){
         Assert-That ($d.$field -is [bool] -and $d.$field) "$id cross-layer checkout / $field"
     }
     Assert-That ($d.Baseline.Contains('observed 2 committed rows') -and $d.Holdout.Contains('response_count POST /checkout = 4') -and $d.Holdout.Contains('sqlite_count orders.sqlite#orders = 2') -and $d.Holdout.Contains('390px and 1280px')) "$id independent two-basket count"
     $main=@($d.Results|Where-Object {$_.Check.Target -ceq 'double' -and $_.Passed -eq $true})
     Assert-That ($main.Count -eq 1 -and $main[0].Detail.Contains('2 responses matched ORD-') -and $main[0].Detail.Contains('sqlite_count orders.sqlite#orders = 1')) "$id repeated receipt and single committed row"
+    Assert-That ($d.CollapsedControl.Contains('expected 2, observed 1 committed rows') -and @($d.Results|Where-Object {$_.Check.Target -ceq 'separate' -and $_.Passed -eq $true -and $_.Detail.Contains('sqlite_count orders.sqlite#orders = 2')}).Count -eq 1) "$id cross-basket order reuse"
     $jobs=@($r.Workers|Where-Object Model -CEQ $id)
     Assert-That ($jobs.Count -eq 1 -and $jobs[0].Calls -gt 0 -and $jobs[0].SourceHash -cmatch '^[a-f0-9]{64}$') "$id delegated worker"
     $w=$jobs[0]
+    Assert-That ($w.ReceivedFinding -eq $true) "$id parent received worker result"
     Assert-That (@($w.Findings|Where-Object {$_.Path -ceq 'policy.js' -and $_.Line -eq 2 -and $_.Quote.Contains([string]$w.Limit) -and $_.Answer.Contains([string]$w.Limit)}).Count -gt 0) "$id worker source citation"
     Assert-That (![string]::IsNullOrWhiteSpace($id) -and ![string]::IsNullOrWhiteSpace($identity.Weights)) 'model identity'
     foreach ($round in 1,2) {

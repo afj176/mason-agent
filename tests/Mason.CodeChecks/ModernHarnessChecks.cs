@@ -101,6 +101,19 @@ internal static class ModernHarnessChecks
     {
         public Task<WorkerFinding[]> Investigate(string question,CodeFile[] files,CancellationToken ct)=>Task.FromResult(result());
     }
+    sealed class DispatchWorker(ICodeInvestigator worker,string question,string path):ICodeModel,ICodeInvestigator
+    {
+        int step;
+        public bool ReceivedFinding;
+        public Task<WorkerFinding[]> Investigate(string assignment,CodeFile[] files,CancellationToken ct)=>worker.Investigate(assignment,files,ct);
+        public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages,Action<string> stream,CancellationToken ct)
+        {
+            if(step++==0)return Task.FromResult(new CodeAction("Enable code tools","enable_tools",JsonSerializer.SerializeToElement(new{group="code"})));
+            if(step==2)return Task.FromResult(new CodeAction("Read the assigned source","delegate_readonly",JsonSerializer.SerializeToElement(new{question,paths=new[]{path}})));
+            ReceivedFinding=messages.Any(m=>m.Content.Contains("SHIFT_LIMIT") && m.Content.Contains("Answer"));
+            return Task.FromResult(new CodeAction("Investigation received.",null,default));
+        }
+    }
     public static async Task LiveWorker(string endpoint,string id,string area)
     {
         if(Directory.Exists(area))throw new IOException("Select a fresh worker directory.");
@@ -109,8 +122,15 @@ internal static class ModernHarnessChecks
         var file=scope.Create("policy.js",$"// Loading dock shift policy\nexport const SHIFT_LIMIT = {limit};\n");
         var model=new CodeLocalModel(new AiEndpointProfile{Endpoint=endpoint,Model=id,ManagedCapability=AiCapability.Chat},"","default",_=>{});
         int calls=0;model.InferenceCompleted+=r=>{if(r.CompletionTokens>0)calls++;};
-        var findings=await CodeInvestigation.Run(scope,model,"What numeric shift limit does policy.js configure? Cite its declaration.",[file.Path],default);
+        const string question="What numeric shift limit does policy.js configure? Cite its declaration.";
+        var dispatcher=new DispatchWorker(model,question,file.Path);
+        using var store=new CodeStore(Path.Combine(area,"profile"));
+        var session=store.New(root);session.Mode="ask";
+        await new CodeEngine(store,dispatcher,(_,_)=>Task.FromResult(false),()=>{}).Run(session,question,default);
+        var job=session.Activities.Single(a=>a.Tool=="delegate_readonly");
+        Require(job.State=="Completed" && dispatcher.ReceivedFinding && session.State=="Completed","Parent receives the delegated result through the normal tool loop");
+        var findings=JsonSerializer.Deserialize<WorkerFinding[]>(job.Result)!;
         Require(calls>0 && findings.Any(f=>f.Path==file.Path && f.Line==2 && f.Quote.Contains(limit.ToString()) && f.Answer.Contains(limit.ToString())),"Live delegated investigator returns the assigned value at its exact source location");
-        File.WriteAllText(Path.Combine(area,"worker.json"),JsonSerializer.Serialize(new{Model=id,Calls=calls,Limit=limit,SourceHash=file.Sha256,Findings=findings}));
+        File.WriteAllText(Path.Combine(area,"worker.json"),JsonSerializer.Serialize(new{Model=id,Calls=calls,Limit=limit,SourceHash=file.Sha256,dispatcher.ReceivedFinding,Findings=findings}));
     }
 }
