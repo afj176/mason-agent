@@ -3,6 +3,10 @@ using Mason.Code;
 
 internal static class ProjectEvidenceChecks
 {
+    sealed class Direction(bool interchangeable):IProjectProbeReviewer
+    {
+        public Task<bool> ArgumentsInterchangeable(string request,ExampleProbe example,bool sourceSymmetric,CancellationToken ct)=>Task.FromResult(interchangeable);
+    }
     public static async Task Run(string area)
     {
         var scope=new CodeWorkspace(Directory.CreateDirectory(area).FullName);
@@ -56,6 +60,25 @@ internal static class ProjectEvidenceChecks
         codec.Edit(impl.Path,impl.Sha256,impl.Content,"exports.encode=encodeURIComponent;exports.decode=decodeURIComponent;",(_,_)=>{});
         if(!(await CodeProjectTests.Verify(codec,properties.Checks.Single(),properties,CodePermission.Auto,default)).Passed)throw new Exception("The valid codec failed the declared round-trip property.");
         Console.WriteLine("PASS sandboxed round-trip property catches collisions beyond the project's passing example");
+        if(!CodeProjectProbes.HasSymmetricImplementation("exports.overlaps=(left,right)=>left.x < right.y && right.x < left.y;","overlaps") ||
+            CodeProjectProbes.HasSymmetricImplementation("exports.overlaps=(left,right)=>left.x < right.y && right.x <= left.y;","overlaps") ||
+            CodeProjectProbes.HasSymmetricImplementation("exports.compare=(a,b)=>a<b;","compare"))
+            throw new Exception("Argument symmetry proof accepted unequal comparisons or dropped a mirrored projection.");
+        var pair=new CodeWorkspace(Directory.CreateDirectory(Path.Combine(area,"pair")).FullName);
+        pair.CreateDirectory(".mason");
+        pair.Create("pair.cjs","exports.choose=(a,b)=>a;");
+        pair.Create("case.cjs","const test=require('node:test'),assert=require('node:assert/strict'); const {choose:pick}=require('./pair.cjs');test('pair',()=>assert.equal(pick(2,3),2));");
+        pair.Create("mason.workflows.json","""{"version":1,"workflows":{"test":{"executable":"node","arguments":["--test","--test-reporter=tap","case.cjs"]}}}""");
+        pair.Create(".mason/tests.json",JsonSerializer.Serialize(new[]{new ProjectTest("Select the smaller value","test","tap","","pair",["case.cjs"],["pair.cjs"])}));
+        foreach(bool symmetric in new[]{true,false}){
+            var pairPlan=new CodeAcceptancePlan{Request=symmetric?"Select the smaller value":"Select the first value",Units=["Select the smaller value"]};
+            CodeProjectTests.Bind(pair,pairPlan,pairPlan.Checks);
+            await CodeProjectTests.Baseline(pair,pairPlan,default,new Direction(symmetric));
+            var observed=await CodeProjectTests.Verify(pair,pairPlan.Checks.Single(),pairPlan,CodePermission.Auto,default);
+            if(observed.Passed==symmetric || symmetric && !observed.Detail.Contains("choose(3, 2)"))
+                throw new Exception("Independent example did not respect the reviewed argument roles.");
+        }
+        Console.WriteLine("PASS a grounded symmetric follow-up catches an asymmetric result and a directional function keeps its declared argument roles");
         Console.WriteLine("PASS named test baseline, pre-existing failure, pinned oracle, four machine reporters, unsaved buffer and project memory freshness");
     }
 }

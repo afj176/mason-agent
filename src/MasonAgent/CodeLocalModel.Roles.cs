@@ -8,7 +8,7 @@ namespace Mason;
 public sealed class RoleModels(CodeLocalModel implementer, CodeLocalModel reviewer, CodeLocalModel visual,
     string profileRoot, Action<string>? progress = null, string? traceDirectory = null, bool inspectBrowserFrames = false,Func<CodeLocalModel,CancellationToken,Task>? prepare = null,int roleLimit=64) :
     ICodeContextModel, ICodeAcceptancePlanner, ICodeCatalogPlanner, ICodeBrowserOperator, ICodeChangeReviewer, IReviewPrediction,
-    ICodeInvestigator, ICodeVisualVerifier
+    ICodeInvestigator, ICodeVisualVerifier, IProjectProbeReviewer
 {
     readonly Dictionary<string,int> calls=new(StringComparer.Ordinal);
     public bool Enabled => inspectBrowserFrames;
@@ -46,6 +46,8 @@ public sealed class RoleModels(CodeLocalModel implementer, CodeLocalModel review
         Invoke("Context",implementer,()=>implementer.Summarize(messages,ct),ct);
     public Task<CatalogSpec> ExtractCatalog(string request,CancellationToken ct)=>
         Invoke("Implementer",implementer,()=>implementer.ExtractCatalog(request,ct),ct);
+    public Task<bool> ArgumentsInterchangeable(string request,ExampleProbe example,bool sourceSymmetric,CancellationToken ct)=>
+        Invoke("Reviewer",reviewer,()=>reviewer.ArgumentsInterchangeable(request,example,sourceSymmetric,ct),ct);
     public Task<List<AcceptanceCheck>> PlanAcceptance(string request,string[] units,CodeFiles inventory,CancellationToken ct)=>
         Invoke("Reviewer",reviewer,()=>reviewer.PlanAcceptance(request,units,inventory,ct),ct);
     public Task<ReviewFinding[]> ReviewChanges(string request,IReadOnlyList<ReviewSource> sources,CancellationToken ct)=>

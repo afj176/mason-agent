@@ -161,7 +161,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     acceptance = await CodeAcceptance.Prepare(request, model, scope, listing, cancellation);
                     if (session.Permission==CodePermission.Auto && acceptance.ProjectTests.Count>0) {
                         foreach(var pinned in acceptance.ProjectTests.Values)CodeProjectPolicy.Load(store.SettingsRoot,scope.Root)?.Check("run_workflow",pinned.Definition.Workflow);
-                        await CodeProjectTests.Baseline(scope,acceptance,cancellation);
+                        await CodeProjectTests.Baseline(scope,acceptance,cancellation,model as IProjectProbeReviewer);
                     }
                     if (previous!=null)
                     {

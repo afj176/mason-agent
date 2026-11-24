@@ -9,9 +9,13 @@ public sealed record RoundTripProperty(string Module,string Encode,string Decode
 public sealed record ProjectTest(string Requirement,string Workflow,string Format,string Report,string Test,string[] TestFiles,string[] Inputs)
 {
     public RoundTripProperty? RoundTrip { get; init; }
+    public string? ArgumentOrder {get;init;}
 }
 public sealed record TestSuiteEvidence(Dictionary<string,string> Outcomes,int ExitCode,string Diagnostics="");
-public sealed record PinnedProjectTest(ProjectTest Definition,string WorkflowRevision,Dictionary<string,string> TestHashes,TestSuiteEvidence? Baseline);
+public sealed record PinnedProjectTest(ProjectTest Definition,string WorkflowRevision,Dictionary<string,string> TestHashes,TestSuiteEvidence? Baseline)
+{
+    public ExampleProbe? IndependentProbe {get;init;}
+}
 
 public static class CodeProjectTests
 {
@@ -29,7 +33,7 @@ public static class CodeProjectTests
         foreach(var d in definitions)
         {
             if(d is null || string.IsNullOrWhiteSpace(d.Requirement) || string.IsNullOrWhiteSpace(d.Test) || d.Test.Length>400 ||
-                d.Format is not ("junit" or "trx" or "tap" or "go-json" or "flutter-json") || d.TestFiles is not {Length:>0 and <=16} ||
+                d.ArgumentOrder is not (null or "ordered" or "interchangeable") || d.Format is not ("junit" or "trx" or "tap" or "go-json" or "flutter-json") || d.TestFiles is not {Length:>0 and <=16} ||
                 d.Inputs is not {Length:>0 and <=32} || !workflows.Workflows.TryGetValue(d.Workflow,out var workflow))
                 throw new InvalidDataException("Invalid named project test. Include its workflow, format, source inputs and existing test files.");
             for(int index=0;index<plan.Units.Length;index++)
@@ -100,10 +104,21 @@ public static class CodeProjectTests
         var diagnostics=result.Output.Length<=2800?result.Output:result.Output[..1400]+"\n…\n"+result.Output[^1400..];
         return new(observed,result.ExitCode,propertyFailure.Length>0?propertyFailure:result.ExitCode==0?"":diagnostics);
     }
-    public static async Task Baseline(CodeWorkspace workspace,CodeAcceptancePlan plan,CancellationToken ct)
+    public static async Task Baseline(CodeWorkspace workspace,CodeAcceptancePlan plan,CancellationToken ct,IProjectProbeReviewer? reviewer=null)
     {
         foreach(var (id,pinned) in plan.ProjectTests.ToArray())
-            if(pinned.Baseline==null)plan.ProjectTests[id]=pinned with {Baseline=await Run(workspace,pinned,ct)};
+        {
+            if(pinned.Baseline!=null)continue;
+            var baseline=await Run(workspace,pinned,ct);
+            ExampleProbe? followUp=null;
+            if(pinned.Definition.ArgumentOrder!="ordered" && CodeProjectProbes.DirectExample(workspace,pinned.Definition) is {} example){
+                bool symmetric=CodeProjectProbes.HasSymmetricImplementation(workspace.Read(pinned.Definition.Inputs[0]).Content,example.Function);
+                if(pinned.Definition.ArgumentOrder=="interchangeable" || reviewer!=null &&
+                    await reviewer.ArgumentsInterchangeable(plan.Request,example,symmetric,ct))
+                    followUp=example with{Arguments=[example.Arguments[1],example.Arguments[0]]};
+            }
+            plan.ProjectTests[id]=pinned with {Baseline=baseline,IndependentProbe=followUp};
+        }
     }
     public static async Task<AcceptanceResult> Verify(CodeWorkspace workspace,AcceptanceCheck check,CodeAcceptancePlan plan,CodePermission permission,CancellationToken ct)
     {
@@ -113,12 +128,18 @@ public static class CodeProjectTests
             var original=pinned.Baseline.Outcomes;
             var now=await Run(workspace,pinned,ct);
             var target=check.Expected;
+            string independent="";
+            if(now.Outcomes[target]=="passed" && pinned.IndependentProbe is {} probe){
+                if(await CodeProjectProbes.Check(workspace,pinned.Definition.Inputs.Single(),probe,ct) is {} finding)
+                    return new(check,false,finding);
+                independent=" Independent argument-order check passed for "+probe.Function+JsonSerializer.Serialize(probe.Arguments)+".";
+            }
             var newFailures=now.Outcomes.Where(p=>p.Value=="failed" && original.GetValueOrDefault(p.Key)!="failed").Select(p=>p.Key);
             var missing=original.Keys.Except(now.Outcomes.Keys,StringComparer.Ordinal);
             var regressed=original.Where(p=>p.Value=="passed" && now.Outcomes.GetValueOrDefault(p.Key)!="passed").Select(p=>p.Key);
             var blockers=newFailures.Concat(missing).Concat(regressed).Distinct().ToArray();
             var existing=now.Outcomes.Where(p=>p.Key!=target && p.Value=="failed" && original.GetValueOrDefault(p.Key)=="failed").Select(p=>p.Key);
-            return new(check,now.Outcomes[target]=="passed" && blockers.Length==0,$"{target}: {original[target]} → {now.Outcomes[target]}. Pre-existing failures: {string.Join(", ",existing)}. New failures, skips or missing tests: {string.Join(", ",blockers)}."+ (now.Outcomes[target]=="failed"?"\n"+now.Diagnostics:""));
+            return new(check,now.Outcomes[target]=="passed" && blockers.Length==0,$"{target}: {original[target]} → {now.Outcomes[target]}. Pre-existing failures: {string.Join(", ",existing)}. New failures, skips or missing tests: {string.Join(", ",blockers)}."+independent+ (now.Outcomes[target]=="failed"?"\n"+now.Diagnostics:""));
         } catch(Exception e) when(e is not OperationCanceledException) {return new(check,false,e.Message);}
     }
     public static Dictionary<string,string> Parse(string format,string content)

@@ -6,7 +6,7 @@ using Mason.Code;
 
 namespace Mason;
 
-public sealed partial class CodeLocalModel : ICodeInvestigator, IDesktopVision, IReviewPrediction
+public sealed partial class CodeLocalModel : ICodeInvestigator, IDesktopVision, IReviewPrediction, IProjectProbeReviewer
 {
     public async Task<PixelDecision> See(string task,DesktopFrame frame,bool observeOnly,CancellationToken ct)
     {
@@ -23,6 +23,15 @@ public sealed partial class CodeLocalModel : ICodeInvestigator, IDesktopVision, 
         InferenceCompleted?.Invoke(result);
         if(result.FinishReason!="stop")throw new InvalidDataException("Incomplete visual decision.");
         return JsonSerializer.Deserialize<PixelDecision>(text.ToString())??throw new InvalidDataException("Missing visual decision.");
+    }
+    sealed record ArgumentLaw(string Rule,string Evidence);
+    public async Task<bool> ArgumentsInterchangeable(string request,ExampleProbe example,bool sourceSymmetric,CancellationToken ct)
+    {
+        var result=await IsolatedDecision<ArgumentLaw>(
+            "Classify the required argument order of the named function. Use preserve when the request fixes a defect while keeping the existing argument roles. Use symmetric for an order-independent operation. Use directional only for distinct roles, such as numerator and denominator. When the host has proved existing symmetry, you may override it only if the request explicitly asks to introduce different roles. In that case quote the exact instruction changing the roles in Evidence. Otherwise keep the existing symmetry.",
+            new{request,example,existingSymmetryProved=sourceSymmetric},Shape(("Rule",EnumOf("preserve","symmetric","directional")),("Evidence",Str(250))),ct);
+        if(!sourceSymmetric)return result.Rule=="symmetric";
+        return result.Rule!="directional" || string.IsNullOrWhiteSpace(result.Evidence) || !request.Contains(result.Evidence,StringComparison.OrdinalIgnoreCase);
     }
     sealed record WorkerReport(WorkerFinding[] Findings);
     public async Task<WorkerFinding[]> Investigate(string question,CodeFile[] files,CancellationToken ct)
