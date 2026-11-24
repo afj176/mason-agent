@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bear Market</title><h1>Bear Market</h1><ul aria-label="Products">PRODUCT_LIST</ul>
+<label>Quantity <input id="qty" type="number" min="1" value="1"></label>
+<output id="total">$10.00</output><button id="checkout">Place order</button><output id="order"></output>
+<script>
+const quantity = document.querySelector('#qty');
+quantity.onchange = async () => {
+  const response = await fetch('/price?quantity=' + encodeURIComponent(quantity.value));
+  const {total} = await response.json();
+  document.querySelector('#total').textContent = '$' + total.toFixed(2);
+};
+document.querySelector('#checkout').onclick = async () => {
+  const response = await fetch('/checkout', {method:'POST'});
+  const {id} = await response.json();
+  document.querySelector('#order').textContent = id;
+  history.pushState({}, '', '/orders/' + id);
+};
+</script></html>

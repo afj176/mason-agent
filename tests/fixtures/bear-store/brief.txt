@@ -1,0 +1,1 @@
+Build a whimsical bear food store in a single offline index.html. Show the shelf prices for Honey at $10 each, Berries at $5 each, and Salmon at $15 each. Shoppers can add each food to their cart. Charge $9 per Honey jar when there are three or more Honey jars in the basket. Show the cart total. Checkout must clear the cart and show a new ORD- receipt that persists after reload.

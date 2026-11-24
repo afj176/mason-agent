@@ -68,7 +68,7 @@ static class CodingCompactionChecks
             var engineSession = Seed(); engineSession.Permission = CodePermission.ReadOnly;
             var engineModel = new ContextFixture { Actions = [Tool("create_file", new { path = "compaction-escape.txt", content = "bad" }), Tool("create_file", new { path = "compaction-escape.txt", content = "bad" }), Tool("open_file", new { path = "README.md" }), new("Actual read-only artifact opened.", null, default)] };
             await new CodeEngine(store, engineModel, (_, _) => Task.FromResult(true), () => { }).Run(engineSession, "Inspect the README; do not write.", default);
-            check(engineSession.State == "Completed" && engineSession.Checkpoints.Count > 0 && engineModel.NextCalls == 4 && !File.Exists(Path.Combine(workspace, "compaction-escape.txt")), "engine continues after compaction without weakening file permissions or replaying tools");
+            check(engineSession.State == "Needs verification" && engineSession.Checkpoints.Count > 0 && engineModel.NextCalls == 4 && !File.Exists(Path.Combine(workspace, "compaction-escape.txt")), "engine continues after compaction without weakening file permissions, replaying tools or claiming unsupported acceptance");
             check(engineSession.Activities.Count(a => a.Tool == "create_file" && a.State == "Denied") == 2 && engineSession.Activities.Count(a => a.Tool == "open_file") == 1, "denied-operation guard and exactly-once successful tool receipt survive compacted context");
         }
         static CodeAction Tool(string name, object arguments) => new("Observed fixture operation.", name, JsonSerializer.SerializeToElement(arguments));

@@ -18,7 +18,7 @@ public sealed partial class MainWindow
     CancellationTokenSource? codeOperation;
     Action? refreshCodeProfiles;
     Action<Guid>? selectCodingModel;
-    Action? openCodeSearch;
+    Func<IEnumerable<TitleHit>>? codeSearchHits;
     Func<Task>? compactCodeContext;
 
     static TextBlock CodeNote(string text, double size = 12)
@@ -38,12 +38,33 @@ public sealed partial class MainWindow
         try { codeStore = new CodeStore(Store.Root); }
         catch (Exception error) { return TroubleNotice("Code sessions are unavailable", error.Message, "Close another Mason Agent instance using this profile, or inspect the saved session files. Existing sessions have not been replaced."); }
         var store = codeStore!;
+        var references = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+        var reviewButton = Button("Review comments", (_, _) => {});
+        FrameworkElement stateRow = null!;
         CodeSession? session = store.SelectedSession;
+        CodeEngine? liveEngine=null;
+        CodeSession? liveOwner=null;
+        string? submittedDraft = null;
+        StackPanel followUpButtons=null!;
         CodeProject? project = store.SelectedProject;
-        const double projectPanelWidth=260;
+        const double projectPanelWidth=232;
+        ReviewDesk? reviewDesk = null;
+        HyperlinkButton contextLink = null!;
+        TextBox draft = null!;
+        ComboBox reasoning = null!, agentMode = null!;
+        var approvalHost = new ContentControl();
+        TaskCompletionSource<bool>? pendingApproval = null;
+        Grid transcriptBody = null!;
+        ProgressRing spinner = null!;
+        Button stop = null!, newSession = null!;
+        var reviewHost = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
+        ComboBox viewPicker = null!;
+        var viewModes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        CodeWorkspaceView View() => session?.WorkspaceView ?? CodeWorkspaceView.Workbench;
         Action? viewerChanged = null; // assigned once the page exists; refreshes counts outside the viewer
         bool updating = false, refreshQueued = false, emptySidebarVisible = true; string[] allFiles = []; int fileGeneration = 0; string? forcedPanel = null; CodeGitStatus? gitStatus = null;
-        Button send = null!, openFolder = null!, branch = null!, search = null!, changeButton = null!, preview = null!;
+        Button send = null!, openFolder = null!, branch = null!, changeButton = null!, preview = null!;
+        Button websiteShortcut=null!;
         FrameworkElement composer = null!, sessionHeader = null!;
         Grid toolbar = null!; TextBlock viewerLabel = null!; Image stateMood = null!; string shownMood = "";
         Grid? emptyHost = null; // onboarding or intro shown while there is no conversation
@@ -51,7 +72,6 @@ public sealed partial class MainWindow
         HyperlinkButton reference = null!, activityButton = null!;
         ToggleButton sideToggle = null!, viewerToggle = null!, pinned = null!;
         KeyboardAccelerator workspaceShortcut = null!, viewerShortcut = null!;
-        TextBlock viewerHeading = null!;
         TabView tabs = null!;
         Grid sideBody = null!, viewer = null!, center = null!;
         StackPanel toolbarLeft=null!,toolbarRight=null!,outputPanel=null!; Grid composerTools=null!;
@@ -71,6 +91,7 @@ public sealed partial class MainWindow
         layout.ColumnDefinitions.Add(new() { Width = new GridLength(8) });
         layout.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(layout, 1); Grid.SetColumn(layout, 1); page.Children.Add(layout);
+        Grid.SetRow(reviewHost, 1); Grid.SetColumn(reviewHost, 1); page.Children.Add(reviewHost);
         var folderLabel = Text("Choose project", 14); folderLabel.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; folderLabel.MaxLines = 1; folderLabel.MaxWidth=155; folderLabel.TextTrimming = TextTrimming.CharacterEllipsis;
         var folderPath = CodeNote(""); folderPath.MaxLines = 1; folderPath.TextTrimming = TextTrimming.CharacterEllipsis;
         var projectSwitcher=Button("Choose project",(_,_)=>{}); projectSwitcher.MaxWidth=225;
@@ -119,7 +140,7 @@ public sealed partial class MainWindow
         var autoNotice = CodeNote("", 11); autoNotice.TextWrapping = TextWrapping.Wrap; autoNotice.Visibility = Visibility.Collapsed;
         CodeSession? fileRefreshOwner = null; int fileRefreshRevision = -1, fileRefreshSequence = 0;
         var models = Button("Models", (_, _) => Navigate("Models and connections"));
-        var title = Text("New coding session", 21); title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.MaxLines = 1; title.TextTrimming = TextTrimming.CharacterEllipsis;
+        var title = Heading("New coding session", 23); title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.MaxLines = 1; title.TextTrimming = TextTrimming.CharacterEllipsis;
         var sessions = BrandControl(CodeProjectNavigation());
         var noProjects=CodeNote("Add a project folder to keep its sessions together.");noProjects.Margin=new Thickness(4,12,4,0);
         var deleteSession = ChatIcon("Delete selected coding session", "\uE74D", (_, _) => { });
@@ -130,15 +151,14 @@ public sealed partial class MainWindow
         var fileState = CodeNote("");
         var fileProject=CodeNote("",11);fileProject.MaxWidth=150;fileProject.MaxLines=1;fileProject.TextTrimming=TextTrimming.CharacterEllipsis;
         var transcript = new StackPanel { Spacing = 20, Margin = new Thickness(28, 32, 28, 20), MaxWidth = 820, HorizontalAlignment = HorizontalAlignment.Center };
+        StackPanel? resultActions = null;
         var transcriptScroll = CodeScroll(transcript); bool followTail = true, pendingTranscriptTail = true;
-        // Built once: the magnifier is an animated icon, and Arrange only swaps between the two layouts.
-        var searchCompact = MotifIcon(Fluent.Motif.Find, 15);
-        var searchWide = Row(MotifIcon(Fluent.Motif.Find, 15), new TextBlock { Text = "Search files or commands", VerticalAlignment = VerticalAlignment.Center });
         // The shape of a file list while the project's files are being listed (added to the Files area below).
         var fileSkeleton = Fluent.Skeleton(.5, .72, .62, .8, .44, .68, .56); fileSkeleton.Margin = new Thickness(6, 8, 6, 0); fileSkeleton.Visibility = Visibility.Collapsed;
         // Behind the onboarding and intro states only, across the whole conversation area rather than the reading column.
         var welcomeArt = MasonryBackdrop(transcriptScroll); Grid.SetRow(welcomeArt, 1);
         // What the transcript showed last time, so only messages new to this session's view animate in (RenderTranscript).
+        var evidenceViews = new Dictionary<CodeTurn, (AcceptanceCheck[] Checks, AcceptanceResult[] Results, string? Revision, EvidenceView View)>();
         CodeSession? shownSession = null; int shownTurns = 0; bool shownLive = false;
         var turnViews = new Dictionary<int, (string Key, UIElement View)>();
         (bool Continues, UIElement View, Border Body, string Text)? liveView = null;
@@ -155,20 +175,19 @@ public sealed partial class MainWindow
         }
         transcriptScroll.Loaded += (_, _) => DispatcherQueue.TryEnqueue(RestoreTranscriptTail);
         // Size the transcript from the scroller, as Chat does. Left to stretch, the scroller centres it by its natural width first and the stretched panel then overflows to the right by that margin.
-        transcriptScroll.SizeChanged += (_, _) => { transcript.Width = Math.Max(200, Math.Min(820, transcriptScroll.ActualWidth - 56)); if (emptyHost != null) FitWelcome(emptyHost, transcriptScroll.ActualHeight - 60); };
+        transcriptScroll.SizeChanged += (_, _) => { transcript.Width = Math.Max(200, Math.Min(transcript.MaxWidth, transcriptScroll.ActualWidth - 56)); if (emptyHost != null) FitWelcome(emptyHost, transcriptScroll.ActualHeight - 60); };
         var state = CodeNote("");
         var context = CodeNote("Context measured before each action"); context.MaxLines = 2; context.TextTrimming = TextTrimming.CharacterEllipsis;
-        var contextLink = CodeLink("Context", (_, _) => OpenTab("context", "", true)); contextLink.FontSize = 12;
+        contextLink = CodeLink("Context", (_, _) => OpenTab("context", "", true)); contextLink.FontSize = 12;
         AutomationProperties.SetName(contextLink, "Coding context and checkpoints");
-        var draft = new TextBox { PlaceholderText = "Describe a change, ask about the repo, or @ a file…", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 76, MaxHeight = 170, MaxLength = 16000, BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        draft = new TextBox { PlaceholderText = "Describe a change, ask about the repo, or @ a file…", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 76, MaxHeight = 170, MaxLength = 16000, BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        ToolTipService.SetToolTip(draft,"Build keeps the current task’s requirements across follow-ups. Type /new followed by a request to start a separate task.");
         AutomationProperties.SetName(draft, "Coding message"); ComposerBox(draft);
-        var references = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
-        var reasoning = new ComboBox { ItemsSource = new[] { "Default", "Off", "Low", "Medium", "High" }, SelectedIndex = 0, MinWidth = 95 }; AutomationProperties.SetName(reasoning, "Coding reasoning");
-        var agentMode = new ComboBox { ItemsSource = new[] { "Build", "Ask" }, SelectedIndex = 0, MinWidth = 85 };
+        reasoning = new ComboBox { ItemsSource = new[] { "Default", "Off", "Low", "Medium", "High" }, SelectedIndex = 0, MinWidth = 95 }; AutomationProperties.SetName(reasoning, "Coding reasoning");
+        agentMode = new ComboBox { ItemsSource = new[] { "Build", "Ask" }, SelectedIndex = 0, MinWidth = 85 };
         AutomationProperties.SetName(agentMode, "Coding mode"); ToolTipService.SetToolTip(agentMode, "Build performs workspace work. Ask explores without file writes or commands.");
-        var approvalHost = new ContentControl(); TaskCompletionSource<bool>? pendingApproval = null;
-        var spinner = BrandControl(new ProgressRing { Width = 15, Height = 15, Visibility = Visibility.Collapsed });
-        var stop = Button("Stop", (_, _) => codeOperation?.Cancel()); stop.Visibility = Visibility.Collapsed;
+        spinner = BrandControl(new ProgressRing { Width = 15, Height = 15, Visibility = Visibility.Collapsed });
+        stop = Button("Stop", (_, _) => codeOperation?.Cancel()); stop.Visibility = Visibility.Collapsed;
         send = ChatIcon("Send coding message", "\uE724", async (_, _) => await Send()); send.Style = (Style)Application.Current.Resources["AccentButtonStyle"]; BrandAccent(send);
         tabs = InterfaceTabs.Apply(new TabView { IsAddTabButtonVisible = false, TabWidthMode = TabViewWidthMode.SizeToContent, CanDragTabs = false, CanReorderTabs = false, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch }, TabPresentation.Document);
         pinned = BrandControl(new ToggleButton { Content = new FontIcon { Glyph = "\uE718", FontSize = 15 }, Padding = new Thickness(8) }); AutomationProperties.SetName(pinned, "Pin current viewer tab"); ToolTipService.SetToolTip(pinned, "Keep the agent from switching the selected viewer tab");
@@ -182,18 +201,27 @@ public sealed partial class MainWindow
         var closeViewer = ChatIcon("Close artifact viewer", "\uE711", (_, _) => { if (session != null) CodePanels.Hide(session); Arrange(); Save(); });
         changeButton = Button("Changes", (_, _) => OpenTab("changes", "", true));
         activityButton = CodeLink("View activity", (_, _) => OpenTab("activity", "", true));
-        preview = Button("Open preview", async (_, _) =>
+        async Task OpenWebsite()
         {
             if (session == null || dialogOpen) return;
-            var address = new TextBox { PlaceholderText = "http://localhost:5173", Text = "http://localhost:5173" }; AutomationProperties.SetName(address, "Local preview URL"); dialogOpen = true;
+            var owner=session;
+            var address = new TextBox { PlaceholderText = "HTML file or local server URL" }; AutomationProperties.SetName(address, "Website address");
             try
             {
-                if (await new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme, Title = "Open local website preview", Content = Stack(CodeNote("Start the site's development server, then enter its loopback URL. The viewer checks that the server answers and can open the page in your browser; the agent does not inspect it automatically."), address), PrimaryButtonText = "Open", CloseButtonText = "Cancel" }.ShowAsync() == ContentDialogResult.Primary)
-                    OpenTab("web", CodeProtocol.PreviewUri(address.Text).AbsoluteUri, true);
+                var site=new CodeWebsite(new CodeWorkspace(owner.Workspace));
+                if (site.PreviewTarget(owner) is {} target) { OpenTab(target.Kind, target.Target, true); return; }
+                dialogOpen=true;
+                if(await new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Open website",Content=address,PrimaryButtonText="Open",CloseButtonText="Cancel"}.ShowAsync()!=ContentDialogResult.Primary || owner!=session)return;
+                var value=address.Text.Trim();
+                if(CodeWebsite.IsPage(value) && !Uri.TryCreate(value,UriKind.Absolute,out _)){site.Page(value);OpenTab("site",value,true);}
+                else OpenTab("web",CodeProtocol.PreviewUri(value).AbsoluteUri,true);
             }
             catch (Exception error) { state.Text = error.Message; }
             finally { dialogOpen = false; }
-        });
+        }
+        preview=Button("Website",async (_,_)=>await OpenWebsite());
+        websiteShortcut=ChatIcon("Open project website","\uE774",async (_,_)=>await OpenWebsite());
+        ToolTipService.SetToolTip(websiteShortcut,"Open project website");
         openFolder = Button("Add project", async (_, _) => await OpenWorkspace());
         openFolder.Content=Row(new FontIcon{Glyph="\uE710",FontSize=12},new TextBlock{Text="Add project",FontSize=12});
         openFolder.Padding=new Thickness(8,7,8,7);openFolder.HorizontalAlignment=HorizontalAlignment.Stretch;AutomationProperties.SetName(openFolder,"Add coding project");
@@ -212,7 +240,9 @@ public sealed partial class MainWindow
         projectsTab=BrandControl(new ToggleButton{Content="Projects",IsChecked=true});filesTab=BrandControl(new ToggleButton{Content="Files"});
         AutomationProperties.SetName(projectsTab,"Show project sessions");AutomationProperties.SetName(filesTab,"Show project files");
         sideBody.Children.Add(Toolbar(Row(projectsTab,filesTab),closeWorkspace));
-        projectList=Vertical(openFolder,sessions);projectList.Children.Add(noProjects);Grid.SetRow(noProjects,1);Grid.SetRow(projectList,1);sideBody.Children.Add(projectList);
+        newSession = Button("New session", (_, _) => { if (project != null) NewProjectSession(project); });
+        AutomationProperties.SetName(newSession, "New session in selected project");
+        projectList=Vertical(Row(openFolder,newSession),sessions);projectList.Children.Add(noProjects);Grid.SetRow(noProjects,1);Grid.SetRow(projectList,1);sideBody.Children.Add(projectList);
         var filterFiles = ChatIcon("Filter workspace files", "\uE721", (_, _) =>
         {
             if (fileSearch.Visibility == Visibility.Visible)
@@ -260,13 +290,17 @@ public sealed partial class MainWindow
         var composerHint = CodeNote("Enter to send · Shift+Enter for a new line", 11);
         composerHint.IsTextSelectionEnabled = false; composerHint.VerticalAlignment = VerticalAlignment.Center;
         composerHint.MaxLines = 1; composerHint.TextTrimming = TextTrimming.CharacterEllipsis;
-        var composerFooter = Toolbar(composerHint, contextLink, send);
-        var composerBody = Stack(references, draft, composerTools, composerFooter, autoNotice);
+        followUpButtons=Row(Button("Steer",(_,_)=>SubmitFollowUp(true)),Button("Queue",(_,_)=>SubmitFollowUp(false)));
+        followUpButtons.Visibility=Visibility.Collapsed;
+        var composerFooter = Toolbar(composerHint, contextLink, Row(followUpButtons,send));
+        reviewButton.HorizontalAlignment = HorizontalAlignment.Left;
+        reviewButton.Visibility = Visibility.Collapsed;
+        var composerBody = Stack(references, reviewButton, draft, composerTools, composerFooter, autoNotice);
         composerBody.Spacing = 8;
         // The composer floats above the transcript, with the window's shared soft shadow beneath it.
         var composerSurface = Fluent.Float(ChatSurface(composerBody, new Thickness(12, 8, 10, 10)), 24);
         composerSurface.CornerRadius = new CornerRadius(12); composer = composerSurface;
-        var transcriptBody = new Grid { RowSpacing = 10, Padding = new Thickness(10, 0, 10, 8), MaxWidth = 960 };
+        transcriptBody = new Grid { RowSpacing = 10, Padding = new Thickness(10, 0, 10, 8), MaxWidth = 960 };
         transcriptBody.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto });
         transcriptBody.Children.Add(transcriptScroll); Grid.SetRow(approvalHost, 1); transcriptBody.Children.Add(approvalHost);
         // Mortar mirrors the session's recorded state (working, waiting on you, done, in trouble).
@@ -276,11 +310,12 @@ public sealed partial class MainWindow
         {
             var (mood, meaning) = session == null || session.Turns.Count == 0 ? ("", "") : session.State switch
             {
+                "Running" when session.RepairingFile != null => ("on-the-mend", "repairing " + session.RepairingFile),
                 "Running" => (MoodWorking, "working on it"),
                 "Awaiting review" or "Waiting for input" => (MoodChecking, "waiting for you"),
                 // "Well played" when the session left reviewable changes, "we're good" when it only answered.
                 "Completed" => session.Changes.Any(c => !c.Restored) ? (MoodPleased, "finished with changes") : (MoodDone, "finished"),
-                "Failed" or "Blocked" => (MoodTrouble, "ran into a problem"),
+                "Failed" or "Blocked" or "Needs verification" => (MoodTrouble, "ran into a problem"),
                 _ => ("", "")
             };
             stateMood.Visibility = mood.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
@@ -292,9 +327,42 @@ public sealed partial class MainWindow
             FadeIn(stateMood);
         }
         state.VerticalAlignment = VerticalAlignment.Center;
-        var stateRow = Toolbar(Row(stateMood, spinner, state), stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow); Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
+        state.TextWrapping = TextWrapping.Wrap;
+        var progressRow = new Grid { ColumnSpacing = 8 };
+        progressRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        progressRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+        progressRow.Children.Add(Row(stateMood, spinner));
+        Grid.SetColumn(state, 1);
+        progressRow.Children.Add(state);
+        stateRow = Toolbar(progressRow, stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow); Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
+        void UpdateStatusRow() => stateRow.Visibility = session?.State == "Completed" && state.Text == session.Detail
+            ? Visibility.Collapsed : Visibility.Visible;
+        state.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) => UpdateStatusRow());
         var sessionTools=ChatIcon("Session settings","\uE713",(_,_)=>{});
-        sessionTools.Flyout=Fluent.Acrylic(new Flyout{Content=Stack(Text("Session settings",18),Text("Reasoning",12),reasoning,deleteSession)});
+        var attach=Button("Attach or detach a window",async (_,_)=>{
+            if(session==null||codeOperation!=null||dialogOpen)return;
+            sessionTools.Flyout.Hide();dialogOpen=true;
+            try{
+                var windows=CodeDesktop.Windows();
+                var picker=new ComboBox{ItemsSource=windows,PlaceholderText="Choose an open window",MinWidth=280};
+                var dialog=new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Computer use",
+                    Content=Stack(CodeNote(session.Desktop?.Target.Title??"No window attached"),CodeNote("Mason can read control names in the selected window. You review each click or text entry."),picker),
+                    PrimaryButtonText="Attach",SecondaryButtonText="Detach",CloseButtonText="Cancel",IsPrimaryButtonEnabled=false};
+                picker.SelectionChanged+=(_,_)=>dialog.IsPrimaryButtonEnabled=picker.SelectedItem!=null;
+                var result=await dialog.ShowAsync();
+                if(result==ContentDialogResult.Primary && picker.SelectedItem is DesktopTarget selected)session.Desktop=new CodeDesktop(selected);
+                else if(result==ContentDialogResult.Secondary)session.Desktop=null;
+            }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
+        });
+        var rewind=Button("Rewind last edited turn",async (_,_)=>{
+            if(session==null || codeOperation!=null)return;
+            if(CodeRewind.Latest(session) is not {} turn){state.Text="No recorded file edits to rewind.";return;}
+            sessionTools.Flyout.Hide();
+            var list=string.Join("\n",turn.Edits.Select(e=>(e.Before==null?"Remove created file · ":"Restore · ")+e.Path));
+            if(await new ContentDialog{XamlRoot=root.XamlRoot,Title="Rewind this turn’s file edits?",Content=list,PrimaryButtonText="Rewind files",CloseButtonText="Cancel"}.ShowAsync()!=ContentDialogResult.Primary)return;
+            try{CodeRewind.Apply(store,session,turn.Id);state.Text=session.Detail;RenderTranscript();RenderTabs();}catch(Exception e){state.Text=e.Message;}
+        });
+        sessionTools.Flyout=Fluent.Acrylic(new Flyout{Content=Stack(Text("Session settings",18),Text("Reasoning",12),reasoning,attach,rewind,deleteSession)});
         sessionTools.Content=MotifIcon(Fluent.Motif.Settings,16);
         ToolTipService.SetToolTip(sessionTools,"Reasoning and session actions");
         var titleBlock = Stack(title, folderPath); titleBlock.Spacing = 1; titleBlock.VerticalAlignment = VerticalAlignment.Center;
@@ -304,8 +372,7 @@ public sealed partial class MainWindow
         preview.Padding = new Thickness(8);
         AutomationProperties.SetName(changeButton, "Review session file changes"); ToolTipService.SetToolTip(changeButton, "Review session file changes");
         AutomationProperties.SetName(preview, "Open local website preview"); ToolTipService.SetToolTip(preview, "Open local website preview");
-        tabs.TabStripFooter = null;
-        viewerHeading = CodeNote("Artifacts", 13);
+
         outputTitle=CodeNote("Command output",12);var outputText=ChatInline("",12,true);
         outputToggle=BrandControl(new ToggleButton{Content="Output",IsChecked=true});AutomationProperties.SetName(outputToggle,"Toggle command output");
         outputScroll=CodeScroll(outputText);outputScroll.MaxHeight=180;
@@ -318,8 +385,9 @@ public sealed partial class MainWindow
             outputPanel.Visibility=last!=null&&session?.OutputVisible==true?Visibility.Visible:Visibility.Collapsed;
             if(last!=null){outputTitle.Text="Command output · "+last.State+"\n"+CodeActivityText.Command(last);var text=CodeActivityText.Result(last);outputScroll.Content=ChatInline(text.Length>12000?text[^12000..]:text,12,true);}
         }
-        viewer = Vertical(Toolbar(viewerHeading, changeButton, preview,outputToggle, pinned, closeViewer), workBody);
-        SurfaceBehind(viewer, new Thickness(10, 8, 10, 10));
+        tabs.TabStripFooter = Row(changeButton, preview, outputToggle, pinned, closeViewer);
+        viewer = workBody;
+        SurfaceBehind(viewer, new Thickness(5, 4, 5, 6));
         Grid.SetColumn(viewer, 2); layout.Children.Add(viewer);
         splitter = new Thumb { Width = 8, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch };
         AutomationProperties.SetName(splitter, "Resize conversation and task viewer"); ToolTipService.SetToolTip(splitter, "Drag to resize the viewer"); Grid.SetColumn(splitter, 1); layout.Children.Add(splitter);
@@ -333,19 +401,28 @@ public sealed partial class MainWindow
         splitter.DragCompleted += (_, _) => Save();
         branch = Button("Repository", (_, _) => OpenTab("git", "", true)); branch.MaxWidth = 200;
         ToolTipService.SetToolTip(branch, "Repository information for the selected project; this does not switch folders.");
-        search = Button("Search files or commands", async (_, _) => await Search()); search.MaxWidth = 290;
         models.Visibility = Visibility.Collapsed;
-        // One toolbar row at every width: where you are on the left, find and viewer on the right.
+        // One toolbar row at every width: where you are on the left, preview and viewer on the right.
         // Labels shrink to icons in Arrange instead of wrapping onto a second row.
         toolbarLeft = Row(sideToggle, projectSwitcher, branch);
-        toolbarRight = Row(search, viewerToggle);
+        viewPicker = new ComboBox { ItemsSource = Enum.GetValues<CodeWorkspaceView>(), MinWidth = 115 };
+        AutomationProperties.SetName(viewPicker, "Coding workspace view");
+        viewPicker.SelectionChanged += (_, _) => { if (!updating && viewPicker.SelectedItem is CodeWorkspaceView view) SelectView(view); };
+        foreach (var view in Enum.GetValues<CodeWorkspaceView>())
+        {
+            var choice = BrandControl(new ToggleButton { Content = view.ToString(), Tag = view, Padding = new Thickness(12, 6, 12, 6) });
+            AutomationProperties.SetName(choice, view + " view");
+            choice.Click += (_, _) => { SelectView(view); choice.IsChecked = View() == view; };
+            viewModes.Children.Add(choice);
+        }
+        toolbarRight = Row(viewModes, viewPicker, websiteShortcut,viewerToggle);
         toolbar = new Grid { ColumnSpacing = 8 };
         toolbar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         toolbar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         Grid.SetColumn(toolbarRight, 1);
         toolbar.Children.Add(toolbarLeft); toolbar.Children.Add(toolbarRight);
         Grid.SetColumnSpan(toolbar, 2);
-        openCodeSearch = async () => await Search();
+        codeSearchHits = WorkspaceSearch;
         // The title bar search opens projects and sessions, and adds projects, through these.
         openCodeSession = chosen => { if (codeOperation != null) { state.Text = "Finish or stop the current run before switching sessions."; return; } Navigate("Code"); if (chosen != session) Select(chosen); };
         openCodeProject = owner => { if (codeOperation != null) { state.Text = "Finish or stop the current run before switching projects."; return; } Navigate("Code"); if (owner != project) SelectProject(owner); };
@@ -359,15 +436,28 @@ public sealed partial class MainWindow
         void Shortcuts() { workspaceShortcut.IsEnabled = page.Visibility == Visibility.Visible; viewerShortcut.IsEnabled = page.Visibility == Visibility.Visible && session?.Tabs.Count > 0; }
         deleteSession.Click += async (_, _) => await DeleteSession();
         projectMenu.Opening+=(_,_)=>RefreshProjectMenu();
+        sessions.ContextRequested += (_, e) =>
+        {
+            bool pointer = e.TryGetPosition(sessions, out var point);
+            var source = e.OriginalSource as DependencyObject;
+            while (source != null && source != sessions && source is not TreeViewItem)
+                source = VisualTreeHelper.GetParent(source);
+            var node = source is TreeViewItem row ? sessions.NodeFromContainer(row) : pointer ? null : sessions.SelectedNode;
+            if (node?.Content is not CodeProjectItem { Session: null } item) return;
+            var menu = Fluent.Acrylic(new MenuFlyout());
+            menu.Items.Add(RemoveProjectItem(item.Project));
+            if (pointer) menu.ShowAt(sessions, point);
+            else menu.ShowAt(source as FrameworkElement ?? sessions);
+            e.Handled = true;
+        };
         sessions.ItemInvoked+=(_,e)=>
         {
             if(updating||codeOperation!=null||(e.InvokedItem as TreeViewNode)?.Content is not CodeProjectItem item)return;
-            if(item.NewSession)NewProjectSession(item.Project);
-            else if(item.Session!=null)Select(item.Session);
+            if(item.Session!=null)Select(item.Session);
             else SelectProject(item.Project);
         };
-        sessions.Expanding+=(_,e)=>{if(!updating&&e.Node.Content is CodeProjectItem{Session:null,NewSession:false} item)PersistExpansion(item.Project,true);};
-        sessions.Collapsed+=(_,e)=>{if(!updating&&e.Node.Content is CodeProjectItem{Session:null,NewSession:false} item)PersistExpansion(item.Project,false);};
+        sessions.Expanding+=(_,e)=>{if(!updating&&e.Node.Content is CodeProjectItem{Session:null} item)PersistExpansion(item.Project,true);};
+        sessions.Collapsed+=(_,e)=>{if(!updating&&e.Node.Content is CodeProjectItem{Session:null} item)PersistExpansion(item.Project,false);};
         files.ItemInvoked += (_, e) => { if ((e.InvokedItem as TreeViewNode)?.Content is CodeExplorerItem { Directory: false } item) OpenTab("file", item.Path, true); };
         files.SelectionChanged += (_, _) => reference.IsEnabled = codeOperation == null && CodeExplorerSelection(files) is { Directory: false };
         profiles.SelectionChanged += (_, _) => { if (!updating && session != null) { session.Model = SelectedChatProfile(profiles)?.Id; Save(); } };
@@ -399,7 +489,7 @@ public sealed partial class MainWindow
         {
             if (session == null || e.Tab.Tag is not CodeTab tab) return;
             if (viewerEntries.Remove(tab.Key, out var entry)) entry.Dispose(); CodePanels.Close(session, tab.Key);
-            RenderTabs(); Arrange(); Save();
+            RenderTabs(); RefreshResultActions(); Arrange(); Save();
         };
         page.SizeChanged += (_, _) => Arrange();
         refreshCodeProfiles = RefreshModels;
@@ -413,7 +503,7 @@ public sealed partial class MainWindow
         }
         viewerChanged = () => { Arrange(); RenderTranscript(); };
         Select(session);
-        Closed += (_, _) => { draftSave.Stop(); pendingApproval?.TrySetResult(false); foreach (var entry in viewerEntries.Values) entry.Dispose(); Save(); store.Dispose(); };
+        Closed += (_, _) => { draftSave.Stop(); pendingApproval?.TrySetResult(false); foreach (var entry in viewerEntries.Values) entry.Dispose(); reviewDesk?.Dispose(); Save(); store.Dispose(); };
         return page;
 
         void RenderProjects()
@@ -426,17 +516,126 @@ public sealed partial class MainWindow
         {
             try{store.SetProjectExpanded(owner.Id,expanded);}catch(Exception error){state.Text="Project list save failed · "+error.Message;}
         }
+        void SelectView(CodeWorkspaceView view)
+        {
+            if (session == null || View() == view) return;
+            if (view == CodeWorkspaceView.Review && pendingApproval != null) { state.Text = "Respond to the pending approval first."; Arrange(); return; }
+            var previous = session.WorkspaceView;
+            session.WorkspaceView = view;
+            if (!TrySaveCurrent()) { session.WorkspaceView = previous; Arrange(); return; }
+            forcedPanel = null;
+            evidenceViews.Clear();
+            RenderTranscript(); Arrange();
+            if (view == CodeWorkspaceView.Review) RefreshReviewDesk();
+        }
+        async Task SendReview()
+        {
+            if (session == null || session.ReviewComments.Count == 0) return;
+            SelectView(CodeWorkspaceView.Workbench);
+            if (View() == CodeWorkspaceView.Workbench) await Send();
+        }
+        void RefreshReviewDesk()
+        {
+            if (session == null || View() != CodeWorkspaceView.Review) return;
+            if (reviewDesk == null)
+            {
+                reviewDesk = BuildReviewDesk(session, Save, () => { RenderTabs(); RenderTranscript(); RefreshReviewDesk(); Save(); },
+                    (kind, target) => OpenTab(kind, target, true), RenderReferences, SendReview,
+                    () => SelectedChatProfile(profiles)?.DisplayName ?? "Select a model");
+                reviewHost.Content = reviewDesk.View;
+            }
+            else reviewDesk.Refresh();
+        }
         void RefreshProjectMenu()
         {
             projectMenu.Items.Clear();
             foreach(var owner in store.Projects)
             {
-                bool ambiguous=store.Projects.Count(p=>p.Name.Equals(owner.Name,StringComparison.OrdinalIgnoreCase))>1;
-                var item=new MenuFlyoutItem{Text=ambiguous?owner.Name+" · "+Path.GetDirectoryName(owner.Workspace):owner.Name,Icon=new FontIcon{Glyph="\uE8B7"},IsEnabled=codeOperation==null};
+                var item=new MenuFlyoutItem{Text=ProjectLabel(owner,store.Projects),Icon=new FontIcon{Glyph="\uE8B7"},IsEnabled=codeOperation==null};
                 ToolTipService.SetToolTip(item,owner.Workspace);item.Click+=(_,_)=>SelectProject(owner);projectMenu.Items.Add(item);
             }
             if(projectMenu.Items.Count>0)projectMenu.Items.Add(new MenuFlyoutSeparator());
+            if(session!=null){
+                var plan = new MenuFlyoutItem { Text = "Plan & repository map", Icon = new FontIcon { Glyph = "\uE8FD" } };
+                plan.Click += (_, _) => OpenTab("plan", "", true);
+                projectMenu.Items.Add(plan);
+                var selection = new MenuFlyoutItem {Text = "Attach editor selection", IsEnabled = codeOperation == null};
+                selection.Click += (_, _) => {
+                    try {
+                        if (session == null || codeOperation != null) return;
+                        var scope = new CodeWorkspace(session.Workspace);
+                        string key = CodeProtocol.Hash(System.Text.Encoding.UTF8.GetBytes(Path.TrimEndingDirectorySeparator(scope.Root).ToLowerInvariant()));
+                        string path = Path.Combine(Store.Root, "editor-inbox", key + ".json");
+                        if (!File.Exists(path)) throw new InvalidOperationException("Use Mason: Share Selection with Local Project in VS Code first.");
+                        if (new FileInfo(path).Length > 120000) throw new InvalidDataException("Editor selection exceeds the limit.");
+                        AttachEvidence(session, DeveloperEvidence.Editor(scope, File.ReadAllText(path)));
+                    } catch (Exception ex) { state.Text = ex.Message; }
+                };
+                projectMenu.Items.Add(selection);
+                var delivery=new MenuFlyoutItem{Text="Git delivery & CI feedback"};delivery.Click+=(_,_)=>OpenTab("delivery","",true);projectMenu.Items.Add(delivery);
+                var settingsItem=new MenuFlyoutItem{Text="Project policy & extensions"};settingsItem.Click+=(_,_)=>OpenTab("harness","",true);projectMenu.Items.Add(settingsItem);
+                var roles=new MenuFlyoutItem{Text="Model roles & decision inspector"};
+                roles.Click+=(_,_)=>OpenTab("roles","",true);projectMenu.Items.Add(roles);
+                var jobs = new MenuFlyoutItem {Text="Background tasks"};
+                jobs.Click += (_,_) => OpenTab("tasks","",true); projectMenu.Items.Add(jobs);
+                var tree=new MenuFlyoutItem{Text="Fork session in an isolated worktree…",IsEnabled=codeOperation==null};
+                tree.Click+=async(_,_)=>{
+                    if(session==null||codeOperation!=null||dialogOpen)return;
+                    dialogOpen=true;
+                    try{
+                        var name=new TextBox{PlaceholderText="Task name"};
+                        var dlg=new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Create a Git worktree",Content=Stack(CodeNote("Fork the current checkout, including pending file edits, and continue in a sibling worktree."),name),PrimaryButtonText="Create",CloseButtonText="Cancel"};
+                        if(await dlg.ShowAsync()!=ContentDialogResult.Primary)return;
+                        var slug=name.Text.Trim();
+                        if(!System.Text.RegularExpressions.Regex.IsMatch(slug,@"\A[A-Za-z0-9][A-Za-z0-9_-]{0,48}\z"))throw new ArgumentException("Use a short task name with letters, digits, hyphens or underscores.");
+                        var dest=session.Workspace+"-"+slug;
+                        var origin=await CodeExperiment.Fork(session,dest,"mason/"+slug,CancellationToken.None);
+                        var fork=store.New(dest);fork.Experiment=origin;fork.Model=session.Model;fork.ReviewerModel=session.ReviewerModel;fork.VisualModel=session.VisualModel;
+                        fork.Permission=session.Permission;fork.Mode=session.Mode;fork.Milestones=session.Milestones.ToArray();
+                        fork.Messages.AddRange(session.Messages);
+                        fork.Turns.AddRange(session.Turns.Where(t=>!t.Rewound).Select(t=>new CodeTurn{Role=t.Role,Text=t.Text,Evidence=t.Evidence}));
+                        fork.Shell=session.Shell;fork.ShellExecutable=session.ShellExecutable;fork.Reasoning=session.Reasoning;
+                        fork.ManageRoleMemory=session.ManageRoleMemory;fork.RoleCallLimit=session.RoleCallLimit;fork.RecordModelDecisions=session.RecordModelDecisions;
+                        fork.Title=slug;store.Save(fork);
+                        Select(fork,store.ProjectForWorkspace(dest));
+                    }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
+                };
+                projectMenu.Items.Add(tree);
+                if(session.Experiment!=null){var compare=new MenuFlyoutItem{Text="Review experiment patch"};compare.Click+=(_,_)=>OpenTab("experiment","",true);projectMenu.Items.Add(compare);}
+            }
             var add=new MenuFlyoutItem{Text="Add project…",Icon=new FontIcon{Glyph="\uE710"},IsEnabled=codeOperation==null};add.Click+=async(_,_)=>await OpenWorkspace();projectMenu.Items.Add(add);
+            if (project != null) projectMenu.Items.Add(RemoveProjectItem(project));
+        }
+        MenuFlyoutItem RemoveProjectItem(CodeProject target)
+        {
+            var item = new MenuFlyoutItem { Text = "Remove project from Mason…", IsEnabled = codeOperation == null };
+            item.Click += async (_, _) => await RemoveProject(target);
+            return item;
+        }
+        async Task RemoveProject(CodeProject target)
+        {
+            if (codeOperation != null || dialogOpen) return;
+            dialogOpen = true;
+            try
+            {
+                var dialog = new ContentDialog
+                {
+                    XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme,
+                    Title = $"Remove {target.Name} from Mason?",
+                    Content = Stack(CodeNote(target.Workspace),
+                        Text("Your files stay on disk. Add this folder again to restore its sessions and project notes.", 14)),
+                    PrimaryButtonText = "Remove from Mason", CloseButtonText = "Cancel",
+                    DefaultButton = ContentDialogButton.Close
+                };
+                if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+                bool current = project?.Id == target.Id;
+                if (current && !TrySaveCurrent()) return;
+                store.RemoveProject(target.Id);
+                if (current) Select(store.SelectedSession, store.SelectedProject, selectionSaved: true);
+                else RenderProjects();
+            }
+            catch (Exception error) { state.Text = "Could not remove the project from Mason · " + error.Message; }
+            finally { dialogOpen = false; Enable(); }
         }
         void SelectProject(CodeProject owner)=>Select(store.LastSession(owner.Id),owner);
         void NewProjectSession(CodeProject owner)
@@ -506,41 +705,32 @@ public sealed partial class MainWindow
             gitStatus = observed; branch.Content = observed.Branch=="Folder workspace"?"Repository":observed.Branch; ToolTipService.SetToolTip(branch, observed.Detail);
             footerText.Text = (project?.Name??Path.GetFileName(owner.Workspace))+" · "+observed.Branch + " · Session saved locally"; RenderFiles();
         }
-        async Task Search()
+        IEnumerable<TitleHit> WorkspaceSearch()
         {
-            if (dialogOpen) return; dialogOpen = true; Action? chosen = null;
-            var input = new TextBox { PlaceholderText = "Search files, sessions or commands…", MinWidth = 420 };
-            AutomationProperties.SetName(input, "Search coding workspace");
-            var results = new ListView { MaxHeight = 420, IsItemClickEnabled = true, SelectionMode = ListViewSelectionMode.Single };
-            var commands = new Dictionary<string, Action> {
-                ["Command · Add project"] = async () => await OpenWorkspace(),
-                ["Command · Toggle projects panel"] = ToggleWorkspace,
-                ["Command · Models and connections"] = () => Navigate("Models and connections") };
-            if (session != null)
+            TitleHit Command(string name, Action run) => new("\uE756", name, "Command", () => { Navigate("Code"); run(); });
+            yield return Command("Toggle projects panel", ToggleWorkspace);
+            if (project is {} owner && codeOperation == null)
             {
-                commands["Command · Delete selected session"] = async () => await DeleteSession();
-                commands["Command · Review session changes"] = () => OpenTab("changes", "", true);
-                commands["Command · View activity"] = () => OpenTab("activity", "", true);
-                commands["Command · View context checkpoints"] = () => OpenTab("context", "", true);
-                commands["Command · Repository status"] = () => OpenTab("git", "", true);
-                if (session.Tabs.Count > 0) commands["Command · Toggle task viewer"] = ToggleViewer;
+                yield return Command("New session in " + ProjectLabel(owner, store.Projects), () => NewProjectSession(owner));
+                yield return Command("Remove project from Mason · " + ProjectLabel(owner, store.Projects), async () => await RemoveProject(owner));
             }
-            if (project != null && codeOperation == null) commands["Command · New session in "+project.Name] = () => NewProjectSession(project);
-            if (session?.Messages.Count > 0 && codeOperation == null) commands["Command · Compact context now"] = async () => await CompactContext();
-            foreach (var path in allFiles) commands["File · " + path] = () => OpenTab("file", path, true);
-            if(codeOperation==null)
+            if (session == null) yield break;
+            foreach (var view in Enum.GetValues<CodeWorkspaceView>())
+                yield return Command(view + " view", () => SelectView(view));
+            yield return Command("Review session changes", () => OpenTab("changes", "", true));
+            yield return Command("View activity", () => OpenTab("activity", "", true));
+            yield return Command("View context checkpoints", () => OpenTab("context", "", true));
+            yield return Command("Plan & repository map", () => OpenTab("plan", "", true));
+            yield return Command("Repository status", () => OpenTab("git", "", true));
+            yield return Command("Open website", async () => await OpenWebsite());
+            if (session.Tabs.Count > 0) yield return Command("Toggle task viewer", ToggleViewer);
+            if (codeOperation == null)
             {
-                foreach(var owner in store.Projects)commands["Project · "+owner.Name+" · "+owner.Workspace]=()=>SelectProject(owner);
-                foreach(var item in store.Sessions)commands["Session · "+(store.ProjectFor(item)?.Name??Path.GetFileName(item.Workspace))+" · "+item.Title+" · "+item.Id.ToString("N")[..6]]=()=>Select(item);
+                yield return Command("Delete selected session", async () => await DeleteSession());
+                if (session.Messages.Count > 0) yield return Command("Compact context now", async () => await CompactContext());
             }
-            void Filter() { results.ItemsSource = commands.Keys.Where(k => k.Contains(input.Text, StringComparison.OrdinalIgnoreCase)).Take(80).ToArray(); results.SelectedIndex = 0; }
-            var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme, Title = "Search files and commands", Content = Stack(input, results), CloseButtonText = "Close" };
-            input.TextChanged += (_, _) => Filter();
-            results.ItemClick += (_, e) => { chosen = commands[e.ClickedItem.ToString()!]; dialog.Hide(); };
-            input.KeyDown += (_, e) => { if (e.Key == VirtualKey.Down) { e.Handled = true; results.Focus(FocusState.Keyboard); } else if (e.Key == VirtualKey.Enter && results.SelectedItem is string key) { e.Handled = true; chosen = commands[key]; dialog.Hide(); } };
-            results.KeyDown += (_, e) => { if (e.Key == VirtualKey.Enter && results.SelectedItem is string key) { e.Handled = true; chosen = commands[key]; dialog.Hide(); } };
-            dialog.Opened += (_, _) => input.Focus(FocusState.Programmatic); Filter();
-            try { await dialog.ShowAsync(); } finally { dialogOpen = false; } chosen?.Invoke();
+            foreach (var path in allFiles)
+                yield return new TitleHit("\uE8A5", path, "File", () => { Navigate("Code"); OpenTab("file", path, true); });
         }
         bool TrySaveCurrent()
         {
@@ -562,13 +752,14 @@ public sealed partial class MainWindow
             catch (Exception error) { state.Text = "Models unavailable · " + error.Message; }
             finally { updating = false; }
         }
-        async void Select(CodeSession? selected,CodeProject? selectedProject=null)
+        async void Select(CodeSession? selected,CodeProject? selectedProject=null,bool selectionSaved=false)
         {
             if (codeOperation != null) return;
-            draftSave.Stop();if(!TrySaveCurrent())return;
+            draftSave.Stop();if(!selectionSaved && !TrySaveCurrent())return;
             var owner=selected==null?selectedProject??store.SelectedProject:store.ProjectFor(selected);
-            try{if(owner!=null)store.ActivateProject(owner.Id,selected?.Id);}catch(Exception error){state.Text="Project switch failed · "+error.Message;return;}
+            try{if(!selectionSaved && owner!=null)store.ActivateProject(owner.Id,selected?.Id);}catch(Exception error){state.Text="Project switch failed · "+error.Message;return;}
             foreach (var entry in viewerEntries.Values) entry.Dispose(); viewerEntries.Clear();
+            reviewDesk?.Dispose(); reviewDesk = null; reviewHost.Content = null;
             session = selected;project=owner; updating = true; pendingTranscriptTail = true; followTail = true;
             try
             {
@@ -586,7 +777,7 @@ public sealed partial class MainWindow
                 context.Text = ContextCaption(selected); ContextLabel(); allFiles = []; gitStatus = null; RenderFiles();
             }
             finally { updating = false; }
-            RefreshModels(); RenderReferences(); RenderTranscript(); RenderTabs(); Arrange(); Enable();
+            RefreshModels(); RenderReferences(); RenderTranscript(); RenderTabs(); Arrange(); Enable(); RefreshReviewDesk();
             DispatcherQueue.TryEnqueue(RestoreTranscriptTail);
             int generation = ++fileGeneration;
             if (selected != null)
@@ -606,10 +797,29 @@ public sealed partial class MainWindow
             }
             else fileSkeleton.Visibility = Visibility.Collapsed;
         }
+        void AttachEvidence(CodeSession owner, DeveloperEvidence item)
+        {
+            if (owner != session || codeOperation != null) throw new InvalidOperationException("Return to the idle session before attaching evidence.");
+            if (owner.Evidence.Count >= 4) throw new InvalidOperationException("Send or remove an attachment first.");
+            owner.Evidence.Add(item);
+            try { store.Save(owner); } catch { owner.Evidence.Remove(item); throw; }
+            RenderReferences();
+        }
         void RenderReferences()
         {
+            SetReviewMenu(reviewButton, session, RenderReferences);
+            reviewDesk?.Refresh();
             references.Children.Clear();
             if (session == null) return;
+            foreach (var item in session.Evidence.ToArray())
+            {
+                var chip = Button(item.Label + " ×", (_, _) => {
+                    if (codeOperation != null) return;
+                    session.Evidence.Remove(item); RenderReferences(); Save();
+                });
+                ToolTipService.SetToolTip(chip, item.Kind + (item.Unsaved ? " · unsaved buffer" : "") + "\n" + item.Details);
+                references.Children.Add(chip);
+            }
             foreach (var path in session.References.ToArray())
             {
                 var button = Button("@" + Path.GetFileName(path) + " ×", (_, _) => { if (codeOperation == null) { session.References.Remove(path); RenderReferences(); Save(); } });
@@ -621,8 +831,8 @@ public sealed partial class MainWindow
             // The composer cannot be used until a session exists. Give the empty
             // project state the space instead of showing a disabled input panel.
             composer.Visibility = sessionHeader.Visibility = session == null ? Visibility.Collapsed : Visibility.Visible;
-            ShowMood();
-            double offset = transcriptScroll.VerticalOffset; transcript.Children.Clear(); emptyHost = null;
+            ShowMood(); UpdateStatusRow();
+            double offset = transcriptScroll.VerticalOffset; transcript.Children.Clear(); emptyHost = null; resultActions = null;
             if (session == null || session.Turns.Count == 0)
             {
                 if (session != null)
@@ -646,14 +856,25 @@ public sealed partial class MainWindow
             // between refreshes, so a message only animates in when it is new to this session's view, and streaming
             // only replaces the text inside the live message (its container, and its entrance, stay put).
             bool animateNew = shownSession == session;
-            if (!animateNew) { turnViews.Clear(); liveView = null; }
+            if (!animateNew) { turnViews.Clear(); evidenceViews.Clear(); liveView = null; }
             var keptViews = new Dictionary<int, (string Key, UIElement View)>();
             string previousRole = ""; bool activityShown = false; int segmentStart = 0, segmentEnd = session.Activities.Count;
+            CodeTurn? requestTurn = null;
+            void AddTurnEvidence()
+            {
+                if (requestTurn?.Acceptance is not { Checks.Count: > 0 } plan) return;
+                if (!evidenceViews.TryGetValue(requestTurn, out var cached) || cached.Revision != plan.VerifiedRevision ||
+                    !plan.Checks.SequenceEqual(cached.Checks) || !plan.Results.SequenceEqual(cached.Results))
+                    evidenceViews[requestTurn] = cached = (plan.Checks.ToArray(), plan.Results.ToArray(), plan.VerifiedRevision,
+                        CheckEvidence(plan, cached.View?.Disclosure?.IsExpanded == true, View()));
+                transcript.Children.Add(cached.View.Layout);
+            }
             for (int index = 0; index < session.Turns.Count; index++)
             {
                 var turn = session.Turns[index];
-                if (turn.Role == "user") { activityShown = false; segmentStart = turn.FirstActivity; segmentEnd = session.Turns.Skip(index + 1).FirstOrDefault(t => t.Role == "user")?.FirstActivity ?? session.Activities.Count; }
-                if (turn.Text.Length == 0) continue;
+                if (turn.Role == "user") { AddTurnEvidence(); requestTurn = turn; activityShown = false; segmentStart = turn.FirstActivity; segmentEnd = session.Turns.Skip(index + 1).FirstOrDefault(t => t.Role == "user")?.FirstActivity ?? session.Activities.Count; }
+                if (turn.Text.Length == 0 || (requestTurn?.Acceptance != null && turn.Role == "assistant" &&
+                    System.Text.RegularExpressions.Regex.IsMatch(turn.Text, @"^Completed · \d+ feature checks? passed · \d+ files? changed$"))) continue;
                 // Keep the opening intent; repeated file-read narration remains in activity/history.
                 if (turn.Role == "assistant" && activityShown && turn.ActivityCount == 1 && turn.FirstActivity < session.Activities.Count && session.Activities[turn.FirstActivity].Tool is "read_file" or "list_files" or "search_text") continue;
                 string viewKey = turn.Role + "|" + (turn.Role != previousRole) + "|" + turn.Text;
@@ -673,6 +894,23 @@ public sealed partial class MainWindow
                         }
                         var content = Stack(speaker, body); content.Spacing = 10; container = content;
                     }
+                    if (turn.Evidence.Length > 0)
+                    {
+                        var captured = Stack(container);
+                        foreach (var item in turn.Evidence)
+                        {
+                            var panel = Stack(CodeNote(item.Details));
+                            if(item.HasScreenshot) panel.Children.Add(new Image{Source=new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(DeveloperEvidence.ImageFile(Store.Root,session.Id,item.Id))),MaxHeight=200});
+                            if(item.Source.Length>0 && item.Line>0) {
+                                var scope=new CodeWorkspace(session.Workspace);
+                                panel.Children.Add(CodeLink("Open source in VS Code",async (_,_)=>{
+                                    try { await Windows.System.Launcher.LaunchUriAsync(new Uri("vscode://file/"+string.Join("/",scope.Resolve(item.Source).Replace('\\','/').Split('/').Select(Uri.EscapeDataString))+":"+item.Line+":1")); } catch(Exception ex){state.Text=ex.Message;}
+                                }));
+                            }
+                            captured.Children.Add(new Expander{Header=item.Kind+" · "+item.Label,Content=panel});
+                        }
+                        container=captured;
+                    }
                     // A finished answer takes over from its live view in place, so it does not enter a second time.
                     if (animateNew && index >= shownTurns && !(turn.Role == "assistant" && shownLive)) FadeIn(container);
                     view = (viewKey, container);
@@ -685,14 +923,12 @@ public sealed partial class MainWindow
                     transcript.Children.Add(Toolbar(CodeNote(CodeProtocol.ActivitySummary(session.Activities.Skip(segmentStart).Take(segmentEnd - segmentStart))), CodeLink("View activity", (_, _) => OpenTab("activity", "", true)))); activityShown = true;
                 }
             }
+            AddTurnEvidence();
             if (session.State is not ("Running" or "Awaiting review"))
             {
-                var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
-                int changed = session.Changes.Count(c => !c.Restored);
-                if (changed > 0) actions.Children.Add(CodeLink(changed == 1 ? "1 changed file" : $"{changed} changed files", (_, _) => OpenTab("changes", "", true)));
-                foreach (var artifact in session.Tabs.Where(t => t.Kind is "file" or "web").TakeLast(2))
-                    actions.Children.Add(CodeLink(artifact.Kind == "web" ? "Open preview" : artifact.Title, (_, _) => OpenTab(artifact.Kind, artifact.Target, true)));
-                if (actions.Children.Count > 0) transcript.Children.Add(actions);
+                resultActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
+                RefreshResultActions();
+                transcript.Children.Add(resultActions);
             }
             if (session.LiveMessage.Length > 0)
             {
@@ -717,6 +953,21 @@ public sealed partial class MainWindow
             turnViews = keptViews; shownSession = session; shownTurns = session.Turns.Count; shownLive = session.LiveMessage.Length > 0;
             transcriptScroll.UpdateLayout(); transcriptScroll.ChangeView(null, followTail ? TranscriptTail() : offset, null, true);
         }
+        void RefreshResultActions()
+        {
+            if (resultActions == null || session == null) return;
+            var actions = resultActions.Children;
+            actions.Clear();
+            int changed = session.Changes.Count(c => !c.Restored);
+            if (changed > 0)
+                actions.Add(Button($"Review changes ({changed})", (_, _) => SelectView(CodeWorkspaceView.Review), true));
+            if (session.Tabs.Any(t => t.Kind is "web" or "site" || t.Kind == "file" && CodeWebsite.IsPage(t.Target)) ||
+                session.Changes.Any(c => !c.Restored && CodeWebsite.IsPage(c.Path)))
+                actions.Add(CodeLink("Open preview", async (_, _) => await OpenWebsite()));
+            foreach (var file in session.Tabs.Where(t => t.Kind == "file").TakeLast(2))
+                actions.Add(CodeLink(file.Title, (_, _) => OpenTab("file", file.Target, true)));
+            resultActions.Visibility = actions.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        }
         void OpenTextArtifact(ChatArtifact artifact)
         {
             if (session == null) return;
@@ -727,12 +978,17 @@ public sealed partial class MainWindow
         void OpenTab(string kind, string target, bool user)
         {
             if (session == null) return;
+            if (user && kind == "changes") { SelectView(CodeWorkspaceView.Review); return; }
+            if (user && View() != CodeWorkspaceView.Workbench) SelectView(CodeWorkspaceView.Workbench);
             // Clicking a transcript link is pointer input, not a request to stop following
             // the latest result. Preserve the bottom anchor while the viewer changes width.
             if (user && transcriptScroll.ScrollableHeight - transcriptScroll.VerticalOffset < 90) followTail = true;
             var tab = new CodeTab { Kind = kind, Target = target };
+            int previousCount = session.Tabs.Count;
             if (!CodePanels.Open(session, tab, user)) { state.Text = "Close a viewer tab before opening more than 12."; return; }
-            if (user) forcedPanel = "viewer"; RenderTabs(); Arrange(); Save();
+            if (user) forcedPanel = "viewer"; RenderTabs();
+            if (session.Tabs.Count != previousCount) RefreshResultActions();
+            Arrange(); Save();
         }
         void RenderTabs()
         {
@@ -745,7 +1001,7 @@ public sealed partial class MainWindow
                 {
                     if (!viewerEntries.TryGetValue(tab.Key, out var entry))
                     {
-                        entry = BuildCodeViewer(session!, tab, Save, () => { RenderTabs(); viewerChanged?.Invoke(); Save(); }, (kind, target) => OpenTab(kind, target, true)); viewerEntries[tab.Key] = entry;
+                        entry = BuildCodeViewer(session!, tab, Save, () => { RenderTabs(); viewerChanged?.Invoke(); Save(); }, (kind, target) => OpenTab(kind, target, true), RenderReferences, attach: AttachEvidence); viewerEntries[tab.Key] = entry;
                     }
                     entry.Refresh?.Invoke(); desired.Add(entry.Tab);
                 }
@@ -765,24 +1021,34 @@ public sealed partial class MainWindow
             bool anyProject = store.Projects.Count > 0;
             // Before the first project there is nothing to switch, search or view: onboarding gets the page.
             toolbar.Visibility = anyProject ? Visibility.Visible : Visibility.Collapsed;
-            UIElement searchContent = width < 1100 ? searchCompact : searchWide;
-            if (search.Content != searchContent) search.Content = searchContent;
-            search.MinHeight = 36; ToolTipService.SetToolTip(search, "Search files, sessions or commands");
-            AutomationProperties.SetName(search, "Search files or commands");
             viewerLabel.Visibility = width < 620 ? Visibility.Collapsed : Visibility.Visible;
             branch.MaxWidth = 180; branch.Visibility = width < 700 ? Visibility.Collapsed : Visibility.Visible;
             profiles.MinWidth=130;permissions.MinWidth=140;
             ArrangeComposer();
             bool hasArtifacts = session?.Tabs.Count > 0;
-            bool sidebar = anyProject && (session?.SidebarVisible ?? emptySidebarVisible) && (width >= 760 || forcedPanel == "workspace");
-            bool showViewer = hasArtifacts && session!.ViewerVisible && (width >= 1000 || forcedPanel == "viewer") && !(width <= 1120 && forcedPanel == "workspace");
+            bool review = View() == CodeWorkspaceView.Review, notebook = View() == CodeWorkspaceView.Notebook;
+            bool sidebar = (!review || forcedPanel == "workspace") && anyProject && (session?.SidebarVisible ?? emptySidebarVisible) && (width >= 760 || forcedPanel == "workspace");
+            bool showViewer = !review && !notebook && hasArtifacts && session!.ViewerVisible && (width >= 1000 || forcedPanel == "viewer") && !(width <= 1120 && forcedPanel == "workspace");
             if (showViewer && width - (sidebar ? projectPanelWidth+12 : 0) < 1000) sidebar = false;
             bool projectsOnly=sidebar&&width<640;if(projectsOnly)showViewer=false;
             bool viewerOnly = showViewer && width < 1000;
+            websiteShortcut.Visibility=session!=null && !showViewer?Visibility.Visible:Visibility.Collapsed;
             sideBody.Visibility = projectSurface.Visibility = sidebar ? Visibility.Visible : Visibility.Collapsed;
             page.ColumnDefinitions[0].Width = projectsOnly?new GridLength(1,GridUnitType.Star):new GridLength(sidebar?projectPanelWidth:0); page.ColumnSpacing = sidebar&&!projectsOnly ? 12 : 0;
             page.ColumnDefinitions[1].Width=projectsOnly?new GridLength(0):new GridLength(1,GridUnitType.Star);
-            layout.Visibility=projectsOnly?Visibility.Collapsed:Visibility.Visible;
+            layout.Visibility=projectsOnly || review ? Visibility.Collapsed : Visibility.Visible;
+            reviewHost.Visibility = review && !projectsOnly ? Visibility.Visible : Visibility.Collapsed;
+            viewModes.Visibility = session != null && width >= 845 ? Visibility.Visible : Visibility.Collapsed;
+            viewPicker.Visibility = session != null && width < 845 ? Visibility.Visible : Visibility.Collapsed;
+            if (viewPicker.SelectedItem is not CodeWorkspaceView picked || picked != View()) viewPicker.SelectedItem = View();
+            foreach (ToggleButton choice in viewModes.Children) choice.IsChecked = (CodeWorkspaceView)choice.Tag == View();
+            title.FontSize = notebook ? 38 : 24;
+            center.MaxWidth = notebook ? 1320 : double.PositiveInfinity;
+            center.Padding = notebook && width >= 900 ? new Thickness(28, 0, 28, 0) : new Thickness(0);
+            transcriptBody.MaxWidth = notebook ? 1320 : 960;
+            transcript.MaxWidth = notebook ? 1160 : 820;
+            transcript.HorizontalAlignment = notebook ? HorizontalAlignment.Left : HorizontalAlignment.Center;
+            viewerToggle.Visibility = review ? Visibility.Collapsed : Visibility.Visible;
             double ratio = Math.Clamp(session?.ViewerFraction ?? .53, .28, .67);
             center.Visibility = viewerOnly ? Visibility.Collapsed : Visibility.Visible;
             layout.ColumnDefinitions[0].MinWidth = viewerOnly ? 0 : showViewer ? 450 : 300;
@@ -793,7 +1059,6 @@ public sealed partial class MainWindow
             splitter.Visibility = showViewer && !viewerOnly ? Visibility.Visible : Visibility.Collapsed;
             sideToggle.IsChecked = sidebar; viewerToggle.IsChecked = showViewer; viewerToggle.IsEnabled = hasArtifacts;
             ToolTipService.SetToolTip(viewerToggle, hasArtifacts ? "Show or hide artifacts · Ctrl+Alt+V" : "Files, changes and previews appear here when available.");
-            viewerHeading.Text = (session?.Tabs.Count ?? 0) == 1 ? "1 tab open" : $"{session?.Tabs.Count ?? 0} tabs open";
             changeButton.Content = session?.Changes.Count(c => !c.Restored) is int changed && changed > 0 ? $"Changes ({changed})" : "Changes";
             pinned.IsEnabled = hasArtifacts;
             Shortcuts();
@@ -807,13 +1072,15 @@ public sealed partial class MainWindow
         void ToggleViewer()
         {
             if (session == null || session.Tabs.Count == 0) return;
-            if (viewer.Visibility == Visibility.Visible) CodePanels.Hide(session); else CodePanels.Show(session);
+            if (View() != CodeWorkspaceView.Workbench) { SelectView(CodeWorkspaceView.Workbench); CodePanels.Show(session); }
+            else if (viewer.Visibility == Visibility.Visible) CodePanels.Hide(session); else CodePanels.Show(session);
             forcedPanel = session.ViewerVisible ? "viewer" : null; Arrange(); Save();
         }
         void Enable()
         {
             bool ready = codeOperation == null;
             bool workspaceReady = session != null;
+            newSession.IsEnabled = ready && project != null;
             sessions.IsEnabled = openFolder.IsEnabled = projectSwitcher.IsEnabled=ready;
             shells.IsEnabled = environment.IsEnabled = ready && workspaceReady;
             networkModes.IsEnabled=ready&&workspaceReady;
@@ -826,7 +1093,10 @@ public sealed partial class MainWindow
             activityButton.IsEnabled = contextLink.IsEnabled = branch.IsEnabled = changeButton.IsEnabled = preview.IsEnabled = workspaceReady;
             ToolTipService.SetToolTip(activityButton, workspaceReady ? "Inspect actual tool requests and results" : "Open a workspace folder to start a session.");
             ToolTipService.SetToolTip(contextLink, workspaceReady ? ContextCaption(session) : "Open a workspace folder to start a session.");
-            draft.IsEnabled = session != null && ready; send.IsEnabled = session != null && ready;
+            bool canGuide=liveEngine!=null && session==liveOwner;
+            draft.IsEnabled = session != null && (ready||canGuide); send.IsEnabled = session != null && ready;
+            followUpButtons.Visibility=canGuide?Visibility.Visible:Visibility.Collapsed;
+            draft.PlaceholderText=canGuide?"Steer this run or queue a follow-up…":session?.PendingInput.Count>0?"Type /queue to resume pending messages…":"Describe a change, ask about the repo, or @ a file…";
             send.Visibility = ready ? Visibility.Visible : Visibility.Collapsed; stop.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
             spinner.Visibility = ready ? Visibility.Collapsed : Visibility.Visible; spinner.IsActive = !ready;
         }
@@ -841,10 +1111,17 @@ public sealed partial class MainWindow
             DispatcherQueue.TryEnqueue(() => { refreshQueued = false; if (session == null) return;
                 // A first run renames "New session"; the project tree binds a snapshot, so rebuild it when the title changes.
                 if (title.Text != session.Title) { title.Text = session.Title; RenderProjects(); }
-                state.Text = session.Detail; context.Text = ContextCaption(session); ContextLabel(); RenderTranscript(); RenderTabs(); RenderFiles(); Arrange(); _ = RefreshWorkspaceFiles(session); });
+                state.Text = session.Detail; context.Text = ContextCaption(session); ContextLabel();
+                if (liveOwner == session && submittedDraft != null && session.Draft.Length == 0)
+                {
+                    if (draft.Text == submittedDraft) { updating = true; draft.Text = ""; updating = false; }
+                    submittedDraft = null; RenderReferences();
+                }
+                RenderTranscript(); RenderTabs(); RenderFiles(); Arrange(); RefreshReviewDesk(); _ = RefreshWorkspaceFiles(session); });
         }
         async Task<bool> Approve(CodeApproval request, CancellationToken cancellation)
         {
+            if (View() == CodeWorkspaceView.Review) SelectView(CodeWorkspaceView.Workbench);
             var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously); pendingApproval = completion;
             using var registration = cancellation.Register(() => completion.TrySetCanceled(cancellation));
             var detail = CodeScroll(Stack(Text(request.Description, 14), CodeNote(request.Detail))); detail.MaxHeight = 190;
@@ -852,7 +1129,16 @@ public sealed partial class MainWindow
             var decline = Button("Decline", (_, _) => completion.TrySetResult(false));
             var approvalTitle = Text("Review " + request.Tool.Replace('_', ' '), 17); approvalTitle.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; approvalTitle.VerticalAlignment = VerticalAlignment.Center;
             AutomationProperties.SetName(allow, "Allow " + request.Tool.Replace('_', ' ') + " once"); AutomationProperties.SetName(decline, "Decline " + request.Tool.Replace('_', ' '));
-            var approvalCard = ChatSurface(Stack(Row(MascotImage(MoodChecking, 44, "needs your review"), approvalTitle), detail, Row(allow, decline)), new Thickness(14, 10, 14, 12));
+            var approvalBody=Stack(Row(MascotImage(MoodChecking, 44, "needs your review"), approvalTitle),detail);
+            if(request.Jpeg!=null){
+                using var bytes=new MemoryStream(Convert.FromBase64String(request.Jpeg));
+                using var stream=bytes.AsRandomAccessStream();
+                var bitmap=new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
+                await bitmap.SetSourceAsync(stream);
+                approvalBody.Children.Add(new Image{Source=bitmap,MaxHeight=200,Stretch=Stretch.Uniform});
+            }
+            approvalBody.Children.Add(Row(allow,decline));
+            var approvalCard = ChatSurface(approvalBody, new Thickness(14, 10, 14, 12));
             approvalHost.Content = approvalCard; FadeIn(approvalCard);
             try { return await completion.Task; } finally { approvalHost.Content = null; pendingApproval = null; }
         }
@@ -871,20 +1157,29 @@ public sealed partial class MainWindow
             catch (Exception error) { state.Text = error.Message; }
             finally { codeOperation = aiOperation = null; Enable(); RenderTabs(); }
         }
+        void SubmitFollowUp(bool steer)
+        {
+            if(liveEngine==null || session!=liveOwner || session==null)return;
+            try{
+                liveEngine.SendWhileRunning(session,draft.Text,steer,includeReview: true);draft.Text="";RenderReferences();state.Text=steer?"Steering the current run":"Follow-up queued";
+            }catch(Exception error){state.Text=error.Message;}
+        }
         async Task Send()
         {
+            if(liveEngine!=null && session==liveOwner){SubmitFollowUp(false);return;}
             if (codeOperation != null || aiOperation != null) { state.Text = "Finish or stop the active AI operation first."; return; }
             if (session == null) { state.Text = "Open a workspace folder first."; return; }
             if (SelectedChatProfile(profiles) is not AiEndpointProfile profile) { state.Text = "Select a coding model from Models & endpoints."; return; }
-            string input = draft.Text.Trim(); if (input.Length == 0) return;
+            string input = draft.Text.Trim(); if (input.Length == 0 && session.ReviewComments.Count == 0) return;
             followTail = true; pendingTranscriptTail = true;
             var active = session; using var cancellation = new CancellationTokenSource(); codeOperation = cancellation; aiOperation = cancellation; draftSave.Stop(); Enable();
             try
             {
-                var key = aiSessionKeys.GetValueOrDefault(profile.Id) ?? Store.Unprotect(profile.Secret);
-                var model = new CodeLocalModel(profile, key, active.Reasoning, value => { context.Text = value; }, progress: value => { active.Detail = value; if (active == session) state.Text = value; });
+                var model = SessionModels(active, profile, value => context.Text = value, value => { active.Detail = value; if (active == session) state.Text = value; });
                 var engine = new CodeEngine(store, model, Approve, RefreshRun);
-                var task = engine.Run(active, input, cancellation.Token); updating = true; draft.Text = ""; updating = false;
+                liveEngine=engine;liveOwner=active;Enable();
+                submittedDraft = draft.Text;
+                var task = engine.Run(active, input, cancellation.Token, includeReview: true);
                 await task; updating = true; draft.Text = active.Draft; updating = false; RenderTranscript(); RenderTabs(); Arrange(); state.Text = active.Detail; title.Text = active.Title;
                 try
                 {
@@ -899,7 +1194,7 @@ public sealed partial class MainWindow
                 catch (Exception error) { fileState.Text = "File listing refresh failed · " + error.Message; }
             }
             catch (Exception error) { state.Text = error.Message; }
-            finally { codeOperation = null; if (aiOperation == cancellation) aiOperation = null; Enable(); updating = true; draft.Text = active.Draft; RenderProjects(); updating = false; ShowMood(); footerText.Text = (project?.Name??Path.GetFileName(active.Workspace)) + " · Session saved locally"; Save(); }
+            finally { submittedDraft=null;liveEngine=null;liveOwner=null;RenderReferences();codeOperation = null; if (aiOperation == cancellation) aiOperation = null; Enable(); updating = true; draft.Text = active.Draft; RenderProjects(); updating = false; ShowMood(); footerText.Text = (project?.Name??Path.GetFileName(active.Workspace)) + " · Session saved locally"; Save(); }
         }
     }
 }

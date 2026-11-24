@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.IO.Compression;
 using System.Text;
 using System.Xml;
@@ -20,13 +20,14 @@ public sealed partial class MainWindow
         public required TabViewItem Tab;
         public Action? Refresh;
         public Action? ReleaseTheme;
+        public Action? ReleaseBrowser;
         public CancellationTokenSource Cancellation { get; } = new();
-        public void Dispose() { ReleaseTheme?.Invoke();ReleaseTheme=null;Cancellation.Cancel(); Cancellation.Dispose(); }
+        public void Dispose() { ReleaseTheme?.Invoke();ReleaseTheme=null;Cancellation.Cancel(); ReleaseBrowser?.Invoke(); ReleaseBrowser=null; Cancellation.Dispose(); }
     }
-    CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open)
+    CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open, Action reviewChanged, Func<Task>? sendReview = null, Action<CodeSession, DeveloperEvidence>? attach = null)
     {
         var host = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
-        var entry = new CodeViewerEntry { Tab = new TabViewItem { Header = TabLabel(model.Title), IconSource = new FontIconSource { Glyph = model.Kind switch { "web" => "\uE774", "context" => "\uE9D9", "git" => "\uE8A5", "changes" => "\uE8A5", "activity" => "\uE9D9", _ => "\uE8A5" } }, Tag = model, Content = host, IsClosable = true, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch } };
+        var entry = new CodeViewerEntry { Tab = new TabViewItem { Header = TabLabel(model.Title), IconSource = new FontIconSource { Glyph = model.Kind switch { "web" or "site" => "\uE774", "context" => "\uE9D9", "git" => "\uE8A5", "changes" => "\uE8A5", "activity" => "\uE9D9", _ => "\uE8A5" } }, Tag = model, Content = host, IsClosable = true, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch } };
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(entry.Tab, model.Title);
         // TabView retains detached content. Explicitly follow the shared app theme
         // so cached document surfaces and token colors update on a live theme switch.
@@ -35,9 +36,15 @@ public sealed partial class MainWindow
         try
         {
             var scope = new CodeWorkspace(session.Workspace);
+            if(model.Kind=="delivery"){host.Content=DeliveryView(session,scope,entry,attach);return entry;}
+            if (model.Kind == "harness") { host.Content=HarnessSettings(session,entry);return entry; }
+            if (model.Kind == "experiment") { host.Content = ExperimentReview(session,scope,entry); return entry; }
+            if (model.Kind == "roles") { host.Content = ModelRolesView(session,entry); return entry; }
+            if (model.Kind == "tasks") { host.Content = BackgroundTasksView(session,entry); return entry; }
+            if (model.Kind == "plan") { host.Content = BuildMilestoneViewer(session, scope, entry, open); return entry; }
             if (model.Kind == "context") { host.Content = CodeContextViewer(session, entry, save, open); return entry; }
             if (model.Kind == "git") { host.Content = CodeGitViewer(session, entry, open); return entry; }
-            if (model.Kind == "web") { BuildCodeBrowser(entry, host, model, save); return entry; }
+            if (model.Kind is "web" or "site") { BuildCodeBrowser(entry, host, model, scope, save, open, session, attach); return entry; }
             if (model.Kind == "changes")
             {
                 string revision = "", selected = "";
@@ -50,24 +57,44 @@ public sealed partial class MainWindow
                     var labels = changes.ToDictionary(c => c.Path, c => { var lines = CodeProtocol.Diff(c.Before, c.After).ToArray(); return c.Path + $"    +{lines.Count(l => l.Kind == '+')}  −{lines.Count(l => l.Kind == '-')}"; });
                     var choices = new ListView { IsItemClickEnabled = true, MaxHeight = 150, SelectionMode = ListViewSelectionMode.Single, ItemsSource = changes.Select(c => labels[c.Path]).ToArray() }; Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(choices, "Files changed by this coding session");
                     var content = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
-                    var changesView = Vertical(Stack(Text("Session changes", 19), choices), content);
+                    var changesView = Vertical(Stack(Heading(sendReview == null ? "Session changes" : "Review changes", sendReview == null ? 19 : 27), choices), content);
                     changesView.Padding = new Thickness(14, 12, 14, 0);
                     host.Content = changesView;
                     void Show(string path)
                     {
-                        selected = path; var change = changes.First(c => c.Path == path); var rows = new StackPanel { Spacing = 0 };
+                        selected = path; var change = changes.First(c => c.Path == path); var rows = new ListView { SelectionMode = ListViewSelectionMode.Single, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(rows, "Diff lines");
+                        ScrollViewer.SetHorizontalScrollMode(rows, ScrollMode.Enabled);
+                        ScrollViewer.SetHorizontalScrollBarVisibility(rows, ScrollBarVisibility.Auto);
+                        bool IsCurrent()
+                        {
+                            try { return scope.Read(path).Sha256 == change.AfterHash; }
+                            catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { return false; }
+                        }
+                        async Task Comment(CodeDiffLine line, FrameworkElement anchor)
+                        {
+                            if (dialogOpen || line.Kind == '@') return;
+                            var pending = CodeReviewComment.OnDiff(change, line, "");
+                            if (sendReview != null && IsCurrent())
+                                OpenLineComment(anchor, session, pending, reviewChanged, sendReview);
+                            else await EditReviewComment(session, pending, true, reviewChanged);
+                        }
+                        rows.KeyDown += async (_, e) =>
+                        {
+                            if (e.Key == VirtualKey.Enter && rows.SelectedItem is ListViewItem { Tag: CodeDiffLine line } selectedLine)
+                            { e.Handled = true; await Comment(line, selectedLine); }
+                        };
                         model.Location = path;
-                        bool current = false; try { current = scope.Read(path).Sha256 == change.AfterHash; } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+                        bool current = IsCurrent();
                         var caption = CodeNote(current ? "Changes against this session's original file snapshot" : "Saved session snapshot · the file has changed or is unavailable. Later edits will not be overwritten.");
                         var mode = new ComboBox { ItemsSource = new[] { "Unified diff", "Split diff" }, SelectedIndex = model.ViewMode == "split" ? 1 : 0, MinWidth = 120 };
                         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(mode, "Diff layout");
                         void RenderDiff()
                         {
-                            rows.Width = mode.SelectedIndex == 1 ? Math.Max(200, host.ActualWidth) : double.NaN;
-                            rows.Children.Clear(); int count = 0;
+                            rows.Items.Clear(); int count = 0;
                             foreach (var line in CodeProtocol.Diff(change.Before, change.After))
                             {
-                                if (++count > 800) { rows.Children.Add(CodeNote("Preview capped at 800 lines. Open the complete file in your editor.")); break; }
+                                if (++count > 800) { rows.Items.Add(CodeNote("Preview capped at 800 lines. Open the complete file in your editor.")); break; }
                                 var text = CodeSource(line.Kind == '@' ? "⋯ " + line.Text : $"{line.Before?.ToString() ?? "",5} {line.After?.ToString() ?? "",5} {line.Kind}  {line.Text}", 13);
                                 text.TextWrapping = TextWrapping.NoWrap; text.Padding = new Thickness(8, 1, 8, 1);
                                 var row = new Border { Child = text };
@@ -87,13 +114,41 @@ public sealed partial class MainWindow
                                     bool high = new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast;
                                     row.Background = high || line.Kind is ' ' or '@' ? null : new SolidColorBrush(line.Kind == '+' ? Windows.UI.Color.FromArgb(36, 40, 174, 112) : Windows.UI.Color.FromArgb(40, 218, 70, 75));
                                 }
-                                row.Loaded += (_, _) => Theme(); row.ActualThemeChanged += (_, _) => Theme(); rows.Children.Add(row);
+                                row.Loaded += (_, _) => Theme(); row.ActualThemeChanged += (_, _) => Theme();
+                                var grid = new Grid { ColumnSpacing = 4 };
+                                grid.ColumnDefinitions.Add(new() { Width = new GridLength(30) });
+                                grid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+                                Grid.SetColumn(row, 1); grid.Children.Add(row);
+                                string location = (line.After.HasValue ? "updated line " : "original line ") + (line.After ?? line.Before);
+                                if (line.Kind != '@')
+                                {
+                                    var add = ChatIcon("Comment on " + location, "\uE710", async (sender, _) => await Comment(line, (FrameworkElement)sender));
+                                    add.Padding = new Thickness(0); add.MinHeight = 22; add.MinWidth = 24; add.IsTabStop = false;
+                                    ToolTipService.SetToolTip(add, "Comment on " + location);
+                                    grid.Children.Add(add);
+                                }
+                                var item = new ListViewItem { Content = grid, Tag = line, MinHeight = 24, Padding = new Thickness(0),
+                                    HorizontalContentAlignment = HorizontalAlignment.Stretch, IsEnabled = line.Kind != '@' };
+                                Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(item, location + " · " + line.Text);
+                                rows.Items.Add(item);
                             }
                         }
                         mode.SelectionChanged += (_, _) => { model.ViewMode = mode.SelectedIndex == 1 ? "split" : "unified"; RenderDiff(); save(); }; RenderDiff();
-                        var scroll = new ScrollViewer { Content = rows, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-                        scroll.SizeChanged += (_, _) => { if (mode.SelectedIndex == 1 && scroll.ViewportWidth > 0) rows.Width = scroll.ViewportWidth; };
-                        scroll.Loaded += (_, _) => scroll.ChangeView(null, model.Scroll, null, true); scroll.ViewChanged += (_, _) => model.Scroll = scroll.VerticalOffset;
+                        rows.Loaded += (_, _) =>
+                        {
+                            ScrollViewer? FindScroll(DependencyObject node)
+                            {
+                                if (node is ScrollViewer viewer) return viewer;
+                                for (int i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+                                    if (FindScroll(VisualTreeHelper.GetChild(node, i)) is {} child) return child;
+                                return null;
+                            }
+                            if (FindScroll(rows) is {} scroll)
+                            {
+                                scroll.ChangeView(null, model.Scroll, null, true);
+                                scroll.ViewChanged += (_, _) => model.Scroll = scroll.VerticalOffset;
+                            }
+                        };
                         var external = CodeLink("Open in editor", async (_, _) => { try { await Launcher.LaunchFileAsync(await Windows.Storage.StorageFile.GetFileFromPathAsync(scope.Resolve(path)), new LauncherOptions { DisplayApplicationPicker = true }); } catch (Exception error) { caption.Text = error.Message; } });
                         var restore = CodeLink("Restore original", async (_, _) =>
                         {
@@ -108,7 +163,7 @@ public sealed partial class MainWindow
                             finally { dialogOpen = false; }
                         });
                         restore.IsEnabled = current && change.Before != null;
-                        content.Content = Vertical(Stack(Toolbar(Text(path, 14), Row(mode, external, restore)), caption), scroll);
+                        content.Content = Vertical(Stack(Toolbar(Text(path, 14), Row(mode, external, restore)), caption), rows);
                     }
                     choices.ItemClick += (_, args) => Show(labels.First(p => p.Value == (string)args.ClickedItem).Key);
                     selected = changes.FirstOrDefault(c => c.Path == (selected.Length > 0 ? selected : model.Location))?.Path ?? changes[0].Path;
@@ -246,58 +301,6 @@ public sealed partial class MainWindow
         var scroll = CodeScroll(new Border { Child = content, Padding = new Thickness(24) });
         scroll.Loaded += (_, _) => scroll.ChangeView(null, tab.Scroll, null, true); scroll.ViewChanged += (_, _) => tab.Scroll = scroll.VerticalOffset; return scroll;
     }
-    /// <summary>
-    /// A local website preview without an embedded browser: the address is checked against loopback, Mason
-    /// reports whether the server answers, and the page itself opens in the default browser.
-    /// </summary>
-    void BuildCodeBrowser(CodeViewerEntry entry, ContentControl host, CodeTab tab, Action save)
-    {
-        var initial = CodeProtocol.PreviewUri(tab.Location ?? tab.Target);
-        var address = new TextBox { Text = initial.AbsoluteUri, MinWidth = 120, HorizontalAlignment = HorizontalAlignment.Stretch, Header = "Local address" };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(address, "Website preview address");
-        var state = CodeNote("Checking the local server…");
-        Uri? Current() { try { return CodeProtocol.PreviewUri(address.Text); } catch (Exception error) { state.Text = error.Message; return null; } }
-
-        async Task Check()
-        {
-            if (Current() is not { } uri) return;
-            state.Text = "Checking " + uri.Authority + "…";
-            try
-            {
-                // Loopback only (PreviewUri enforces it); the response body is never read or rendered.
-                using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(4) };
-                using var response = await client.GetAsync(uri, System.Net.Http.HttpCompletionOption.ResponseHeadersRead, entry.Cancellation.Token);
-                state.Text = $"Responding · HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
-                tab.Location = uri.AbsoluteUri; save();
-            }
-            catch (OperationCanceledException) when (entry.Cancellation.IsCancellationRequested) { }
-            catch (Exception) { state.Text = "Not responding at " + uri.Authority + ". Start the dev server, then check again."; }
-        }
-
-        var open = Button("Open in browser", async (_, _) =>
-        {
-            if (Current() is not { } uri) return;
-            try { if (!await Launcher.LaunchUriAsync(uri)) state.Text = "Windows could not open a browser for this address."; }
-            catch (Exception error) { state.Text = error.Message; }
-        }, true);
-        var check = Button("Check again", async (_, _) => await Check());
-        var copy = Button("Copy address", (_, _) =>
-        {
-            if (Current() is not { } uri) return;
-            var data = new Windows.ApplicationModel.DataTransfer.DataPackage(); data.SetText(uri.AbsoluteUri);
-            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(data); state.Text = "Address copied";
-        });
-        address.KeyDown += async (_, e) => { if (e.Key == VirtualKey.Enter) { e.Handled = true; await Check(); } };
-
-        var title = Text("Website preview", 20);
-        var intro = CodeNote("Mason does not embed a browser. Open the page in your browser; Mason checks that the local server is answering.");
-        var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24), MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left };
-        panel.Children.Add(title); panel.Children.Add(intro); panel.Children.Add(address);
-        panel.Children.Add(Row(open, check, copy)); panel.Children.Add(state);
-        host.Content = CodeScroll(panel);
-        _ = Check();
-    }
-
     void BuildCodePdf(CodeViewerEntry entry, ContentControl host, string path)
     {
         if (new FileInfo(path).Length > 10 * 1024 * 1024) throw new ArgumentException("PDF preview is limited to 10 MiB.");

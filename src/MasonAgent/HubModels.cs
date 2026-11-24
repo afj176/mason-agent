@@ -163,11 +163,11 @@ public sealed class HubClient : IDisposable
     {
         var files = source.ToArray(); var variants = new List<HubVariant>();
         var ggufs = files.Where(f => f.Path.EndsWith(".gguf",StringComparison.OrdinalIgnoreCase));
-        foreach(var group in ggufs.GroupBy(f=>Regex.Replace(f.Path,@"-\d{5}-of-\d{5}\.gguf$",".gguf",RegexOptions.IgnoreCase)))
+        foreach(var group in ggufs.GroupBy(f=>(Name:Regex.Replace(f.Path,@"-\d{5}-of-\d{5}\.gguf$",".gguf",RegexOptions.IgnoreCase),Split:Regex.IsMatch(f.Path,@"-\d{5}-of-\d{5}\.gguf$",RegexOptions.IgnoreCase))))
         {
             var ordered=group.OrderBy(f=>f.Path,StringComparer.Ordinal).ToArray(); var split=Regex.Match(ordered[0].Path,@"-(\d{5})-of-(\d{5})\.gguf$",RegexOptions.IgnoreCase);
             if(split.Success && (int.Parse(split.Groups[2].Value)!=ordered.Length || ordered.Where((f,i)=>!f.Path.EndsWith($"-{i+1:00000}-of-{ordered.Length:00000}.gguf",StringComparison.OrdinalIgnoreCase)).Any())) continue;
-            variants.Add(new(group.Key,"GGUF",ordered,split.Success?"Includes every shard. Split GGUF is inventory-only in the current local serving adapter.":group.Key.Contains("mmproj",StringComparison.OrdinalIgnoreCase)?"Projection companion file; not a standalone chat model.":"llama.cpp · compatibility checked on start"));
+            variants.Add(new(group.Key.Name+(split.Success?" (split)":""),"GGUF",ordered,split.Success?"Includes every shard. Split GGUF is inventory-only in the current local serving adapter.":group.Key.Name.Contains("mmproj",StringComparison.OrdinalIgnoreCase)?"Projection companion file; not a standalone chat model.":"llama.cpp · compatibility checked on start"));
         }
         // Only coherent root bundles are offered; custom code and unrelated binary formats are never executed or fetched.
         var rootWeights=files.Where(f=>!f.Path.Contains('/')&&f.Path.EndsWith(".safetensors",StringComparison.OrdinalIgnoreCase)).ToArray();

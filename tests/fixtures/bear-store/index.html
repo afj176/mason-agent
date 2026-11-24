@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Honey Hollow Market</title>
+    <style>
+        body {
+            background-color: #234537;
+            font-family: 'Arial', sans-serif;
+        }
+        .shop-section {
+            margin: 20px;
+            padding: 20px;
+            background-color: #fff4d6;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .shop-section h2 {
+            color: #8B4513;
+        }
+        .shop-section p {
+            color: #2F4F4F;
+        }
+        .cart-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .cart-item input[type="number"] {
+            width: 50px;
+            text-align: center;
+        }
+        #total, #final-order-number {
+            margin-top: 20px;
+            font-size: 1.2em;
+        }
+        .price {
+            font-weight: bold;
+            color: #ffe7a3;
+        }
+    </style>
+</head>
+<body>
+    <h1>Honey Hollow Market</h1>
+    <div class="shop-section" id="honey">
+        <h2>Honey</h2>
+        <p>Golden honey for bears with a sweet tooth.</p>
+        <span class="price">$10 per jar, or $9 each for 3 or more</span>
+        <button onclick="addToCart('honey')">Add to cart</button>
+    </div>
+    <div class="shop-section" id="berries">
+        <h2>Berries</h2>
+        <p>A pawful of berries for the woodland trail.</p>
+        <span class="price">$5 per basket</span>
+        <button onclick="addToCart('berries')">Add to cart</button>
+    </div>
+    <div class="shop-section" id="salmon">
+        <h2>Salmon</h2>
+        <p>River salmon for the hungriest grizzly.</p>
+        <span class="price">$15 per fish</span>
+        <button onclick="addToCart('salmon')">Add to cart</button>
+    </div>
+    <div id="cart-items"></div>
+    <div id="total">0.00</div>
+    <button id="checkout" onclick="checkout()">Checkout</button>
+    <div id="final-order-number"></div>
+
+    <script>
+        let cart = {
+            honey: 0,
+            berries: 0,
+            salmon: 0
+        };
+
+        function render() {
+            const cartItemsDiv = document.getElementById('cart-items');
+            cartItemsDiv.innerHTML = '';
+            let total = 0;
+
+            for (const item in cart) {
+                if (cart[item] > 0) {
+                    const cartItem = document.createElement('div');
+                    cartItem.className = 'cart-item';
+
+                    const itemName = document.createElement('span');
+                    itemName.className = 'item-name';
+                    itemName.textContent = item.charAt(0).toUpperCase() + item.slice(1);
+
+                    const quantityInput = document.createElement('input');
+                    quantityInput.type = 'number';
+                    quantityInput.value = cart[item];
+                    quantityInput.min = 0;
+                    quantityInput.addEventListener('input', () => {
+                        cart[item] = parseInt(quantityInput.value, 10);
+                        render();
+                    });
+
+                    cartItem.appendChild(itemName);
+                    cartItem.appendChild(quantityInput);
+                    cartItemsDiv.appendChild(cartItem);
+
+                    let itemPrice = 0;
+                    if (item === 'honey') {
+                        itemPrice = cart[item] >= 3 ? 9 : 10;
+                    } else if (item === 'berries') {
+                        itemPrice = 5;
+                    } else if (item === 'salmon') {
+                        itemPrice = 15;
+                    }
+
+                    total += cart[item] * itemPrice;
+                }
+            }
+
+            document.getElementById('total').textContent = total.toFixed(2);
+        }
+
+        function addToCart(item) {
+            cart[item]++;
+            render();
+        }
+
+        function checkout() {
+            if (Object.values(cart).reduce((a, b) => a + b, 0) === 0) {
+                return;
+            }
+
+            const orderNumber = 'ORD-' + Math.random().toString(36).substr(2, 9);
+            document.getElementById('final-order-number').textContent = orderNumber;
+            localStorage.setItem('final-order-number', orderNumber);
+
+            for (const item in cart) {
+                cart[item] = 0;
+            }
+
+            render();
+        }
+
+        window.onload = () => {
+            const storedOrderNumber = localStorage.getItem('final-order-number');
+            if (storedOrderNumber) {
+                document.getElementById('final-order-number').textContent = storedOrderNumber;
+            }
+
+            render();
+        };
+    </script>
+</body>
+</html>

@@ -5,10 +5,17 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.Playwright" Version="1.65.1" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
     <ProjectReference Include="../Mason.NetworkHook/Mason.NetworkHook.csproj" />
     <InternalsVisibleTo Include="Mason.CodeChecks" />
+    <InternalsVisibleTo Include="mason" />
+    <Content Include="../../scripts/language-tools/*.py;../../scripts/language-tools/*.cjs" Link="language-tools/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="../../.cache/language-tools-v2/**/*" Link="language-tools/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+    <Content Include="../../.cache/window-host/Mason.WindowHost.exe" Link="computer-use/Mason.WindowHost.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('../../.cache/window-host/Mason.WindowHost.exe')"/>
     <EmbeddedResource Include="CodeNetworkNode.cjs" LogicalName="Mason.Code.CodeNetworkNode.cjs" />
     <EmbeddedResource Include="CodeNetworkPython.py" LogicalName="Mason.Code.CodeNetworkPython.py" />
+    <EmbeddedResource Include="CodeWsgiBridge.py" LogicalName="Mason.Code.CodeWsgiBridge.py" />
     <Content Include="../../.cache/code-compat/dbcw.dll" Link="dbcw.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('../../.cache/code-compat/dbcw.dll')" />
   </ItemGroup>
   <ItemGroup Condition="Exists('../../.cache/code-handoff/handoff-manifest.json')">

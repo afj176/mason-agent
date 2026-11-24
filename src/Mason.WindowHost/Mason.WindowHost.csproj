@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net48</TargetFramework><OutputType>Exe</OutputType><LangVersion>latest</LangVersion><Nullable>enable</Nullable><AssemblyName>Mason.WindowHost</AssemblyName><AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath></PropertyGroup>
+  <ItemGroup><Reference Include="UIAutomationClient"/><Reference Include="UIAutomationTypes"/><Reference Include="WindowsBase"/><Reference Include="System.Web.Extensions"/></ItemGroup>
+  <ItemGroup><Reference Include="System.Drawing"/></ItemGroup>
+</Project>

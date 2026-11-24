@@ -1,15 +1,63 @@
-param([Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,[switch]$Installer,[string]$InnoCompiler='')
+param([Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,[Parameter(Mandatory)][string]$ModelEvidence,[Parameter(Mandatory)][string]$WorkflowEvidence,[switch]$Installer,[string]$InnoCompiler='')
 $ErrorActionPreference='Stop'
 $appRoot=Split-Path $PSScriptRoot -Parent
+$commit=git -C $appRoot rev-parse --verify HEAD
+if($LASTEXITCODE -ne 0 -or $commit -notmatch '^[a-f0-9]{40}$'){throw 'Release requires a Git source commit.'}
+function Confirm-Source {
+    $dirty=git -C $appRoot status --porcelain --untracked-files=all
+    if($LASTEXITCODE -ne 0 -or $dirty -or (git -C $appRoot rev-parse HEAD) -cne $commit){throw 'Release requires a clean checkout at the evaluated source commit.'}
+}
+Confirm-Source
+$configured=[xml](Get-Content -LiteralPath (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -Raw)
+if($configured.SelectSingleNode('/Project/PropertyGroup/Version').InnerText -cne $Version){throw "Requested version differs from the source version."}
+& (Join-Path $PSScriptRoot 'Assert-ModelBenchmark.ps1') -Report $ModelEvidence -Commit $commit
+$primaryModel=(Get-Content -LiteralPath $ModelEvidence -Raw | ConvertFrom-Json).Model
+& (Join-Path $PSScriptRoot 'Assert-WorkflowQualification.ps1') -Report $WorkflowEvidence -Commit $commit -PrimaryModel $primaryModel
+& (Join-Path $PSScriptRoot 'Prepare-LanguageTools.ps1')
 $payload=Join-Path $appRoot "artifacts/MasonAgent-$Version-win-x64"
 if(Test-Path -LiteralPath $payload){throw "Release already exists: $payload"}
+& (Join-Path $PSScriptRoot 'Build-CodeCompat.ps1')
 & (Join-Path $PSScriptRoot 'Build-CodeHandoff.ps1')
-if($LASTEXITCODE -ne 0){throw 'Native coding handoff build failed'}
-dotnet publish (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Platform=x64 -p:UseSharedCompilation=false -p:NuGetAudit=false -p:Version=$Version -o $payload -m:1
+& (Join-Path $PSScriptRoot 'Build-CodeSandboxProbe.ps1')
+dotnet build (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1
+if($LASTEXITCODE -ne 0){throw 'Coding checks build failed'}
+$previousProbe=$env:MASON_SANDBOX_PROBE
+$previousData=$env:MASON_DATA_HOME
+try {
+    $env:MASON_SANDBOX_PROBE=Join-Path $appRoot '.cache/code-sandbox-probe/SandboxNativeProbe.exe'
+    if(!$previousData){$env:MASON_DATA_HOME=Join-Path $appRoot '.cache/release-test-profile'}
+    dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release
+    if($LASTEXITCODE -ne 0){throw 'Full coding harness regression suite failed'}
+    dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --extension-checks (Join-Path ([IO.Path]::GetTempPath()) ('mason-extensions-'+[guid]::NewGuid().ToString('N')))
+    if($LASTEXITCODE -ne 0){throw 'Harness extension checks failed'}
+    dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --modern-checks (Join-Path ([IO.Path]::GetTempPath()) ('mason-modern-'+[guid]::NewGuid().ToString('N')))
+    if($LASTEXITCODE -ne 0){throw 'Repository search, Git, steering, rewind or investigation regression'}
+    dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --checkout-controls (Join-Path ([IO.Path]::GetTempPath()) ('mason-checkout-'+[guid]::NewGuid().ToString('N')))
+    if($LASTEXITCODE -ne 0){throw 'Positive/negative checkout control matrix failed'}
+} finally {$env:MASON_SANDBOX_PROBE=$previousProbe;$env:MASON_DATA_HOME=$previousData}
+dotnet publish (Join-Path $appRoot 'src/MasonAgent/MasonAgent.csproj') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Platform=x64 -p:PlaywrightPlatform=win-x64 -p:UseSharedCompilation=false -p:NuGetAudit=false -p:Version=$Version -o $payload -m:1
 if($LASTEXITCODE -ne 0){throw 'App publish failed'}
+$cliOutput=Join-Path $appRoot '.cache/cli-publish'
+dotnet publish (Join-Path $appRoot 'src/Mason.Cli') -c Release -r win-x64 --self-contained true -p:Version=$Version -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1 -o $cliOutput
+if($LASTEXITCODE -ne 0){throw 'Headless CLI publish failed'}
+foreach($name in 'mason.exe','mason.dll','mason.deps.json','mason.runtimeconfig.json'){
+    Copy-Item -LiteralPath (Join-Path $cliOutput $name) -Destination $payload
+}
+& (Join-Path $PSScriptRoot 'Build-EditorBridge.ps1') -OutputFile (Join-Path $payload 'integrations/mason-workspace.vsix')
+& (Join-Path $payload 'mason.exe') --help
+if($LASTEXITCODE -ne 0){throw 'Published CLI failed startup'}
+& python (Join-Path $appRoot 'tests/terminal/reattach.py') (Join-Path $payload 'mason.exe') (Join-Path ([IO.Path]::GetTempPath()) ('mason-task-client-'+[guid]::NewGuid().ToString('N')))
+if($LASTEXITCODE -ne 0){throw 'Packaged detached-task client failed reattachment.'}
 dotnet publish (Join-Path $appRoot 'src/Mason.SandboxSetup') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Version=$Version -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1 -o (Join-Path $payload 'sandbox-setup')
 if($LASTEXITCODE -ne 0){throw 'Mason.SandboxSetup publish failed'}
 & (Join-Path $PSScriptRoot 'Assert-ReleasePayload.ps1') -Payload $payload
+Confirm-Source
+Copy-Item -LiteralPath $ModelEvidence -Destination (Join-Path $payload 'model-benchmark.json')
+Copy-Item -LiteralPath $WorkflowEvidence -Destination (Join-Path $payload 'workflow-evidence.json')
+& (Join-Path $PSScriptRoot 'Assert-ModelBenchmark.ps1') -Report "$payload/model-benchmark.json" -Commit $commit
+& (Join-Path $PSScriptRoot 'Assert-WorkflowQualification.ps1') -Report "$payload/workflow-evidence.json" -Commit $commit -PrimaryModel (Get-Content "$payload/model-benchmark.json" -Raw | ConvertFrom-Json).Model
+if(!([Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $payload 'MasonAgent.dll')).ProductVersion).EndsWith("+$commit")){throw 'Published app has the wrong source revision.'}
+[pscustomobject]@{Version=$Version;Commit=$commit;Tree=(git -C $appRoot rev-parse 'HEAD^{tree}');BenchmarkSha256=(Get-FileHash -LiteralPath (Join-Path $payload 'model-benchmark.json')).Hash;WorkflowSha256=(Get-FileHash -LiteralPath (Join-Path $payload 'workflow-evidence.json')).Hash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payload 'release-source.json') -Encoding utf8
 Copy-Item -LiteralPath (Join-Path $appRoot 'README.md') -Destination $payload
 Copy-Item -LiteralPath (Join-Path $appRoot 'LICENSE') -Destination $payload
 $notices=Join-Path $appRoot 'THIRD-PARTY-NOTICES.md'

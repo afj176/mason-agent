@@ -35,20 +35,21 @@ public static class CodeCommand
             throw new ArgumentException("Select an existing .exe. Shell scripts require an explicit interpreter and reviewed arguments.");
         return executable;
     }
-    public static Task<CodeCommandResult> Run(string executable, IReadOnlyList<string> arguments, string directory, CancellationToken cancellation, string? sandboxWorkspace = null, CodeNetworkAccess? network=null)
+    public static Task<CodeCommandResult> Run(string executable, IReadOnlyList<string> arguments, string directory, CancellationToken cancellation, string? sandboxWorkspace = null, CodeNetworkAccess? network=null,
+        TimeSpan? timeout=null,Action<Func<string>>? observeLog=null,Action<Func<int,bool>>? observeOwner=null,CodeTerminalInput? terminal=null)
     {
-        if(sandboxWorkspace==null)return RunCore(executable,arguments,directory,cancellation,null);
+        if(sandboxWorkspace==null)return RunCore(executable,arguments,directory,cancellation,null,null,timeout,observeLog,observeOwner,terminal);
         // Windows debug events belong to the OS thread that created the process, not an async continuation.
         var completion=new TaskCompletionSource<CodeCommandResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         new Thread(()=>
         {
-            try { completion.TrySetResult(RunCore(executable,arguments,directory,cancellation,sandboxWorkspace,network).GetAwaiter().GetResult()); }
+            try { completion.TrySetResult(RunCore(executable,arguments,directory,cancellation,sandboxWorkspace,network,timeout,observeLog,observeOwner,terminal).GetAwaiter().GetResult()); }
             catch(OperationCanceledException){completion.TrySetCanceled(cancellation);}
             catch(Exception error){completion.TrySetException(error);}
         }) { IsBackground=true,Name="Mason Agent Auto compatibility broker" }.Start();
         return completion.Task;
     }
-    static async Task<CodeCommandResult> RunCore(string executable,IReadOnlyList<string> arguments,string directory,CancellationToken cancellation,string? sandboxWorkspace,CodeNetworkAccess? network=null)
+    static async Task<CodeCommandResult> RunCore(string executable,IReadOnlyList<string> arguments,string directory,CancellationToken cancellation,string? sandboxWorkspace,CodeNetworkAccess? network,TimeSpan? timeout,Action<Func<string>>? observeLog,Action<Func<int,bool>>? observeOwner,CodeTerminalInput? terminal)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("This command host currently supports Windows.");
         cancellation.ThrowIfCancellationRequested();
@@ -71,7 +72,17 @@ public static class CodeCommand
             var nativeLog=log.StartsWith(@"\\",StringComparison.Ordinal) ? @"\\?\UNC\"+log[2..] : @"\\?\"+log;
             using var output = CreateFile(nativeLog, 0x40000000, 3, ref security, 2, 0x80, IntPtr.Zero);
             if (output.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(),"Cannot create the owned command output log.");
+            using var live=observeLog==null?null:File.OpenHandle(log,FileMode.Open,FileAccess.Read,FileShare.ReadWrite);
+            if(live!=null)observeLog!(()=>{
+                if(live.IsClosed)return "";
+                try{
+                    long size=RandomAccess.GetLength(live);
+                    var bytes=new byte[(int)Math.Min(size,8000)];
+                    return Encoding.UTF8.GetString(bytes,0,RandomAccess.Read(live,bytes,size-bytes.Length));
+                }catch(ObjectDisposedException){return "";}
+            });
             using var input = CreateFile(sandbox==null?"NUL":@"\\?\GLOBALROOT\Device\Null", sandbox==null?0x80000000:0xc0000000, 3, ref security, 3, 0x80, IntPtr.Zero);
+            IntPtr stdin=terminal?.Child.DangerousGetHandle()??input.DangerousGetHandle();
             if (input.IsInvalid) throw new Win32Exception();
             using var outputPipe=sandbox==null?null:new CodeOutputPipe();
             var standardOutput=outputPipe?.Writer??output;
@@ -84,7 +95,7 @@ public static class CodeCommand
             {
                 if (!InitializeProcThreadAttributeList(attributes, attributeCount, 0, ref size)) throw new Win32Exception();
                 initialized = true;
-                Marshal.WriteIntPtr(handles, 0, input.DangerousGetHandle()); Marshal.WriteIntPtr(handles, IntPtr.Size, standardOutput.DangerousGetHandle());
+                Marshal.WriteIntPtr(handles, 0, stdin); Marshal.WriteIntPtr(handles, IntPtr.Size, standardOutput.DangerousGetHandle());
                 if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)0x20002, handles, (IntPtr)(IntPtr.Size * 2), IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception();
                 if (sandbox != null)
                 {
@@ -95,7 +106,7 @@ public static class CodeCommand
                     if (!UpdateProcThreadAttribute(attributes, 0, (IntPtr)0x2000f, policy, (IntPtr)4, IntPtr.Zero, IntPtr.Zero)) throw new Win32Exception();
                     environment = sandbox.EnvironmentBlock();
                 }
-                var startup = new StartupEx { Startup = new Startup { Size = Marshal.SizeOf<StartupEx>(), Desktop = sandbox?.DesktopName, Flags = 0x100, Input = input.DangerousGetHandle(), Output = standardOutput.DangerousGetHandle(), Error = standardOutput.DangerousGetHandle() }, Attributes = attributes };
+                var startup = new StartupEx { Startup = new Startup { Size = Marshal.SizeOf<StartupEx>(), Desktop = sandbox?.DesktopName, Flags = 0x100, Input = stdin, Output = standardOutput.DangerousGetHandle(), Error = standardOutput.DangerousGetHandle() }, Attributes = attributes };
                 var command = new StringBuilder(CommandLine(executable, arguments));
                 bool created = sandbox == null
                     ? CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080004u, environment, directory, ref startup, out info)
@@ -103,17 +114,23 @@ public static class CodeCommand
                 if (!created) throw new Win32Exception();
             }
             finally { if (initialized) DeleteProcThreadAttributeList(attributes); Marshal.FreeHGlobal(attributes); Marshal.FreeHGlobal(handles); Marshal.FreeHGlobal(capabilities); Marshal.FreeHGlobal(policy); Marshal.FreeHGlobal(environment); }
+            terminal?.Started();
             using var nativeProcess = new SafeFileHandle(info.Process, true);
             var drain=outputPipe?.Drain(output)??Task.CompletedTask;
             try
             {
                 if (!AssignProcessToJobObject(job, info.Process)) throw new Win32Exception();
+                observeOwner?.Invoke(pid=>{
+                    try{using var child=System.Diagnostics.Process.GetProcessById(pid);return IsProcessInJob(child.SafeHandle,job,out var inside)&&inside;}
+                    catch(ArgumentException){return false;}catch(InvalidOperationException){return false;}catch(Win32Exception){return false;}
+                });
                 sandbox?.VerifyToken(info.Process);
                 if (ResumeThread(info.Thread) == uint.MaxValue) throw new Win32Exception();
             }
             catch { TerminateProcess(info.Process, 1); throw; }
             finally { CloseHandle(info.Thread); }
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation); deadline.CancelAfter(TimeSpan.FromSeconds(120));
+            var duration=timeout??TimeSpan.FromSeconds(120);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation); deadline.CancelAfter(duration);
             bool truncated = false; uint nativeExit = 0;string nativeDiagnostics="";
             try
             {
@@ -133,7 +150,7 @@ public static class CodeCommand
                     await Task.Delay(100, deadline.Token);
                 }
             }
-            catch (OperationCanceledException) when (!cancellation.IsCancellationRequested) { throw new TimeoutException("Command exceeded 120 seconds and its owned process tree was stopped."); }
+            catch (OperationCanceledException) when (!cancellation.IsCancellationRequested) { throw new TimeoutException($"Command exceeded {duration.TotalSeconds:0} seconds and its owned process tree was stopped."); }
             // Close the job before reading so still-running descendants cannot continue writing to the log.
             var exit = truncated ? -1 : unchecked((int)nativeExit);relay?.Dispose();job.Dispose();
             await drain;
@@ -149,6 +166,20 @@ public static class CodeCommand
         }
         finally { try { File.Delete(log); } catch (IOException) { } }
     }
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern bool IsProcessInJob(SafeProcessHandle process,SafeFileHandle job,out bool inside);
+    internal static Process StartDetachedWorker(string executable, IReadOnlyList<string> arguments)
+    {
+        // Redirecting the three standard handles with Process.Start can still inherit the CLI
+        // caller's other open pipe handles. A worker has its own journal and needs none of them.
+        var startup=new StartupEx{Startup=new Startup{Size=Marshal.SizeOf<Startup>(),Flags=0x100}};
+        var line=new StringBuilder(CommandLine(executable,arguments));
+        if(!CreateProcess(executable,line,IntPtr.Zero,IntPtr.Zero,false,0x08000000,IntPtr.Zero,AppContext.BaseDirectory,ref startup,out var info))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        try{return Process.GetProcessById(checked((int)info.Id));}
+        finally{CloseHandle(info.Thread);CloseHandle(info.Process);}
+    }
+
     /// <summary>CMD consumes one literal script after /c; it does not decode CRT backslash escapes.</summary>
     public static string CommandLine(string executable,IReadOnlyList<string> arguments)
     {

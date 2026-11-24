@@ -1,0 +1,7 @@
+Build a single offline index.html in this directory. Make it a whimsical food store for bears to go shopping.
+
+Show three foods and their shelf prices. Honey is $10 per jar. Berries are $5 each. Salmon is $15 each. Shoppers can add each food to the cart and see the cart total.
+
+Three or more Honey jars cost $9 per jar for every Honey jar in that basket. Two Honey cost $20 and three Honey cost $27. Other foods keep their own shelf prices. The cart total is the sum of the three food line totals.
+
+Checkout clears the cart and issues a new ORD- receipt. Show that same receipt after the page is reloaded.

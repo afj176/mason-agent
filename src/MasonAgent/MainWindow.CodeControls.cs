@@ -95,16 +95,18 @@ public sealed partial class MainWindow
     FrameworkElement CodeGitViewer(CodeSession session, CodeViewerEntry entry, Action<string, string> open)
     {
         var message = CodeNote("Reading repository status…"); var content = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch };
-        Button reload = null!; reload = Button("Refresh", async (_, _) => await Load());
+        Button reload = null!; reload = Button("Git status", async (_, _) => {
+            if(await new ContentDialog{XamlRoot=root.XamlRoot,Title="Read full Git status?",Content="Git runs under your Windows account and may run filters configured by this repository.",PrimaryButtonText="Inspect",CloseButtonText="Cancel"}.ShowAsync()==ContentDialogResult.Primary)await Load(true);
+        });
         var body = Vertical(Toolbar(Text("Repository", 19), reload), CodeScroll(Stack(message, content)));
         body.Padding = new Thickness(14, 12, 14, 0);
         body.Loaded += async (_, _) => await Load();
-        async Task Load()
+        async Task Load(bool full=false)
         {
             reload.IsEnabled = false;
             try
             {
-                var status = await CodeGit.Inspect(session.Workspace, entry.Cancellation.Token);
+                var status = full?await CodeGit.FullStatus(session.Workspace,entry.Cancellation.Token):await CodeGit.Inspect(session.Workspace, entry.Cancellation.Token);
                 message.Text = status.Branch + " · " + status.Detail;
                 var list = new StackPanel { Spacing = 7, Margin = new Thickness(12) };
                 foreach (var file in status.Files)
@@ -113,10 +115,11 @@ public sealed partial class MainWindow
                     list.Children.Add(CodeLink(file.Status + "  " + file.Path + (file.PreviousPath == null ? "" : " ← " + file.PreviousPath), (_, _) => open("file", target)));
                 }
                 if (!string.IsNullOrWhiteSpace(status.Worktrees)) { list.Children.Add(Text("Worktrees", 18)); list.Children.Add(ChatInline(status.Worktrees, 12, true)); }
-                list.Children.Add(CodeNote("Safe metadata-only observation. Full working-tree status and linked worktree discovery are unavailable. Session changes are shown separately; repository-configured programs are never run automatically."));
+                if(full)list.Children.Add(CodeNote("Left column: staged changes. Right column: working tree. ?? marks an untracked file."));
                 content.Content = list;
             }
             catch (OperationCanceledException) { }
+            catch(Exception error){message.Text=error.Message;}
             finally { reload.IsEnabled = true; }
         }
         return body;

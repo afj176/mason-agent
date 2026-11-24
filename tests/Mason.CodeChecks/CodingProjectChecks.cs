@@ -27,7 +27,7 @@ static class CodingProjectChecks
             check(cross&&store.SelectedSession==first&&first.Workspace==a&&other.Workspace==b,"cross-project session selection is rejected before changing folder context");
             var model=new EditModel(new CodeWorkspace(a).Read("route.txt").Sha256);
             store.ActivateProject(bProject.Id,other.Id);
-            await new CodeEngine(store,model,(_,_)=>throw new Exception("Unexpected review"),()=>{}).Run(first,"Edit A while preserving the other project.",default);
+            await new CodeEngine(store,model,(_,_)=>throw new Exception("Unexpected review"),()=>{}).Run(first,"Edit route.txt in A while preserving the other project.",default);
             check(first.State=="Completed"&&File.ReadAllText(Path.Combine(a,"route.txt"))=="project A edited"&&File.ReadAllText(Path.Combine(b,"route.txt"))=="project B","the real engine remains bound to its session folder even when another project is selected");
             // A run consumes its draft and resets viewer dismissal for its new
             // request. Persist a new unsent draft/dismissal before restart.
@@ -60,6 +60,55 @@ static class CodingProjectChecks
         }
         using(var empty=new CodeStore(profile))check(empty.SelectedProject!.Id==aProject&&empty.SelectedSession==null&&empty.Sessions.Count==1,"a saved project with no sessions remains selected after restart");
 
+        string removal = Path.Combine(area, "removal");
+        Guid removedId, lastId, keptId;
+        var noteId = Guid.NewGuid();
+        Dictionary<string, byte[]> keptBytes;
+        using (var store = new CodeStore(removal))
+        {
+            var first = store.New(a);
+            var last = store.New(a);
+            last.Draft = "Recover this draft"; store.Save(last);
+            removedId = store.ProjectFor(last)!.Id; lastId = last.Id;
+            store.SaveNote(removedId, noteId, "Remember the route", "route.txt");
+            var kept = store.New(b); keptId = store.ProjectFor(kept)!.Id;
+            keptBytes = Directory.GetFiles(Path.Combine(removal, "code-sessions"), "*.json")
+                .Concat(new[] { Path.Combine(a, "route.txt"), Path.Combine(b, "route.txt") })
+                .ToDictionary(p => p, File.ReadAllBytes);
+            first.State = "Awaiting review";
+            bool busy = false;
+            try { store.RemoveProject(removedId); } catch (InvalidOperationException) { busy = true; }
+            first.State = "Ready";
+            check(busy && store.Projects.Count == 2, "removal respects a pending run in another session of the target project");
+            using (var reader = File.Open(Path.Combine(removal, "code-projects.json"), FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                bool blocked = false;
+                try { store.RemoveProject(keptId); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { blocked = true; }
+                check(blocked && store.SelectedSession == kept && store.Projects.Select(p => p.Id).SequenceEqual(new[] { removedId, keptId }),
+                    "a catalog write failure rolls back project removal, ordering and selection");
+            }
+            store.RemoveProject(removedId);
+            check(store.SelectedSession == kept && store.ProjectFor(last) == null && store.Projects.Single().Id == keptId,
+                "removing an unselected project affects only that exact folder even when names match");
+        }
+        using (var store = new CodeStore(removal))
+        {
+            check(store.Projects.Single().Id == keptId && store.ProjectForWorkspace(a) == null,
+                "retained session journals cannot repopulate a removed project on restart");
+            var restored = store.AddProject(Path.Combine(a, "."));
+            check(restored.Id == removedId && restored.Notes.Single().Id == noteId && store.LastSession(removedId)?.Id == lastId &&
+                store.LastSession(removedId)?.Draft == "Recover this draft" && store.SessionsFor(removedId).Length == 2,
+                "re-adding the folder restores notes, both conversations and the last selected draft");
+            store.RemoveProject(keptId);
+            check(store.SelectedProject == restored && store.SelectedSession?.Id == lastId,
+                "removing the selected project activates the remaining project and its saved session");
+            store.RemoveProject(removedId);
+        }
+        using (var store = new CodeStore(removal))
+            check(store.Projects.Count == 0 && store.SelectedProject == null && store.SelectedSession == null &&
+                keptBytes.All(p => File.ReadAllBytes(p.Key).SequenceEqual(p.Value)),
+                "the final removal leaves an empty sidebar across restart with byte-identical files and journals");
+
         string legacy=Path.Combine(area,"legacy");string[] journals;
         using(var old=new CodeStore(legacy))
         {
@@ -72,7 +121,12 @@ static class CodingProjectChecks
         string missing=Path.Combine(area,"temporarily-offline"),offlineProfile=Path.Combine(area,"offline-profile");Directory.CreateDirectory(missing);Guid offlineId;
         using(var setup=new CodeStore(offlineProfile)){offlineId=setup.AddProject(missing).Id;setup.ActivateProject(offlineId);}
         Directory.Delete(missing);
-        using(var offline=new CodeStore(offlineProfile))check(offline.SelectedProject!.Id==offlineId&&offline.SelectedSession==null,"an unavailable project folder remains in the saved list instead of losing its history");
+        using(var offline=new CodeStore(offlineProfile))
+        {
+            check(offline.SelectedProject!.Id==offlineId&&offline.SelectedSession==null,"an unavailable project folder remains in the saved list instead of losing its history");
+            offline.RemoveProject(offlineId);
+        }
+        using(var removed=new CodeStore(offlineProfile))check(removed.Projects.Count==0&&!Directory.Exists(missing),"removing an offline folder never recreates it");
 
         int malformed=0;
         void RejectCatalog(JsonObject catalog)
@@ -87,8 +141,10 @@ static class CodingProjectChecks
         RejectCatalog(JsonNode.Parse(JsonSerializer.Serialize(new{Version=1,Projects=new[]{new{Id=Guid.NewGuid(),Workspace=a},new{Id=Guid.NewGuid(),Workspace=Path.Combine(a,".")}}}))!.AsObject());
         RejectCatalog(JsonNode.Parse(JsonSerializer.Serialize(new{Version=1,Projects=new[]{new{Id=Guid.NewGuid(),Workspace="relative"}}}))!.AsObject());
     }
-    sealed class EditModel(string hash):ICodeModel
+    sealed class EditModel(string hash):ICodeModel, ICodeAcceptancePlanner
     {
+        public Task<List<AcceptanceCheck>> PlanAcceptance(string request,string[] units,CodeFiles files,CancellationToken ct) =>
+            Task.FromResult<List<AcceptanceCheck>>([new(1,"Route in A","document_text","route.txt","","project A edited")]);
         int action;
         public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages,Action<string> update,CancellationToken cancellation)=>Task.FromResult(action++==0
             ?new CodeAction("Updating the selected session's file.","edit_file",JsonSerializer.SerializeToElement(new{path="route.txt",expected_sha256=hash,old_text="project A",new_text="project A edited"}))

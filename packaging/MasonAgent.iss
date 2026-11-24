@@ -21,7 +21,9 @@ CloseApplications=yes
 RestartApplications=no
 UninstallDisplayIcon={app}\MasonAgent.exe
 [Files]
-Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "portable.flag,data\*,ui-qa-data\*"
+; The pre-publish payload check rejects root-level profile directories. Nested data
+; directories belong to the shipped language tools and must match the release manifest.
+Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "\portable.flag"
 [Icons]
 Name: "{group}\Mason Agent"; Filename: "{app}\MasonAgent.exe"; AppUserModelID: "MasonAgent.Desktop"
 [Run]

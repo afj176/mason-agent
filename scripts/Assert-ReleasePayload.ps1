@@ -6,8 +6,6 @@ if(-not (Test-Path -LiteralPath $payloadRoot -PathType Container)){throw 'Releas
 # Both the portable ZIP and installer must be built from application files only.
 # Never let a validation run's runtime choices become another user's defaults.
 $forbidden=@(Get-ChildItem -LiteralPath $payloadRoot -Recurse -Force | Where-Object {
-    # No WebView in this app: its libraries must never ship.
-    $_.Name -like '*WebView2*' -or
     $_.Name -in @('model-library.json','model-library.json.tmp','ai-connections.json','chat-library.json','code-projects.json','code-projects.json.tmp','appearance.json','model-downloads.json','SandboxNativeProbe.exe') -or
     ($_.PSIsContainer -and $_.Name -in @('code-sessions','code-webview','chat-files','chat-webview','sandbox-tools','.mason-sandbox','.dbcowboy-sandbox')) -or
     ($_.PSIsContainer -and $_.Parent.FullName -eq $payloadRoot -and $_.Name -in @('data','ui-qa-data')) -or
@@ -18,3 +16,20 @@ if($forbidden.Count){
     throw "Release payload contains user runtime settings or profile data: $paths"
 }
 Write-Output 'PASS release payload contains no runtime settings or profile data'
+$extension=Join-Path $payloadRoot 'integrations/mason-workspace.vsix'
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip=[IO.Compression.ZipFile]::OpenRead($extension)
+try {
+    foreach($entry in 'extension.vsixmanifest','extension/package.json','extension/extension.js'){
+        if(!$zip.GetEntry($entry)){throw "Incomplete bundled editor bridge: $entry"}
+    }
+}finally{$zip.Dispose()}
+if(!(Test-Path -LiteralPath (Join-Path $payloadRoot 'System.Security.Cryptography.ProtectedData.dll') -PathType Leaf)){throw 'Missing protected background-connection dependency.'}
+foreach($file in 'Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.Core.Projection.dll','WebView2Loader.dll'){
+    if(!(Test-Path -LiteralPath (Join-Path $payloadRoot $file) -PathType Leaf)){throw "Missing embedded Website viewer dependency: $file"}
+}
+foreach ($file in @('Microsoft.Playwright.dll','.playwright/node/win32_x64/node.exe','.playwright/node/LICENSE','.playwright/package/cli.js','.playwright/package/LICENSE')) {
+    if (!(Test-Path -LiteralPath (Join-Path $payloadRoot $file) -PathType Leaf)) { throw "Missing browser verification dependency: $file" }
+}
+$platforms = @(Get-ChildItem -LiteralPath (Join-Path $payloadRoot '.playwright/node') -Directory)
+if ($platforms.Count -ne 1 -or $platforms[0].Name -ne 'win32_x64') { throw 'The Windows payload must include only the Windows x64 browser driver.' }

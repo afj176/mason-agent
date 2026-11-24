@@ -18,7 +18,7 @@ namespace Mason;
 public sealed partial class MainWindow
 {
     TitleBar? titleBar;
-    readonly AutoSuggestBox titleSearch = new() { PlaceholderText = "Search pages, projects, sessions and chats", QueryIcon = new SymbolIcon(Symbol.Find), MinWidth = 240, MaxWidth = 520, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
+    readonly AutoSuggestBox titleSearch = new() { PlaceholderText = "Search Mason (Ctrl+K)", QueryIcon = new SymbolIcon(Symbol.Find), MinWidth = 240, MaxWidth = 520, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
     List<TitleHit> titleHits = [];
     readonly Button titleModel = new() { Padding = new Thickness(10, 4, 12, 4), MinHeight = 30, CornerRadius = new CornerRadius(15), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 10, 0), BorderThickness = new Thickness(1) };
     readonly DispatcherTimer titleModelTimer = new() { Interval = TimeSpan.FromSeconds(2) };
@@ -43,7 +43,7 @@ public sealed partial class MainWindow
     }
 
     /// <summary>
-    /// Extends the window into the caption area and puts a TitleBar there: pane toggle, Mortar and the wordmark,
+    /// Extends the window into the caption area and puts a TitleBar there: workspace switcher, Mortar and the wordmark,
     /// the search in the middle and the running model on the right. The caption buttons stay the system's own.
     /// </summary>
     FrameworkElement BuildTitleBar(FrameworkElement brand)
@@ -53,19 +53,16 @@ public sealed partial class MainWindow
         titleBar = new TitleBar
         {
             IsBackButtonVisible = false,
-            IsPaneToggleButtonVisible = true,
-            LeftHeader = brand,
+            IsPaneToggleButtonVisible = false,
+            LeftHeader = Row(brand, BuildRouteSwitcher()),
             Content = BrandControl(titleSearch),
             RightHeader = titleModel,
             Height = 48
         };
-        // The pane toggle lives in the title bar, as in Windows Settings; the NavigationView's own one stays hidden.
-        nav.IsPaneToggleButtonVisible = false;
-        titleBar.PaneToggleRequested += (_, _) => nav.IsPaneOpen = !nav.IsPaneOpen;
         SetTitleBar(titleBar);
 
-        AutomationProperties.SetName(titleSearch, "Search pages, projects, sessions and chats");
-        ToolTipService.SetToolTip(titleSearch, "Search pages, projects, sessions and chats (Ctrl+K)");
+        AutomationProperties.SetName(titleSearch, "Search Mason");
+        ToolTipService.SetToolTip(titleSearch, "Search projects, sessions, files, commands and chats (Ctrl+K)");
         titleSearch.ItemTemplate = (DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load(
             "<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><Grid ColumnSpacing='12' Padding='0,6'><Grid.ColumnDefinitions><ColumnDefinition Width='20'/><ColumnDefinition Width='*'/><ColumnDefinition Width='Auto'/></Grid.ColumnDefinitions>" +
             "<FontIcon Glyph='{Binding Glyph}' FontSize='14' Opacity='.8'/><TextBlock Grid.Column='1' Text='{Binding Label}' TextTrimming='CharacterEllipsis' VerticalAlignment='Center'/><TextBlock Grid.Column='2' Text='{Binding Kind}' FontSize='12' Opacity='.6' VerticalAlignment='Center'/></Grid></DataTemplate>");
@@ -96,43 +93,47 @@ public sealed partial class MainWindow
             new("", "Models", "Page", () => Navigate("Models")),
             new("", "Connections", "Page", () => Navigate("AI connections")),
             new("", "New chat", "Command", () => { Navigate("Chat"); newNativeChat?.Invoke(); }),
-            new("", "Add project", "Command", () => { Navigate("Code"); _ = addCodeProject?.Invoke(); }),
-            new("", "Search files or commands in this project", "Command", () => { Navigate("Code"); openCodeSearch?.Invoke(); })
+            new("", "Add project", "Command", () => { Navigate("Code"); _ = addCodeProject?.Invoke(); })
         };
         if (codeStore is { } store)
         {
             foreach (var project in store.Projects)
-                hits.Add(new("", project.Name, "Project", () => openCodeProject?.Invoke(project)));
-            foreach (var session in store.Sessions.OrderByDescending(s => s.Updated).Take(60))
+                hits.Add(new("", ProjectLabel(project, store.Projects), "Project", () => openCodeProject?.Invoke(project)));
+            foreach (var session in store.Sessions.OrderByDescending(s => s.Updated))
             {
-                var owner = store.ProjectFor(session)?.Name ?? System.IO.Path.GetFileName(session.Workspace);
+                if (store.ProjectFor(session) is not {} project) continue;
+                var owner = ProjectLabel(project, store.Projects);
                 hits.Add(new("", session.Title + " · " + owner, "Session", () => openCodeSession?.Invoke(session)));
             }
         }
         if (nativeChatLibrary is { } chats)
             foreach (var chat in chats.State.Conversations.OrderByDescending(c => c.Updated).Take(60))
                 hits.Add(new("", chat.Title, "Chat", () => openChatConversation?.Invoke(chat)));
+        if (codeSearchHits != null) hits.AddRange(codeSearchHits());
         return hits;
     }
 
     bool titleSearchClosing;
 
     /// <summary>
-    /// Clears and closes the title bar search and hands focus back to the current page's navigation item, so the
+    /// Clears and closes the title bar search and hands focus back to the workspace switcher, so the
     /// list cannot linger and a command that opens a dialog does not fight the popup.
     /// </summary>
     void CloseTitleSearch()
     {
         titleSearchClosing = true;
         titleSearch.Text = ""; titleSearch.ItemsSource = null; titleSearch.IsSuggestionListOpen = false;
-        (nav.SelectedItem as Control)?.Focus(FocusState.Programmatic);
+        routeSwitcher.Focus(FocusState.Programmatic);
         DispatcherQueue.TryEnqueue(() => { titleSearch.IsSuggestionListOpen = false; titleSearchClosing = false; });
     }
 
     void FilterTitleSearch()
     {
         var text = titleSearch.Text.Trim();
-        titleSearch.ItemsSource = titleHits.Where(h => text.Length == 0 || h.Label.Contains(text, StringComparison.OrdinalIgnoreCase) || h.Kind.Contains(text, StringComparison.OrdinalIgnoreCase)).Take(40).ToList();
+        var terms = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        titleSearch.ItemsSource = titleHits.Where(h => terms.All(word => h.Label.Contains(word, StringComparison.OrdinalIgnoreCase) || h.Kind.Contains(word, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(h => text.Length > 0 && h.Label.Equals(text, StringComparison.OrdinalIgnoreCase))
+            .Take(40).ToList();
     }
 
     /// <summary>Ctrl+K lands in the title bar search.</summary>
@@ -231,7 +232,7 @@ public sealed partial class MainWindow
     /// <summary>Which way a page enters: moving down the navigation it rises from below, moving up it settles from above.</summary>
     Fluent.PageMotion MotionFor(string from, string to)
     {
-        var order = nav.MenuItems.Concat(nav.FooterMenuItems).OfType<NavigationViewItem>().Select(i => i.Tag as string).ToList();
+        var order = new List<string> { "Code", "Chat", "Models and connections" };
         int a = order.IndexOf(from), b = order.IndexOf(to);
         return a >= 0 && b >= 0 && b < a ? Fluent.PageMotion.EntranceFromAbove : Fluent.PageMotion.Entrance;
     }

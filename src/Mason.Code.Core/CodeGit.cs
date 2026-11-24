@@ -53,5 +53,16 @@ public static class CodeGit
         }
         return new(true, branch, files.ToArray(), worktrees, files.Count == 0 ? "Working tree clean" : $"{files.Count} working-tree changes · includes edits outside this session");
     }
+    public static async Task<CodeGitStatus> FullStatus(string workspace,CancellationToken ct)
+    {
+        var scope=new CodeWorkspace(workspace);
+        var metadata=Path.Combine(scope.Root,".git");
+        CodeWorkspace.CheckLinks(metadata);
+        if(!File.Exists(metadata)&&!Directory.Exists(metadata))throw new InvalidOperationException("Select the root of a Git checkout.");
+        var git=CodeCommand.ResolveExecutable("git",scope.Root);
+        var output=await CodeOwnedHelper.Run(git,["--no-optional-locks","-c","core.fsmonitor=false","-c","core.hooksPath=NUL",
+            "status","--porcelain=v1","-z","--branch","--untracked-files=all","--ignore-submodules=all"],"",scope.Root,ct);
+        return Parse(output,"");
+    }
 }
 
