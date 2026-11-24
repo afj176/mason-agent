@@ -168,6 +168,18 @@ public static class CodeCommand
     }
     [DllImport("kernel32.dll",SetLastError=true)]
     static extern bool IsProcessInJob(SafeProcessHandle process,SafeFileHandle job,out bool inside);
+    internal static Process StartDetachedWorker(string executable, IReadOnlyList<string> arguments)
+    {
+        // Redirecting the three standard handles with Process.Start can still inherit the CLI
+        // caller's other open pipe handles. A worker has its own journal and needs none of them.
+        var startup=new StartupEx{Startup=new Startup{Size=Marshal.SizeOf<Startup>(),Flags=0x100}};
+        var line=new StringBuilder(CommandLine(executable,arguments));
+        if(!CreateProcess(executable,line,IntPtr.Zero,IntPtr.Zero,false,0x08000000,IntPtr.Zero,AppContext.BaseDirectory,ref startup,out var info))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        try{return Process.GetProcessById(checked((int)info.Id));}
+        finally{CloseHandle(info.Thread);CloseHandle(info.Process);}
+    }
+
     /// <summary>CMD consumes one literal script after /c; it does not decode CRT backslash escapes.</summary>
     public static string CommandLine(string executable,IReadOnlyList<string> arguments)
     {

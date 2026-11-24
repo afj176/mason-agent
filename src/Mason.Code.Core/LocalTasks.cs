@@ -70,13 +70,11 @@ public sealed class LocalTasks
         var id = Guid.NewGuid();
         Directory.CreateDirectory(Folder(id));
         Write(Path.Combine(Folder(id),"request.json"),new LocalTaskSpec(id,scope.Root,prompt,endpoint,model,permission,modelLifetime,terminal,models),false);
-        var start = new ProcessStartInfo(executable) {UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,WorkingDirectory=AppContext.BaseDirectory};
-        foreach (var arg in new[]{"task-worker","--id",id.ToString(),"--task-home",Path.GetDirectoryName(root)!}) start.ArgumentList.Add(arg);
+        string[] arguments=["task-worker","--id",id.ToString(),"--task-home",Path.GetDirectoryName(root)!];
         // Publish the initial identity before releasing the worker to claim the request.
         using var launch = new FileStream(Path.Combine(Folder(id),"launch.lock"),FileMode.CreateNew,FileAccess.Write,FileShare.None);
         try {
-            using var child = Process.Start(start) ?? throw new IOException("Could not launch the background worker.");
-            child.StandardInput.Close();
+            using var child=CodeCommand.StartDetachedWorker(executable,arguments);
             Update(id,new("Starting","Opening journal",child.Id,child.StartTime.ToUniversalTime().Ticks));
             return id;
         } catch (Exception e) { Update(id,new("Failed",e.Message,0,0)); throw; }

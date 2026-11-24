@@ -46,6 +46,8 @@ foreach($name in 'mason.exe','mason.dll','mason.deps.json','mason.runtimeconfig.
 & (Join-Path $PSScriptRoot 'Build-EditorBridge.ps1') -OutputFile (Join-Path $payload 'integrations/mason-workspace.vsix')
 & (Join-Path $payload 'mason.exe') --help
 if($LASTEXITCODE -ne 0){throw 'Published CLI failed startup'}
+& python (Join-Path $appRoot 'tests/terminal/reattach.py') (Join-Path $payload 'mason.exe') (Join-Path ([IO.Path]::GetTempPath()) ('mason-task-client-'+[guid]::NewGuid().ToString('N')))
+if($LASTEXITCODE -ne 0){throw 'Packaged detached-task client failed reattachment.'}
 dotnet publish (Join-Path $appRoot 'src/Mason.SandboxSetup') -c Release -p:DebugType=None -r win-x64 --self-contained true -p:Version=$Version -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1 -o (Join-Path $payload 'sandbox-setup')
 if($LASTEXITCODE -ne 0){throw 'Mason.SandboxSetup publish failed'}
 & (Join-Path $PSScriptRoot 'Assert-ReleasePayload.ps1') -Payload $payload
