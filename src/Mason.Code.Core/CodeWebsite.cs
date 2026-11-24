@@ -21,6 +21,20 @@ public sealed class CodeWebsite(CodeWorkspace workspace)
         }
         return null;
     }
+    public CodeTab? PreviewTarget(CodeSession session)
+    {
+        var selected = session.Tabs.FirstOrDefault(tab => tab.Key == session.SelectedTab);
+        string? page = StartPage(selected?.Kind is "file" or "site" ? selected.Target : null);
+        if (page == null)
+        {
+            var candidates = session.Tabs.Where(tab => tab.Kind is "site" or "file").Reverse().Select(tab => tab.Target)
+                .Concat(session.Changes.Where(change => !change.Restored).Reverse().Select(change => change.Path));
+            page = candidates.FirstOrDefault(path => IsPage(path) && File.Exists(workspace.Resolve(path)));
+        }
+        if (page != null) return new CodeTab { Kind = "site", Target = page };
+        var server = selected?.Kind == "web" ? selected : session.Tabs.LastOrDefault(tab => tab.Kind == "web");
+        return server == null ? null : new CodeTab { Kind = "web", Target = CodeProtocol.PreviewUri(server.Target).AbsoluteUri };
+    }
     public Uri Page(string relative)
     {
         string path=workspace.Relative(workspace.Resolve(relative));

@@ -134,6 +134,7 @@ public sealed partial class MainWindow
         var fileState = CodeNote("");
         var fileProject=CodeNote("",11);fileProject.MaxWidth=150;fileProject.MaxLines=1;fileProject.TextTrimming=TextTrimming.CharacterEllipsis;
         var transcript = new StackPanel { Spacing = 20, Margin = new Thickness(28, 32, 28, 20), MaxWidth = 820, HorizontalAlignment = HorizontalAlignment.Center };
+        StackPanel? resultActions = null;
         var transcriptScroll = CodeScroll(transcript); bool followTail = true, pendingTranscriptTail = true;
         // Built once: the magnifier is an animated icon, and Arrange only swaps between the two layouts.
         var searchCompact = MotifIcon(Fluent.Motif.Find, 15);
@@ -195,9 +196,7 @@ public sealed partial class MainWindow
             try
             {
                 var site=new CodeWebsite(new CodeWorkspace(owner.Workspace));
-                var selected=owner.Tabs.FirstOrDefault(t=>t.Key==owner.SelectedTab);
-                if(site.StartPage(selected?.Kind is "file" or "site"?selected.Target:null) is {} file){OpenTab("site",file,true);return;}
-                if(selected?.Kind=="web"){OpenTab("web",selected.Target,true);return;}
+                if (site.PreviewTarget(owner) is {} target) { OpenTab(target.Kind, target.Target, true); return; }
                 dialogOpen=true;
                 if(await new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Open website",Content=address,PrimaryButtonText="Open",CloseButtonText="Cancel"}.ShowAsync()!=ContentDialogResult.Primary || owner!=session)return;
                 var value=address.Text.Trim();
@@ -447,7 +446,7 @@ public sealed partial class MainWindow
         {
             if (session == null || e.Tab.Tag is not CodeTab tab) return;
             if (viewerEntries.Remove(tab.Key, out var entry)) entry.Dispose(); CodePanels.Close(session, tab.Key);
-            RenderTabs(); Arrange(); Save();
+            RenderTabs(); RefreshResultActions(); Arrange(); Save();
         };
         page.SizeChanged += (_, _) => Arrange();
         refreshCodeProfiles = RefreshModels;
@@ -688,7 +687,7 @@ public sealed partial class MainWindow
             // project state the space instead of showing a disabled input panel.
             composer.Visibility = sessionHeader.Visibility = session == null ? Visibility.Collapsed : Visibility.Visible;
             ShowMood();
-            double offset = transcriptScroll.VerticalOffset; transcript.Children.Clear(); emptyHost = null;
+            double offset = transcriptScroll.VerticalOffset; transcript.Children.Clear(); emptyHost = null; resultActions = null;
             if (session == null || session.Turns.Count == 0)
             {
                 if (session != null)
@@ -768,12 +767,9 @@ public sealed partial class MainWindow
             }
             if (session.State is not ("Running" or "Awaiting review"))
             {
-                var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
-                int changed = session.Changes.Count(c => !c.Restored);
-                if (changed > 0) actions.Children.Add(CodeLink(changed == 1 ? "1 changed file" : $"{changed} changed files", (_, _) => OpenTab("changes", "", true)));
-                foreach (var artifact in session.Tabs.Where(t => t.Kind is "file" or "web").TakeLast(2))
-                    actions.Children.Add(CodeLink(artifact.Kind == "web" ? "Open preview" : artifact.Title, (_, _) => OpenTab(artifact.Kind, artifact.Target, true)));
-                if (actions.Children.Count > 0) transcript.Children.Add(actions);
+                resultActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
+                RefreshResultActions();
+                transcript.Children.Add(resultActions);
             }
             if (session.LiveMessage.Length > 0)
             {
@@ -798,6 +794,21 @@ public sealed partial class MainWindow
             turnViews = keptViews; shownSession = session; shownTurns = session.Turns.Count; shownLive = session.LiveMessage.Length > 0;
             transcriptScroll.UpdateLayout(); transcriptScroll.ChangeView(null, followTail ? TranscriptTail() : offset, null, true);
         }
+        void RefreshResultActions()
+        {
+            if (resultActions == null || session == null) return;
+            var actions = resultActions.Children;
+            actions.Clear();
+            int changed = session.Changes.Count(c => !c.Restored);
+            if (changed > 0)
+                actions.Add(CodeLink($"Review changes ({changed})", (_, _) => OpenTab("changes", "", true)));
+            if (session.Tabs.Any(t => t.Kind is "web" or "site" || t.Kind == "file" && CodeWebsite.IsPage(t.Target)) ||
+                session.Changes.Any(c => !c.Restored && CodeWebsite.IsPage(c.Path)))
+                actions.Add(CodeLink("Open preview", async (_, _) => await OpenWebsite()));
+            foreach (var file in session.Tabs.Where(t => t.Kind == "file").TakeLast(2))
+                actions.Add(CodeLink(file.Title, (_, _) => OpenTab("file", file.Target, true)));
+            resultActions.Visibility = actions.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        }
         void OpenTextArtifact(ChatArtifact artifact)
         {
             if (session == null) return;
@@ -812,8 +823,11 @@ public sealed partial class MainWindow
             // the latest result. Preserve the bottom anchor while the viewer changes width.
             if (user && transcriptScroll.ScrollableHeight - transcriptScroll.VerticalOffset < 90) followTail = true;
             var tab = new CodeTab { Kind = kind, Target = target };
+            int previousCount = session.Tabs.Count;
             if (!CodePanels.Open(session, tab, user)) { state.Text = "Close a viewer tab before opening more than 12."; return; }
-            if (user) forcedPanel = "viewer"; RenderTabs(); Arrange(); Save();
+            if (user) forcedPanel = "viewer"; RenderTabs();
+            if (session.Tabs.Count != previousCount) RefreshResultActions();
+            Arrange(); Save();
         }
         void RenderTabs()
         {
