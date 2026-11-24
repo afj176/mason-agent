@@ -39,6 +39,9 @@ public sealed partial class MainWindow
         catch (Exception error) { return TroubleNotice("Code sessions are unavailable", error.Message, "Close another Mason Agent instance using this profile, or inspect the saved session files. Existing sessions have not been replaced."); }
         var store = codeStore!;
         CodeSession? session = store.SelectedSession;
+        CodeEngine? liveEngine=null;
+        CodeSession? liveOwner=null;
+        StackPanel followUpButtons=null!;
         CodeProject? project = store.SelectedProject;
         const double projectPanelWidth=260;
         Action? viewerChanged = null; // assigned once the page exists; refreshes counts outside the viewer
@@ -261,7 +264,9 @@ public sealed partial class MainWindow
         var composerHint = CodeNote("Enter to send · Shift+Enter for a new line", 11);
         composerHint.IsTextSelectionEnabled = false; composerHint.VerticalAlignment = VerticalAlignment.Center;
         composerHint.MaxLines = 1; composerHint.TextTrimming = TextTrimming.CharacterEllipsis;
-        var composerFooter = Toolbar(composerHint, contextLink, send);
+        followUpButtons=Row(Button("Steer",(_,_)=>SubmitFollowUp(true)),Button("Queue",(_,_)=>SubmitFollowUp(false)));
+        followUpButtons.Visibility=Visibility.Collapsed;
+        var composerFooter = Toolbar(composerHint, contextLink, Row(followUpButtons,send));
         var composerBody = Stack(references, draft, composerTools, composerFooter, autoNotice);
         composerBody.Spacing = 8;
         // The composer floats above the transcript, with the window's shared soft shadow beneath it.
@@ -317,7 +322,15 @@ public sealed partial class MainWindow
                 else if(result==ContentDialogResult.Secondary)session.Desktop=null;
             }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
         });
-        sessionTools.Flyout=Fluent.Acrylic(new Flyout{Content=Stack(Text("Session settings",18),Text("Reasoning",12),reasoning,attach,deleteSession)});
+        var rewind=Button("Rewind last edited turn",async (_,_)=>{
+            if(session==null || codeOperation!=null)return;
+            if(CodeRewind.Latest(session) is not {} turn){state.Text="No recorded file edits to rewind.";return;}
+            sessionTools.Flyout.Hide();
+            var list=string.Join("\n",turn.Edits.Select(e=>(e.Before==null?"Remove created file · ":"Restore · ")+e.Path));
+            if(await new ContentDialog{XamlRoot=root.XamlRoot,Title="Rewind this turn’s file edits?",Content=list,PrimaryButtonText="Rewind files",CloseButtonText="Cancel"}.ShowAsync()!=ContentDialogResult.Primary)return;
+            try{CodeRewind.Apply(store,session,turn.Id);state.Text=session.Detail;RenderTranscript();RenderTabs();}catch(Exception e){state.Text=e.Message;}
+        });
+        sessionTools.Flyout=Fluent.Acrylic(new Flyout{Content=Stack(Text("Session settings",18),Text("Reasoning",12),reasoning,attach,rewind,deleteSession)});
         sessionTools.Content=MotifIcon(Fluent.Motif.Settings,16);
         ToolTipService.SetToolTip(sessionTools,"Reasoning and session actions");
         var titleBlock = Stack(title, folderPath); titleBlock.Spacing = 1; titleBlock.VerticalAlignment = VerticalAlignment.Center;
@@ -882,7 +895,10 @@ public sealed partial class MainWindow
             activityButton.IsEnabled = contextLink.IsEnabled = branch.IsEnabled = changeButton.IsEnabled = preview.IsEnabled = workspaceReady;
             ToolTipService.SetToolTip(activityButton, workspaceReady ? "Inspect actual tool requests and results" : "Open a workspace folder to start a session.");
             ToolTipService.SetToolTip(contextLink, workspaceReady ? ContextCaption(session) : "Open a workspace folder to start a session.");
-            draft.IsEnabled = session != null && ready; send.IsEnabled = session != null && ready;
+            bool canGuide=liveEngine!=null && session==liveOwner;
+            draft.IsEnabled = session != null && (ready||canGuide); send.IsEnabled = session != null && ready;
+            followUpButtons.Visibility=canGuide?Visibility.Visible:Visibility.Collapsed;
+            draft.PlaceholderText=canGuide?"Steer this run or queue a follow-up…":session?.PendingInput.Count>0?"Type /queue to resume pending messages…":"Describe a change, ask about the repo, or @ a file…";
             send.Visibility = ready ? Visibility.Visible : Visibility.Collapsed; stop.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
             spinner.Visibility = ready ? Visibility.Collapsed : Visibility.Visible; spinner.IsActive = !ready;
         }
@@ -908,7 +924,16 @@ public sealed partial class MainWindow
             var decline = Button("Decline", (_, _) => completion.TrySetResult(false));
             var approvalTitle = Text("Review " + request.Tool.Replace('_', ' '), 17); approvalTitle.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; approvalTitle.VerticalAlignment = VerticalAlignment.Center;
             AutomationProperties.SetName(allow, "Allow " + request.Tool.Replace('_', ' ') + " once"); AutomationProperties.SetName(decline, "Decline " + request.Tool.Replace('_', ' '));
-            var approvalCard = ChatSurface(Stack(Row(MascotImage(MoodChecking, 44, "needs your review"), approvalTitle), detail, Row(allow, decline)), new Thickness(14, 10, 14, 12));
+            var approvalBody=Stack(Row(MascotImage(MoodChecking, 44, "needs your review"), approvalTitle),detail);
+            if(request.Jpeg!=null){
+                using var bytes=new MemoryStream(Convert.FromBase64String(request.Jpeg));
+                using var stream=bytes.AsRandomAccessStream();
+                var bitmap=new Microsoft.UI.Xaml.Media.Imaging.BitmapImage();
+                await bitmap.SetSourceAsync(stream);
+                approvalBody.Children.Add(new Image{Source=bitmap,MaxHeight=200,Stretch=Stretch.Uniform});
+            }
+            approvalBody.Children.Add(Row(allow,decline));
+            var approvalCard = ChatSurface(approvalBody, new Thickness(14, 10, 14, 12));
             approvalHost.Content = approvalCard; FadeIn(approvalCard);
             try { return await completion.Task; } finally { approvalHost.Content = null; pendingApproval = null; }
         }
@@ -927,8 +952,16 @@ public sealed partial class MainWindow
             catch (Exception error) { state.Text = error.Message; }
             finally { codeOperation = aiOperation = null; Enable(); RenderTabs(); }
         }
+        void SubmitFollowUp(bool steer)
+        {
+            if(liveEngine==null || session!=liveOwner || session==null)return;
+            try{
+                liveEngine.SendWhileRunning(session,draft.Text,steer);draft.Text="";state.Text=steer?"Steering the current run":"Follow-up queued";
+            }catch(Exception error){state.Text=error.Message;}
+        }
         async Task Send()
         {
+            if(liveEngine!=null && session==liveOwner){SubmitFollowUp(false);return;}
             if (codeOperation != null || aiOperation != null) { state.Text = "Finish or stop the active AI operation first."; return; }
             if (session == null) { state.Text = "Open a workspace folder first."; return; }
             if (SelectedChatProfile(profiles) is not AiEndpointProfile profile) { state.Text = "Select a coding model from Models & endpoints."; return; }
@@ -940,6 +973,7 @@ public sealed partial class MainWindow
                 var key = aiSessionKeys.GetValueOrDefault(profile.Id) ?? Store.Unprotect(profile.Secret);
                 var model = new CodeLocalModel(profile, key, active.Reasoning, value => { context.Text = value; }, progress: value => { active.Detail = value; if (active == session) state.Text = value; });
                 var engine = new CodeEngine(store, model, Approve, RefreshRun);
+                liveEngine=engine;liveOwner=active;Enable();
                 var task = engine.Run(active, input, cancellation.Token); updating = true; draft.Text = ""; updating = false;
                 await task; updating = true; draft.Text = active.Draft; updating = false; RenderTranscript(); RenderTabs(); Arrange(); state.Text = active.Detail; title.Text = active.Title;
                 try
@@ -955,7 +989,7 @@ public sealed partial class MainWindow
                 catch (Exception error) { fileState.Text = "File listing refresh failed · " + error.Message; }
             }
             catch (Exception error) { state.Text = error.Message; }
-            finally { codeOperation = null; if (aiOperation == cancellation) aiOperation = null; Enable(); updating = true; draft.Text = active.Draft; RenderProjects(); updating = false; ShowMood(); footerText.Text = (project?.Name??Path.GetFileName(active.Workspace)) + " · Session saved locally"; Save(); }
+            finally { liveEngine=null;liveOwner=null;codeOperation = null; if (aiOperation == cancellation) aiOperation = null; Enable(); updating = true; draft.Text = active.Draft; RenderProjects(); updating = false; ShowMood(); footerText.Text = (project?.Name??Path.GetFileName(active.Workspace)) + " · Session saved locally"; Save(); }
         }
     }
 }

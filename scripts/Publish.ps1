@@ -30,6 +30,8 @@ try {
     if($LASTEXITCODE -ne 0){throw 'Full coding harness regression suite failed'}
     dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --extension-checks (Join-Path ([IO.Path]::GetTempPath()) ('mason-extensions-'+[guid]::NewGuid().ToString('N')))
     if($LASTEXITCODE -ne 0){throw 'Harness extension checks failed'}
+    dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --modern-checks (Join-Path ([IO.Path]::GetTempPath()) ('mason-modern-'+[guid]::NewGuid().ToString('N')))
+    if($LASTEXITCODE -ne 0){throw 'Repository search, Git, steering, rewind or investigation regression'}
     dotnet run --no-build --project (Join-Path $appRoot 'tests/Mason.CodeChecks') -c Release -- --checkout-controls (Join-Path ([IO.Path]::GetTempPath()) ('mason-checkout-'+[guid]::NewGuid().ToString('N')))
     if($LASTEXITCODE -ne 0){throw 'Positive/negative checkout control matrix failed'}
 } finally {$env:MASON_SANDBOX_PROBE=$previousProbe;$env:MASON_DATA_HOME=$previousData}

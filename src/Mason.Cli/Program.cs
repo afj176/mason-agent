@@ -17,6 +17,7 @@ try{
             serve explicitly launches the named development workflow under your Windows account and stops it after browser interaction.
             mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics
             mason worktree --workspace PATH --destination NEW_PATH --branch NEW_BRANCH
+            mason git-status --workspace PATH
             Use --prompt-file PATH to read a UTF-8 task. Output is JSON Lines. Exit 0 means completed.
             Each invocation uses a separate journal by default. Use --profile PATH --resume SESSION_ID to continue.
             """);return 0;
@@ -31,6 +32,7 @@ try{
     if(args[0]=="worktree"){
         var path=await CodeWorktree.Create(scope.Root,Get("destination"),Get("branch"),ct);Event("worktree.created",new{path});return 0;
     }
+    if(args[0]=="git-status"){Event("git.status",await CodeGit.FullStatus(scope.Root,ct));return 0;}
     if(args[0]=="symbol"){
         var result=await CodeSemantic.Query(scope,Get("path"),int.Parse(Get("line")),int.Parse(Get("column")),Get("mode"),ct);
         Event("symbol.result",JsonSerializer.Deserialize<JsonElement>(result));return 0;

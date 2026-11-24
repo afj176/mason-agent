@@ -13,7 +13,7 @@ function Assert-Checks($Checks,[string[]]$Targets,[string]$ExpectedFailure,[stri
             $match[0].Passed -eq ($target -cne $ExpectedFailure)) "$Label / $target"
     }
 }
-Assert-That ($r.Version -eq 1 -and $Commit -cmatch '^[0-9a-f]{40}$' -and $r.Commit -ceq $Commit) 'source identity'
+Assert-That ($r.Version -eq 2 -and $Commit -cmatch '^[0-9a-f]{40}$' -and $r.Commit -ceq $Commit) 'source identity'
 Assert-That ($r.Models.Count -eq 2 -and $r.Models[0].Id -ceq $PrimaryModel -and
     $r.Models[0].Id -ne $r.Models[1].Id -and $r.Models[0].Weights -ne $r.Models[1].Weights) 'two distinct model identities'
 Assert-That ($r.Builds.Count -eq 8 -and $r.Controls.Count -eq 14 -and $r.Repairs.Count -eq 2) 'matrix size'
@@ -22,6 +22,19 @@ $buildChecks=@('offer-0','offer-1','offer-2','discount-0','order')+$reviews
 $failures=@{working=''; quantity=$reviews[0]; mixed=$reviews[0]; shelf=$reviews[1]; uncleared=$reviews[2]; receipt=$reviews[2]; reused=$reviews[2]}
 foreach ($identity in $r.Models) {
     $id=$identity.Id
+    $double=@($r.DoubleCheckouts|Where-Object Model -CEQ $id)
+    Assert-That ($double.Count -eq 1 -and $double[0].Calls -gt 0 -and $double[0].State -ceq 'Completed') "$id double submission repair"
+    $d=$double[0]
+    foreach ($field in 'CaughtDuplicate','StaleRejected','FreshHashUsed','LabelPreserved','UntouchedPage','SourceReviewed','Verified','DatabaseIsolated','HoldoutPassed'){
+        Assert-That ($d.$field -is [bool] -and $d.$field) "$id cross-layer checkout / $field"
+    }
+    Assert-That ($d.Baseline.Contains('observed 2 committed rows') -and $d.Holdout.Contains('response_count POST /checkout = 4') -and $d.Holdout.Contains('sqlite_count orders.sqlite#orders = 2') -and $d.Holdout.Contains('390px and 1280px')) "$id independent two-basket count"
+    $main=@($d.Results|Where-Object {$_.Check.Target -ceq 'double' -and $_.Passed -eq $true})
+    Assert-That ($main.Count -eq 1 -and $main[0].Detail.Contains('2 responses matched ORD-') -and $main[0].Detail.Contains('sqlite_count orders.sqlite#orders = 1')) "$id repeated receipt and single committed row"
+    $jobs=@($r.Workers|Where-Object Model -CEQ $id)
+    Assert-That ($jobs.Count -eq 1 -and $jobs[0].Calls -gt 0 -and $jobs[0].SourceHash -cmatch '^[a-f0-9]{64}$') "$id delegated worker"
+    $w=$jobs[0]
+    Assert-That (@($w.Findings|Where-Object {$_.Path -ceq 'policy.js' -and $_.Line -eq 2 -and $_.Quote.Contains([string]$w.Limit) -and $_.Answer.Contains([string]$w.Limit)}).Count -gt 0) "$id worker source citation"
     Assert-That (![string]::IsNullOrWhiteSpace($id) -and ![string]::IsNullOrWhiteSpace($identity.Weights)) 'model identity'
     foreach ($round in 1,2) {
         foreach ($brief in 'brief','plain-rules') {
@@ -64,4 +77,8 @@ foreach ($identity in $r.Models) {
     $hashes=@($repair.InitialHash,$repair.ConcurrentHash,$repair.FinalHash)
     Assert-That (@($hashes | Sort-Object -Unique).Count -eq 3 -and @($hashes | Where-Object {$_ -cnotmatch '^[0-9a-f]{64}$'}).Count -eq 0) "$id repair revision chain"
 }
-Write-Output "Verified eight empty-project builds, fourteen review controls and two concurrent repairs at $Commit."
+$v=$r.NativeVision
+Assert-That ($null -ne $v -and @($r.Models|Where-Object {$_.Vision -and $_.Id -ceq $v.Model}).Count -eq 1) 'vision model identity'
+Assert-That ($v.Click.Action -ceq 'click' -and $v.Drag.Action -ceq 'drag' -and $v.StaleRejected -eq $true -and $v.NativeState -ceq 'Canvas drag completed' -and $v.Final.Length -gt 0) 'observed native transitions'
+Assert-That ($v.FrameHashes.Count -eq 3 -and @($v.FrameHashes|Sort-Object -Unique).Count -eq 3 -and @($v.FrameHashes|Where-Object {$_ -cnotmatch '^[a-f0-9]{64}$'}).Count -eq 0) 'distinct visual observations'
+Write-Output "Qualified eight empty-project builds, fourteen review controls, four concurrent repairs, two delegated investigations and native visual actions at $Commit."

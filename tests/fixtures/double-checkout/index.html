@@ -1,0 +1,18 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Trail checkout</title>
+<h1>STORE_NAME</h1><button id="buy">Checkout</button><button id="next">New basket</button>
+<button id="policy">Show policy</button><output id="terms"></output><output id="receipt"></output><output id="done"></output>
+<script>
+const view = id => document.getElementById(id);
+let key = crypto.randomUUID();
+let completed = 0;
+view('receipt').textContent = localStorage.getItem('receipt') || '';
+view('policy').onclick = () => { view('terms').textContent = 'Local pickup'; };
+view('next').onclick = () => { key = crypto.randomUUID(); completed = 0; view('done').textContent = ''; };
+view('buy').onclick = async () => {
+    const response = await fetch('/checkout', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key})});
+    const order = await response.json();
+    localStorage.setItem('receipt', order.id);
+    view('receipt').textContent = order.id;
+    view('done').textContent = String(++completed);
+};
+</script></html>

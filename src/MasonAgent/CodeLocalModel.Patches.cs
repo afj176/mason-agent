@@ -9,6 +9,36 @@ public sealed partial class CodeLocalModel
     sealed record AnchoredEdit(string Before,string After);
     sealed record ExpressionEdit(string Target,string Expression);
     sealed record DomEdit(string Id);
+    sealed record PredicateEdit(string Column);
+    async Task<CodeAction?> RepairLookup(CodePageRepair repair,string request,CancellationToken ct)
+    {
+        var source=repair.File.Content;
+        // Constrain a possible equality-key mixup to columns actually declared by
+        // this application. The caller still has to pass the real API and DB checks.
+        var table=Regex.Match(repair.Evidence,@"sqlite_count [\w./-]+#(?<table>[a-zA-Z_]\w*): expected \d+, observed \d+ committed rows");
+        if(!table.Success)return null;
+        string name=Regex.Escape(table.Groups["table"].Value);
+        var ddl=Regex.Match(source,@"\bCREATE TABLE (?:IF NOT EXISTS )?"+name+@"\s*\((?<cols>[^()\r\n]+)\)",RegexOptions.IgnoreCase);
+        var lookups=Regex.Matches(source,@"\bSELECT [\w, ]+ FROM "+name+@"\s+WHERE\s+(?<column>[a-zA-Z_]\w*)\s*=\s*\?",RegexOptions.IgnoreCase);
+        if(!ddl.Success || lookups.Count!=1)return null;
+        var columns=ddl.Groups["cols"].Value.Split(',').Select(c=>Regex.Match(c.Trim(),@"^\w+").Value)
+            .Where(c=>c.Length>0 && !new[]{"PRIMARY","UNIQUE","CHECK","FOREIGN","CONSTRAINT"}.Contains(c,StringComparer.OrdinalIgnoreCase)).Distinct().ToArray();
+        if(columns.Length is <2 or >32)return null;
+        var bound=Regex.Match(source[(lookups[0].Index+lookups[0].Length)..],"""^["']\s*,\s*\(\s*(\w+)\s*,\s*\)""");
+        var inserts=Regex.Matches(source,"""INSERT INTO """+name+"""\s*\(([\w ,]+)\)\s*VALUES\s*\([?, ]+\)["']\s*,\s*\(([\w ,]+)\)""",RegexOptions.IgnoreCase);
+        if(bound.Success && inserts.Count==1){
+            var names=inserts[0].Groups[1].Value.Split(',').Select(s=>s.Trim()).ToArray();
+            var values=inserts[0].Groups[2].Value.Split(',').Select(s=>s.Trim()).ToArray();
+            int index=Array.IndexOf(values,bound.Groups[1].Value);
+            if(index>=0 && names.Length==values.Length && values.Count(v=>v==values[index])==1 && columns.Contains(names[index]))
+                columns=[names[index]];
+        }
+        var selected=await IsolatedDecision<PredicateEdit>("A persisted count is wrong. Inspect what value is bound to the observed lookup and which columns the insert stores. Select the schema column that must equal that bound value. Keep the current column if this lookup is correct.",new{request,repair.Evidence,source,lookup=lookups[0].Value},Shape(("Column",EnumOf(columns))),ct);
+        var old=lookups[0].Groups["column"];
+        if(!columns.Contains(selected.Column)||old.Value==selected.Column)return null;
+        return new("Matching the lookup to the stored key used by this request.","replace_file",
+            JsonSerializer.SerializeToElement(new{path=repair.File.Path,expected_sha256=repair.File.Sha256,content=source.Remove(old.Index,old.Length).Insert(old.Index,selected.Column)}));
+    }
 
     async Task<CodeAction?> RepairDomTarget(CodePageRepair repair,string request,CancellationToken ct)
     {

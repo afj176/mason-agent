@@ -68,6 +68,8 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
         }catch(OperationCanceledException)when(stop&&!ct.IsCancellationRequested){if(unverified.GetValueOrDefault(job.Key)=="Outcome pending")unverified.Remove(job.Key);return new(JsonSerializer.Serialize(new{id,state="Stopped"}));}
     }
     public bool NeedsCollection=>jobs.Values.Any(j=>!j.Collected);
+    public CodeRepositorySearch Search {get;}=new(scope);
+    public int WorkerCalls {get;set;}
     public HashSet<string> Enabled {get;}=new(StringComparer.Ordinal);
     readonly Lazy<string[]> skills=new(()=>Directory.Exists(scope.Resolve(".mason/skills"))?
         scope.Files(".mason/skills",200).Files.Where(p=>Regex.IsMatch(p,@"^\.mason/skills/[\w-]+/SKILL\.md$")).Select(p=>p.Split('/')[2]).ToArray():[]);
@@ -76,7 +78,7 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
     {
         bool auto=session.Mode=="build" && session.Permission==CodePermission.Auto;
         string[] tools=group switch{
-            "code"=>["inspect_symbol"],
+            "code"=>["inspect_symbol","git_status","delegate_readonly"],
             "workflows"=>auto?["read_skill","run_workflow"]:["read_skill"],
             "jobs" when auto=>["start_job","poll_job","stop_job"],
             "browser" when auto=>["computer_use"],
@@ -92,6 +94,7 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
     }
     public async ValueTask DisposeAsync()
     {
+        Search.Dispose();
         foreach(var job in jobs.Values)job.Stop.Cancel();
         foreach(var job in jobs.Values){try{await job.Task;}catch(Exception){/* The foreground task records explicit failures. */}finally{job.Stop.Dispose();}}
     }

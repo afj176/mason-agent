@@ -58,7 +58,7 @@ internal static class CodeBrowserVerification
 
     static string Url(CodeWorkspace scope,string path) => Origin + "/" + string.Join("/",scope.Relative(scope.Resolve(path)).Split('/').Select(Uri.EscapeDataString));
 
-    internal static async Task<string> Interact(CodeWorkspace scope,string path,Func<IPage,CancellationToken,Task<string>> act,CancellationToken ct,CodePreviewServer? live=null)
+    internal static async Task<string> Interact(CodeWorkspace scope,string path,Func<IPage,CancellationToken,Task<string>> act,CancellationToken ct,CodePreviewServer? live=null,string? application=null)
     {
         using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromMinutes(4));
@@ -66,7 +66,7 @@ internal static class CodeBrowserVerification
         using var stop=deadline.Token.Register(driver.Dispose);
         await using var browser=await Launch(driver);
         var url=live!=null && path=="/"?Origin+"/":Url(scope,path);
-        return await Observe(browser,scope,new(1,"Interactive project browser","browser_flow",path,"",""),url,1280,deadline.Token,act,live);
+        return await Observe(browser,scope,new AcceptanceCheck(1,"Interactive project browser","browser_flow",path,"",""){Application=application},url,1280,deadline.Token,act,live);
     }
 
     static Task<IBrowser> Launch(IPlaywright driver)
@@ -88,7 +88,7 @@ internal static class CodeBrowserVerification
 
     static async Task<string> Observe(IBrowser browser, CodeWorkspace scope, AcceptanceCheck check, string url, int width,CancellationToken ct,Func<IPage,CancellationToken,Task<string>>? interact=null,CodePreviewServer? live=null,Candidate? candidate=null)
     {
-        await using var app=check.Application==null?null:await CodeVerificationApp.Start(scope,check.Application,ct);
+        await using var app=check.Application==null?null:await CodeVerificationApp.Start(scope,check.Application,ct,candidate);
         await using var context = await browser.NewContextAsync(new() { Offline = true, ServiceWorkers = ServiceWorkerPolicy.Block,
             AcceptDownloads = false, ViewportSize = new() { Width = width, Height = 850 } });
         var errors = new ConcurrentQueue<string>();
@@ -183,7 +183,7 @@ internal static class CodeBrowserVerification
         {
             case "browser_load": break;
             case "browser_flow":
-                try { observed=await BrowserContract.Observe(page,check.Steps!,ct); }
+                try { observed=await BrowserContract.Observe(page,check.Steps!,ct,app); }
                 catch(Exception) when(!ct.IsCancellationRequested && scriptFailure!=null) {throw scriptFailure;}
                 break;
             case "browser_layout":

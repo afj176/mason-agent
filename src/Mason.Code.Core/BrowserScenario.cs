@@ -27,6 +27,8 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
                 throw new InvalidDataException("Each scenario requires a bounded ID and a requirement.");
             scope.Resolve(scenario.Page);
             Validate(scenario.Steps);
+            if(contract.Application==null && scenario.Steps.Any(s=>ApplicationStep(s.Op)))
+                throw new InvalidDataException("API and database assertions require an isolated verification application.");
         }
         return contract;
     }
@@ -37,7 +39,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         foreach (var s in steps)
         {
             if (s is null || s.Target==null || s.Value==null || s.Target.Length>180 || s.Value.Length>300 ||
-                s.Op is not ("count_distinct" or "fill" or "click" or "click_if_enabled" or "money" or "shelf_price" or "text" or "empty" or "capture" or "reload" or "same" or "new_id"))
+                !ApplicationStep(s.Op) && s.Op is not ("count_distinct" or "fill" or "click" or "double_click" or "click_if_enabled" or "money" or "shelf_price" or "text" or "empty" or "capture" or "reload" or "same" or "new_id"))
                 throw new InvalidDataException("Unknown or oversized browser step.");
             if(s.Op!="reload" && string.IsNullOrWhiteSpace(s.Target)) throw new InvalidDataException("A browser step needs a target.");
             if(s.Op=="count_distinct" && !(int.TryParse(s.Value,out var n) && n is >0 and <=1000)) throw new InvalidDataException("Specify a positive distinct item count.");
@@ -45,9 +47,18 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
             if(s.Op=="text" && string.IsNullOrWhiteSpace(s.Value)) throw new InvalidDataException("Specify exact visible text.");
             if(s.Op is ("same" or "new_id") && !captured) throw new InvalidDataException("Capture a value before comparing it.");
             if(s.Op=="capture") captured=true;
+            if(s.Op=="sqlite_count" && (!Regex.IsMatch(s.Target,@"\A(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.(?:sqlite3?|db)#[A-Za-z_][A-Za-z0-9_]*\z") || !BoundedCount(s.Value)))
+                throw new InvalidDataException("Use a relative database filename, #table and a nonnegative expected count.");
+            if(s.Op is "response_count" or "response_same"){
+                if(!Regex.IsMatch(s.Target,@"\A(?:GET|POST|PUT|PATCH|DELETE) /[a-zA-Z0-9/_-]*\z") ||
+                    (s.Op=="response_count" ? !BoundedCount(s.Value) : !captured || !Regex.IsMatch(s.Value,@"\A[A-Za-z_][A-Za-z0-9_]*\z")))
+                    throw new InvalidDataException("Use METHOD /path with a bounded response count or a JSON field after capture.");
+            }
         }
-        if(steps[^1].Op is not ("count_distinct" or "money" or "shelf_price" or "text" or "same" or "new_id" or "empty")) throw new InvalidDataException("End each scenario with an assertion.");
+        if(!ApplicationStep(steps[^1].Op) && steps[^1].Op is not ("count_distinct" or "money" or "shelf_price" or "text" or "same" or "new_id" or "empty")) throw new InvalidDataException("End each scenario with an assertion.");
     }
+    internal static bool ApplicationStep(string op)=>op is "sqlite_count" or "response_count" or "response_same";
+    static bool BoundedCount(string text)=>int.TryParse(text,NumberStyles.None,CultureInfo.InvariantCulture,out var n) && n<=1000000;
     internal static bool CoversBehavior(string text,BrowserStep[] steps)
     {
         bool Mentions(string pattern)=>Regex.IsMatch(text,pattern,RegexOptions.IgnoreCase|RegexOptions.CultureInvariant);
@@ -65,7 +76,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         }
         return true;
     }
-    internal static async Task<string> Observe(IPage page, BrowserStep[] steps, CancellationToken ct)
+    internal static async Task<string> Observe(IPage page, BrowserStep[] steps, CancellationToken ct,CodeVerificationApp? app=null)
     {
         Validate(steps);
         string? captured=null;
@@ -74,10 +85,17 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         {
             var step=steps[index];
             ct.ThrowIfCancellationRequested();
+            if(ApplicationStep(step.Op)){
+                if(app==null)throw new InvalidDataException("Missing isolated verification application.");
+                await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
+                observations.Add(await app.Assert(step,captured,ct));
+                continue;
+            }
             var node=page.Locator("css="+step.Target).Filter(new(){Visible=true});
             try {
                 if(step.Op=="reload") { await page.ReloadAsync(new(){WaitUntil=WaitUntilState.Load}); continue; }
                 if(step.Op=="click") { await node.ClickAsync(); continue; }
+                if(step.Op=="double_click") { await node.DblClickAsync(); continue; }
                 if(step.Op=="click_if_enabled") { if(await node.IsEnabledAsync())await node.ClickAsync(); continue; }
                 if(step.Op=="fill") { await node.FillAsync(step.Value); await node.PressAsync("Tab"); continue; }
             } catch(Exception e) when(e is TimeoutException or PlaywrightException) {

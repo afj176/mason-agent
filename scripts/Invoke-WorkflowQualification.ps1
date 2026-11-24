@@ -21,13 +21,16 @@ function Get-ModelIdentity([uri]$Server, [string]$Id) {
     $props = Invoke-RestMethod "$base/props" -TimeoutSec 15
     $weights = [IO.Path]::GetFileName($props.model_path)
     if (!$weights) { throw "The model server at $base did not identify its weights." }
-    [pscustomobject]@{ Id=$Id; Weights=$weights }
+    $vision=$props.PSObject.Properties['modalities'] -and $props.modalities.PSObject.Properties['vision'] -and $props.modalities.vision -eq $true
+    [pscustomobject]@{ Id=$Id; Weights=$weights; Vision=[bool]$vision }
 }
 $models = @((Get-ModelIdentity $Endpoint $Model), (Get-ModelIdentity $SecondaryEndpoint $SecondaryModel))
 if ($Model -eq $SecondaryModel -or $models[0].Weights -eq $models[1].Weights) { throw 'Use two distinct local models.' }
 $output = [IO.Path]::GetFullPath($OutputDirectory,(Get-Location).Path)
 if (Test-Path -LiteralPath $output) { throw 'Each qualification requires a fresh directory.' }
 $null = New-Item -ItemType Directory $output
+dotnet build (Join-Path $repo 'src/Mason.WindowHost') -c Release -o (Join-Path $repo '.cache/window-host') -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1
+if($LASTEXITCODE){throw 'Could not build the native window helper for this revision.'}
 foreach ($build in @(@('cli','src/Mason.Cli','mason'),@('checks','tests/Mason.CodeChecks','Mason.CodeChecks'))) {
     $bin = Join-Path $output $build[0]
     dotnet build (Join-Path $repo $build[1]) -c Release -o $bin -p:UseSharedCompilation=false -p:NuGetAudit=false -m:1
@@ -92,10 +95,24 @@ function Invoke-ReviewControl($Server,$Id,$Area,$Case) {
 $builds=@()
 $controls=@()
 $repairs=@()
+$doubleCheckouts=@()
+$workers=@()
+$visual=$null
 foreach ($index in 0,1) {
     $server=@($Endpoint,$SecondaryEndpoint)[$index]
     $id=$models[$index].Id
     $area=Join-Path $output "model-$index"
+    & "$output/checks/Mason.CodeChecks.exe" --double-checkout $server $id "$area/double"
+    if ($LASTEXITCODE) { throw "Cross-layer checkout failed for $id. See $area/double." }
+    $doubleCheckouts+=Get-Content "$area/double/double-checkout.json" -Raw | ConvertFrom-Json
+    & "$output/checks/Mason.CodeChecks.exe" --worker-check $server $id "$area/worker"
+    if ($LASTEXITCODE) { throw "Delegated investigation failed for $id." }
+    $workers+=Get-Content "$area/worker/worker.json" -Raw | ConvertFrom-Json
+    if($models[$index].Vision -and !$visual){
+        & "$output/checks/Mason.CodeChecks.exe" --visual-check $server $id "$area/visual.json"
+        if($LASTEXITCODE){throw "Native-window visual qualification failed for $id."}
+        $visual=Get-Content "$area/visual.json" -Raw | ConvertFrom-Json
+    }
     foreach ($round in 1,2) {
         foreach ($brief in 'brief','plain-rules') {
             Write-Host "Building $brief (round $round) with $id"
@@ -112,6 +129,6 @@ foreach ($index in 0,1) {
 }
 Assert-Source
 $report=Join-Path $output 'workflow-evidence.json'
-[ordered]@{ Version=1; Commit=$commit; Models=$models; Builds=$builds; Controls=$controls; Repairs=$repairs } |
+[ordered]@{ Version=2; Commit=$commit; Models=$models; Builds=$builds; Controls=$controls; Repairs=$repairs; DoubleCheckouts=$doubleCheckouts; Workers=$workers; NativeVision=$visual } |
     ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $report -Encoding utf8
 & "$PSScriptRoot/Assert-WorkflowQualification.ps1" -Report $report -Commit $commit -PrimaryModel $Model

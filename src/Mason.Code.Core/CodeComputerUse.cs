@@ -98,7 +98,7 @@ public static class CodeComputerUse
         },ct,live);
     }
 
-    public static async Task<BrowserScenario[]> Review(CodeWorkspace scope,string path,string request,ICodeBrowserOperator model,CancellationToken ct)
+    public static async Task<BrowserScenario[]> Review(CodeWorkspace scope,string path,string request,ICodeBrowserOperator model,CancellationToken ct,string? application=null)
     {
         BrowserScenario[]? scenarios=null;
         await CodeBrowserVerification.Interact(scope,path,async(page,token)=>{
@@ -106,8 +106,8 @@ public static class CodeComputerUse
             try{scenarios=await model.DesignReview(request,path,observation,token);}
             finally{foreach(var h in handles)await h.DisposeAsync();}
             return "Observed";
-        },ct);
+        },ct,application:application);
         if(scenarios is not {Length:>0 and <=4} || scenarios.Any(s=>s.Page!=path))throw new InvalidDataException("Independent reviewer did not supply an executable check for the observed page.");
-        return BrowserContract.Parse(scope,JsonSerializer.Serialize(new BrowserContract(1,null,scenarios))).Scenarios;
+        return BrowserContract.Parse(scope,JsonSerializer.Serialize(new BrowserContract(1,application,scenarios))).Scenarios;
     }
 }

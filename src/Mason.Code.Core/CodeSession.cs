@@ -19,6 +19,10 @@ public sealed record CodeMessage(string Role, string Content)
 }
 public sealed class CodeTurn
 {
+    public List<TurnEdit> Edits {get;set;}=[];
+    public bool Rewound {get;set;}
+    public bool RewindPending {get;set;}
+    public bool PlanningInterrupted {get;set;}
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Role { get; set; } = "user";
     public string Text { get; set; } = "";
@@ -27,6 +31,7 @@ public sealed class CodeTurn
     public int ActivityCount { get; set; }
     public CodeAcceptancePlan? Acceptance { get; set; }
 }
+public sealed record CodeFollowUp(Guid Id,string Text,bool Steer);
 public sealed class CodeActivity
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -59,6 +64,7 @@ public sealed class CodeTab
 }
 public sealed class CodeSession
 {
+    public List<CodeFollowUp> PendingInput {get;set;}=[];
     public int Version { get; set; } = 1;
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Title { get; set; } = "New session";
@@ -193,7 +199,7 @@ public interface ICodeModel
 {
     Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages, Action<string> onMessage, CancellationToken cancellation);
 }
-public sealed record CodeApproval(string Tool, string Description, string Detail);
+public sealed record CodeApproval(string Tool, string Description, string Detail){public string? Jpeg {get;init;}}
 public sealed class CodeResponseException(string message, string response) : Exception(message)
 {
     public string Response { get; } = response.Length > 8000 ? response[..8000] + " [clipped]" : response;

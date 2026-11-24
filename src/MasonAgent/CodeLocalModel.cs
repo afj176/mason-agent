@@ -231,6 +231,11 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
         var requestText=repair.Request;
         int contractStart=requestText.IndexOf("```mason.acceptance.json",StringComparison.Ordinal);
         if(contractStart>=0)requestText=requestText[..contractStart].TrimEnd();
+        if(Path.GetExtension(repair.File.Path).Equals(".py",StringComparison.OrdinalIgnoreCase)){
+            if(await RepairLookup(repair,requestText,ct) is {} lookup)return lookup;
+            if(await RepairByAnchor(repair,requestText,ct) is {} backend)return backend;
+            return await RepairLines(client,server,repair,requestText,ct) ?? throw new CodeResponseException("Select a unique source edit for the observed backend failure.","");
+        }
         if(server.Llama && await RepairDomTarget(repair,requestText,ct) is {} target)return target;
         if(repair.NumericMismatch!=null && server.Llama && !repair.PreviousEditUnchanged &&
             await RepairCalculation(repair,requestText,ct) is {} calculation)return calculation;

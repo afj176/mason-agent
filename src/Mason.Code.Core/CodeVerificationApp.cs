@@ -10,13 +10,14 @@ internal sealed class CodeVerificationApp : IAsyncDisposable
     readonly CancellationTokenSource lifetime;
     Task<CodeCommandResult>? process;
     readonly List<string> log=[];
+    readonly List<(string Route,byte[] Json)> responses=[];
     public string Observations { get { lock(log) return string.Join(", ",log.TakeLast(8)); } }
     CodeVerificationApp(string root,CancellationToken ct)
     {
         copy=new(root); mailbox="mason-bridge-"+Guid.NewGuid().ToString("N");
         Directory.CreateDirectory(copy.Resolve(mailbox)); lifetime=CancellationTokenSource.CreateLinkedTokenSource(ct);
     }
-    public static async Task<CodeVerificationApp> Start(CodeWorkspace project,string entry,CancellationToken ct)
+    public static async Task<CodeVerificationApp> Start(CodeWorkspace project,string entry,CancellationToken ct,CodeBrowserVerification.Candidate? candidate=null)
     {
         var root=Directory.CreateTempSubdirectory("mason-verify-").FullName;
         var app=new CodeVerificationApp(root,ct);
@@ -33,7 +34,8 @@ internal sealed class CodeVerificationApp : IAsyncDisposable
                 var dest=app.copy.Resolve(path);
                 Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
                 using var file=File.Create(dest);
-                await source.CopyToAsync(file,ct);
+                if(candidate!=null && path.Equals(candidate.Path,StringComparison.OrdinalIgnoreCase))await file.WriteAsync(candidate.Content,ct);
+                else await source.CopyToAsync(file,ct);
             }
             using(var source=typeof(CodeVerificationApp).Assembly.GetManifestResourceStream("Mason.Code.CodeWsgiBridge.py")!)
             using(var file=File.Create(app.copy.Resolve(app.mailbox+"/runner.py"))) await source.CopyToAsync(file,ct);
@@ -82,7 +84,48 @@ internal sealed class CodeVerificationApp : IAsyncDisposable
             if(h.Name is "content-type" or "set-cookie" or "cache-control" or "location") allowed[h.Name]=h.Value.GetString()!;
         if(allowed.TryGetValue("location",out var redirect) && (!Uri.TryCreate(uri,redirect,out var target) || target.GetLeftPart(UriPartial.Authority)!=uri.GetLeftPart(UriPartial.Authority)))
             throw new InvalidDataException("Verification app redirected outside its isolated origin.");
-        return(status,response.GetProperty("body").GetBytesFromBase64(),allowed);
+        var bytesOut=response.GetProperty("body").GetBytesFromBase64();
+        lock(responses)responses.Add(($"{request.Method} {uri.AbsolutePath}",allowed.GetValueOrDefault("content-type","").Contains("json",StringComparison.OrdinalIgnoreCase) && bytesOut.Length<=65536 ? bytesOut : []));
+        return(status,bytesOut,allowed);
+    }
+    internal async Task<string> Assert(BrowserStep step,string? captured,CancellationToken ct)
+    {
+        if(step.Op=="sqlite_count"){
+            var parts=step.Target.Split('#');
+            var path=copy.Resolve(parts[0]);
+            if(!File.Exists(path))throw new InvalidDataException("Missing verification database: "+parts[0]);
+            // A separate isolated interpreter reads committed rows, independently of the
+            // application's imports, HTTP responses, and connection-local transaction.
+            const string query="""
+                import pathlib, sqlite3, sys
+                with sqlite3.connect(pathlib.Path(sys.argv[1]).resolve().as_uri() + '?mode=ro', uri=True, timeout=2) as db:
+                    db.execute('PRAGMA trusted_schema=OFF')
+                    name=sys.argv[2]
+                    if not any(row[0]=='main' and row[1]==name and row[2]=='table' for row in db.execute('PRAGMA table_list')):
+                        raise ValueError('Expected a regular stored table')
+                    print(db.execute('SELECT count(*) FROM "' + name + '"').fetchone()[0])
+                """;
+            var result=await CodeCommand.Run(CodeCommand.ResolveExecutable("python",copy.Root),["-I","-B","-c",query,parts[0],parts[1]],copy.Root,ct,copy.Root);
+            if(result.ExitCode!=0 || result.Truncated || !int.TryParse(result.Output.Trim(),out var rows))
+                throw new InvalidDataException("Could not read committed row count from "+step.Target+": "+result.Output.Trim()[..Math.Min(result.Output.Trim().Length,240)]);
+            if(rows!=int.Parse(step.Value))throw new InvalidDataException($"sqlite_count {step.Target}: expected {step.Value}, observed {rows} committed rows.");
+            return $"sqlite_count {step.Target} = {rows}";
+        }
+        byte[][] matched;
+        lock(responses)matched=responses.Where(r=>r.Route==step.Target).Select(r=>r.Json).ToArray();
+        if(step.Op=="response_count"){
+            if(matched.Length!=int.Parse(step.Value))throw new InvalidDataException($"response_count {step.Target}: expected {step.Value}, observed {matched.Length}.");
+            return $"response_count {step.Target} = {matched.Length}";
+        }
+        if(matched.Length==0)throw new InvalidDataException("No response observed from "+step.Target);
+        foreach(var json in matched){
+            if(json.Length==0)throw new InvalidDataException("Expected a bounded JSON response from "+step.Target);
+            using var data=JsonDocument.Parse(json);
+            if(data.RootElement.ValueKind!=JsonValueKind.Object || !data.RootElement.TryGetProperty(step.Value,out var value) ||
+                value.ValueKind!=JsonValueKind.String || value.GetString()!=captured)
+                throw new InvalidDataException($"response_same {step.Target}: field {step.Value} differed from the captured receipt.");
+        }
+        return $"response_same {step.Target} · {matched.Length} responses matched {captured}";
     }
     public async ValueTask DisposeAsync()
     {

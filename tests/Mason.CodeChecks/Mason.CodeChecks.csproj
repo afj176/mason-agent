@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup><Content Include="WindowFixture.ps1" CopyToOutputDirectory="PreserveNewest"/></ItemGroup>
+  <ItemGroup><Content Include="CanvasFixture.ps1" CopyToOutputDirectory="PreserveNewest"/></ItemGroup>
   <ItemGroup><Content Include="../fixtures/checkout/*" Link="fixtures/checkout/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+  <ItemGroup><Content Include="../fixtures/double-checkout/*" Link="fixtures/double-checkout/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
   <ItemGroup><ProjectReference Include="../../src/Mason.Code.Core/Mason.Code.Core.csproj" /></ItemGroup>
   <ItemGroup>

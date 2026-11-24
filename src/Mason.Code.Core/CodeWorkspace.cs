@@ -153,20 +153,18 @@ public sealed class CodeWorkspace
     }
     public object Search(string query, string relative = ".")
     {
-        if (string.IsNullOrWhiteSpace(query) || query.Length > 200) throw new ArgumentException("Search for 1–200 literal characters.");
-        var listing = Files(relative, 1000); var matches = new List<object>(); int skipped = 0;
-        foreach (var path in listing.Files)
-        {
-            CodeFile file;
-            try { file = Read(path); } catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException or DecoderFallbackException) { skipped++; continue; }
-            var lines = file.Content.Split('\n');
-            for (int i = 0; i < lines.Length; i++) if (lines[i].Contains(query, StringComparison.OrdinalIgnoreCase))
-            {
-                matches.Add(new { path, line = i + 1, text = lines[i].Length > 400 ? lines[i][..400] + " [line clipped]" : lines[i] });
-                if (matches.Count >= 60) return new { matches, truncated = true, skipped };
+        using var search=new CodeRepositorySearch(this);
+        var page=search.Start(query,relative,default);
+        var matches=new List<object>();int skipped=0;
+        while(true){
+            skipped+=page.Skipped;
+            foreach(var hit in page.Matches){
+                matches.Add(new{path=hit.Path,line=hit.Line,text=hit.Text});
+                if(matches.Count==60)return new{matches,truncated=true,skipped};
             }
+            if(page.Cursor==null)return new{matches,truncated=false,skipped};
+            page=search.Next(page.Cursor,default);
         }
-        return new { matches, truncated = listing.Truncated, skipped };
     }
     public string Instructions(string relative = "AGENTS.md")
     {
@@ -182,14 +180,14 @@ public sealed class CodeWorkspace
         }
         return text.ToString();
     }
-    static byte[] Bytes(string content, bool bom)
+    internal static byte[] Bytes(string content, bool bom)
     {
         var bytes = Utf8.GetBytes(content); if (bytes.Length > FileLimit || content.Any(c => char.IsControl(c) && c is not ('\t' or '\r' or '\n' or '\f'))) throw new InvalidDataException("Edits require UTF-8 text up to 128 KiB without unexpected control characters.");
         return bom ? new byte[] { 239, 187, 191 }.Concat(bytes).ToArray() : bytes;
     }
     public CodeFile Edit(string relative, string expected, string oldText, string newText, Action<CodeFile, string> beforeWrite)
         => ApplyEdits(relative, expected, [new(oldText, newText)], beforeWrite);
-    public CodeFile ApplyEdits(string relative, string expected, IReadOnlyList<CodeReplacement> edits, Action<CodeFile, string> beforeWrite)
+    public CodeFile ApplyEdits(string relative, string expected, IReadOnlyList<CodeReplacement> edits, Action<CodeFile, string> beforeWrite,Action<CodeFile,string>? onCommit=null)
     {
         var file = Read(relative);
         if (!file.Sha256.Equals(expected, StringComparison.OrdinalIgnoreCase)) throw new CodeStaleEditException("File changed since the last read. Read it again; nothing was overwritten.");
@@ -214,6 +212,7 @@ public sealed class CodeWorkspace
         using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read);
         using var current = new MemoryStream(); stream.CopyTo(current);
         if (CodeProtocol.Hash(current.ToArray()) != file.Sha256) throw new CodeStaleEditException("File changed while this edit was being reviewed.");
+        onCommit?.Invoke(file,content);
         stream.Position = 0; stream.Write(bytes); stream.SetLength(bytes.Length); stream.Flush(true);
         return new(file.Path, content, CodeProtocol.Hash(bytes), file.Bom);
     }
@@ -228,14 +227,14 @@ public sealed class CodeWorkspace
         CheckLinks(path);
         return Relative(path);
     }
-    public CodeFile Create(string relative, string content)
+    public CodeFile Create(string relative, string content,Action? onCommit=null)
     {
         var path = Resolve(relative); var parent = System.IO.Path.GetDirectoryName(path)!;
         if (!Directory.Exists(parent)) throw new DirectoryNotFoundException("Create files in an existing directory in this first release.");
         if (File.Exists(path))
             throw new IOException($"File {JsonSerializer.Serialize(Relative(path))} already exists. Its contents were preserved. If the file still needs changes, use read_file and edit the current version. Otherwise continue or finish the request.");
         var bytes = Bytes(content, false);
-        using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None); output.Write(bytes); output.Flush(true);
+        using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None); onCommit?.Invoke();output.Write(bytes); output.Flush(true);
         return new(Relative(path), content, CodeProtocol.Hash(bytes), false);
     }
     public void Restore(CodeChange change)

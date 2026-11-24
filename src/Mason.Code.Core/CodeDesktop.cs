@@ -8,6 +8,12 @@ public sealed record DesktopTarget(int ProcessId,long Handle,long Started,string
     public override string ToString()=>Title+" · PID "+ProcessId;
 }
 public sealed record DesktopControl(string Id,string Name,string Type,bool Invoke,bool SetValue);
+public sealed record DesktopFrame(int Width,int Height,string Hash,string Image);
+public sealed record PixelDecision(string Action,int X,int Y,int EndX,int EndY,string Observation);
+public interface IDesktopVision
+{
+    Task<PixelDecision> See(string task,DesktopFrame frame,bool observeOnly,CancellationToken ct);
+}
 public sealed class CodeDesktop
 {
     public static IReadOnlyList<DesktopTarget> Windows()
@@ -26,6 +32,19 @@ public sealed class CodeDesktop
     readonly Dictionary<string,DesktopControl> controls=[];
     public DesktopTarget Target {get;}
     public CodeDesktop(DesktopTarget target){Target=target;}
+    async Task<string> Pixels(object request,CancellationToken ct)
+    {
+        var exe=Path.Combine(AppContext.BaseDirectory,"computer-use","Mason.WindowHost.exe");
+        return await CodeOwnedHelper.Run(exe,[],JsonSerializer.Serialize(request),AppContext.BaseDirectory,ct,12,2000000);
+    }
+    public async Task<DesktopFrame> Frame(CancellationToken ct)=>JsonSerializer.Deserialize<DesktopFrame>(
+        await Pixels(new{target=Target,operation="frame"},ct))??throw new InvalidDataException("Missing window frame.");
+    public async Task Apply(DesktopFrame frame,PixelDecision action,CancellationToken ct)
+    {
+        if(action.Action is not ("click" or "drag"))throw new InvalidDataException("Expected a click or drag.");
+        await Pixels(new{target=Target,operation="pixel_"+action.Action,hash=frame.Hash,width=frame.Width,height=frame.Height,
+            x=action.X,y=action.Y,endX=action.EndX,endY=action.EndY},ct);
+    }
     async Task<DesktopControl[]> Call(string operation,DesktopControl? control,string? value,CancellationToken ct)
     {
         using var process=Process.GetProcessById(Target.ProcessId);

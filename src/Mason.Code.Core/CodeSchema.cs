@@ -10,6 +10,8 @@ public static class CodeSchema
     {
         var names=new HashSet<string>(["list_files","search_text","read_file","open_file","ask_user","navigate_code"]);
         names.Add("enable_tools");
+        if(session.Desktop!=null)names.Add("desktop_visual");
+        names.UnionWith(["search_next","read_lines"]);
         if(session.Desktop!=null){names.Add("desktop_observe");if(session.Mode=="build"&&session.Permission!=CodePermission.ReadOnly)names.Add("desktop_act");}
         if(session.Mode=="ask"||session.Permission==CodePermission.ReadOnly)return names;
         names.UnionWith(["edit_file","apply_edits","replace_file","create_file","create_directory","run_command"]);
@@ -34,6 +36,7 @@ public static class CodeSchema
         "enable_tools"=>"Load specialized tools for code (TS/Python symbol navigation), workflows (named tasks and skills), jobs (background processes), browser (interactive project Edge), or mcp (registered tools).",
         "computer_use"=>"Operate the project page in disposable offline Edge using a fresh accessibility observation after each click or fill. Supply a workspace HTML path and task.",
         "desktop_observe"=>"Read the control names and available actions from the native window the user attached for this session.",
+        "desktop_visual"=>"Inspect the attached window with a local vision model. For a canvas operation specify one requested click or drag. Every action needs approval and a fresh matching frame.",
         "desktop_act"=>"Ask the user to invoke or set a control from the most recent attached-window observation. Receives a fresh observation.",
         "start_job"=>"Start a long-running offline sandboxed executable for this run. Returns a job ID. Read output with poll_job, stop a service before finishing.",
         "poll_job"=>"Read a background job's current output or collect its exit status.",
@@ -45,6 +48,10 @@ public static class CodeSchema
         "list_files"=>"List workspace files recursively, limit 1–1000. Use the supplied inventory first.",
         "search_text"=>"Search literal text in allowed workspace files. Use focused queries to locate existing behavior before reading and editing the relevant files.",
         "read_file"=>"Read the exact UTF-8 file, applicable repository instructions and current byte SHA-256. Use this fresh hash for edits or replacement.",
+        "search_next"=>"Continue the preceding search with its returned cursor, including later files and matches.",
+        "git_status"=>"Request full Git index and working-tree status, including pre-existing changes.",
+        "delegate_readonly"=>"Delegate one question over 1–8 named workspace files to a separate read-only model context. Returns line-grounded findings. The worker cannot edit, run commands or delegate.",
+        "read_lines"=>"Read a range of 1 to 200 numbered lines from a workspace UTF-8 file, including large files.",
         "open_file"=>"Open a workspace file in the user's viewer and return its contents/hash. Opening a file does not change it or prove tests passed.",
         "create_directory"=>"Create missing workspace directory components before creating nested files.",
         "create_file"=>"Create a NEW UTF-8 file only; never overwrite an existing file. For an existing file use read_file then replace_file or edit_file. Supply complete working source text as content, not a draft or shell-escaped string.",
@@ -99,10 +106,15 @@ public static class CodeSchema
         tools.Add(Tool("verify_acceptance", Fields()));
         tools.Add(Tool("ask_user", Fields(("question", Text()))));
         object integer=new{type="integer",minimum=1,maximum=1000000};
+        tools.Add(Tool("search_next",Fields(("cursor",Text()))));
+        tools.Add(Tool("git_status",Fields()));
+        tools.Add(Tool("delegate_readonly",Fields(("question",Text()),("paths",new{type="array",minItems=1,maxItems=8,items=Text()}))));
+        tools.Add(Tool("read_lines",Fields(("path",Text()),("start",integer),("count",new{type="integer",minimum=1,maximum=200}))));
         tools.Add(Tool("enable_tools",Fields(("group",new{type="string",@enum=new[]{"code","workflows","jobs","browser","mcp"}}))));
         tools.Add(Tool("inspect_symbol",Fields(("path",Text()),("line",integer),("column",integer),("mode",new{type="string",@enum=new[]{"definitions","references","diagnostics"}}))));
         tools.Add(Tool("computer_use",Fields(("path",Text()),("task",Text()))));
         tools.Add(Tool("desktop_observe",Fields()));
+        tools.Add(Tool("desktop_visual",Fields(("task",Text()))));
         tools.Add(Tool("desktop_act",Fields(("operation",new{type="string",@enum=new[]{"invoke","set"}}),("id",Text()),("value",Text()))));
         tools.Add(Tool("start_job",Fields(("executable",Text()),("arguments",new{type="array",items=Text(),maxItems=40}),("directory",existingDirectory))));
         tools.Add(Tool("poll_job",Fields(("id",Text()),("wait_ms",new{type="integer",minimum=0,maximum=10000}))));

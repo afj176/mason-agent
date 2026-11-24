@@ -13,7 +13,8 @@ public sealed class Control {
     public string Id {get;set;}=""; public string Name {get;set;}=""; public string Type {get;set;}="";
     public bool Invoke {get;set;} public bool SetValue {get;set;}
 }
-public sealed class Request { public Target target {get;set;}=new();public Control? control {get;set;}public string operation {get;set;}="";public string value {get;set;}="";}
+public sealed class Request { public Target target {get;set;}=new();public Control? control {get;set;}public string operation {get;set;}="";public string value {get;set;}="";
+    public string hash {get;set;}="";public int width {get;set;} public int height {get;set;} public int x {get;set;} public int y {get;set;} public int endX {get;set;} public int endY {get;set;} }
 internal static class Program
 {
     static IEnumerable<KeyValuePair<Control,AutomationElement>> Observe(AutomationElement root,int pid)
@@ -39,10 +40,11 @@ internal static class Program
     {
         try{
             Console.InputEncoding=new UTF8Encoding(false);Console.OutputEncoding=new UTF8Encoding(false);
-            var json=new JavaScriptSerializer{MaxJsonLength=200000};
+            var json=new JavaScriptSerializer{MaxJsonLength=2000000};
             var req=json.Deserialize<Request>(Console.In.ReadToEnd());
             using var process=Process.GetProcessById(req.target.ProcessId);
             if(process.StartTime.ToUniversalTime().Ticks!=req.target.Started||process.MainWindowHandle.ToInt64()!=req.target.Handle)throw new InvalidOperationException("Window identity changed.");
+            if(req.operation is "frame" or "pixel_click" or "pixel_drag"){Console.WriteLine(json.Serialize(WindowPixels.Run(process,req)));return 0;}
             var root=AutomationElement.FromHandle(process.MainWindowHandle);
             var entries=Observe(root,process.Id).ToArray();
             if(req.operation!="observe"){

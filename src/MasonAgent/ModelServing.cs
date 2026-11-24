@@ -35,7 +35,11 @@ public sealed class ModelServing : IDisposable
         {
             using var input = File.OpenRead(model.Path); Span<byte> header = stackalloc byte[4];
             if (input.Read(header) != 4 || !header.SequenceEqual("GGUF"u8)) throw new InvalidDataException("Model is no longer a GGUF file.");
-            return ["-m", model.Path, "--host", "127.0.0.1", "--port", port.ToString(), "--alias", alias, "-c", options.ContextTokens.ToString(), "--parallel", "1", "-b", "256", "-ub", "128", "--reasoning", "auto", "--spec-type", "none", "--device", gpu?"CUDA0":"none", "--split-mode", "none", "-ngl", gpu ? "99" : "0"];
+            string Family(string path)=>System.Text.RegularExpressions.Regex.Replace(Path.GetFileNameWithoutExtension(path),@"^(?:mmproj-)|-(?:BF16|F16|F32|Q\d[\w_]*)$","",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var candidates=Directory.EnumerateFiles(Path.GetDirectoryName(model.Path)!,"mmproj-*.gguf")
+                .Where(p=>Family(p).Equals(Family(model.Path),StringComparison.OrdinalIgnoreCase)).ToArray();
+            var companion=candidates.FirstOrDefault(p=>Path.GetFileName(p).Equals("mmproj-"+Path.GetFileName(model.Path),StringComparison.OrdinalIgnoreCase))??(candidates.Length==1?candidates[0]:null);
+            return ["-m", model.Path, "--host", "127.0.0.1", "--port", port.ToString(), "--alias", alias, "-c", options.ContextTokens.ToString(), "--parallel", "1", "-b", "256", "-ub", "128", "--reasoning", "auto", "--spec-type", "none", "--device", gpu?"CUDA0":"none", "--split-mode", "none", "-ngl", gpu ? "99" : "0",..(companion==null?Array.Empty<string>():new[]{"--mmproj",companion})];
         }
         var script=Path.Combine(scriptDirectory,"Serve-Transformers.py");
         if(!File.Exists(script))throw new FileNotFoundException("The packaged chat serving adapter is missing.",script);

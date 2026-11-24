@@ -8,6 +8,7 @@ namespace Mason;
 public sealed record AiToolCall(string Id, string Name, string Arguments);
 public sealed record AiMessage(string Role, string Content)
 {
+    [System.Text.Json.Serialization.JsonIgnore] public string? Jpeg {get;init;}
     [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<AiToolCall>? ToolCalls { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
@@ -80,6 +81,7 @@ public sealed class ChatGenerationOptions
         body["messages"] = messages.Select(m =>
         {
             var message=new Dictionary<string,object?> { ["role"]=m.Role,["content"]=m.Content };
+            if(m.Jpeg!=null)message["content"]=new object[]{new{type="text",text=m.Content},new{type="image_url",image_url=new{url="data:image/jpeg;base64,"+m.Jpeg}}};
             if(m.ReasoningContent!=null)message["reasoning_content"]=m.ReasoningContent;
             if(m.ToolCallId!=null)message["tool_call_id"]=m.ToolCallId;
             if(m.ToolCalls is { Count:>0 })message["tool_calls"]=m.ToolCalls.Select(t=>new { id=t.Id,type="function",function=new { name=t.Name,arguments=t.Arguments } }).ToArray();
@@ -157,6 +159,7 @@ public sealed record ChatCompletionFeedback(string State, string Detail)
 public sealed record ChatServerInfo(bool Llama, bool IdentityVerified, int? Context, int? ModelCapacity, bool Reasoning, string Detail, bool RestrictedTextAdapter = false, bool ManagedTokenCount = false, int? DecoderContext = null)
 {
     public bool FlintTools { get; init; }
+    public bool Vision {get;init;}
     public bool ExactContext => Llama || ManagedTokenCount;
 }
 public sealed record ChatTokenBudget(int Prompt, int Context, int Output, int? DecoderContext = null)
@@ -225,7 +228,8 @@ public sealed partial class LocalAiClient
         bool reasoning = text.Contains("enable_thinking", StringComparison.Ordinal) || text.Contains("reasoning_effort", StringComparison.Ordinal) || text.Contains("thinking_budget", StringComparison.Ordinal) || (text.Contains("<think>") && text.Contains("</think>")) || text.Contains("<|channel>thought") || text.Contains("<|think|>") || text.Contains("<seed:think|>");
         var context = root.TryGetProperty("default_generation_settings", out var settings) ? Positive(settings, "n_ctx") : null;
         return new(llama, verified, context ?? Positive(meta, "n_ctx"), Positive(meta, "n_ctx_train"), reasoning, llama ? "llama.cpp · model identity checked; reasoning support detected from the chat template." : "Standard chat connection; llama.cpp controls unavailable.")
-        { FlintTools=llama&&text.Contains("macro flint_text",StringComparison.Ordinal)&&text.Contains("<arg_key>",StringComparison.Ordinal)&&text.Contains("tool_calls",StringComparison.Ordinal) };
+        { Vision=root.TryGetProperty("modalities",out var modalities) && modalities.ValueKind==JsonValueKind.Object && modalities.TryGetProperty("vision",out var vision) && vision.ValueKind==JsonValueKind.True,
+          FlintTools=llama&&text.Contains("macro flint_text",StringComparison.Ordinal)&&text.Contains("<arg_key>",StringComparison.Ordinal)&&text.Contains("tool_calls",StringComparison.Ordinal) };
     }
     public async Task<ChatTokenBudget?> TokenBudget(AiEndpointProfile profile, string key, IReadOnlyList<AiMessage> messages, int output, ChatGenerationOptions options, ChatServerInfo server, CancellationToken ct)
     {

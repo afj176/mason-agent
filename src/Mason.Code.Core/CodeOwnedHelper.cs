@@ -5,7 +5,7 @@ namespace Mason.Code;
 
 internal static class CodeOwnedHelper
 {
-    internal static async Task<string> Run(string exe,IEnumerable<string> args,string input,string directory,CancellationToken ct,int seconds=25)
+    internal static async Task<string> Run(string exe,IEnumerable<string> args,string input,string directory,CancellationToken ct,int seconds=25,int outputLimit=240000)
     {
         var settings=new ProcessStartInfo(exe){WorkingDirectory=directory,UseShellExecute=false,CreateNoWindow=true,
             RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,
@@ -18,7 +18,7 @@ internal static class CodeOwnedHelper
         async Task<string> Read(StreamReader reader){
             var result=new StringBuilder();var buf=new char[2048];
             while(true){int count=await reader.ReadAsync(buf,timer.Token);if(count==0)return result.ToString();
-                if(result.Length+count>240000){timer.Cancel();throw new InvalidDataException("Helper output limit exceeded.");}
+                if(result.Length+count>outputLimit){timer.Cancel();throw new InvalidDataException("Helper output limit exceeded.");}
                 result.Append(buf,0,count);}
         }
         var output=Read(process.StandardOutput);var error=Read(process.StandardError);

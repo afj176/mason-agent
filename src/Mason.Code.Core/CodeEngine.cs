@@ -7,7 +7,41 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
     Func<CodeApproval, CancellationToken, Task<bool>> approve, Action changed,Action<Exception>? diagnostic=null)
 {
     static string S(JsonElement a, string key) => a.GetProperty(key).GetString() ?? throw new ArgumentException(key + " must be text.");
-    public async Task Run(CodeSession session, string input, CancellationToken cancellation)
+    CancellationTokenSource? activeTurn;
+    CodeSession? activeSession;
+    public void SendWhileRunning(CodeSession session,string text,bool steer)
+    {
+        if(activeSession!=session || activeTurn==null)throw new InvalidOperationException("No active turn in this session.");
+        text=text.Trim();
+        if(text.Length is 0 or >16000 || session.PendingInput.Count>=16)throw new ArgumentException("Use 1–16,000 characters and at most 16 pending messages.");
+        var message=new CodeFollowUp(Guid.NewGuid(),text,steer);
+        session.PendingInput.Add(message);
+        try{store.Save(session);}catch{session.PendingInput.Remove(message);throw;}
+        if(steer)activeTurn.Cancel();
+        changed();
+    }
+    public async Task Run(CodeSession session,string input,CancellationToken cancellation)
+    {
+        if(activeSession!=null)throw new InvalidOperationException("This engine already has an active session.");
+        if(session.Turns.Any(t=>t.RewindPending))throw new InvalidOperationException("Finish the pending turn rewind before starting more work.");
+        bool resumeQueue=input.Trim().Equals("/queue",StringComparison.OrdinalIgnoreCase);
+        CodeFollowUp? Next()=>session.PendingInput.FirstOrDefault(m=>m.Steer)??session.PendingInput.FirstOrDefault();
+        var next=resumeQueue?Next()??throw new InvalidOperationException("The input queue is empty."):null;
+        activeSession=session;
+        try{
+            do{
+                using var turn=CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+                activeTurn=turn;
+                try{await RunTurn(session,next?.Text??input,turn.Token,next);}
+                catch(OperationCanceledException) when(turn.IsCancellationRequested && !cancellation.IsCancellationRequested){session.State="Stopped";store.Save(session);}
+                activeTurn=null;
+                if(cancellation.IsCancellationRequested)return;
+                next=Next();
+                if(next!=null && !next.Steer && session.State!="Completed")return;
+            }while(next!=null);
+        }finally{activeTurn=null;activeSession=null;}
+    }
+    async Task RunTurn(CodeSession session,string input,CancellationToken cancellation,CodeFollowUp? followUp)
     {
         // WinUI TextBox uses CR for paragraph breaks, while files and API callers use LF or CRLF.
         input=input?.ReplaceLineEndings("\n")??"";
@@ -29,6 +63,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         var references = session.References.Select(p => { var file = scope.Read(p); return new { file.Path, file.Content, file.Sha256, instructions = scope.Instructions(p) }; }).ToArray();
         int firstActivity = session.Activities.Count;
         var user = new CodeTurn { Text = input, FirstActivity = firstActivity }; session.Turns.Add(user);
+        if(followUp!=null)session.PendingInput.RemoveAll(m=>m.Id==followUp.Id);
         string? handoff = newTask ? "The user explicitly started a new task. The current request defines its requirements." : session.State is "Blocked" or "Interrupted" or "Failed" or "Stopped" or "Needs verification"
             ? $"Previous run: {session.State}. Current workspace root: '.'. Use the current file inventory to resume. " +
               (listing.RootIsOnlyDirectory && listing.Files.Length == 0 ? "The selected project exists and is empty. Create the requested files here using bare filenames." : "")
@@ -76,6 +111,11 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 else
                 {
                     var request = resume ? CodeAcceptance.SubstantiveRequest(session.Messages) : input;
+                    if(followUp?.Steer==true && !newTask){
+                        var interrupted=session.Turns.Take(session.Turns.Count-1).Reverse()
+                            .TakeWhile(t=>t.Role=="user" && t.Acceptance==null && t.PlanningInterrupted).Reverse();
+                        request=string.Join("\n",interrupted.Select(t=>t.Text).Append(request));
+                    }
                     acceptance = await CodeAcceptance.Prepare(request, model, scope, listing, cancellation);
                     if (previous!=null)
                     {
@@ -97,7 +137,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 Save();
                 bool existingBrowserContract=!verificationOnly && acceptance.Checks.Count>0 &&
                     (acceptance.ContractHash!=null || input.Contains("```mason.acceptance.json",StringComparison.Ordinal)) &&
-                    acceptance.Checks.All(c=>c.Kind=="browser_flow" && c.Application==null && File.Exists(scope.Resolve(c.Path)));
+                    acceptance.Checks.All(c=>c.Kind=="browser_flow" && File.Exists(scope.Resolve(c.Path)));
                 if((acceptance.LiteralRequirements || existingBrowserContract) && session.Permission==CodePermission.Auto && acceptance.Checks.Any(c=>File.Exists(scope.Resolve(c.Path))) &&
                     await VerifyCurrentWork(acceptance))return;
             }
@@ -168,6 +208,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         session.Changes.Any(c=>c.Path==repairPage.Path && c.AfterHash==repairPage.Sha256 && !c.Restored)
                         ? CodeJavaScriptRepair.ForGeneratedFile(repairPage,acceptance.Results) : null;
                     action = quickFix ?? await model.Next(messages, text => { session.LiveMessage = text; changed(); }, cancellation);
+                    cancellation.ThrowIfCancellationRequested();
                     if (action.Tool == "ask_user") question = ReadQuestion(action.Arguments);
                 }
                 catch (CodeResponseException error)
@@ -302,6 +343,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                             }
                         }
                     }
+                    cancellation.ThrowIfCancellationRequested();
                     result = await Execute(scope, session, action, activity, services, cancellation);
                     // Commands can create files even when they exit with an error.
                     refreshInventory = result.ChangedFile != null || result.CreatedDirectory || action.Tool is "run_command" or "run_shell";
@@ -338,7 +380,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         : error.Message;
                     result = new(activity.Result);
                 }
-                bool successfulRead = activity.State == "Completed" && action.Tool is ("read_file" or "open_file" or "list_files" or "search_text");
+                bool successfulRead = activity.State == "Completed" && action.Tool is ("read_file" or "open_file" or "list_files" or "search_text" or "search_next" or "read_lines");
                 bool fileRead = successfulRead && action.Tool is ("read_file" or "open_file");
                 if (fileRead)
                 {
@@ -427,7 +469,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             }
             throw new InvalidOperationException($"Stopped at the {session.ActionLimit}-response run limit. Inspect the activity and continue with a new instruction.");
         }
-        catch (OperationCanceledException) { session.LiveMessage = ""; session.State = "Stopped"; session.Detail = callerCancellation.IsCancellationRequested?"Stopped · completed edits are retained. Pending operations will not be replayed.":"Stopped at the 30-minute run budget · completed edits and receipts are retained."; Save(); }
+        catch (OperationCanceledException) { user.PlanningInterrupted=session.Mode=="build" && user.Acceptance==null;session.LiveMessage = ""; session.State = "Stopped"; session.Detail = callerCancellation.IsCancellationRequested?"Stopped · completed edits are retained. Pending operations will not be replayed.":"Stopped at the 30-minute run budget · completed edits and receipts are retained."; Save(); }
         catch (Exception error) { try{diagnostic?.Invoke(error);}catch{ /* Diagnostics cannot suppress the failure receipt. */ }session.LiveMessage = ""; session.State = "Failed"; session.Detail = error.Message; Save(); }
         async Task<bool> VerifyCurrentWork(CodeAcceptancePlan plan)
         {
@@ -465,13 +507,14 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             }
             await CodeAcceptance.Verify(plan,scope,session.Permission,cancellation,approved);
             if(!verificationOnly && session.Permission==CodePermission.Auto && model is ICodeChangeReviewer codeReviewer &&
-                plan.Results.Count>0 && plan.Results.All(r=>r.Passed) && !plan.Checks.Any(c=>c.Kind.StartsWith("browser_"))){
+                plan.Results.Count>0 && plan.Results.All(r=>r.Passed)){
                 foreach(var change in session.Changes.Where(c=>!c.Restored && changedFiles.Contains(c.Path) && CodeChangeReview.Supported(c.Path))){
                     var current=scope.Read(change.Path);
                     var receipt=new CodeActivity{Tool="independent_source_review",State="Running",Arguments=JsonSerializer.Serialize(new{path=change.Path,current.Sha256})};
                     session.Activities.Add(receipt);Save();
                     try{
-                        var findings=await CodeChangeReview.Review(codeReviewer,plan.Request,[new(change.Path,change.Before,current.Content,current.Sha256)],cancellation);
+                        var brief=plan.Request.Split("```mason.acceptance.json",2)[0]+"\nObserved behavior on this revision:\n"+CodeAcceptance.Receipt(plan);
+                        var findings=await CodeChangeReview.Review(codeReviewer,brief,[new(change.Path,change.Before,current.Content,current.Sha256)],cancellation);
                         if(scope.Read(change.Path).Sha256!=current.Sha256)throw new InvalidDataException("Source changed during review.");
                         receipt.Result=JsonSerializer.Serialize(findings);receipt.State=findings.Length==0?"Completed":"Failed";
                         if(findings.Length>0)throw new InvalidDataException("Independent code review found a defect: "+receipt.Result);
@@ -480,29 +523,38 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             }
             if(verificationOnly || session.Permission!=CodePermission.Auto || model is not ICodeBrowserOperator reviewer ||
                 plan.Results.Count==0 || plan.Results.Any(r=>!r.Passed) || plan.IndependentReviewPage!=null)return;
-            var page=plan.Checks.FirstOrDefault(c=>c.Application==null && c.Kind.StartsWith("browser_"))?.Path;
-            if(page==null)return;
+            var pages=plan.Checks.Where(c=>c.Kind.StartsWith("browser_")).Select(c=>(c.Path,c.Application)).Distinct().ToArray();
+            if(pages.Length==0)return;
             session.Detail="Independent browser review";changed();
             var activity=new CodeActivity{Tool="independent_review",State="Running"};session.Activities.Add(activity);Save();
             try{
                 var request=System.Text.RegularExpressions.Regex.Replace(plan.Request,@"(?ms)^```mason\.acceptance\.json\s*.*?^```[^\S\r\n]*","");
-                var scenarios=await CodeComputerUse.Review(scope,page,request,reviewer,cancellation);
-                plan.Checks.AddRange(scenarios.Select(s=>new AcceptanceCheck(1,"Independent review · "+s.Requirement,"browser_flow",page,s.Id,"Independent browser assertions pass"){Steps=s.Steps}));
-                plan.IndependentReviewPage=page;
-                activity.Result=JsonSerializer.Serialize(scenarios);activity.State="Completed";Save();
+                var additional=new List<AcceptanceCheck>();
+                foreach(var (page,application) in pages){
+                    var units=plan.Checks.Where(c=>c.Path==page && c.Application==application).ToArray();
+                    var brief=pages.Length==1 && !string.IsNullOrWhiteSpace(request)?request:string.Join("\n",units.Select(c=>c.Feature).Distinct());
+                    var scenarios=await CodeComputerUse.Review(scope,page,brief,reviewer,cancellation,application);
+                    additional.AddRange(scenarios.Select(s=>new AcceptanceCheck(units[0].Unit,"Independent review · "+s.Requirement,"browser_flow",page,s.Id,"Independent browser assertions pass"){Steps=s.Steps,Application=application}));
+                }
+                plan.Checks.AddRange(additional);
+                plan.IndependentReviewPage=pages[0].Path;
+                activity.Result=JsonSerializer.Serialize(additional);activity.State="Completed";Save();
                 await CodeAcceptance.Verify(plan,scope,session.Permission,cancellation,approved);
             }catch(Exception e){activity.State="Failed";activity.Result=e.Message;Save();throw;}
         }
         void QueueBrowserRepair(CodeAcceptancePlan plan)
         {
             if(browserRepairs>=6)return;
-            var failure=plan.Results.Where(r=>!r.Passed && r.Check.Application==null && r.Check.Kind.StartsWith("browser_",StringComparison.Ordinal))
+            var failure=plan.Results.Where(r=>!r.Passed && r.Check.Kind.StartsWith("browser_",StringComparison.Ordinal))
                 .OrderByDescending(r=>r.ScriptPath!=null).FirstOrDefault();
-            if(failure!=null && QueueFile(failure.ScriptPath??failure.Check.Path,"Fix the first reproducible browser failure before addressing later assertions."))browserRepairs++;
+            if(failure==null)return;
+            var appModule=failure.Check.Application?.Split(':')[0].Replace('.','/')+".py";
+            bool backend=failure.Check.Application!=null && (failure.Detail.Contains("sqlite_count ") || failure.Detail.Contains("response_same ") || failure.Detail.Contains("Application returned"));
+            if(QueueFile(backend?appModule:failure.ScriptPath??failure.Check.Path,"Fix the first reproducible failure. Preserve successful interactions and unrelated edits."))browserRepairs++;
         }
         bool QueueFile(string path,string reason)
         {
-            if(Path.GetExtension(path).ToLowerInvariant() is not (".html" or ".htm" or ".js" or ".mjs"))return false;
+            if(Path.GetExtension(path).ToLowerInvariant() is not (".html" or ".htm" or ".js" or ".mjs" or ".py"))return false;
             try
             {
                 var current=scope.Read(path);
@@ -586,6 +638,20 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         var a = action.Arguments; var tool = action.Tool!;
         switch (tool)
         {
+            case "desktop_visual":
+                CodeProtocol.Exact(a,"task");
+                if(session.Desktop is not {} attached || model is not IDesktopVision eyes)throw new InvalidOperationException("Attach a window and select a vision model.");
+                string assignment=S(a,"task");if(assignment.Length is 0 or >2000)throw new ArgumentException("Use a short visual task.");
+                var frame=await attached.Frame(ct);
+                bool onlyObserve=session.Mode!="build" || session.Permission==CodePermission.ReadOnly;
+                var decision=await eyes.See(assignment,frame,onlyObserve,ct);
+                if(decision.Action=="observe")return new(JsonSerializer.Serialize(new{frame.Width,frame.Height,frame.Hash,decision.Observation}));
+                if(onlyObserve)throw new UnauthorizedAccessException("Visual input requires a writable Build session.");
+                await Review(new(tool,"Operate "+attached.Target.Title+"?",decision.Action+" ("+decision.X+", "+decision.Y+") to ("+decision.EndX+", "+decision.EndY+") on "+frame.Width+" × "+frame.Height+" · "+decision.Observation){Jpeg=frame.Image});
+                await attached.Apply(frame,decision,ct);
+                var after=await attached.Frame(ct);
+                var observation=await eyes.See("Describe what is visible after the action. Original task: "+assignment,after,true,ct);
+                return new(JsonSerializer.Serialize(new{decision.Action,before=frame.Hash,after=after.Hash,observation.Observation}));
             case "desktop_observe":
                 CodeProtocol.Exact(a);
                 return new(await (session.Desktop??throw new UnauthorizedAccessException("Attach a window in session settings.")).Act("observe","",null,ct));
@@ -647,7 +713,18 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 await CodeAcceptance.Verify(contract,scope,session.Permission,ct);
                 return new(CodeAcceptance.Receipt(contract), Failed: contract.Results.Count==0 || contract.Results.Any(r=>!r.Passed));
             case "list_files": CodeProtocol.Exact(a, "path", "limit"); return new(JsonSerializer.Serialize(await Task.Run(() => scope.ListForAgent(S(a, "path"), a.GetProperty("limit").GetInt32()), ct)));
-            case "search_text": CodeProtocol.Exact(a, "query", "path"); return new(JsonSerializer.Serialize(await Task.Run(() => scope.Search(S(a, "query"), S(a, "path")), ct)));
+            case "search_text": CodeProtocol.Exact(a,"query","path"); return new(JsonSerializer.Serialize(await Task.Run(()=>services.Search.Start(S(a,"query"),S(a,"path"),ct),ct),JsonSerializerOptions.Web));
+            case "search_next": CodeProtocol.Exact(a,"cursor"); return new(JsonSerializer.Serialize(await Task.Run(()=>services.Search.Next(S(a,"cursor"),ct),ct),JsonSerializerOptions.Web));
+            case "git_status":
+                CodeProtocol.Exact(a);
+                await Review(new(tool,"Inspect full Git status?","Git runs with your Windows account and may run repository-configured filters."));
+                return new(JsonSerializer.Serialize(await CodeGit.FullStatus(scope.Root,ct)));
+            case "delegate_readonly":
+                CodeProtocol.Exact(a,"question","paths");
+                if(model is not ICodeInvestigator worker || ++services.WorkerCalls>4)throw new InvalidOperationException("Read-only worker unavailable or the four-assignment run budget was reached.");
+                var paths=a.GetProperty("paths").EnumerateArray().Select(x=>x.GetString()??throw new ArgumentException("Missing worker path.")).ToArray();
+                return new(JsonSerializer.Serialize(await CodeInvestigation.Run(scope,worker,S(a,"question"),paths,ct)));
+            case "read_lines": CodeProtocol.Exact(a,"path","start","count"); return new(JsonSerializer.Serialize(await Task.Run(()=>CodeRepositorySearch.Range(scope,S(a,"path"),a.GetProperty("start").GetInt32(),a.GetProperty("count").GetInt32()),ct)));
             case "read_file": case "open_file":
                 CodeProtocol.Exact(a, "path"); var file = scope.Read(S(a, "path"));
                 return new(JsonSerializer.Serialize(new { file.Path, file.Content, file.Sha256, instructions = scope.Instructions(file.Path) }), tool == "open_file" ? "file" : null, file.Path);
@@ -691,7 +768,11 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if (change == null) { change = new() { Path = path, Before = prior?.Content, BeforeBom = prior?.Bom == true }; session.Changes.Add(change); }
                 try
                 {
-                    var edited = editing ? scope.ApplyEdits(path, S(a, "expected_sha256"), replacements, (_, next) => { change.After = next; store.Save(session); }) : scope.Create(path, S(a, "content"));
+                    var turn=session.Turns.Last(t=>t.Role=="user");
+                    void Journal(CodeFile? original,string next){
+                        CodeRewind.Record(turn,path,original,next);change.After=next;store.Save(session);
+                    }
+                    var edited = editing ? scope.ApplyEdits(path,S(a,"expected_sha256"),replacements,(_,_)=>{},Journal) : scope.Create(path,S(a,"content"),()=>Journal(null,S(a,"content")));
                     change.After = edited.Content; change.AfterHash = edited.Sha256;
                     return new(JsonSerializer.Serialize(new { edited.Path, edited.Sha256, state = "Written" }), "changes", "") { ChangedFile = edited.Path };
                 }
