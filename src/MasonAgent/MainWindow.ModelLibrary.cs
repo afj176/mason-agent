@@ -13,20 +13,22 @@ public sealed partial class MainWindow
     Action<Guid>? selectManagedAiConnection;
 
 
+    static ModelLibrarySettings DiscoveredSettings()
+    {
+        var runtime=RuntimeDiscovery.Find();
+        return new([],runtime.LlamaServer,runtime.Python);
+    }
+
+    static ModelLibrarySettings NormalizeRuntimePaths(ModelLibrarySettings selected)=>selected with
+    {
+        LlamaServer=selected.LlamaServer??"",
+        Python=selected.Python??"",
+        QuantizedPython=string.IsNullOrEmpty(selected.QuantizedPython) && QuantizedRuntime.IsPrepared
+            ? QuantizedRuntime.ManagedPython : selected.QuantizedPython??""
+    };
+
     FrameworkElement BuildModelLibrary()
     {
-        ModelLibrarySettings DiscoveredSettings()
-        {
-            var runtime = RuntimeDiscovery.Find();
-            return new([], runtime.LlamaServer, runtime.Python);
-        }
-        ModelLibrarySettings NormalizeRuntimePaths(ModelLibrarySettings selected) => selected with
-        {
-            LlamaServer = selected.LlamaServer ?? "",
-            Python = selected.Python ?? "",
-            QuantizedPython = string.IsNullOrEmpty(selected.QuantizedPython) && QuantizedRuntime.IsPrepared
-                ? QuantizedRuntime.ManagedPython : selected.QuantizedPython ?? ""
-        };
         ModelLibrarySettings settings; bool readable = true;
         try { settings = ModelLibrarySettings.ReadSaved(Path.Combine(Store.Root,"model-library.json")) ?? DiscoveredSettings();
             if(settings.Locations==null || settings.Locations.Count>30 || settings.Locations.Any(x=>x==null || string.IsNullOrWhiteSpace(x.Path) || !Path.IsPathFullyQualified(x.Path))) throw new InvalidDataException("Invalid model location settings.");

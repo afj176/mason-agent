@@ -24,7 +24,7 @@ public sealed partial class MainWindow
             var path=ModelServing.RecipePath(requested.ProfileId);
             if(!File.Exists(path))return;
             var recipe=JsonSerializer.Deserialize<ModelServing.LaunchRecipe>(await File.ReadAllTextAsync(path,token))??throw new InvalidDataException("Missing local launch recipe.");
-            var settings=ModelLibrarySettings.ReadSaved(Path.Combine(Store.Root,"model-library.json"))??throw new InvalidDataException("Model runtime settings are unavailable.");
+            var settings=NormalizeRuntimePaths(ModelLibrarySettings.ReadSaved(Path.Combine(Store.Root,"model-library.json"))??DiscoveredSettings());
             if(recipe.Gpu){
                 var memory=await Task.Run(()=>ModelMemory.Read(recipe.Model,token),token);
                 async Task<ModelFit> Fit()=>ModelMemory.Assess(memory,await GpuTelemetry.Read(token),recipe.Options.ContextTokens);
