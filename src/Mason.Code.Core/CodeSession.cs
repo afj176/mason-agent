@@ -66,8 +66,12 @@ public sealed class CodeTab
     [JsonIgnore] public string Key => Kind + ":" + Target;
     [JsonIgnore] public string Title => Kind switch { "changes" => "Changes", "context" => "Context", "git" => "Repository", "activity" => "Activity", "answer" => "Answer", "web" => DisplayTitle ?? new Uri(Target).Authority, _ => System.IO.Path.GetFileName(Target) };
 }
+public enum CodeWorkspaceView { Workbench, Review, Notebook }
+
 public sealed class CodeSession
 {
+    public CodeWorkspaceView WorkspaceView { get; set; } = CodeWorkspaceView.Workbench;
+    [JsonIgnore] public string? RepairingFile { get; set; }
     public List<CodeReviewComment> ReviewComments { get; set; } = [];
     public List<CodeFollowUp> PendingInput {get;set;}=[];
     public int Version { get; set; } = 1;

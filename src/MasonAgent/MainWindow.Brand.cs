@@ -112,7 +112,8 @@ public sealed partial class MainWindow
     const string MoodDone = "06-were-good", MoodWorking = "07-im-on-it";
 
     static BitmapImage MascotSource(string mood, double size)
-        => new(new Uri($"ms-appx:///Assets/Brand/mascot/{mood}-light.png")) { DecodePixelWidth = (int)Math.Min(768, size * 2) };
+        => new(new Uri(mood is "on-the-mend" or "mark-this-line"
+            ? $"ms-appx:///Assets/Brand/poses/{mood}.png" : $"ms-appx:///Assets/Brand/mascot/{mood}-light.png")) { DecodePixelWidth = (int)Math.Min(768, size * 2) };
 
     /// <summary>One Mortar mood still. <paramref name="meaning"/> is what assistive technology reads.</summary>
     static Image MascotImage(string mood, double size, string meaning)

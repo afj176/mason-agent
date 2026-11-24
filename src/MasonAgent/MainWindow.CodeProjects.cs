@@ -9,14 +9,14 @@ namespace Mason;
 
 public sealed partial class MainWindow
 {
-    sealed record CodeProjectItem(CodeProject Project,CodeSession? Session=null,bool NewSession=false,string? Label=null)
+    sealed record CodeProjectItem(CodeProject Project,CodeSession? Session=null,string? Label=null)
     {
-        public string Name=>NewSession?"New session":Session?.Title??Project.Name;
+        public string Name=>Session?.Title??Project.Name;
         public Visibility QualifierVisibility => string.IsNullOrEmpty(Label) ? Visibility.Collapsed : Visibility.Visible;
-        public string Glyph=>NewSession?"\uE710":Session==null?"\uE8B7":"\uE8BD";
-        public double TextSize=>Session==null&&!NewSession?14:13;
-        public Windows.UI.Text.FontWeight Weight=>Session==null&&!NewSession?Microsoft.UI.Text.FontWeights.SemiBold:Microsoft.UI.Text.FontWeights.Normal;
-        public string Description=>NewSession?"New session in "+Project.Name:Session==null?Project.Workspace:Session.Title+"\n"+Project.Workspace+"\n"+Session.State;
+        public string Glyph=>Session==null?"\uE8B7":"\uE8BD";
+        public double TextSize=>Session==null?14:13;
+        public Windows.UI.Text.FontWeight Weight=>Session==null?Microsoft.UI.Text.FontWeights.SemiBold:Microsoft.UI.Text.FontWeights.Normal;
+        public string Description=>Session==null?Project.Workspace:Session.Title+"\n"+Project.Workspace+"\n"+Session.State;
         public override string ToString()=>string.IsNullOrEmpty(Label) ? Name : Name+" · "+Label;
     }
     static string ProjectQualifier(CodeProject project, IEnumerable<CodeProject> projects)
@@ -69,7 +69,6 @@ public sealed partial class MainWindow
                 var node=new TreeViewNode{Content=new CodeProjectItem(project,session)};
                 group.Children.Add(node);if(session==selected)selection=node;
             }
-            group.Children.Add(new(){Content=new CodeProjectItem(project,NewSession:true)});
             tree.RootNodes.Add(group);
         }
         tree.SelectedNode=selection;

@@ -47,7 +47,20 @@ public sealed partial class MainWindow
         string? submittedDraft = null;
         StackPanel followUpButtons=null!;
         CodeProject? project = store.SelectedProject;
-        const double projectPanelWidth=260;
+        const double projectPanelWidth=232;
+        ReviewDesk? reviewDesk = null;
+        HyperlinkButton contextLink = null!;
+        TextBox draft = null!;
+        ComboBox reasoning = null!, agentMode = null!;
+        var approvalHost = new ContentControl();
+        TaskCompletionSource<bool>? pendingApproval = null;
+        Grid transcriptBody = null!;
+        ProgressRing spinner = null!;
+        Button stop = null!, newSession = null!;
+        var reviewHost = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
+        ComboBox viewPicker = null!;
+        var viewModes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        CodeWorkspaceView View() => session?.WorkspaceView ?? CodeWorkspaceView.Workbench;
         Action? viewerChanged = null; // assigned once the page exists; refreshes counts outside the viewer
         bool updating = false, refreshQueued = false, emptySidebarVisible = true; string[] allFiles = []; int fileGeneration = 0; string? forcedPanel = null; CodeGitStatus? gitStatus = null;
         Button send = null!, openFolder = null!, branch = null!, changeButton = null!, preview = null!;
@@ -59,7 +72,6 @@ public sealed partial class MainWindow
         HyperlinkButton reference = null!, activityButton = null!;
         ToggleButton sideToggle = null!, viewerToggle = null!, pinned = null!;
         KeyboardAccelerator workspaceShortcut = null!, viewerShortcut = null!;
-        TextBlock viewerHeading = null!;
         TabView tabs = null!;
         Grid sideBody = null!, viewer = null!, center = null!;
         StackPanel toolbarLeft=null!,toolbarRight=null!,outputPanel=null!; Grid composerTools=null!;
@@ -68,6 +80,7 @@ public sealed partial class MainWindow
         Thumb splitter = null!;
         var draftSave = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
         var viewerEntries = new Dictionary<string, CodeViewerEntry>();
+        var notebookPaper = new SolidColorBrush(BrandPaper);
         var page = new Grid { RowSpacing = 12, ColumnSpacing = 12 };
         page.ColumnDefinitions.Add(new() { Width = new GridLength(projectPanelWidth) }); page.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         page.RowDefinitions.Add(new() { Height = GridLength.Auto }); page.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
@@ -79,6 +92,7 @@ public sealed partial class MainWindow
         layout.ColumnDefinitions.Add(new() { Width = new GridLength(8) });
         layout.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(layout, 1); Grid.SetColumn(layout, 1); page.Children.Add(layout);
+        Grid.SetRow(reviewHost, 1); Grid.SetColumn(reviewHost, 1); page.Children.Add(reviewHost);
         var folderLabel = Text("Choose project", 14); folderLabel.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; folderLabel.MaxLines = 1; folderLabel.MaxWidth=155; folderLabel.TextTrimming = TextTrimming.CharacterEllipsis;
         var folderPath = CodeNote(""); folderPath.MaxLines = 1; folderPath.TextTrimming = TextTrimming.CharacterEllipsis;
         var projectSwitcher=Button("Choose project",(_,_)=>{}); projectSwitcher.MaxWidth=225;
@@ -127,7 +141,7 @@ public sealed partial class MainWindow
         var autoNotice = CodeNote("", 11); autoNotice.TextWrapping = TextWrapping.Wrap; autoNotice.Visibility = Visibility.Collapsed;
         CodeSession? fileRefreshOwner = null; int fileRefreshRevision = -1, fileRefreshSequence = 0;
         var models = Button("Models", (_, _) => Navigate("Models and connections"));
-        var title = Text("New coding session", 21); title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.MaxLines = 1; title.TextTrimming = TextTrimming.CharacterEllipsis;
+        var title = Heading("New coding session", 23); title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.MaxLines = 1; title.TextTrimming = TextTrimming.CharacterEllipsis;
         var sessions = BrandControl(CodeProjectNavigation());
         var noProjects=CodeNote("Add a project folder to keep its sessions together.");noProjects.Margin=new Thickness(4,12,4,0);
         var deleteSession = ChatIcon("Delete selected coding session", "\uE74D", (_, _) => { });
@@ -145,7 +159,7 @@ public sealed partial class MainWindow
         // Behind the onboarding and intro states only, across the whole conversation area rather than the reading column.
         var welcomeArt = MasonryBackdrop(transcriptScroll); Grid.SetRow(welcomeArt, 1);
         // What the transcript showed last time, so only messages new to this session's view animate in (RenderTranscript).
-        var evidenceViews = new Dictionary<CodeTurn, (AcceptanceCheck[] Checks, AcceptanceResult[] Results, string? Revision, Expander View)>();
+        var evidenceViews = new Dictionary<CodeTurn, (AcceptanceCheck[] Checks, AcceptanceResult[] Results, string? Revision, EvidenceView View)>();
         CodeSession? shownSession = null; int shownTurns = 0; bool shownLive = false;
         var turnViews = new Dictionary<int, (string Key, UIElement View)>();
         (bool Continues, UIElement View, Border Body, string Text)? liveView = null;
@@ -162,20 +176,19 @@ public sealed partial class MainWindow
         }
         transcriptScroll.Loaded += (_, _) => DispatcherQueue.TryEnqueue(RestoreTranscriptTail);
         // Size the transcript from the scroller, as Chat does. Left to stretch, the scroller centres it by its natural width first and the stretched panel then overflows to the right by that margin.
-        transcriptScroll.SizeChanged += (_, _) => { transcript.Width = Math.Max(200, Math.Min(820, transcriptScroll.ActualWidth - 56)); if (emptyHost != null) FitWelcome(emptyHost, transcriptScroll.ActualHeight - 60); };
+        transcriptScroll.SizeChanged += (_, _) => { transcript.Width = Math.Max(200, Math.Min(transcript.MaxWidth, transcriptScroll.ActualWidth - 56)); if (emptyHost != null) FitWelcome(emptyHost, transcriptScroll.ActualHeight - 60); };
         var state = CodeNote("");
         var context = CodeNote("Context measured before each action"); context.MaxLines = 2; context.TextTrimming = TextTrimming.CharacterEllipsis;
-        var contextLink = CodeLink("Context", (_, _) => OpenTab("context", "", true)); contextLink.FontSize = 12;
+        contextLink = CodeLink("Context", (_, _) => OpenTab("context", "", true)); contextLink.FontSize = 12;
         AutomationProperties.SetName(contextLink, "Coding context and checkpoints");
-        var draft = new TextBox { PlaceholderText = "Describe a change, ask about the repo, or @ a file…", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 76, MaxHeight = 170, MaxLength = 16000, BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        draft = new TextBox { PlaceholderText = "Describe a change, ask about the repo, or @ a file…", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 76, MaxHeight = 170, MaxLength = 16000, BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
         ToolTipService.SetToolTip(draft,"Build keeps the current task’s requirements across follow-ups. Type /new followed by a request to start a separate task.");
         AutomationProperties.SetName(draft, "Coding message"); ComposerBox(draft);
-        var reasoning = new ComboBox { ItemsSource = new[] { "Default", "Off", "Low", "Medium", "High" }, SelectedIndex = 0, MinWidth = 95 }; AutomationProperties.SetName(reasoning, "Coding reasoning");
-        var agentMode = new ComboBox { ItemsSource = new[] { "Build", "Ask" }, SelectedIndex = 0, MinWidth = 85 };
+        reasoning = new ComboBox { ItemsSource = new[] { "Default", "Off", "Low", "Medium", "High" }, SelectedIndex = 0, MinWidth = 95 }; AutomationProperties.SetName(reasoning, "Coding reasoning");
+        agentMode = new ComboBox { ItemsSource = new[] { "Build", "Ask" }, SelectedIndex = 0, MinWidth = 85 };
         AutomationProperties.SetName(agentMode, "Coding mode"); ToolTipService.SetToolTip(agentMode, "Build performs workspace work. Ask explores without file writes or commands.");
-        var approvalHost = new ContentControl(); TaskCompletionSource<bool>? pendingApproval = null;
-        var spinner = BrandControl(new ProgressRing { Width = 15, Height = 15, Visibility = Visibility.Collapsed });
-        var stop = Button("Stop", (_, _) => codeOperation?.Cancel()); stop.Visibility = Visibility.Collapsed;
+        spinner = BrandControl(new ProgressRing { Width = 15, Height = 15, Visibility = Visibility.Collapsed });
+        stop = Button("Stop", (_, _) => codeOperation?.Cancel()); stop.Visibility = Visibility.Collapsed;
         send = ChatIcon("Send coding message", "\uE724", async (_, _) => await Send()); send.Style = (Style)Application.Current.Resources["AccentButtonStyle"]; BrandAccent(send);
         tabs = InterfaceTabs.Apply(new TabView { IsAddTabButtonVisible = false, TabWidthMode = TabViewWidthMode.SizeToContent, CanDragTabs = false, CanReorderTabs = false, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch }, TabPresentation.Document);
         pinned = BrandControl(new ToggleButton { Content = new FontIcon { Glyph = "\uE718", FontSize = 15 }, Padding = new Thickness(8) }); AutomationProperties.SetName(pinned, "Pin current viewer tab"); ToolTipService.SetToolTip(pinned, "Keep the agent from switching the selected viewer tab");
@@ -228,7 +241,9 @@ public sealed partial class MainWindow
         projectsTab=BrandControl(new ToggleButton{Content="Projects",IsChecked=true});filesTab=BrandControl(new ToggleButton{Content="Files"});
         AutomationProperties.SetName(projectsTab,"Show project sessions");AutomationProperties.SetName(filesTab,"Show project files");
         sideBody.Children.Add(Toolbar(Row(projectsTab,filesTab),closeWorkspace));
-        projectList=Vertical(openFolder,sessions);projectList.Children.Add(noProjects);Grid.SetRow(noProjects,1);Grid.SetRow(projectList,1);sideBody.Children.Add(projectList);
+        newSession = Button("New session", (_, _) => { if (project != null) NewProjectSession(project); });
+        AutomationProperties.SetName(newSession, "New session in selected project");
+        projectList=Vertical(Row(openFolder,newSession),sessions);projectList.Children.Add(noProjects);Grid.SetRow(noProjects,1);Grid.SetRow(projectList,1);sideBody.Children.Add(projectList);
         var filterFiles = ChatIcon("Filter workspace files", "\uE721", (_, _) =>
         {
             if (fileSearch.Visibility == Visibility.Visible)
@@ -286,7 +301,7 @@ public sealed partial class MainWindow
         // The composer floats above the transcript, with the window's shared soft shadow beneath it.
         var composerSurface = Fluent.Float(ChatSurface(composerBody, new Thickness(12, 8, 10, 10)), 24);
         composerSurface.CornerRadius = new CornerRadius(12); composer = composerSurface;
-        var transcriptBody = new Grid { RowSpacing = 10, Padding = new Thickness(10, 0, 10, 8), MaxWidth = 960 };
+        transcriptBody = new Grid { RowSpacing = 10, Padding = new Thickness(10, 0, 10, 8), MaxWidth = 960 };
         transcriptBody.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto });
         transcriptBody.Children.Add(transcriptScroll); Grid.SetRow(approvalHost, 1); transcriptBody.Children.Add(approvalHost);
         // Mortar mirrors the session's recorded state (working, waiting on you, done, in trouble).
@@ -296,6 +311,7 @@ public sealed partial class MainWindow
         {
             var (mood, meaning) = session == null || session.Turns.Count == 0 ? ("", "") : session.State switch
             {
+                "Running" when session.RepairingFile != null => ("on-the-mend", "repairing " + session.RepairingFile),
                 "Running" => (MoodWorking, "working on it"),
                 "Awaiting review" or "Waiting for input" => (MoodChecking, "waiting for you"),
                 // "Well played" when the session left reviewable changes, "we're good" when it only answered.
@@ -357,8 +373,7 @@ public sealed partial class MainWindow
         preview.Padding = new Thickness(8);
         AutomationProperties.SetName(changeButton, "Review session file changes"); ToolTipService.SetToolTip(changeButton, "Review session file changes");
         AutomationProperties.SetName(preview, "Open local website preview"); ToolTipService.SetToolTip(preview, "Open local website preview");
-        tabs.TabStripFooter = null;
-        viewerHeading = CodeNote("Artifacts", 13);
+
         outputTitle=CodeNote("Command output",12);var outputText=ChatInline("",12,true);
         outputToggle=BrandControl(new ToggleButton{Content="Output",IsChecked=true});AutomationProperties.SetName(outputToggle,"Toggle command output");
         outputScroll=CodeScroll(outputText);outputScroll.MaxHeight=180;
@@ -371,8 +386,9 @@ public sealed partial class MainWindow
             outputPanel.Visibility=last!=null&&session?.OutputVisible==true?Visibility.Visible:Visibility.Collapsed;
             if(last!=null){outputTitle.Text="Command output · "+last.State+"\n"+CodeActivityText.Command(last);var text=CodeActivityText.Result(last);outputScroll.Content=ChatInline(text.Length>12000?text[^12000..]:text,12,true);}
         }
-        viewer = Vertical(Toolbar(viewerHeading, changeButton, preview,outputToggle, pinned, closeViewer), workBody);
-        SurfaceBehind(viewer, new Thickness(10, 8, 10, 10));
+        tabs.TabStripFooter = Row(changeButton, preview, outputToggle, pinned, closeViewer);
+        viewer = workBody;
+        SurfaceBehind(viewer, new Thickness(5, 4, 5, 6));
         Grid.SetColumn(viewer, 2); layout.Children.Add(viewer);
         splitter = new Thumb { Width = 8, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch };
         AutomationProperties.SetName(splitter, "Resize conversation and task viewer"); ToolTipService.SetToolTip(splitter, "Drag to resize the viewer"); Grid.SetColumn(splitter, 1); layout.Children.Add(splitter);
@@ -390,7 +406,17 @@ public sealed partial class MainWindow
         // One toolbar row at every width: where you are on the left, preview and viewer on the right.
         // Labels shrink to icons in Arrange instead of wrapping onto a second row.
         toolbarLeft = Row(sideToggle, projectSwitcher, branch);
-        toolbarRight = Row(websiteShortcut,viewerToggle);
+        viewPicker = new ComboBox { ItemsSource = Enum.GetValues<CodeWorkspaceView>(), MinWidth = 115 };
+        AutomationProperties.SetName(viewPicker, "Coding workspace view");
+        viewPicker.SelectionChanged += (_, _) => { if (!updating && viewPicker.SelectedItem is CodeWorkspaceView view) SelectView(view); };
+        foreach (var view in Enum.GetValues<CodeWorkspaceView>())
+        {
+            var choice = BrandControl(new ToggleButton { Content = view.ToString(), Tag = view, Padding = new Thickness(12, 6, 12, 6) });
+            AutomationProperties.SetName(choice, view + " view");
+            choice.Click += (_, _) => { SelectView(view); choice.IsChecked = View() == view; };
+            viewModes.Children.Add(choice);
+        }
+        toolbarRight = Row(viewModes, viewPicker, websiteShortcut,viewerToggle);
         toolbar = new Grid { ColumnSpacing = 8 };
         toolbar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         toolbar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -414,12 +440,11 @@ public sealed partial class MainWindow
         sessions.ItemInvoked+=(_,e)=>
         {
             if(updating||codeOperation!=null||(e.InvokedItem as TreeViewNode)?.Content is not CodeProjectItem item)return;
-            if(item.NewSession)NewProjectSession(item.Project);
-            else if(item.Session!=null)Select(item.Session);
+            if(item.Session!=null)Select(item.Session);
             else SelectProject(item.Project);
         };
-        sessions.Expanding+=(_,e)=>{if(!updating&&e.Node.Content is CodeProjectItem{Session:null,NewSession:false} item)PersistExpansion(item.Project,true);};
-        sessions.Collapsed+=(_,e)=>{if(!updating&&e.Node.Content is CodeProjectItem{Session:null,NewSession:false} item)PersistExpansion(item.Project,false);};
+        sessions.Expanding+=(_,e)=>{if(!updating&&e.Node.Content is CodeProjectItem{Session:null} item)PersistExpansion(item.Project,true);};
+        sessions.Collapsed+=(_,e)=>{if(!updating&&e.Node.Content is CodeProjectItem{Session:null} item)PersistExpansion(item.Project,false);};
         files.ItemInvoked += (_, e) => { if ((e.InvokedItem as TreeViewNode)?.Content is CodeExplorerItem { Directory: false } item) OpenTab("file", item.Path, true); };
         files.SelectionChanged += (_, _) => reference.IsEnabled = codeOperation == null && CodeExplorerSelection(files) is { Directory: false };
         profiles.SelectionChanged += (_, _) => { if (!updating && session != null) { session.Model = SelectedChatProfile(profiles)?.Id; Save(); } };
@@ -465,7 +490,7 @@ public sealed partial class MainWindow
         }
         viewerChanged = () => { Arrange(); RenderTranscript(); };
         Select(session);
-        Closed += (_, _) => { draftSave.Stop(); pendingApproval?.TrySetResult(false); foreach (var entry in viewerEntries.Values) entry.Dispose(); Save(); store.Dispose(); };
+        Closed += (_, _) => { draftSave.Stop(); pendingApproval?.TrySetResult(false); foreach (var entry in viewerEntries.Values) entry.Dispose(); reviewDesk?.Dispose(); Save(); store.Dispose(); };
         return page;
 
         void RenderProjects()
@@ -477,6 +502,36 @@ public sealed partial class MainWindow
         void PersistExpansion(CodeProject owner,bool expanded)
         {
             try{store.SetProjectExpanded(owner.Id,expanded);}catch(Exception error){state.Text="Project list save failed · "+error.Message;}
+        }
+        void SelectView(CodeWorkspaceView view)
+        {
+            if (session == null || View() == view) return;
+            if (view == CodeWorkspaceView.Review && pendingApproval != null) { state.Text = "Respond to the pending approval first."; Arrange(); return; }
+            var previous = session.WorkspaceView;
+            session.WorkspaceView = view;
+            if (!TrySaveCurrent()) { session.WorkspaceView = previous; Arrange(); return; }
+            forcedPanel = null;
+            evidenceViews.Clear();
+            RenderTranscript(); Arrange();
+            if (view == CodeWorkspaceView.Review) RefreshReviewDesk();
+        }
+        async Task SendReview()
+        {
+            if (session == null || session.ReviewComments.Count == 0) return;
+            SelectView(CodeWorkspaceView.Workbench);
+            if (View() == CodeWorkspaceView.Workbench) await Send();
+        }
+        void RefreshReviewDesk()
+        {
+            if (session == null || View() != CodeWorkspaceView.Review) return;
+            if (reviewDesk == null)
+            {
+                reviewDesk = BuildReviewDesk(session, Save, () => { RenderTabs(); RenderTranscript(); RefreshReviewDesk(); Save(); },
+                    (kind, target) => OpenTab(kind, target, true), RenderReferences, SendReview,
+                    () => SelectedChatProfile(profiles)?.DisplayName ?? "Select a model");
+                reviewHost.Content = reviewDesk.View;
+            }
+            else reviewDesk.Refresh();
         }
         void RefreshProjectMenu()
         {
@@ -582,6 +637,8 @@ public sealed partial class MainWindow
             if (project is {} owner && codeOperation == null)
                 yield return Command("New session in " + ProjectLabel(owner, store.Projects), () => NewProjectSession(owner));
             if (session == null) yield break;
+            foreach (var view in Enum.GetValues<CodeWorkspaceView>())
+                yield return Command(view + " view", () => SelectView(view));
             yield return Command("Review session changes", () => OpenTab("changes", "", true));
             yield return Command("View activity", () => OpenTab("activity", "", true));
             yield return Command("View context checkpoints", () => OpenTab("context", "", true));
@@ -623,6 +680,7 @@ public sealed partial class MainWindow
             var owner=selected==null?selectedProject??store.SelectedProject:store.ProjectFor(selected);
             try{if(owner!=null)store.ActivateProject(owner.Id,selected?.Id);}catch(Exception error){state.Text="Project switch failed · "+error.Message;return;}
             foreach (var entry in viewerEntries.Values) entry.Dispose(); viewerEntries.Clear();
+            reviewDesk?.Dispose(); reviewDesk = null; reviewHost.Content = null;
             session = selected;project=owner; updating = true; pendingTranscriptTail = true; followTail = true;
             try
             {
@@ -640,7 +698,7 @@ public sealed partial class MainWindow
                 context.Text = ContextCaption(selected); ContextLabel(); allFiles = []; gitStatus = null; RenderFiles();
             }
             finally { updating = false; }
-            RefreshModels(); RenderReferences(); RenderTranscript(); RenderTabs(); Arrange(); Enable();
+            RefreshModels(); RenderReferences(); RenderTranscript(); RenderTabs(); Arrange(); Enable(); RefreshReviewDesk();
             DispatcherQueue.TryEnqueue(RestoreTranscriptTail);
             int generation = ++fileGeneration;
             if (selected != null)
@@ -663,6 +721,7 @@ public sealed partial class MainWindow
         void RenderReferences()
         {
             SetReviewMenu(reviewButton, session, RenderReferences);
+            reviewDesk?.Refresh();
             references.Children.Clear();
             if (session == null) return;
             foreach (var path in session.References.ToArray())
@@ -711,8 +770,8 @@ public sealed partial class MainWindow
                 if (!evidenceViews.TryGetValue(requestTurn, out var cached) || cached.Revision != plan.VerifiedRevision ||
                     !plan.Checks.SequenceEqual(cached.Checks) || !plan.Results.SequenceEqual(cached.Results))
                     evidenceViews[requestTurn] = cached = (plan.Checks.ToArray(), plan.Results.ToArray(), plan.VerifiedRevision,
-                        CheckEvidence(plan, cached.View?.IsExpanded == true));
-                transcript.Children.Add(cached.View);
+                        CheckEvidence(plan, cached.View?.Disclosure?.IsExpanded == true, View()));
+                transcript.Children.Add(cached.View.Layout);
             }
             for (int index = 0; index < session.Turns.Count; index++)
             {
@@ -788,7 +847,7 @@ public sealed partial class MainWindow
             actions.Clear();
             int changed = session.Changes.Count(c => !c.Restored);
             if (changed > 0)
-                actions.Add(CodeLink($"Review changes ({changed})", (_, _) => OpenTab("changes", "", true)));
+                actions.Add(Button($"Review changes ({changed})", (_, _) => SelectView(CodeWorkspaceView.Review), true));
             if (session.Tabs.Any(t => t.Kind is "web" or "site" || t.Kind == "file" && CodeWebsite.IsPage(t.Target)) ||
                 session.Changes.Any(c => !c.Restored && CodeWebsite.IsPage(c.Path)))
                 actions.Add(CodeLink("Open preview", async (_, _) => await OpenWebsite()));
@@ -806,6 +865,8 @@ public sealed partial class MainWindow
         void OpenTab(string kind, string target, bool user)
         {
             if (session == null) return;
+            if (user && kind == "changes") { SelectView(CodeWorkspaceView.Review); return; }
+            if (user && View() != CodeWorkspaceView.Workbench) SelectView(CodeWorkspaceView.Workbench);
             // Clicking a transcript link is pointer input, not a request to stop following
             // the latest result. Preserve the bottom anchor while the viewer changes width.
             if (user && transcriptScroll.ScrollableHeight - transcriptScroll.VerticalOffset < 90) followTail = true;
@@ -852,8 +913,9 @@ public sealed partial class MainWindow
             profiles.MinWidth=130;permissions.MinWidth=140;
             ArrangeComposer();
             bool hasArtifacts = session?.Tabs.Count > 0;
-            bool sidebar = anyProject && (session?.SidebarVisible ?? emptySidebarVisible) && (width >= 760 || forcedPanel == "workspace");
-            bool showViewer = hasArtifacts && session!.ViewerVisible && (width >= 1000 || forcedPanel == "viewer") && !(width <= 1120 && forcedPanel == "workspace");
+            bool review = View() == CodeWorkspaceView.Review, notebook = View() == CodeWorkspaceView.Notebook;
+            bool sidebar = (!review || forcedPanel == "workspace") && anyProject && (session?.SidebarVisible ?? emptySidebarVisible) && (width >= 760 || forcedPanel == "workspace");
+            bool showViewer = !review && !notebook && hasArtifacts && session!.ViewerVisible && (width >= 1000 || forcedPanel == "viewer") && !(width <= 1120 && forcedPanel == "workspace");
             if (showViewer && width - (sidebar ? projectPanelWidth+12 : 0) < 1000) sidebar = false;
             bool projectsOnly=sidebar&&width<640;if(projectsOnly)showViewer=false;
             bool viewerOnly = showViewer && width < 1000;
@@ -861,7 +923,22 @@ public sealed partial class MainWindow
             sideBody.Visibility = projectSurface.Visibility = sidebar ? Visibility.Visible : Visibility.Collapsed;
             page.ColumnDefinitions[0].Width = projectsOnly?new GridLength(1,GridUnitType.Star):new GridLength(sidebar?projectPanelWidth:0); page.ColumnSpacing = sidebar&&!projectsOnly ? 12 : 0;
             page.ColumnDefinitions[1].Width=projectsOnly?new GridLength(0):new GridLength(1,GridUnitType.Star);
-            layout.Visibility=projectsOnly?Visibility.Collapsed:Visibility.Visible;
+            layout.Visibility=projectsOnly || review ? Visibility.Collapsed : Visibility.Visible;
+            reviewHost.Visibility = review && !projectsOnly ? Visibility.Visible : Visibility.Collapsed;
+            viewModes.Visibility = session != null && width >= 845 ? Visibility.Visible : Visibility.Collapsed;
+            viewPicker.Visibility = session != null && width < 845 ? Visibility.Visible : Visibility.Collapsed;
+            if (viewPicker.SelectedItem is not CodeWorkspaceView picked || picked != View()) viewPicker.SelectedItem = View();
+            foreach (ToggleButton choice in viewModes.Children) choice.IsChecked = (CodeWorkspaceView)choice.Tag == View();
+            var readingTheme = notebook && !BrandHighContrast ? ElementTheme.Light : ElementTheme.Default;
+            if (page.RequestedTheme != readingTheme) page.RequestedTheme = readingTheme;
+            page.Background = notebook && !BrandHighContrast ? notebookPaper : null;
+            title.FontSize = notebook ? 38 : 24;
+            center.MaxWidth = notebook ? 1320 : double.PositiveInfinity;
+            center.Padding = notebook && width >= 900 ? new Thickness(28, 0, 28, 0) : new Thickness(0);
+            transcriptBody.MaxWidth = notebook ? 1320 : 960;
+            transcript.MaxWidth = notebook ? 1160 : 820;
+            transcript.HorizontalAlignment = notebook ? HorizontalAlignment.Left : HorizontalAlignment.Center;
+            viewerToggle.Visibility = review ? Visibility.Collapsed : Visibility.Visible;
             double ratio = Math.Clamp(session?.ViewerFraction ?? .53, .28, .67);
             center.Visibility = viewerOnly ? Visibility.Collapsed : Visibility.Visible;
             layout.ColumnDefinitions[0].MinWidth = viewerOnly ? 0 : showViewer ? 450 : 300;
@@ -872,7 +949,6 @@ public sealed partial class MainWindow
             splitter.Visibility = showViewer && !viewerOnly ? Visibility.Visible : Visibility.Collapsed;
             sideToggle.IsChecked = sidebar; viewerToggle.IsChecked = showViewer; viewerToggle.IsEnabled = hasArtifacts;
             ToolTipService.SetToolTip(viewerToggle, hasArtifacts ? "Show or hide artifacts · Ctrl+Alt+V" : "Files, changes and previews appear here when available.");
-            viewerHeading.Text = (session?.Tabs.Count ?? 0) == 1 ? "1 tab open" : $"{session?.Tabs.Count ?? 0} tabs open";
             changeButton.Content = session?.Changes.Count(c => !c.Restored) is int changed && changed > 0 ? $"Changes ({changed})" : "Changes";
             pinned.IsEnabled = hasArtifacts;
             Shortcuts();
@@ -886,13 +962,15 @@ public sealed partial class MainWindow
         void ToggleViewer()
         {
             if (session == null || session.Tabs.Count == 0) return;
-            if (viewer.Visibility == Visibility.Visible) CodePanels.Hide(session); else CodePanels.Show(session);
+            if (View() != CodeWorkspaceView.Workbench) { SelectView(CodeWorkspaceView.Workbench); CodePanels.Show(session); }
+            else if (viewer.Visibility == Visibility.Visible) CodePanels.Hide(session); else CodePanels.Show(session);
             forcedPanel = session.ViewerVisible ? "viewer" : null; Arrange(); Save();
         }
         void Enable()
         {
             bool ready = codeOperation == null;
             bool workspaceReady = session != null;
+            newSession.IsEnabled = ready && project != null;
             sessions.IsEnabled = openFolder.IsEnabled = projectSwitcher.IsEnabled=ready;
             shells.IsEnabled = environment.IsEnabled = ready && workspaceReady;
             networkModes.IsEnabled=ready&&workspaceReady;
@@ -929,10 +1007,11 @@ public sealed partial class MainWindow
                     if (draft.Text == submittedDraft) { updating = true; draft.Text = ""; updating = false; }
                     submittedDraft = null; RenderReferences();
                 }
-                RenderTranscript(); RenderTabs(); RenderFiles(); Arrange(); _ = RefreshWorkspaceFiles(session); });
+                RenderTranscript(); RenderTabs(); RenderFiles(); Arrange(); RefreshReviewDesk(); _ = RefreshWorkspaceFiles(session); });
         }
         async Task<bool> Approve(CodeApproval request, CancellationToken cancellation)
         {
+            if (View() == CodeWorkspaceView.Review) SelectView(CodeWorkspaceView.Workbench);
             var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously); pendingApproval = completion;
             using var registration = cancellation.Register(() => completion.TrySetCanceled(cancellation));
             var detail = CodeScroll(Stack(Text(request.Description, 14), CodeNote(request.Detail))); detail.MaxHeight = 190;

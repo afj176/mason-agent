@@ -24,7 +24,7 @@ public sealed partial class MainWindow
         public CancellationTokenSource Cancellation { get; } = new();
         public void Dispose() { ReleaseTheme?.Invoke();ReleaseTheme=null;Cancellation.Cancel(); ReleaseBrowser?.Invoke(); ReleaseBrowser=null; Cancellation.Dispose(); }
     }
-    CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open, Action reviewChanged)
+    CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open, Action reviewChanged, Func<Task>? sendReview = null)
     {
         var host = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
         var entry = new CodeViewerEntry { Tab = new TabViewItem { Header = TabLabel(model.Title), IconSource = new FontIconSource { Glyph = model.Kind switch { "web" or "site" => "\uE774", "context" => "\uE9D9", "git" => "\uE8A5", "changes" => "\uE8A5", "activity" => "\uE9D9", _ => "\uE8A5" } }, Tag = model, Content = host, IsClosable = true, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch } };
@@ -51,7 +51,7 @@ public sealed partial class MainWindow
                     var labels = changes.ToDictionary(c => c.Path, c => { var lines = CodeProtocol.Diff(c.Before, c.After).ToArray(); return c.Path + $"    +{lines.Count(l => l.Kind == '+')}  −{lines.Count(l => l.Kind == '-')}"; });
                     var choices = new ListView { IsItemClickEnabled = true, MaxHeight = 150, SelectionMode = ListViewSelectionMode.Single, ItemsSource = changes.Select(c => labels[c.Path]).ToArray() }; Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(choices, "Files changed by this coding session");
                     var content = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
-                    var changesView = Vertical(Stack(Text("Session changes", 19), choices), content);
+                    var changesView = Vertical(Stack(Heading(sendReview == null ? "Session changes" : "Review changes", sendReview == null ? 19 : 27), choices), content);
                     changesView.Padding = new Thickness(14, 12, 14, 0);
                     host.Content = changesView;
                     void Show(string path)
@@ -60,19 +60,26 @@ public sealed partial class MainWindow
                         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(rows, "Diff lines");
                         ScrollViewer.SetHorizontalScrollMode(rows, ScrollMode.Enabled);
                         ScrollViewer.SetHorizontalScrollBarVisibility(rows, ScrollBarVisibility.Auto);
-                        async Task Comment(CodeDiffLine line)
+                        bool IsCurrent()
+                        {
+                            try { return scope.Read(path).Sha256 == change.AfterHash; }
+                            catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { return false; }
+                        }
+                        async Task Comment(CodeDiffLine line, FrameworkElement anchor)
                         {
                             if (dialogOpen || line.Kind == '@') return;
                             var pending = CodeReviewComment.OnDiff(change, line, "");
-                            await EditReviewComment(session, pending, true, reviewChanged);
+                            if (sendReview != null && IsCurrent())
+                                OpenLineComment(anchor, session, pending, reviewChanged, sendReview);
+                            else await EditReviewComment(session, pending, true, reviewChanged);
                         }
                         rows.KeyDown += async (_, e) =>
                         {
-                            if (e.Key == VirtualKey.Enter && rows.SelectedItem is ListViewItem { Tag: CodeDiffLine line })
-                            { e.Handled = true; await Comment(line); }
+                            if (e.Key == VirtualKey.Enter && rows.SelectedItem is ListViewItem { Tag: CodeDiffLine line } selectedLine)
+                            { e.Handled = true; await Comment(line, selectedLine); }
                         };
                         model.Location = path;
-                        bool current = false; try { current = scope.Read(path).Sha256 == change.AfterHash; } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+                        bool current = IsCurrent();
                         var caption = CodeNote(current ? "Changes against this session's original file snapshot" : "Saved session snapshot · the file has changed or is unavailable. Later edits will not be overwritten.");
                         var mode = new ComboBox { ItemsSource = new[] { "Unified diff", "Split diff" }, SelectedIndex = model.ViewMode == "split" ? 1 : 0, MinWidth = 120 };
                         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(mode, "Diff layout");
@@ -109,7 +116,7 @@ public sealed partial class MainWindow
                                 string location = (line.After.HasValue ? "updated line " : "original line ") + (line.After ?? line.Before);
                                 if (line.Kind != '@')
                                 {
-                                    var add = ChatIcon("Comment on " + location, "\uE710", async (_, _) => await Comment(line));
+                                    var add = ChatIcon("Comment on " + location, "\uE710", async (sender, _) => await Comment(line, (FrameworkElement)sender));
                                     add.Padding = new Thickness(0); add.MinHeight = 22; add.MinWidth = 24; add.IsTabStop = false;
                                     ToolTipService.SetToolTip(add, "Comment on " + location);
                                     grid.Children.Add(add);

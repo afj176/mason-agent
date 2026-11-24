@@ -46,7 +46,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 next=Next();
                 if(next!=null && !next.Steer && session.State!="Completed")return;
             }while(next!=null);
-        }finally{activeTurn=null;activeSession=null;}
+        }finally{session.RepairingFile=null;activeTurn=null;activeSession=null;}
     }
     async Task RunTurn(CodeSession session,string input,CancellationToken cancellation,CodeFollowUp? followUp,CodeReviewComment[] review)
     {
@@ -190,6 +190,11 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     listing = await Task.Run(() => scope.Files(".", 120), cancellation);
                     instructions = scope.Instructions();
                     refreshInventory = false;
+                }
+                if (session.RepairingFile != repairPage?.Path)
+                {
+                    session.RepairingFile = repairPage?.Path;
+                    changed();
                 }
                 var system = WorkspacePrompt(session, listing, instructions, available, snippetRecovery);
                 if(services.Workflows.Workflows.Count>0||services.Skills.Length>0)

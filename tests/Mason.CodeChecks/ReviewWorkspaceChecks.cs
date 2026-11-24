@@ -16,11 +16,18 @@ internal static class ReviewWorkspaceChecks
         {
             var draft = writer.New(root);
             draft.Mode = "ask";
+            check(draft.WorkspaceView == CodeWorkspaceView.Workbench &&
+                JsonSerializer.Deserialize<CodeSession>("{}")?.WorkspaceView == CodeWorkspaceView.Workbench,
+                "New and legacy sessions start in Workbench");
+            draft.WorkspaceView = CodeWorkspaceView.Notebook;
+            draft.Draft = "Preserve this note.";
             draft.ReviewComments.AddRange([original, updated]);
             writer.Save(draft);
         }
         using var store = new CodeStore(profile);
         var session = store.Sessions.Single();
+        check(session.WorkspaceView == CodeWorkspaceView.Notebook && session.Draft == "Preserve this note.",
+            "Notebook choice and the shared composer draft survive a restart");
         check(session.ReviewComments.SequenceEqual([original, updated]) && original.Original && !updated.Original &&
             original.Quote == "removed" && original.Note == "Explain the removal.", "Review drafts retain both diff sides, source lines, notes and revision after restart");
         var engine = new CodeEngine(store, new AnswerModel(), (_, _) => Task.FromResult(false), () => {});

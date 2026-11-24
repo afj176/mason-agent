@@ -63,18 +63,54 @@ public sealed partial class MainWindow
                 try { SaveReview(session.ReviewComments.Where(c => c.Id != comment.Id).ToList()); }
                 catch (Exception error) { e.Cancel = true; problem.Text = error.Message; }
             };
-            void SaveReview(List<CodeReviewComment> next)
-            {
-                var previous = session.ReviewComments;
-                session.ReviewComments = next;
-                try { codeStore!.Save(session); }
-                catch { session.ReviewComments = previous; throw; }
-                changed();
-            }
+            void SaveReview(List<CodeReviewComment> next) => SaveReviewDrafts(session, next, changed);
             dialog.Opened += (_, _) => note.Focus(FocusState.Programmatic);
             await dialog.ShowAsync();
         }
         finally { dialogOpen = false; }
+    }
+
+    void SaveReviewDrafts(CodeSession session, List<CodeReviewComment> next, Action changed)
+    {
+        var previous = session.ReviewComments;
+        session.ReviewComments = next;
+        try { codeStore!.Save(session); }
+        catch { session.ReviewComments = previous; throw; }
+        changed();
+    }
+
+    void OpenLineComment(FrameworkElement anchor, CodeSession session, CodeReviewComment comment, Action changed, Func<Task> sendReview)
+    {
+        var note = new TextBox { Header = "Draft comment", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+            MinHeight = 64, MaxHeight = 150, MaxLength = 16000, PlaceholderText = "Leave feedback on this line…" };
+        var feedback = Muted(comment.Location);
+        var flyout = new Flyout();
+        bool finished = false;
+        bool SaveNote()
+        {
+            if (string.IsNullOrWhiteSpace(note.Text)) return false;
+            try
+            {
+                SaveReviewDrafts(session, [..session.ReviewComments, comment with { Note = note.Text.Trim() }], changed);
+                finished = true;
+                return true;
+            }
+            catch (Exception e) { feedback.Text = e.Message; return false; }
+        }
+        var add = Button("Add to review", (_, _) => { if (SaveNote()) flyout.Hide(); });
+        var send = Button("Send review", async (_, _) => { if (!SaveNote()) return; flyout.Hide(); await sendReview(); }, true);
+        var cancel = CodeLink("Cancel", (_, _) => { finished = true; flyout.Hide(); });
+        var body = Stack(Row(MascotImage("mark-this-line", 48, "marking this line"), feedback), note, Row(cancel, add, send));
+        body.MaxWidth = Math.Clamp(anchor.XamlRoot.Size.Width - 72, 230, 370);
+        flyout.Content = body;
+        add.IsEnabled = send.IsEnabled = false;
+        note.TextChanged += (_, _) => add.IsEnabled = send.IsEnabled = !string.IsNullOrWhiteSpace(note.Text);
+        flyout.Closing += (_, e) =>
+        {
+            if (!finished && !string.IsNullOrWhiteSpace(note.Text) && !SaveNote()) e.Cancel = true;
+        };
+        flyout.Opened += (_, _) => note.Focus(FocusState.Programmatic);
+        flyout.ShowAt(anchor);
     }
 
     void SetReviewMenu(Button button, CodeSession? session, Action changed)

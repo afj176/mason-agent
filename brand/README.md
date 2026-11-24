@@ -15,6 +15,13 @@ Mason Agent is a Windows coding workspace that runs on your own local models. Yo
 
 Four companions are made of the same paper. **Lintel** the heron is perceptive and brief, **Dovetail** the badger asks the exact question, **Rivet** the beetle is energetic and focused, and **Plumb** the seal is calm and dependable.
 
+Two transparent pose masters are available for review and recovery.
+
+| Pose | Suggested placement |
+| --- | --- |
+| [Mark this line](poses/mark-this-line.png) | Beside a draft diff comment while the reviewer marks a source line. |
+| [On the mend](poses/on-the-mend.png) | Beside an active repair while Mason applies a correction or retries a failed edit. |
+
 <img src="characters/01-mortar.png" alt="Mortar" width="88"> <img src="characters/02-lintel.png" alt="Lintel" width="88"> <img src="characters/03-dovetail.png" alt="Dovetail" width="88"> <img src="characters/04-rivet.png" alt="Rivet" width="88"> <img src="characters/05-plumb.png" alt="Plumb" width="88">
 
 Where Mortar appears in the app:
