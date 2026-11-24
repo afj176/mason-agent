@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.IO.Compression;
 using System.Text;
 using System.Xml;
@@ -20,13 +20,14 @@ public sealed partial class MainWindow
         public required TabViewItem Tab;
         public Action? Refresh;
         public Action? ReleaseTheme;
+        public Action? ReleaseBrowser;
         public CancellationTokenSource Cancellation { get; } = new();
-        public void Dispose() { ReleaseTheme?.Invoke();ReleaseTheme=null;Cancellation.Cancel(); Cancellation.Dispose(); }
+        public void Dispose() { ReleaseTheme?.Invoke();ReleaseTheme=null;Cancellation.Cancel(); ReleaseBrowser?.Invoke(); ReleaseBrowser=null; Cancellation.Dispose(); }
     }
     CodeViewerEntry BuildCodeViewer(CodeSession session, CodeTab model, Action save, Action refresh, Action<string, string> open)
     {
         var host = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
-        var entry = new CodeViewerEntry { Tab = new TabViewItem { Header = TabLabel(model.Title), IconSource = new FontIconSource { Glyph = model.Kind switch { "web" => "\uE774", "context" => "\uE9D9", "git" => "\uE8A5", "changes" => "\uE8A5", "activity" => "\uE9D9", _ => "\uE8A5" } }, Tag = model, Content = host, IsClosable = true, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch } };
+        var entry = new CodeViewerEntry { Tab = new TabViewItem { Header = TabLabel(model.Title), IconSource = new FontIconSource { Glyph = model.Kind switch { "web" or "site" => "\uE774", "context" => "\uE9D9", "git" => "\uE8A5", "changes" => "\uE8A5", "activity" => "\uE9D9", _ => "\uE8A5" } }, Tag = model, Content = host, IsClosable = true, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch } };
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(entry.Tab, model.Title);
         // TabView retains detached content. Explicitly follow the shared app theme
         // so cached document surfaces and token colors update on a live theme switch.
@@ -37,7 +38,7 @@ public sealed partial class MainWindow
             var scope = new CodeWorkspace(session.Workspace);
             if (model.Kind == "context") { host.Content = CodeContextViewer(session, entry, save, open); return entry; }
             if (model.Kind == "git") { host.Content = CodeGitViewer(session, entry, open); return entry; }
-            if (model.Kind == "web") { BuildCodeBrowser(entry, host, model, save); return entry; }
+            if (model.Kind is "web" or "site") { BuildCodeBrowser(entry, host, model, scope, save, open); return entry; }
             if (model.Kind == "changes")
             {
                 string revision = "", selected = "";
@@ -246,58 +247,6 @@ public sealed partial class MainWindow
         var scroll = CodeScroll(new Border { Child = content, Padding = new Thickness(24) });
         scroll.Loaded += (_, _) => scroll.ChangeView(null, tab.Scroll, null, true); scroll.ViewChanged += (_, _) => tab.Scroll = scroll.VerticalOffset; return scroll;
     }
-    /// <summary>
-    /// A local website preview without an embedded browser: the address is checked against loopback, Mason
-    /// reports whether the server answers, and the page itself opens in the default browser.
-    /// </summary>
-    void BuildCodeBrowser(CodeViewerEntry entry, ContentControl host, CodeTab tab, Action save)
-    {
-        var initial = CodeProtocol.PreviewUri(tab.Location ?? tab.Target);
-        var address = new TextBox { Text = initial.AbsoluteUri, MinWidth = 120, HorizontalAlignment = HorizontalAlignment.Stretch, Header = "Local address" };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(address, "Website preview address");
-        var state = CodeNote("Checking the local server…");
-        Uri? Current() { try { return CodeProtocol.PreviewUri(address.Text); } catch (Exception error) { state.Text = error.Message; return null; } }
-
-        async Task Check()
-        {
-            if (Current() is not { } uri) return;
-            state.Text = "Checking " + uri.Authority + "…";
-            try
-            {
-                // Loopback only (PreviewUri enforces it); the response body is never read or rendered.
-                using var client = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(4) };
-                using var response = await client.GetAsync(uri, System.Net.Http.HttpCompletionOption.ResponseHeadersRead, entry.Cancellation.Token);
-                state.Text = $"Responding · HTTP {(int)response.StatusCode} {response.ReasonPhrase}";
-                tab.Location = uri.AbsoluteUri; save();
-            }
-            catch (OperationCanceledException) when (entry.Cancellation.IsCancellationRequested) { }
-            catch (Exception) { state.Text = "Not responding at " + uri.Authority + ". Start the dev server, then check again."; }
-        }
-
-        var open = Button("Open in browser", async (_, _) =>
-        {
-            if (Current() is not { } uri) return;
-            try { if (!await Launcher.LaunchUriAsync(uri)) state.Text = "Windows could not open a browser for this address."; }
-            catch (Exception error) { state.Text = error.Message; }
-        }, true);
-        var check = Button("Check again", async (_, _) => await Check());
-        var copy = Button("Copy address", (_, _) =>
-        {
-            if (Current() is not { } uri) return;
-            var data = new Windows.ApplicationModel.DataTransfer.DataPackage(); data.SetText(uri.AbsoluteUri);
-            Windows.ApplicationModel.DataTransfer.Clipboard.SetContent(data); state.Text = "Address copied";
-        });
-        address.KeyDown += async (_, e) => { if (e.Key == VirtualKey.Enter) { e.Handled = true; await Check(); } };
-
-        var title = Text("Website preview", 20);
-        var intro = CodeNote("Mason does not embed a browser. Open the page in your browser; Mason checks that the local server is answering.");
-        var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24), MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left };
-        panel.Children.Add(title); panel.Children.Add(intro); panel.Children.Add(address);
-        panel.Children.Add(Row(open, check, copy)); panel.Children.Add(state);
-        host.Content = CodeScroll(panel);
-        _ = Check();
-    }
-
     void BuildCodePdf(CodeViewerEntry entry, ContentControl host, string path)
     {
         if (new FileInfo(path).Length > 10 * 1024 * 1024) throw new ArgumentException("PDF preview is limited to 10 MiB.");

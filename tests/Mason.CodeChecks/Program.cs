@@ -243,6 +243,17 @@ try
     Reject(() => CodeProtocol.PreviewUri("file:///C:/Windows/win.ini"), "file URL preview");
     Reject(() => CodeProtocol.PreviewUri("https://example.com"), "remote preview URL");
     Check(CodeProtocol.PreviewUri("http://localhost:5173/catalog").Host == "127.0.0.1", "localhost preview pinned to loopback");
+    var webScope=new CodeWorkspace(Directory.CreateDirectory(Path.Combine(root,"website")).FullName);
+    var site=new CodeWebsite(webScope);
+    Check(site.StartPage()==null,"Website asks for an address when there is no project entry page");
+    webScope.Create("index.html","<title>Local shop</title>");webScope.Create("item details.htm","Item");
+    Check(site.StartPage()=="index.html" && site.StartPage("item details.htm")=="item details.htm","Website prefers the selected HTML page and otherwise opens the project index");
+    var itemUri=site.Page("item details.htm");
+    Check(Encoding.UTF8.GetString(site.Read(new Uri(itemUri+"?v=2#price")).Bytes)=="Item" && site.Read(site.Origin).Type=="text/html","Website serves encoded HTML paths and the root document without a server");
+    var css=webScope.Create("store.css","body{color:green}");
+    Check(Encoding.UTF8.GetString(site.Read(new Uri(site.Origin,css.Path)).Bytes)==css.Content,"Website resolves local stylesheet assets");
+    Reject(()=>site.Read(new Uri(new CodeWebsite(scope).Origin,"index.html")),"website request from another project origin");
+    Reject(()=>site.Read(new Uri(site.Origin,".git/config")),"restricted workspace file in website preview");
     Reject(() => CodeProtocol.Parse(JsonSerializer.Serialize(new { version=1, message=new string('x',1601), tool=new { name="read_file", arguments=new { path="README.md" } } })), "long tool narration is rejected before an operation can execute");
     Check(CodeSchema.Action(true).GetProperty("properties").GetProperty("message").GetProperty("maxLength").GetInt32()==1600,"Build wire schema bounds public updates rather than streaming unbounded analysis");
     var diff = CodeProtocol.Diff("a\nb\nc", "a\nx\nc").ToArray(); Check(diff.Any(d => d.Kind == '-' && d.Text == "b") && diff.Any(d => d.Kind == '+' && d.Text == "x"), "native diff has explicit before/after lines");

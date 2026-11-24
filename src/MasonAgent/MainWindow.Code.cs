@@ -47,6 +47,7 @@ public sealed partial class MainWindow
         Action? viewerChanged = null; // assigned once the page exists; refreshes counts outside the viewer
         bool updating = false, refreshQueued = false, emptySidebarVisible = true; string[] allFiles = []; int fileGeneration = 0; string? forcedPanel = null; CodeGitStatus? gitStatus = null;
         Button send = null!, openFolder = null!, branch = null!, search = null!, changeButton = null!, preview = null!;
+        Button websiteShortcut=null!;
         FrameworkElement composer = null!, sessionHeader = null!;
         Grid toolbar = null!; TextBlock viewerLabel = null!; Image stateMood = null!; string shownMood = "";
         Grid? emptyHost = null; // onboarding or intro shown while there is no conversation
@@ -186,18 +187,29 @@ public sealed partial class MainWindow
         var closeViewer = ChatIcon("Close artifact viewer", "\uE711", (_, _) => { if (session != null) CodePanels.Hide(session); Arrange(); Save(); });
         changeButton = Button("Changes", (_, _) => OpenTab("changes", "", true));
         activityButton = CodeLink("View activity", (_, _) => OpenTab("activity", "", true));
-        preview = Button("Open preview", async (_, _) =>
+        async Task OpenWebsite()
         {
             if (session == null || dialogOpen) return;
-            var address = new TextBox { PlaceholderText = "http://localhost:5173", Text = "http://localhost:5173" }; AutomationProperties.SetName(address, "Local preview URL"); dialogOpen = true;
+            var owner=session;
+            var address = new TextBox { PlaceholderText = "HTML file or local server URL" }; AutomationProperties.SetName(address, "Website address");
             try
             {
-                if (await new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme, Title = "Open local website preview", Content = Stack(CodeNote("Start the site's development server, then enter its loopback URL. The viewer checks that the server answers and can open the page in your browser; the agent does not inspect it automatically."), address), PrimaryButtonText = "Open", CloseButtonText = "Cancel" }.ShowAsync() == ContentDialogResult.Primary)
-                    OpenTab("web", CodeProtocol.PreviewUri(address.Text).AbsoluteUri, true);
+                var site=new CodeWebsite(new CodeWorkspace(owner.Workspace));
+                var selected=owner.Tabs.FirstOrDefault(t=>t.Key==owner.SelectedTab);
+                if(site.StartPage(selected?.Kind is "file" or "site"?selected.Target:null) is {} file){OpenTab("site",file,true);return;}
+                if(selected?.Kind=="web"){OpenTab("web",selected.Target,true);return;}
+                dialogOpen=true;
+                if(await new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Open website",Content=address,PrimaryButtonText="Open",CloseButtonText="Cancel"}.ShowAsync()!=ContentDialogResult.Primary || owner!=session)return;
+                var value=address.Text.Trim();
+                if(CodeWebsite.IsPage(value) && !Uri.TryCreate(value,UriKind.Absolute,out _)){site.Page(value);OpenTab("site",value,true);}
+                else OpenTab("web",CodeProtocol.PreviewUri(value).AbsoluteUri,true);
             }
             catch (Exception error) { state.Text = error.Message; }
             finally { dialogOpen = false; }
-        });
+        }
+        preview=Button("Website",async (_,_)=>await OpenWebsite());
+        websiteShortcut=ChatIcon("Open project website","\uE774",async (_,_)=>await OpenWebsite());
+        ToolTipService.SetToolTip(websiteShortcut,"Open project website");
         openFolder = Button("Add project", async (_, _) => await OpenWorkspace());
         openFolder.Content=Row(new FontIcon{Glyph="\uE710",FontSize=12},new TextBlock{Text="Add project",FontSize=12});
         openFolder.Padding=new Thickness(8,7,8,7);openFolder.HorizontalAlignment=HorizontalAlignment.Stretch;AutomationProperties.SetName(openFolder,"Add coding project");
@@ -374,7 +386,7 @@ public sealed partial class MainWindow
         // One toolbar row at every width: where you are on the left, find and viewer on the right.
         // Labels shrink to icons in Arrange instead of wrapping onto a second row.
         toolbarLeft = Row(sideToggle, projectSwitcher, branch);
-        toolbarRight = Row(search, viewerToggle);
+        toolbarRight = Row(search, websiteShortcut,viewerToggle);
         toolbar = new Grid { ColumnSpacing = 8 };
         toolbar.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         toolbar.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -848,6 +860,7 @@ public sealed partial class MainWindow
             if (showViewer && width - (sidebar ? projectPanelWidth+12 : 0) < 1000) sidebar = false;
             bool projectsOnly=sidebar&&width<640;if(projectsOnly)showViewer=false;
             bool viewerOnly = showViewer && width < 1000;
+            websiteShortcut.Visibility=session!=null && !showViewer?Visibility.Visible:Visibility.Collapsed;
             sideBody.Visibility = projectSurface.Visibility = sidebar ? Visibility.Visible : Visibility.Collapsed;
             page.ColumnDefinitions[0].Width = projectsOnly?new GridLength(1,GridUnitType.Star):new GridLength(sidebar?projectPanelWidth:0); page.ColumnSpacing = sidebar&&!projectsOnly ? 12 : 0;
             page.ColumnDefinitions[1].Width=projectsOnly?new GridLength(0):new GridLength(1,GridUnitType.Star);
