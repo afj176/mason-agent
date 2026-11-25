@@ -1,40 +1,8 @@
 <Application x:Class="Mason.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
  <Application.Resources>
   <ResourceDictionary>
-   <ResourceDictionary.MergedDictionaries><XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls"/><ResourceDictionary Source="ms-appx:///Styles/Mason.xaml"/></ResourceDictionary.MergedDictionaries>
-   <ResourceDictionary.ThemeDictionaries>
-    <ResourceDictionary x:Key="Light">
+   <ResourceDictionary.MergedDictionaries><XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls"/><ResourceDictionary Source="ms-appx:///Styles/Palette.xaml"/><ResourceDictionary Source="ms-appx:///Styles/Mason.xaml"/></ResourceDictionary.MergedDictionaries>
 
-<SolidColorBrush x:Key="AccentButtonBackground" Color="#4849A8"/><SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="#4849A8"/><SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#4849A8"/><SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="#4849A8"/><SolidColorBrush x:Key="CheckBoxCheckBackgroundFillIndeterminate" Color="#4849A8"/><SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeIndeterminate" Color="#4849A8"/><SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#3E3F94"/><SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#343580"/><SolidColorBrush x:Key="AccentButtonForeground" Color="#FFFFFF"/><SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#FFFFFF"/><SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#FFFFFF"/><SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundChecked" Color="#FFFFFF"/>
-     <Color x:Key="SystemAccentColor">#4849A8</Color><Color x:Key="SystemAccentColorLight1">#6264C4</Color><Color x:Key="SystemAccentColorLight2">#8E8FE0</Color><Color x:Key="SystemAccentColorLight3">#C3C2FF</Color><Color x:Key="SystemAccentColorDark1">#4849A8</Color><Color x:Key="SystemAccentColorDark2">#3E3F94</Color><Color x:Key="SystemAccentColorDark3">#343580</Color>
-<SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#4849A8"/><SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="#4849A8"/><SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="#4849A8"/><SolidColorBrush x:Key="ProgressBarForeground" Color="#4849A8"/><SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="#4849A8"/><SolidColorBrush x:Key="ListViewItemSelectionIndicatorBrush" Color="#4849A8"/><SolidColorBrush x:Key="ToggleButtonForegroundChecked" Color="#FFFFFF"/><SolidColorBrush x:Key="ToggleButtonForegroundCheckedPointerOver" Color="#FFFFFF"/><SolidColorBrush x:Key="ToggleButtonForegroundCheckedPressed" Color="#FFFFFF"/>
-     <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#4849A8"/>
-     <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#3E3F94"/>
-     <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#343580"/>
-     <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#4849A8"/>
-     <SolidColorBrush x:Key="TextOnAccentFillColorPrimaryBrush" Color="#FFFFFF"/>
-     <SolidColorBrush x:Key="HyperlinkButtonForeground" Color="#4849A8"/>
-     <SolidColorBrush x:Key="HyperlinkButtonForegroundPointerOver" Color="#343580"/>
-     <SolidColorBrush x:Key="HyperlinkButtonForegroundPressed" Color="#343580"/>
-     <SolidColorBrush x:Key="HyperlinkForeground" Color="#4849A8"/>
-    </ResourceDictionary>
-    <ResourceDictionary x:Key="Dark">
-
-<SolidColorBrush x:Key="AccentButtonBackground" Color="#C3C2FF"/><SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="#C3C2FF"/><SolidColorBrush x:Key="CheckBoxCheckBackgroundFillChecked" Color="#C3C2FF"/><SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeChecked" Color="#C3C2FF"/><SolidColorBrush x:Key="CheckBoxCheckBackgroundFillIndeterminate" Color="#C3C2FF"/><SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeIndeterminate" Color="#C3C2FF"/><SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#B3B2EF"/><SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#A3A2DF"/><SolidColorBrush x:Key="AccentButtonForeground" Color="#171A2B"/><SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#171A2B"/><SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#171A2B"/><SolidColorBrush x:Key="CheckBoxCheckGlyphForegroundChecked" Color="#171A2B"/>
-     <Color x:Key="SystemAccentColor">#C3C2FF</Color><Color x:Key="SystemAccentColorLight1">#B3B2EF</Color><Color x:Key="SystemAccentColorLight2">#C3C2FF</Color><Color x:Key="SystemAccentColorLight3">#DAD9FF</Color><Color x:Key="SystemAccentColorDark1">#6264C4</Color><Color x:Key="SystemAccentColorDark2">#4849A8</Color><Color x:Key="SystemAccentColorDark3">#343580</Color>
-<SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#C3C2FF"/><SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="#C3C2FF"/><SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="#C3C2FF"/><SolidColorBrush x:Key="ProgressBarForeground" Color="#C3C2FF"/><SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="#C3C2FF"/><SolidColorBrush x:Key="ListViewItemSelectionIndicatorBrush" Color="#C3C2FF"/><SolidColorBrush x:Key="ToggleButtonForegroundChecked" Color="#20263C"/><SolidColorBrush x:Key="ToggleButtonForegroundCheckedPointerOver" Color="#20263C"/><SolidColorBrush x:Key="ToggleButtonForegroundCheckedPressed" Color="#20263C"/>
-     <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#C3C2FF"/>
-     <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#B3B2EF"/>
-     <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#A3A2DF"/>
-     <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#C3C2FF"/>
-     <SolidColorBrush x:Key="TextOnAccentFillColorPrimaryBrush" Color="#171A2B"/>
-     <SolidColorBrush x:Key="HyperlinkButtonForeground" Color="#C3C2FF"/>
-     <SolidColorBrush x:Key="HyperlinkButtonForegroundPointerOver" Color="#DAD9FF"/>
-     <SolidColorBrush x:Key="HyperlinkButtonForegroundPressed" Color="#DAD9FF"/>
-     <SolidColorBrush x:Key="HyperlinkForeground" Color="#C3C2FF"/>
-    </ResourceDictionary>
-    <ResourceDictionary x:Key="HighContrast"/>
-   </ResourceDictionary.ThemeDictionaries>
 <!-- Fluent geometry: controls keep 4 px corners (ControlCornerRadius) and overlays 8 px; Mason does not override them. -->
 <Style TargetType="TabView"><Setter Property="Background" Value="{ThemeResource TabViewBackground}"/></Style>
 <Style TargetType="TabViewItem"><Setter Property="UseSystemFocusVisuals" Value="True"/><Setter Property="MinHeight" Value="40"/><Setter Property="FontSize" Value="14"/><Setter Property="FontWeight" Value="Normal"/><Setter Property="BorderThickness" Value="0"/></Style>

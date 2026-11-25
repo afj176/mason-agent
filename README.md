@@ -10,19 +10,19 @@
 
 </div>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/code-dark.png">
-  <img src="docs/images/code-light.png" alt="A Mason Agent coding session: projects sidebar, a request to fix CSV parsing, and the agent's summary of two edited files and a passing test run">
-</picture>
+<img src="docs/images/code-dark.png" alt="A Mason Agent coding session in dark mode: projects sidebar, a request to fix CSV parsing, and the agent's summary of two edited files and a passing test run">
 
 ## What it does
 
 - **Projects that keep their history.** Add a folder to keep its sessions, files and changes together. Right-click a project in the sidebar or open its project menu and choose **Remove project from Mason**. Its files stay on disk. Adding the same folder again restores its sessions and project notes. Switch between Code, Chat and Models in the title bar. Ctrl+K searches sessions, projects, workspace files and commands. Each session remembers its workspace view. Workbench pairs the conversation with its artifacts, Review opens line comments beside the recorded checks, and Notebook gives the conversation a wider reading layout and follows your Mason appearance setting.
-- **Runs on your own models.** Start GGUF models with llama.cpp's `llama-server` or Transformers models with Python from the model library, or connect to an OpenAI-compatible server already running on localhost.
-- **You set the permissions.** Sessions start read-only. Switch to *Review edits* (approve each edit and command), *Workspace edits*, or *Auto*, which runs commands in a Windows sandbox limited to the project folder with network access off unless you allow a destination. Commands run in Git Bash, PowerShell or Command Prompt.
-- **Every change on record.** Edits appear as diffs against the original file and can be restored; select a diff line to attach feedback and send several comments together. Completed turns show the observations behind each feature check, with the full evidence and verified revision available to inspect.
-- **Chat beside your code.** Conversations with any connected model, with code blocks, tables and attached documents. Long chats compact automatically and keep their originals.
-- **A model library.** Scans your folders for GGUF and safetensors weights, estimates whether a model fits in your GPU memory, and downloads models from Hugging Face on request.
+- **Runs on your own models.** GGUF models run inside Mason Agent through llama.cpp, so there is no separate server process to start or keep alive. Transformers models run with Python, and you can connect to an OpenAI-compatible server already running on localhost. **Quick setup** under Models checks your GPU, installs the matching llama.cpp build, suggests a coding model that fits in its memory and starts it once you confirm the download.
+- **You set the permissions.** Sessions start read-only. Switch to *Review edits* (approve each edit and command), *Workspace edits*, or *Auto*, which runs commands in a Windows sandbox limited to the project folder with network access off unless you allow a destination. Commands run in Git Bash, PowerShell or Command Prompt. On an approval, **Always allow…** saves an editable rule for that command prefix, folder or MCP tool in this project. A deny rule always wins, and you can revoke rules in Harness settings (project menu → **Project policy & extensions**).
+- **Every change on record.** Edits appear as diffs against the original file and can be restored; select a diff line to attach feedback and send several comments together. **Undo** in the session menu puts back everything a request changed, including files its commands created, edited or deleted, and **Redo** reapplies it; files you changed since are left alone and listed. Completed turns show the observations behind each feature check, with the full evidence and verified revision available to inspect.
+- **Chat beside your code.** Conversations with any connected model, with code blocks, tables and attached documents. Favourite and recent models come first in the pickers. Long chats compact automatically and keep their originals.
+- **A model library.** Scans your folders for GGUF and safetensors weights, shows what each model can do for the coding agent, estimates whether it fits in your GPU memory, and downloads models from Hugging Face on request. Choosing a model sizes its context to the memory you have. Each connection can carry its own generation settings (temperature, top P/K, min P, repeat penalty, seed) for the coding agent.
+- **Your agents and commands.** Agents and slash commands are Markdown files with front matter in `.mason/agents` and `.mason/commands`; Mason Agent also reads `.claude/` and `.opencode/` folders. Pick an agent in session settings; commands appear in Ctrl+K and take `$ARGUMENTS` or `$1`–`$9`.
+- **Scheduled and background work.** Schedule a request hourly, daily, on weekdays or weekly; it runs as a background task while Mason Agent is open, and a run missed while it was closed happens once at the next start. The taskbar button shows progress and flashes when an approval is waiting, and Windows notifies you when Mason Agent is in the background.
+- **Fork, export and import sessions.** Fork from any earlier request, optionally putting files back as they were then. Export a session as JSON, with paths and keys removed if you like, and import it into another project.
 
 ## Screenshots
 
@@ -50,7 +50,7 @@ Store reusable instructions in `.mason/skills/NAME/SKILL.md`. Named workflows li
 {"Version":1,"Workflows":{"test":{"Executable":"python","Arguments":["-B","-m","unittest"],"Directory":".","BeforeVerify":true},"preview":{"Executable":"python","Arguments":["-m","http.server","8123","--bind","127.0.0.1"],"Directory":"."}}}
 ```
 
-Register local MCP tools in the Mason profile's `mcp-servers.json`, for example `[{"Name":"docs","Endpoint":"http://127.0.0.1:8088/mcp","Tools":["search_docs"]}]`. Mason negotiates MCP 2025-06-18 over HTTP, lists allowlisted tools, and shows the tool arguments for approval before a call. An unattended run declines approvals.
+Add local MCP servers under **MCP servers** in Harness settings (project menu → **Project policy & extensions**): enter the endpoint, choose **Discover tools** to list what the server offers, and tick the tools the agent may call. Servers can be edited, switched off or removed there. They are saved in the Mason profile's `mcp-servers.json`, for example `[{"Name":"docs","Endpoint":"http://127.0.0.1:8088/mcp","Tools":["search_docs"]}]`. Mason negotiates MCP 2025-06-18 over HTTP, lists allowlisted tools, and shows the tool arguments for approval before a call unless an **Always allow** rule covers it. An unattended run declines approvals.
 
 ### Command line and parallel tasks
 
@@ -67,9 +67,9 @@ The project menu also offers **New isolated worktree**. Start builds concurrentl
 
 | Review changes | Chat |
 | --- | --- |
-| <img src="docs/images/changes-dark.png" alt="Changes viewer showing a unified diff beside the session"> | <img src="docs/images/chat-light.png" alt="Chat with a code block answer in the light theme"> |
-| **Models & endpoints** | **Code workspace, light** |
-| <img src="docs/images/models-dark.png" alt="Model library with local GGUF models and saved connections"> | <img src="docs/images/code-light.png" alt="The Code workspace in the light theme"> |
+| <img src="docs/images/changes-dark.png" alt="Changes viewer showing a unified diff beside the session"> | <img src="docs/images/chat-dark.png" alt="Chat with a local model's answer, a code block and the Reference panel"> |
+| **Models** | **Harness settings** |
+| <img src="docs/images/models-dark.png" alt="Model library with GPU memory, Quick setup and local GGUF models with their agent use"> | <img src="docs/images/harness-dark.png" alt="Harness settings with saved approvals, agents and commands, MCP servers and schedules"> |
 
 ## Install
 
@@ -80,9 +80,9 @@ Download from the [latest release](https://github.com/afj176/mason-agent/release
 
 Both are x64 and self-contained (.NET and the Windows App SDK are included). Releases are not code-signed yet, so Windows SmartScreen may warn on first run: choose **More info → Run anyway**. SHA-256 files are attached to each release.
 
-**You also need a model.** Model weights and runtimes are not bundled. Under *Models & endpoints*, point Mason Agent at:
+**You also need a model.** Model weights and runtimes are not bundled. The quickest start is **Models → Quick setup**, which installs llama.cpp for your GPU and downloads a coding model that fits after you confirm. Or point Mason Agent at:
 
-- GGUF weights plus a llama.cpp `llama-server` executable, or
+- GGUF weights. Mason Agent runs them inside the app with a llama.cpp build that includes `llama-server-impl.dll` (current releases do). Turn off **Run GGUF models inside Mason** under Models → Runtimes to give each model its own `llama-server` process instead, or
 - Transformers (safetensors) weights plus a Python installation with the needed packages (an optional isolated runtime for GPTQ/AWQ models can be set up from the app; that setup downloads Python packages), or
 - an OpenAI-compatible server already running on `localhost` / `127.0.0.1`.
 
@@ -94,7 +94,7 @@ Git for Windows is optional and adds Git Bash as a shell for commands. Using Pow
 
 Click **Website** or a completed turn’s **Open preview** to open the selected HTML file or the project’s `index.html` in Mason’s embedded browser. Both actions can also reopen a standalone HTML page changed in the session or a local server tab in a server-only project. Use the address field for another project page or the loopback URL of a running development server. **Reload website** reads the latest files. Browser storage for the preview is kept under the Mason profile for that project.
 
-During a coding run, **Steer** interrupts the current model action and applies your new instruction. **Queue** saves a follow-up for after completion. Use `/queue` to resume saved input after a stop. In session settings, **Rewind last edited turn** restores files changed through Mason's edit tools. A later external edit blocks the rewind before any files change. Commands and their side effects remain in the activity history.
+During a coding run, **Steer** interrupts the current model action and applies your new instruction. **Queue** saves a follow-up for after completion. Use `/queue` to resume saved input after a stop. In the session menu, **Undo** previews and restores everything the latest request changed, including command output files, and **Redo** reapplies it. Requests sent with earlier versions have no snapshots, so for those **Rewind last edited turn** restores files changed through Mason's edit tools; a later external edit blocks the rewind before any files change. Commands and their side effects remain in the activity history.
 
 Repository search can page through results and read numbered line ranges in UTF-8 files up to 8 MiB. The Repository menu and `mason git-status --workspace PATH` show staged, unstaged and untracked paths. A delegated investigation reads up to eight assigned files and returns findings with source citations. Mason checks the citations against the current files.
 

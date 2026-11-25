@@ -543,8 +543,15 @@ public sealed partial class MainWindow
             if (session != null || Environment.GetEnvironmentVariable("MASON_UI_CAPTURE_PROJECT") is not { Length: > 0 } folder || !Directory.Exists(folder)) return;
             var owner = store.AddProject(folder); Select(store.LastSession(owner.Id) ?? store.New(owner.Workspace), owner);
         }
-        extraCaptures.Add(("code-session", () => { Navigate("Code"); CaptureProject(); }));
-        extraCaptures.Add(("code-harness", () => { Navigate("Code"); CaptureProject(); if (session != null) OpenTab("harness", "", true); }));
+        void CaptureViewer(string? kind)
+        {
+            Navigate("Code"); CaptureProject(); if (session == null) return;
+            if (kind != null) OpenTab(kind, "", true);
+            else if (viewer.Visibility == Visibility.Visible) { CodePanels.Hide(session); forcedPanel = null; Arrange(); }
+        }
+        extraCaptures.Add(("code-session", () => CaptureViewer(null)));
+        extraCaptures.Add(("code-changes", () => CaptureViewer("changes")));
+        extraCaptures.Add(("code-harness", () => CaptureViewer("harness")));
         openCodeProject = owner => { if (codeOperation != null) { state.Text = "Finish or stop the current run before switching projects."; return; } Navigate("Code"); if (owner != project) SelectProject(owner); };
         addCodeProject = OpenWorkspace;
         compactCodeContext = CompactContext;

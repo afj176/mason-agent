@@ -112,7 +112,7 @@ public sealed partial class MainWindow
                                 void Theme()
                                 {
                                     bool high = new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast;
-                                    row.Background = high || line.Kind is ' ' or '@' ? null : new SolidColorBrush(line.Kind == '+' ? Windows.UI.Color.FromArgb(36, 40, 174, 112) : Windows.UI.Color.FromArgb(40, 218, 70, 75));
+                                    row.Background = high || line.Kind is ' ' or '@' ? null : ModelTones.FillBrush(line.Kind == '+' ? Tone.Good : Tone.Bad, row.ActualTheme == ElementTheme.Dark);
                                 }
                                 row.Loaded += (_, _) => Theme(); row.ActualThemeChanged += (_, _) => Theme();
                                 var grid = new Grid { ColumnSpacing = 4 };

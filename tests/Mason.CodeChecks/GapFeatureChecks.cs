@@ -102,6 +102,14 @@ static class GapFeatureChecks
         Check(!exported.Contains("sk-abcdefghijklmnopqrstu") && !exported.Contains(workspace.Replace("\\", "\\\\")) && exported.Contains("<workspace>"), "a sanitized export removes the workspace path and keys");
         var imported = CodeSessionTransfer.Import(store, exported, workspace);
         Check(imported.Messages.Count == 3 && imported.Turns.All(t => t.SnapshotBefore == null), "an export imports as a new session without undo history");
+
+        // Line endings: a model's "\n" replacement still edits a CRLF checkout, and keeps the file CRLF.
+        var crlf = Path.Combine(workspace, "crlf.py"); File.WriteAllText(crlf, "def f():\r\n    return 1\r\n\r\ndef g():\r\n    return 2\r\n");
+        var scope = new CodeWorkspace(workspace); var read = scope.Read("crlf.py");
+        scope.ApplyEdits("crlf.py", read.Sha256, [new("def f():\n    return 1\n", "def f():\n    return 10\n")], (_, _) => { });
+        Check(File.ReadAllText(crlf) == "def f():\r\n    return 10\r\n\r\ndef g():\r\n    return 2\r\n", "an LF replacement edits a CRLF file and keeps its line endings");
+        try { scope.ApplyEdits("crlf.py", scope.Read("crlf.py").Sha256, [new("def missing():\n", "x")], (_, _) => { }); Check(false, "a replacement that matches nowhere is still rejected"); }
+        catch (CodeSnippetMismatchException) { Check(true, "a replacement that matches nowhere is still rejected"); }
         try { Directory.Delete(root, true); } catch (IOException) { }
         Console.WriteLine("gap feature checks passed");
     }

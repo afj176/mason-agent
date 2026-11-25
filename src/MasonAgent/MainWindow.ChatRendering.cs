@@ -106,7 +106,7 @@ public sealed partial class MainWindow
             double font = block.Kind switch { "h1" => 27, "h2" => 22, "h3" => 19, "h4" or "h5" or "h6" => 17, _ => 15 };
             var content = ChatInline(block.Text, font);
             if (block.Kind.StartsWith('h')) content.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
-            if (block.Kind == "quote") body.Children.Add(new Border { Child = content, BorderThickness = new Thickness(3, 0, 0, 0), BorderBrush = AccentBrush(), Padding = new Thickness(14, 5, 0, 5) });
+            if (block.Kind == "quote") { var quote = new Border { Child = content, BorderThickness = new Thickness(3, 0, 0, 0), Padding = new Thickness(14, 5, 0, 5) }; void Rule() => quote.BorderBrush = AccentBrush(quote.ActualTheme == ElementTheme.Dark); quote.Loaded += (_, _) => Rule(); quote.ActualThemeChanged += (_, _) => Rule(); body.Children.Add(quote); }
             else body.Children.Add(content);
         }
         return body;
