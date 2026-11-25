@@ -254,9 +254,18 @@ struct Composer: View {
                     }
                 }
                 .accessibilityLabel("Request")
-                // While an approval is waiting, the request box gives up the keyboard so Return answers "Allow Once"
-                // and Escape declines, instead of typing into the box.
-                .disabled(model.approval != nil)
+                // While an approval is waiting, Return answers "Allow Once" and Escape declines, even when the
+                // request box still has the keyboard, instead of typing into the box.
+                .onKeyPress(.return) {
+                    guard let pending = model.approval else { return .ignored }
+                    model.answer(pending, allow: true)
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    guard let pending = model.approval else { return .ignored }
+                    model.answer(pending, allow: false)
+                    return .handled
+                }
             HStack {
                 Picker("Permission", selection: Binding(get: { session.permission }, set: { model.setPermission($0) })) {
                     Text("Read-only").tag(Permission.readOnly)
@@ -279,7 +288,7 @@ struct Composer: View {
         }
         .padding(16)
         .onAppear { focused = true }
-        .onChange(of: model.approval == nil) { _, answered in if answered { focused = true } }
+        .onChange(of: model.approval == nil) { _, answered in focused = answered }
     }
 }
 
