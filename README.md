@@ -19,7 +19,7 @@ Each platform has its own native app and its own engine, written for that system
 | | App | Engine and `mason` | Sandbox for Auto | Status |
 | --- | --- | --- | --- | --- |
 | **Windows** | WinUI 3 | C# | Windows sandbox limited to the project | Released |
-| **macOS** | SwiftUI | Swift | macOS sandbox (`sandbox-exec`) | In development: no download yet |
+| **macOS** | SwiftUI | Swift | macOS sandbox (`sandbox-exec`) | In development: builds, installs and runs on a macOS 15 runner, no download yet |
 | **Linux** | GTK 4 and libadwaita | C++ | bubblewrap | In development: builds and runs on Ubuntu 24.04, no download yet |
 
 The Windows app is the complete one. The macOS and Linux engines and command lines cover the core: sessions, reading and searching a project, reviewed edits with diffs and undo, commands with approvals and always-allow rules, the four permission modes, and finding, downloading and running GGUF models with llama.cpp. Verification receipts, browser checks, milestones, MCP servers, custom agents and scheduling are Windows-only for now.
@@ -47,7 +47,7 @@ Git for Windows is optional and adds Git Bash as a shell for commands. Using Pow
 
 ### macOS
 
-There is no download yet. The engine and `mason` tool pass their tests with the Swift toolchain on Linux; the app and the packaging steps below have not been verified on a Mac yet. To try them on a Mac (macOS 14 or later, Xcode command line tools):
+There is no download yet. Every push is built and checked on a macOS 15 runner: the tests (including real commands under the sandbox), the `.pkg` install, a sandboxed `mason` request in Auto, and a request typed into the app and approved there. It has not been used on anyone's own Mac yet, and that check uses a stand-in model rather than a real one. To build it on a Mac (macOS 14 or later, Xcode command line tools):
 
 ```sh
 cd macos
@@ -210,7 +210,9 @@ Auto records a baseline and reruns the pinned check before completion. Results d
 
 ## macOS app
 
-A SwiftUI app with the engine written in Swift, in [`macos/`](macos). It has not been released, and the app has not yet been built or run on a Mac; treat this as a description of what is written.
+A SwiftUI app with the engine written in Swift, in [`macos/`](macos). It has not been released. The screenshot is from the automated check on a Mac runner, where a stand-in model asks to create a file and waits for approval.
+
+<img src="docs/images/mac-app.png" alt="Mason Agent on macOS: a session with a completed shell command and an approval card for creating hello.txt">
 
 - **Sessions by project.** Open a folder, ask for a change, and watch each tool call as it finishes. Answers render Markdown and code.
 - **Permissions.** Read-only, Review edits, Workspace edits, or Auto. In Auto, commands run under the macOS sandbox: they can write only inside the project and your temporary folder, cannot read `~/.ssh`, `~/.aws`, `~/.gnupg` or your keychains, and have no network access. Where the sandbox is unavailable, Auto refuses to run commands instead of running them unprotected.
@@ -277,7 +279,7 @@ swift test                  # engine tests, including real commands under the sa
 Scripts/build-app.sh        # universal app, .zip and .pkg in macos/dist
 ```
 
-`MasonCore` and the `mason` tool use Foundation only, so they also build and pass their tests on Linux with the Swift toolchain. The SwiftUI app builds on macOS only. The [macOS workflow](.github/workflows/macos.yml) runs the tests, builds the packages and starts the app on a Mac runner.
+`MasonCore` and the `mason` tool use Foundation only, so they also build and pass their tests on Linux with the Swift toolchain. The SwiftUI app builds on macOS only. The [macOS workflow](.github/workflows/macos.yml) runs the tests, builds the packages, installs the `.pkg` and runs [`Scripts/check-installed.sh`](macos/Scripts/check-installed.sh) on a Mac runner.
 
 ### Linux
 
