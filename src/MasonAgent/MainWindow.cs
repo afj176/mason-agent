@@ -43,7 +43,7 @@ public sealed partial class MainWindow : Window
     public MainWindow()
     {
         Title = "Mason Agent";
-        SystemBackdrop = new MicaBackdrop(); Content = root;
+        SystemBackdrop = backdrop; Content = root;
         try { preferences = Store.Read<AppPreferences>("appearance.json") ?? new(); }
         catch (Exception error) { status.Text = "Appearance could not be read: " + error.Message; }
         // Enum.TryParse also accepts numbers, so only a defined theme name is honoured; anything else means Auto.

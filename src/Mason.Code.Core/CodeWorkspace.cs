@@ -193,6 +193,13 @@ public sealed class CodeWorkspace
         if (!file.Sha256.Equals(expected, StringComparison.OrdinalIgnoreCase)) throw new CodeStaleEditException("File changed since the last read. Read it again; nothing was overwritten.");
         if (edits.Count is < 1 or > 32) throw new ArgumentException("Apply 1–32 replacements per file.");
         var regions = new List<(int At, CodeReplacement Edit)>();
+        // Models write "\n" line endings, but Windows checkouts are often CRLF. When a replacement only fails
+        // because of that, match it in the file's own line endings and write the new text the same way.
+        static string Crlf(string text) => text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\n", "\r\n", StringComparison.Ordinal);
+        bool crlfFile = file.Content.Contains("\r\n", StringComparison.Ordinal);
+        edits = edits.Select(edit =>
+            crlfFile && edit.OldText.Contains('\n') && !edit.OldText.Contains('\r') && file.Content.IndexOf(edit.OldText, StringComparison.Ordinal) < 0
+                ? new CodeReplacement(Crlf(edit.OldText), Crlf(edit.NewText)) : edit).ToArray();
         foreach (var edit in edits)
         {
             int at = file.Content.IndexOf(edit.OldText, StringComparison.Ordinal);

@@ -71,7 +71,7 @@ public sealed partial class MainWindow
         var sort = new ComboBox { ItemsSource=new[]{"Suggested order","Name","Size · largest first","Size · smallest first"},SelectedIndex=0,MinWidth=150 };
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(sort,"Sort model collection");
         var list = new ListView { SelectionMode=ListViewSelectionMode.Single, HorizontalContentAlignment=HorizontalAlignment.Stretch };
-        var resourceTable=ListTable(list,("Model","Title",2.3),("Agent use","RoleLabel",1.2),("Status","StatusLabel",2.3));
+        var resourceTable=ListTable(list,("Model","Title",2.2),("Agent use","RoleLabel",1.6),("Status","StatusLabel",2.2));
         list.ItemTemplate=(DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'><Border BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='0,0,0,1'><Grid MinHeight='64' Padding='12,10' ColumnSpacing='12'><Grid.ColumnDefinitions><ColumnDefinition Width='2.3*'/><ColumnDefinition Width='1.2*'/><ColumnDefinition Width='2.3*'/></Grid.ColumnDefinitions>"
             +"<Grid ColumnSpacing='12'><Grid.ColumnDefinitions><ColumnDefinition Width='32'/><ColumnDefinition Width='*'/></Grid.ColumnDefinitions><Border Width='32' Height='32' CornerRadius='8' Background='{Binding RoleFill}' VerticalAlignment='Center'><SymbolIcon Symbol='{Binding Icon}' Foreground='{Binding RoleInk}'/></Border><StackPanel Grid.Column='1' VerticalAlignment='Center' Spacing='2'><TextBlock Text='{Binding Title}' FontSize='14' FontWeight='SemiBold' TextTrimming='CharacterEllipsis'/><TextBlock Text='{Binding Subtitle}' FontSize='11' Foreground='{ThemeResource TextFillColorSecondaryBrush}' TextTrimming='CharacterEllipsis'/></StackPanel></Grid>"
             +"<Border Grid.Column='1' CornerRadius='10' Padding='9,3,9,4' Background='{Binding RoleFill}' HorizontalAlignment='Left' VerticalAlignment='Center'><TextBlock Text='{Binding RoleLabel}' FontSize='11' FontWeight='SemiBold' Foreground='{Binding RoleInk}' TextTrimming='CharacterEllipsis'/></Border>"
@@ -146,7 +146,7 @@ public sealed partial class MainWindow
         var locations=new ListView { MaxHeight=340,SelectionMode=ListViewSelectionMode.Single };
         var common=new ToggleSwitch { Header="Include common model folders", IsOn=settings.IncludeCommon };
         var embedGguf=new ToggleSwitch { Header="Run GGUF models inside Mason", OnContent="No separate server process", OffContent="Each model in its own process", IsOn=settings.EmbedGguf };
-        ToolTipService.SetToolTip(embedGguf,"One GGUF model at a time runs inside Mason; others start as owned processes. A native llama.cpp crash closes Mason, and an embedded model stops when Mason closes. Clear this to run every model in its own process.");
+        ToolTipService.SetToolTip(embedGguf,"One GGUF model at a time runs inside Mason; others start as owned processes. A native llama.cpp crash closes Mason, and an embedded model stops when Mason closes. Turn this off to run every model in its own process.");
         var folders=Text("",12);
         var emptyAdd=Button("Add local folder",(_,_)=>openModelLocations?.Invoke());noMatches.Children.Add(Button("Find models",(_,_)=>ShowView(3),true));noMatches.Children.Add(emptyAdd);
         var noMatchesMortar = EmptyState(noMatches, MoodChecking, "nothing here yet");

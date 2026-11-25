@@ -84,7 +84,7 @@ public sealed class ViewSwitcher : UserControl
                 var clear=new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
                 foreach(var key in backgrounds)segment.Resources[key]=clear;
                 segment.Background=clear;segment.BorderBrush=index==selected?accent:clear;segment.BorderThickness=new Thickness(0,0,0,2);segment.CornerRadius=new CornerRadius(0);
-                segment.Foreground=index==selected?accent:new Microsoft.UI.Xaml.Media.SolidColorBrush(dark?Microsoft.UI.Colors.White:Windows.UI.Color.FromArgb(255,24,34,54));
+                segment.Foreground=index==selected?accent:new Microsoft.UI.Xaml.Media.SolidColorBrush(dark?Windows.UI.Color.FromArgb(255,248,246,242):Windows.UI.Color.FromArgb(255,32,38,60));
                 segment.Resources["ToggleButtonForegroundChecked"]=segment.Foreground;
                 segment.Resources["ToggleButtonForegroundCheckedPointerOver"]=segment.Foreground;
             }

@@ -9,9 +9,9 @@ namespace Mason;
 
 public sealed partial class MainWindow
 {
-    static SolidColorBrush AccentBrush() => new(new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast
+    static SolidColorBrush AccentBrush(bool dark) => new(new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast
         ? new Windows.UI.ViewManagement.UISettings().UIElementColor(Windows.UI.ViewManagement.UIElementType.Highlight)
-        : Windows.UI.Color.FromArgb(255, 72, 73, 168));
+        : ModelTones.Ink(Tone.Accent, dark));
     // Shared presentation only. The caller retains selection, persistence and execution ownership.
     /// <summary>A Fluent table: Caption Strong headers over a divider, 40 px Body rows, system selection visuals.</summary>
     static FrameworkElement ListTable(ListView rows, params (string Label, string Path, double Weight)[] columns)

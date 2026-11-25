@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mason Agent: a coding workspace for your local models</title>
-<meta name="description" content="Mason Agent is a Windows coding workspace that runs on your own local models. Bring a project into focus, choose what the agent may do, and review every change.">
+<meta name="description" content="Mason Agent is a Windows coding workspace that runs on your own local models. Add a project, choose what the agent may do, and review every change before you keep it.">
 <link rel="canonical" href="https://masonagent.site/">
 <meta name="theme-color" content="#F8F6F2" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#171A2B" media="(prefers-color-scheme: dark)">
@@ -76,10 +76,7 @@
     </div>
     <div class="wrap">
       <figure class="hero-shot">
-        <picture>
-          <source srcset="assets/code-dark.png" media="(prefers-color-scheme: dark)">
-          <img src="assets/code-light.png" width="1600" height="1001" alt="A Mason Agent coding session: the projects sidebar, a request to fix CSV parsing, and the agent's summary of two edited files and a passing test run" fetchpriority="high">
-        </picture>
+        <img src="assets/code-dark.png" width="1600" height="1001" alt="A Mason Agent coding session in dark mode: the projects sidebar, a request to fix CSV parsing, and the agent's summary of two edited files and a passing test run" fetchpriority="high">
       </figure>
     </div>
   </section>
@@ -97,27 +94,42 @@
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1.5V4M15 1.5V4M9 20v2.5M15 20v2.5M1.5 9H4M1.5 15H4M20 9h2.5M20 15h2.5"/></svg></span>
           <h3>Runs on your own models</h3>
-          <p>Start GGUF models with a llama.cpp server or Transformers models with Python, or connect to an OpenAI-compatible server already running on this computer.</p>
+          <p>Mason Agent runs GGUF models itself through llama.cpp, so there is no separate server to start or keep alive. Transformers models run with Python, or you can connect to an OpenAI-compatible server on this computer.</p>
+        </li>
+        <li class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>
+          <h3>Quick setup</h3>
+          <p>One button checks your GPU, installs the right llama.cpp build, suggests a coding model that fits in its memory and, once you confirm the download, starts it.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5.5c0 4.2 2.9 7.9 7 9.5 4.1-1.6 7-5.3 7-9.5V6z"/><path d="m9 12 2 2 4-4"/></svg></span>
           <h3>You set the permissions</h3>
-          <p>New sessions start read-only. Choose Review edits to approve each edit and command, Workspace edits, or Auto, which runs commands in a Windows sandbox limited to the project folder.</p>
+          <p>Sessions start read-only. Approve each edit and command, allow workspace edits, or use Auto, which runs commands in a Windows sandbox. Choose <em>Always allow</em> to stop being asked about a command, folder or tool you trust.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M13 10v6M10 19h6"/></svg></span>
-          <h3>Every change on record</h3>
-          <p>Edits show as diffs against the original file, which you can restore. The activity log lists each file read, edit and command with its result.</p>
+          <h3>Undo a whole request</h3>
+          <p>Edits show as diffs against the original files. Undo puts back everything a request changed, including files its commands touched, and Redo reapplies it. Files you edited since are left alone.</p>
+        </li>
+        <li class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg></span>
+          <h3>Your agents and commands</h3>
+          <p>Write agents and slash commands as Markdown files in your project. Mason Agent also reads the ones you keep for Claude Code and OpenCode. Add MCP servers and choose which of their tools the agent may use.</p>
+        </li>
+        <li class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></svg></span>
+          <h3>Schedules and notifications</h3>
+          <p>Schedule a request to run hourly, daily, on weekdays or weekly as a background task. While you work in another app, the taskbar button shows a session's progress, and Windows notifies you when it finishes or needs your approval.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 4v-4h0A1.5 1.5 0 0 1 4 14.5z"/><path d="M8 9h8M8 12h5"/></svg></span>
           <h3>Chat beside your code</h3>
-          <p>Talk a problem through with any connected model, with code blocks, tables and attached documents. Long conversations compact automatically; the originals stay in the library.</p>
+          <p>Talk a problem through with any connected model. Answers can include code blocks and tables, and you can attach documents. Favourite models stay at the top, and long conversations compact automatically.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16.5 4.5l3.8 1-4 15.4-3.8-1z"/></svg></span>
           <h3>A model library</h3>
-          <p>Scan your folders for GGUF and safetensors weights, see whether a model fits in your GPU memory, and download models from Hugging Face when you choose to.</p>
+          <p>Scan your folders for GGUF and safetensors weights, see what each one can do for the agent and whether it fits in your GPU memory, and download models from Hugging Face when you choose to.</p>
         </li>
       </ul>
     </div>
@@ -126,26 +138,23 @@
   <section class="screens" id="screenshots" aria-labelledby="screens-title">
     <div class="wrap">
       <h2 id="screens-title">Screenshots</h2>
-      <p class="section-lede">Light and dark follow your Windows setting, or pick one in the sidebar.</p>
+      <p class="section-lede">Built with Windows 11's own design language: Mica, Fluent controls and the Windows type ramp. Shown here in dark mode. Light mode is there too: Mason Agent follows your Windows setting, or you can choose either one from the settings button in the title bar.</p>
       <div class="gallery">
         <figure class="shot wide">
           <img src="assets/changes-dark.png" width="1600" height="1001" loading="lazy" decoding="async" alt="The Changes viewer beside a coding session, showing a unified diff of the edited importer with added and removed lines">
           <figcaption>Review a session's edits as diffs, then keep or restore them.</figcaption>
         </figure>
         <figure class="shot">
-          <img src="assets/chat-light.png" width="1600" height="1001" loading="lazy" decoding="async" alt="Chat in the light theme: a question about reading CSV files in Python and the model's answer with a code block">
-          <figcaption>Chat with a local model, with your conversations saved on this computer.</figcaption>
+          <img src="assets/chat-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="Chat: a question about reading CSV files with quoted commas in Python, the local model's answer with a code block, and the code opened in the Reference panel">
+          <figcaption>Chat with a local model. Conversations are saved on this computer.</figcaption>
         </figure>
         <figure class="shot">
-          <img src="assets/models-dark.png" width="1600" height="551" loading="lazy" decoding="async" alt="The Models library listing local GGUF models and saved server connections, with the selected connection's details beside the list">
-          <figcaption>Your local models and saved connections in one library.</figcaption>
+          <img src="assets/models-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="The Models library: GPU memory, a Quick setup button, and local GGUF models with what each can do for the coding agent">
+          <figcaption>Your local models, what each can do for the agent, and Quick setup.</figcaption>
         </figure>
         <figure class="shot wide">
-          <picture>
-            <source srcset="assets/code-light.png" media="(prefers-color-scheme: dark)">
-            <img src="assets/code-dark.png" width="1600" height="1001" loading="lazy" decoding="async" alt="The same coding session in the other theme">
-          </picture>
-          <figcaption>The Code workspace in the other theme.</figcaption>
+          <img src="assets/harness-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="Harness settings beside a new coding session: saved allow and deny rules, a reviewer agent, two project commands and an MCP server">
+          <figcaption>Saved approvals, your agents and commands, MCP servers and schedules on one settings page.</figcaption>
         </figure>
       </div>
     </div>
@@ -176,7 +185,8 @@
             <h3>Requirements</h3>
             <ul>
               <li>Windows 11, x64. The portable ZIP also runs on Windows 10 version 2004 or later.</li>
-              <li>A local model: GGUF weights with llama.cpp's <code>llama-server</code>, Transformers weights with Python, or an OpenAI-compatible server on this computer. Set it up under Models &amp; endpoints.</li>
+              <li>A local model. <strong>Quick setup</strong> under Models installs llama.cpp and downloads a coding model that fits your GPU. You can also use GGUF weights you already have, Transformers weights with Python, or an OpenAI-compatible server on this computer.</li>
+              <li>A GPU is recommended. Larger models need more video memory, and Mason Agent shows whether each one fits before you start it.</li>
               <li>Optional: Git for Windows, to use Git Bash as a shell for commands.</li>
             </ul>
           </div>

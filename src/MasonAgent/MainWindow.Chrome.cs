@@ -179,8 +179,10 @@ public sealed partial class MainWindow
         Fluent.Appear(content, 4);
     }
 
+    readonly BrandBackdrop backdrop = new();
+
     /// <summary>
-    /// Lets Mica show through the sidebar and title bar while the page keeps the brand paper and night surfaces.
+    /// Lets brand-tinted Mica (Night or Paper) show through the sidebar and title bar; pages sit on the brand layer.
     /// High contrast keeps solid system colours and the system caption buttons.
     /// </summary>
     void ApplyWindowMaterial(bool dark)
@@ -195,6 +197,7 @@ public sealed partial class MainWindow
             return;
         }
         root.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        backdrop.SetTheme(dark);
         var ink = dark ? BrandPaper : BrandInk;
         chrome.ButtonBackgroundColor = chrome.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         chrome.ButtonForegroundColor = chrome.ButtonHoverForegroundColor = chrome.ButtonPressedForegroundColor = ink;

@@ -355,6 +355,6 @@ public sealed partial class MainWindow
         var ui=new Windows.UI.ViewManagement.UISettings();
         if(new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast)return new(ui.UIElementColor(Windows.UI.ViewManagement.UIElementType.WindowText));
         bool dark=theme==ElementTheme.Dark;
-        return new(state switch{"Ready in library"=>dark?Windows.UI.Color.FromArgb(255,108,215,149):Windows.UI.Color.FromArgb(255,20,115,65),"Needs attention"=>dark?Windows.UI.Color.FromArgb(255,255,150,145):Windows.UI.Color.FromArgb(255,175,35,35),_=>dark?Microsoft.UI.Colors.White:Windows.UI.Color.FromArgb(255,24,34,54)});
+        return new(state switch{"Ready in library"=>ModelTones.Ink(Tone.Good,dark),"Needs attention"=>ModelTones.Ink(Tone.Bad,dark),_=>dark?Windows.UI.Color.FromArgb(255,248,246,242):Windows.UI.Color.FromArgb(255,32,38,60)});
     }
 }
