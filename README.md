@@ -20,9 +20,9 @@ Each platform has its own native app and its own engine, written for that system
 | --- | --- | --- | --- | --- |
 | **Windows** | WinUI 3 | C# | Windows sandbox limited to the project | Released |
 | **macOS** | SwiftUI | Swift | macOS sandbox (`sandbox-exec`) | In development: no download yet |
-| **Linux** | GTK 4 and libadwaita | C++ | Planned | In development |
+| **Linux** | GTK 4 and libadwaita | C++ | bubblewrap | In development: builds and runs on Ubuntu 24.04, no download yet |
 
-The Windows app is the complete one. The macOS engine and command line cover the core: sessions, reading and searching a project, reviewed edits with diffs and undo, commands with approvals and always-allow rules, the four permission modes, and finding, downloading and running GGUF models with llama.cpp. Verification receipts, browser checks, milestones, MCP servers, custom agents and scheduling are Windows-only for now.
+The Windows app is the complete one. The macOS and Linux engines and command lines cover the core: sessions, reading and searching a project, reviewed edits with diffs and undo, commands with approvals and always-allow rules, the four permission modes, and finding, downloading and running GGUF models with llama.cpp. Verification receipts, browser checks, milestones, MCP servers, custom agents and scheduling are Windows-only for now.
 
 ## Install
 
@@ -61,11 +61,21 @@ Settings, sessions and downloaded models live in `~/Library/Application Support/
 
 ### Linux
 
-The Linux app (GTK 4, libadwaita, C++) is in development and has no download yet.
+There is no download yet. The app, the `mason` command and both packages build and run on Ubuntu 24.04:
+
+```sh
+sudo apt install build-essential meson ninja-build pkg-config libcurl4-openssl-dev nlohmann-json3-dev libgtkmm-4.0-dev libadwaita-1-dev bubblewrap dpkg-dev
+linux/packaging/build-packages.sh
+sudo apt install ./linux/dist/mason-agent_*.deb      # Debian and Ubuntu: mason and mason-agent in /usr/bin
+```
+
+On other distributions, extract `linux/dist/mason-agent-*-linux-*.tar.gz` and run its `install.sh`. It installs for your user under `~/.local` without administrator rights, tells you if `~/.local/bin` is not on your PATH yet, and `install.sh --uninstall` removes it. The programs need GTK 4, gtkmm 4.10 or later, libadwaita 1.4 or later and libcurl from your distribution. A Flatpak is not available yet.
+
+Settings, sessions and downloaded models live in `~/.local/share/MasonAgent` (or `$XDG_DATA_HOME/MasonAgent`). `MASON_DATA_HOME` overrides the location.
 
 ## The mason command line
 
-This section describes `mason` on Windows. On macOS the same command, written in Swift, has the session and model commands below; it does not have `/compact`, `/agent`, `/commands`, `/queue` or the script operations yet, and its `/undo` covers edits only.
+This section describes `mason` on Windows. On macOS (Swift) and Linux (C++) the same command has the session and model commands below; it does not have `/compact`, `/agent`, `/commands`, `/queue` or the script operations yet, and its `/undo` covers edits only.
 
 `mason` is the same agent in your terminal. The installer puts it on your PATH; with the portable ZIP, add its `bin` folder to PATH yourself.
 
@@ -210,7 +220,16 @@ A SwiftUI app with the engine written in Swift, in [`macos/`](macos). It has not
 
 ## Linux app
 
-A GTK 4 and libadwaita app with its engine in C++ is being built in [`linux/`](linux). Nothing is released yet.
+A GTK 4 and libadwaita app with its engine in C++, in [`linux/`](linux). It has not been released. It has been built, packaged and run on Ubuntu 24.04, including a real request approved through the app against a local model.
+
+<img src="docs/images/linux-app.png" alt="Mason Agent on Linux: a session's tool calls, an approval card for a shell command, and the Changes pane with a diff">
+
+- **Sessions by project.** A sidebar of projects and sessions, the conversation with each tool call, and answers with Markdown and code blocks.
+- **Permissions.** Read-only, Review edits, Workspace edits, or Auto. In Auto, commands run under [bubblewrap](https://github.com/containers/bubblewrap): the system is read-only, only the project and a private `/tmp` are writable, credential folders such as `~/.ssh` and `~/.aws` are hidden, and there is no network. Where bubblewrap cannot create a sandbox, Auto refuses to run commands instead of running them unprotected.
+- **Approvals.** Each edit shows its diff before it is applied. **Always Allow…** saves a rule for that command prefix or folder in the project.
+- **Changes.** One diff per changed file, with undo and redo of the latest request's edits. Files changed by commands are not tracked yet.
+- **Models.** Running local servers, every GGUF file on the computer with what the agent can do with it, and Hugging Face search with a verdict on each result. It installs the official llama.cpp build (Vulkan when a GPU and the Vulkan loader are present, otherwise CPU), downloads a build you choose, verifies both against their published SHA-256, and starts the model. A model Mason starts stops when Mason quits.
+- **`mason` in the terminal.** The same session, approvals and `/models` commands as the other platforms.
 
 ## Build from source
 
@@ -259,6 +278,19 @@ Scripts/build-app.sh        # universal app, .zip and .pkg in macos/dist
 ```
 
 `MasonCore` and the `mason` tool use Foundation only, so they also build and pass their tests on Linux with the Swift toolchain. The SwiftUI app builds on macOS only. The [macOS workflow](.github/workflows/macos.yml) runs the tests, builds the packages and starts the app on a Mac runner.
+
+### Linux
+
+On Ubuntu 24.04, with the packages listed under [Install](#linux):
+
+```sh
+cd linux
+meson setup builddir && meson compile -C builddir && meson test -C builddir
+./builddir/mason                # the command line
+./builddir/mason-agent          # the app
+```
+
+`-Dapp=false` builds only the engine and `mason`, without GTK. [`linux/packaging/Dockerfile.build`](linux/packaging/Dockerfile.build) is the same environment as a container, and the [Linux workflow](.github/workflows/linux.yml) builds, tests, packages and starts the app on each change. The sandbox tests run real commands under bubblewrap where it can create a sandbox, and otherwise check that Auto refuses.
 
 ## Privacy
 
