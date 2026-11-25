@@ -11,5 +11,11 @@
     <Compile Include="../../src/MasonAgent/AiChat.cs" Link="AiChat.cs" />
     <Compile Include="../../src/MasonAgent/AiConnections.cs" Link="AiConnections.cs" />
     <Compile Include="../../src/MasonAgent/HubModels.cs" Link="HubModels.cs" />
+    <Compile Include="../../src/MasonAgent/GgufHeader.cs" Link="GgufHeader.cs" />
+    <Compile Include="../../src/MasonAgent/ModelCompatibility*.cs" Link="%(Filename)%(Extension)" />
+    <Compile Include="../../src/MasonAgent/ModelDiscovery.cs" Link="ModelDiscovery.cs" />
+    <Compile Include="../../src/MasonAgent/ModelAdapters.cs" Link="ModelAdapters.cs" />
+    <Compile Include="../../src/MasonAgent/LlamaRuntime.cs" Link="LlamaRuntime.cs" />
+    <EmbeddedResource Include="../../scripts/ModelAdapters.json" LogicalName="Mason.ModelAdapters.json" />
   </ItemGroup>
 </Project>

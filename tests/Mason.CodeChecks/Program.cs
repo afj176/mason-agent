@@ -42,6 +42,9 @@ if(args.Length==6 && args[0]=="--evaluate-empty-project" && args[4]=="--request-
 {
     await HarnessRecoveryChecks.EvaluateEmptyProject(args[1],args[2],Path.GetFullPath(args[3]),requestText:File.ReadAllText(args[5]));return;
 }
+if(args.Length==2 && args[0]=="--model-catalog-checks"){
+    await ModelCatalogChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
+}
 if(args.Length==2 && args[0]=="--harness-contract-checks"){
     await HarnessContractChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
 }
@@ -437,6 +440,7 @@ try
     }
     await HarnessRecoveryChecks.Run(root, Check);
     await HarnessContractChecks.Run(root, Check);
+    await ModelCatalogChecks.Run(root, Check);
     if (OperatingSystem.IsWindows()) await HarnessRecoveryChecks.CheckNamedTests(root,Check);
     await CodingCompactionChecks.Run(root, workspace, Check);
     await CodingPanelChecks.Run(root, workspace, Check);

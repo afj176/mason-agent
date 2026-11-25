@@ -9,16 +9,28 @@ namespace Mason;
 
 public sealed record HubModel(string Id, string Task, string[] Tags, long Downloads, string Updated)
 {
+    public string Library { get; init; } = "";
+    /// <summary>GGUF architecture or Transformers model_type, when the Hub reports one.</summary>
+    public string Architecture { get; init; } = "";
+    public long Parameters { get; init; }
+    public long Likes { get; init; }
+    public bool Gated { get; init; }
     public string Name => Id.Split('/').Last();
     public string Publisher => Id.Contains('/') ? Id.Split('/')[0] : "";
-    public string Format => Tags.Contains("gguf") ? "GGUF" : Tags.Contains("safetensors") ? "Safetensors" : "Inspect files";
-    public string Capability => Task switch { "text-generation" => "Chat", "sentence-similarity" or "feature-extraction" => "Embeddings", "text-ranking" => "Reranking", _ => string.IsNullOrEmpty(Task) ? "Inspect model card" : Task };
+    public string Format => Tags.Contains("gguf") ? "GGUF" : Tags.Contains("mlx") || Library == "mlx" ? "MLX" : Tags.Contains("safetensors") ? "Safetensors" : Tags.Contains("onnx") ? "ONNX" : "Inspect files";
+    public AgentRole Role => ModelCompatibility.Classify(Task, Tags, Id, Library);
+    public string Inputs => Task switch { "image-text-to-text" => "Text + image", "audio-text-to-text" => "Text + audio", "video-text-to-text" => "Text + video", "any-to-any" => "Multimodal", _ => Tags.Contains("audio-text-to-text") ? "Text + audio" : "Text" };
+    public string Size => Parameters <= 0 ? "" : Parameters >= 1_000_000_000 ? $"{Parameters / 1e9:0.#}B" : $"{Parameters / 1e6:0}M";
+    public string Signals => Compact(Downloads) + " downloads" + (Likes > 0 ? " · " + Compact(Likes) + " likes" : "");
+    static string Compact(long n) => n >= 1_000_000 ? $"{n / 1e6:0.#}M" : n >= 1000 ? $"{n / 1e3:0.#}k" : n.ToString();
 }
 public sealed record HubFile(string Path, long Size, string Hash, bool Lfs);
 public sealed record HubVariant(string Name, string Format, HubFile[] Files, string Note)
 {
+    public AgentRole Role { get; init; } = AgentRole.Implementer;
     public long Bytes => Files.Sum(f => f.Size);
-    public override string ToString() => Name + " · " + HubFormat.Size(Bytes);
+    public string Quality => ModelCompatibility.QuantQuality(Name);
+    public override string ToString() => Name + " · " + HubFormat.Size(Bytes) + (Quality.Length > 0 ? " · " + Quality : "");
 }
 public sealed record HubRepository(string Id, string Revision, string License, bool Gated, HubVariant[] Variants);
 public static class HubFormat
@@ -104,22 +116,71 @@ public sealed class HubClient : IDisposable
         if (response.Headers.TryGetValues("Link", out var links)) foreach (var link in links.SelectMany(l => l.Split(','))) { var match = Regex.Match(link, "<([^>]+)>;\\s*rel=\"next\""); if (match.Success) next = match.Groups[1].Value; }
         return (JsonDocument.Parse(buffer.ToArray()), next);
     }
-    public async Task<HubModel[]> Search(string query, string publisher, string format, CancellationToken ct)
+    public static readonly string[] Publishers = ["unsloth", "ggml-org", "bartowski", "lmstudio-community", "Qwen", "google", "mistralai", "microsoft", "nomic-ai", "BAAI"];
+    const string Fields = "&expand[]=pipeline_tag&expand[]=tags&expand[]=downloads&expand[]=likes&expand[]=lastModified&expand[]=library_name&expand[]=gguf&expand[]=safetensors&expand[]=config&expand[]=gated";
+    /// <summary>Every matching repository is returned. Compatibility is explained per result, never used to hide it.</summary>
+    public async Task<HubModel[]> Search(string query, string publisher, string format, CancellationToken ct, string sort = "downloads")
     {
-        query=query.Trim();
-        if(Regex.IsMatch(query,"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+        query = query.Trim();
+        if (Uri.TryCreate(query, UriKind.Absolute, out var page) && page.Host is "huggingface.co" or "hf.co" && page.AbsolutePath.Trim('/').Split('/') is [var owner, var name, ..]) query = owner + "/" + name;
+        string? author = Publishers.FirstOrDefault(p => p.Equals(publisher, StringComparison.OrdinalIgnoreCase));
+        bool Keep(HubModel m) => (author == null || m.Publisher.Equals(author, StringComparison.OrdinalIgnoreCase)) && (format is not ("GGUF" or "Safetensors") || m.Format == format);
+        string Filters() => (author == null ? "" : "&author=" + author) + (format is "GGUF" or "Safetensors" ? "&filter=" + format.ToLowerInvariant() : "");
+        if (Regex.IsMatch(query, "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
         {
-            HubFormat.Repo(query);var direct=await Json(new Uri("https://huggingface.co/api/models/"+query),ct).ConfigureAwait(false);using var doc=direct.Document;
-            var entry=ReadModel(doc.RootElement);return (publisher!="Unsloth"||entry.Publisher.Equals("unsloth",StringComparison.OrdinalIgnoreCase))&&(format is not("GGUF" or "Safetensors")||entry.Format==format)?[entry]:[];
+            HubFormat.Repo(query);
+            HubModel? exact = null;
+            try { var direct = await Json(new Uri("https://huggingface.co/api/models/" + query + "?" + Fields.TrimStart('&')), ct).ConfigureAwait(false); using var doc = direct.Document; exact = ReadModel(doc.RootElement); }
+            catch (IOException) { }
+            // An exact repository also lists its quantizations and adapters, so local builds are one click away.
+            var derived = exact == null ? Array.Empty<HubModel>() : await List("&filter=" + Uri.EscapeDataString("base_model:quantized:" + exact.Id) + Filters(), "downloads", ct).ConfigureAwait(false);
+            var adapters = exact == null ? Array.Empty<HubModel>() : await List("&filter=" + Uri.EscapeDataString("base_model:adapter:" + exact.Id) + Filters(), "downloads", ct, 10).ConfigureAwait(false);
+            var fallback = exact != null ? Array.Empty<HubModel>() : await List("&search=" + Uri.EscapeDataString(query.Split('/')[1]) + Filters(), sort, ct).ConfigureAwait(false);
+            return new[] { exact }.OfType<HubModel>().Concat(derived).Concat(adapters).Concat(fallback).Where(Keep).DistinctBy(m => m.Id, StringComparer.OrdinalIgnoreCase).ToArray();
         }
-        var url = "https://huggingface.co/api/models?limit=40&full=true&sort=downloads&direction=-1&search=" + Uri.EscapeDataString(query.Trim());
-        if (publisher == "Unsloth") url += "&author=unsloth";
-        if (format is "GGUF" or "Safetensors") url += "&filter=" + format.ToLowerInvariant();
-        var result = await Json(new Uri(url), ct).ConfigureAwait(false); using var document = result.Document;
+        return await List((query.Length == 0 ? "" : "&search=" + Uri.EscapeDataString(query)) + Filters(), sort, ct).ConfigureAwait(false);
+    }
+    /// <summary>Landing lists: what is trending for one agent job.</summary>
+    public Task<HubModel[]> Trending(string pipelineTag, CancellationToken ct, string filter = "") =>
+        List((pipelineTag.Length == 0 ? "" : "&pipeline_tag=" + Uri.EscapeDataString(pipelineTag)) + (filter.Length == 0 ? "" : "&filter=" + Uri.EscapeDataString(filter)), "trendingScore", ct, 24);
+    async Task<HubModel[]> List(string parameters, string sort, CancellationToken ct, int limit = 50)
+    {
+        if (sort is not ("downloads" or "likes" or "lastModified" or "trendingScore" or "createdAt")) sort = "downloads";
+        var result = await Json(new Uri($"https://huggingface.co/api/models?limit={limit}&sort={sort}&direction=-1" + parameters + Fields), ct).ConfigureAwait(false); using var document = result.Document;
         return document.RootElement.EnumerateArray().Select(ReadModel).Where(m => m.Id.Contains('/')).ToArray();
     }
-    static HubModel ReadModel(JsonElement m)=>new(m.GetProperty("id").GetString()!,String(m,"pipeline_tag"),m.TryGetProperty("tags",out var tags)?tags.EnumerateArray().Select(t=>t.GetString()??"").ToArray():[],m.TryGetProperty("downloads",out var d)?d.GetInt64():0,String(m,"lastModified"));
+    static HubModel ReadModel(JsonElement m)
+    {
+        var tags = m.TryGetProperty("tags", out var t) && t.ValueKind == JsonValueKind.Array ? t.EnumerateArray().Select(x => x.GetString() ?? "").ToArray() : [];
+        long Long(JsonElement e, string key) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n) ? n : 0;
+        var gguf = m.TryGetProperty("gguf", out var g) && g.ValueKind == JsonValueKind.Object ? g : default;
+        var tensors = m.TryGetProperty("safetensors", out var st) && st.ValueKind == JsonValueKind.Object ? st : default;
+        var config = m.TryGetProperty("config", out var c) && c.ValueKind == JsonValueKind.Object ? c : default;
+        string architecture = gguf.ValueKind == JsonValueKind.Object ? String(gguf, "architecture") : "";
+        if (architecture.Length == 0 && config.ValueKind == JsonValueKind.Object) architecture = String(config, "model_type");
+        bool gated = m.TryGetProperty("gated", out var gate) && gate.ValueKind is not (JsonValueKind.False or JsonValueKind.Null or JsonValueKind.Undefined);
+        return new(m.GetProperty("id").GetString()!, String(m, "pipeline_tag"), tags, m.TryGetProperty("downloads", out var d) && d.ValueKind == JsonValueKind.Number ? d.GetInt64() : 0, String(m, "lastModified"))
+        { Library = String(m, "library_name"), Architecture = architecture, Parameters = Math.Max(Long(gguf, "total"), Long(tensors, "total")), Likes = m.TryGetProperty("likes", out var l) && l.ValueKind == JsonValueKind.Number ? l.GetInt64() : 0, Gated = gated };
+    }
     static string String(JsonElement e, string key) => e.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
+    /// <summary>Plain-text model card for the inspector. Front matter, HTML, images and link targets are dropped.</summary>
+    public async Task<string> Readme(string id, string revision, CancellationToken ct)
+    {
+        using var response = await Send(FileUrl(id, revision, "README.md"), 0, ct).ConfigureAwait(false);
+        var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        return CardText(text);
+    }
+    public static string CardText(string text)
+    {
+        if (text.Length > 200_000) text = text[..200_000];
+        text = text.ReplaceLineEndings("\n");
+        text = Regex.Replace(text, @"\A---\n[\s\S]*?\n---\n", "");
+        text = Regex.Replace(text, @"<[^>]{1,400}>", "");
+        text = Regex.Replace(text, @"!\[[^\]]*\]\([^)]*\)", "");
+        text = Regex.Replace(text, @"\[([^\]]+)\]\([^)]*\)", "$1");
+        text = Regex.Replace(text, @"\n{3,}", "\n\n");
+        return text.Trim();
+    }
     public async Task<HubRepository> Inspect(string id, CancellationToken ct)
     {
         HubFormat.Repo(id);
@@ -162,12 +223,35 @@ public sealed class HubClient : IDisposable
     public static HubVariant[] Variants(IEnumerable<HubFile> source)
     {
         var files = source.ToArray(); var variants = new List<HubVariant>();
-        var ggufs = files.Where(f => f.Path.EndsWith(".gguf",StringComparison.OrdinalIgnoreCase));
+        var ggufs = files.Where(f => f.Path.EndsWith(".gguf",StringComparison.OrdinalIgnoreCase)).ToArray();
+        static bool IsProjector(HubFile f) => System.IO.Path.GetFileName(f.Path).Contains("mmproj", StringComparison.OrdinalIgnoreCase);
+        var projectors = ggufs.Where(IsProjector).ToArray();
+        if (projectors.Length > 0 && ggufs.Any(f => !IsProjector(f))) ggufs = ggufs.Where(f => !IsProjector(f)).Concat(projectors.OrderBy(p => System.IO.Path.GetFileNameWithoutExtension(p.Path).EndsWith("-F16", StringComparison.OrdinalIgnoreCase) ? 0 : System.IO.Path.GetFileNameWithoutExtension(p.Path).EndsWith("-BF16", StringComparison.OrdinalIgnoreCase) ? 1 : 2).Take(1)).ToArray();
+        // Vision models need their projector beside the weights; prefer an exact name match, then F16, BF16, F32 in the same folder.
+        HubFile? Projector(HubFile weights)
+        {
+            string folder = weights.Path.Contains('/') ? weights.Path[..weights.Path.LastIndexOf('/')] : "";
+            var near = projectors.Where(p => (p.Path.Contains('/') ? p.Path[..p.Path.LastIndexOf('/')] : "") == folder).ToArray();
+            return near.FirstOrDefault(p => System.IO.Path.GetFileName(p.Path).Equals("mmproj-" + System.IO.Path.GetFileName(weights.Path), StringComparison.OrdinalIgnoreCase))
+                ?? new[] { "F16", "BF16", "F32" }.Select(precision => near.FirstOrDefault(p => System.IO.Path.GetFileNameWithoutExtension(p.Path).EndsWith("-" + precision, StringComparison.OrdinalIgnoreCase))).OfType<HubFile>().FirstOrDefault()
+                ?? near.OrderBy(p => p.Size).FirstOrDefault();
+        }
         foreach(var group in ggufs.GroupBy(f=>(Name:Regex.Replace(f.Path,@"-\d{5}-of-\d{5}\.gguf$",".gguf",RegexOptions.IgnoreCase),Split:Regex.IsMatch(f.Path,@"-\d{5}-of-\d{5}\.gguf$",RegexOptions.IgnoreCase))))
         {
             var ordered=group.OrderBy(f=>f.Path,StringComparer.Ordinal).ToArray(); var split=Regex.Match(ordered[0].Path,@"-(\d{5})-of-(\d{5})\.gguf$",RegexOptions.IgnoreCase);
             if(split.Success && (int.Parse(split.Groups[2].Value)!=ordered.Length || ordered.Where((f,i)=>!f.Path.EndsWith($"-{i+1:00000}-of-{ordered.Length:00000}.gguf",StringComparison.OrdinalIgnoreCase)).Any())) continue;
-            variants.Add(new(group.Key.Name+(split.Success?" (split)":""),"GGUF",ordered,split.Success?"Includes every shard. Split GGUF is inventory-only in the current local serving adapter.":group.Key.Name.Contains("mmproj",StringComparison.OrdinalIgnoreCase)?"Projection companion file; not a standalone chat model.":"llama.cpp · compatibility checked on start"));
+            var role = ModelCompatibility.ClassifyGguf(null, System.IO.Path.GetFileName(ordered[0].Path));
+            var projector = role is AgentRole.Implementer ? Projector(ordered[0]) : null;
+            string note = role switch
+            {
+                AgentRole.Projector => "Vision companion file. It is bundled with each chat variant; download it alone only to add vision to weights you already have.",
+                AgentRole.Draft => "Draft model for speculative decoding. Start the main model with this as its draft for faster agent turns.",
+                AgentRole.CodeSearch => "Embeddings model · powers the agent's semantic code search.",
+                AgentRole.Reranker => "Reranker · reorders the agent's code search results.",
+                AgentRole.Adapter => "LoRA adapter · loads on top of its base model.",
+                _ => split.Success ? "Every shard is included; llama.cpp loads them from the first file." : "Runs in llama.cpp" + (projector != null ? " with image input (projector " + System.IO.Path.GetFileName(projector.Path) + " included)." : ".")
+            };
+            variants.Add(new(group.Key.Name + (split.Success ? " (split)" : "") + (projector == null ? "" : " + vision"), "GGUF", projector == null ? ordered : [.. ordered, projector], note) { Role = projector != null ? AgentRole.Vision : role });
         }
         // Only coherent root bundles are offered; custom code and unrelated binary formats are never executed or fetched.
         var rootWeights=files.Where(f=>!f.Path.Contains('/')&&f.Path.EndsWith(".safetensors",StringComparison.OrdinalIgnoreCase)).ToArray();

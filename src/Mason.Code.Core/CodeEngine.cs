@@ -477,7 +477,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         : error.Message;
                     result = new(activity.Result);
                 }
-                bool successfulRead = activity.State == "Completed" && action.Tool is ("read_file" or "open_file" or "list_files" or "search_text" or "search_next" or "read_lines");
+                bool successfulRead = activity.State == "Completed" && action.Tool is ("read_file" or "open_file" or "list_files" or "search_text" or "search_next" or "read_lines" or "semantic_search");
                 bool fileRead = successfulRead && action.Tool is ("read_file" or "open_file");
                 if (fileRead)
                 {
@@ -913,6 +913,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 CodeProtocol.Exact(a,"query");
                 if (!services.Enabled.Contains(tool)) throw new InvalidOperationException("Enable the code tool group first.");
                 return new(JsonSerializer.Serialize(await services.Map.Query(S(a,"query"),16,ct)));
+            case "semantic_search":
+                CodeProtocol.Exact(a,"query","path");
+                var semantic=CodeSemanticIndex.Provider?.Invoke()??throw new InvalidOperationException("No code search model is connected. Use repository_map or search_text instead.");
+                return new(JsonSerializer.Serialize(await CodeSemanticIndex.Search(scope,semantic,S(a,"query"),S(a,"path"),10,ct),JsonSerializerOptions.Web));
             case "delegate_readonly":
                 CodeProtocol.Exact(a,"question","paths");
                 if(model is not ICodeInvestigator worker || ++services.WorkerCalls>4)throw new InvalidOperationException("Read-only worker unavailable or the four-assignment run budget was reached.");

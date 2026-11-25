@@ -8,6 +8,7 @@ public static class ModelAdapters
     static readonly Dictionary<string,string> Families = JsonSerializer.Deserialize<Dictionary<string,string>>(
         typeof(ModelAdapters).Assembly.GetManifestResourceStream("Mason.ModelAdapters.json")!)!;
 
+    public static IReadOnlyCollection<string> TextFamilies => Families.Keys;
     public static bool UsesPython(LocalModel model) => model.Task != "Chat" || model.Format != "GGUF";
     public static bool IsQuantized(LocalModel model) => model.Format.Contains("GPTQ",StringComparison.Ordinal) || model.Format.Contains("AWQ",StringComparison.Ordinal);
 
