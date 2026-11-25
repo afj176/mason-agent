@@ -13,18 +13,14 @@ public sealed partial class MainWindow
     string currentRoute = "Home";
     Func<bool>? modelScanBusy;
     Action? modelScanCancel;
-    static Border SurfaceCard(FrameworkElement child)
-    {
-        var card=(Border)Microsoft.UI.Xaml.Markup.XamlReader.Load("<Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource CardBackgroundFillColorDefaultBrush}' BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='1' CornerRadius='8' Padding='16'/>");
-        card.Child=child;return card;
-    }
+    static Border SurfaceCard(FrameworkElement child) => new() { Child = child, Style = Token("MasonCard") };
     static ScrollViewer ScrollPage(FrameworkElement child)=>new() { Content=child,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,HorizontalScrollBarVisibility=ScrollBarVisibility.Disabled };
     static FrameworkElement InspectorLayout(FrameworkElement main,FrameworkElement inspector,string title="Inspector",Action<bool>? focusChanged=null,Action<Action<string>>? titleReady=null)
     {
         var grid=new Grid {ColumnSpacing=12,RowSpacing=10};
         grid.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});grid.ColumnDefinitions.Add(new(){Width=new GridLength(400)});
         grid.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});grid.RowDefinitions.Add(new(){Height=GridLength.Auto});
-        var caption=Text(title,17);titleReady?.Invoke(next=>caption.Text=next);
+        var caption=Text(title,20);titleReady?.Invoke(next=>caption.Text=next);
         var card=SurfaceCard(Vertical(caption,inspector));card.Padding=new Thickness(16,12,16,12);
         grid.Children.Add(main);grid.Children.Add(card);Grid.SetColumn(card,1);
         bool compact=false,focused=false;
@@ -37,7 +33,7 @@ public sealed partial class MainWindow
         => FormGrid(680,elements);
     static Grid FormGrid(double narrowWidth,params FrameworkElement[] elements)
     {
-        var grid=new Grid{ColumnSpacing=16,RowSpacing=10};grid.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});grid.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
+        var grid=new Grid{ColumnSpacing=16,RowSpacing=16};grid.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});grid.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
         foreach(var element in elements)grid.Children.Add(element);
         void Arrange(){bool narrow=grid.ActualWidth<narrowWidth;grid.RowDefinitions.Clear();for(int i=0;i<(narrow?elements.Length:(elements.Length+1)/2);i++)grid.RowDefinitions.Add(new(){Height=GridLength.Auto});for(int i=0;i<elements.Length;i++){Grid.SetRow(elements[i],narrow?i:i/2);Grid.SetColumn(elements[i],narrow?0:i%2);Grid.SetColumnSpan(elements[i],narrow?2:1);}}
         grid.SizeChanged+=(_,_)=>Arrange();Arrange();return grid;

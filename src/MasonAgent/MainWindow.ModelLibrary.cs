@@ -142,9 +142,11 @@ public sealed partial class MainWindow
         running.HorizontalContentAlignment=HorizontalAlignment.Stretch;
         running.ItemTemplate=(DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><Border Padding='16' Margin='0,4' CornerRadius='8' BorderThickness='1' Background='{ThemeResource CardBackgroundFillColorDefaultBrush}' BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}'><StackPanel Spacing='6'><TextBlock Text='{Binding Model.Name}' FontSize='17' FontWeight='SemiBold' TextWrapping='Wrap'/><TextBlock Text='{Binding Model.Role}'/><TextBlock Text='{Binding Profile.Endpoint}' FontSize='13' Foreground='{ThemeResource TextFillColorSecondaryBrush}'/></StackPanel></Border></DataTemplate>");
         var serverSummary=Text("Choose a running server to inspect or stop it.",14);
-        var serverDetail=new TextBox { Header="Server details",IsReadOnly=true,AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,MinHeight=140 };
+        var serverDetail=new ContentControl { HorizontalContentAlignment=HorizontalAlignment.Stretch };
         var locations=new ListView { MaxHeight=340,SelectionMode=ListViewSelectionMode.Single };
-        var common=BrandControl(new CheckBox { Content="Include common model folders", IsChecked=settings.IncludeCommon });
+        var common=new ToggleSwitch { Header="Include common model folders", IsOn=settings.IncludeCommon };
+        var embedGguf=new ToggleSwitch { Header="Run GGUF models inside Mason", OnContent="No separate server process", OffContent="Each model in its own process", IsOn=settings.EmbedGguf };
+        ToolTipService.SetToolTip(embedGguf,"One GGUF model at a time runs inside Mason; others start as owned processes. A native llama.cpp crash closes Mason, and an embedded model stops when Mason closes. Clear this to run every model in its own process.");
         var folders=Text("",12);
         var emptyAdd=Button("Add local folder",(_,_)=>openModelLocations?.Invoke());noMatches.Children.Add(Button("Find models",(_,_)=>ShowView(3),true));noMatches.Children.Add(emptyAdd);
         var noMatchesMortar = EmptyState(noMatches, MoodChecking, "nothing here yet");
@@ -159,7 +161,7 @@ public sealed partial class MainWindow
         {
             if(!readable) throw new InvalidOperationException("Repair model-library.json before changing settings; the unreadable file is preserved.");
             var saved=ModelLibrarySettings.ReadSaved(Path.Combine(Store.Root,"model-library.json"))??settings;
-            settings=(settings with { LlamaServer=llama.Text,Python=python.Text,IncludeCommon=common.IsChecked==true,QuantizedPython=quantizedPython.Text }).MergeRuntimeSelection(saved,editedRuntime);
+            settings=(settings with { LlamaServer=llama.Text,Python=python.Text,IncludeCommon=common.IsOn,QuantizedPython=quantizedPython.Text,EmbedGguf=embedGguf.IsOn }).MergeRuntimeSelection(saved,editedRuntime);
             Store.Write("model-library.json",settings);
             llama.Text=settings.LlamaServer;python.Text=settings.Python;quantizedPython.Text=settings.QuantizedPython;
         }
@@ -317,7 +319,7 @@ public sealed partial class MainWindow
             if(discovered.Length==0){scanSkeleton.Visibility=Visibility.Visible;noMatches.Visibility=Visibility.Collapsed;}
             try
             {
-                var roots=(common.IsChecked==true ? ModelDiscovery.CommonLocations() : []).Concat(settings.Locations).Concat((modelDownloads?.Snapshot()??[]).Where(j=>j.State=="Ready in library").Select(j=>new ModelLocation("Downloaded · "+j.Repository,j.Folder))).DistinctBy(x=>x.Path,StringComparer.OrdinalIgnoreCase).ToArray();
+                var roots=(common.IsOn ? ModelDiscovery.CommonLocations() : []).Concat(settings.Locations).Concat((modelDownloads?.Snapshot()??[]).Where(j=>j.State=="Ready in library").Select(j=>new ModelLocation("Downloaded · "+j.Repository,j.Folder))).DistinctBy(x=>x.Path,StringComparer.OrdinalIgnoreCase).ToArray();
                 var result=await Task.Run(()=>ModelDiscovery.Scan(roots,ct.Token));
                 result=result with{Models=result.Models.Select(DownloadIdentity).ToArray()};
                 var profiles=await Task.Run(()=>result.Models.Where(x=>x.Launchable).ToDictionary(x=>x.Path,x=>ModelMemory.Read(x,ct.Token),StringComparer.OrdinalIgnoreCase),ct.Token);
@@ -358,7 +360,7 @@ public sealed partial class MainWindow
             }catch(Exception e){await Notice("Runtime",e.Message);}
         }
         var runtimeSettings=new Expander { Header="Runtime setup",HorizontalAlignment=HorizontalAlignment.Stretch,
-            Content=Stack(runtimeStatus,llama,Button("Choose llama-server.exe",async(_,_)=>await PickRuntime(false)),python,Button("Choose Python runtime",async(_,_)=>await PickRuntime(true)),Button("Quantized model setup",(_,_)=>{ShowView(2);if(quantizedSetup!=null){quantizedSetup.IsExpanded=true;selectRuntime?.Invoke(2);}})) };
+            Content=Stack(runtimeStatus,llama,Button("Choose llama-server.exe",async(_,_)=>await PickRuntime(false)),embedGguf,python,Button("Choose Python runtime",async(_,_)=>await PickRuntime(true)),Button("Quantized model setup",(_,_)=>{ShowView(2);if(quantizedSetup!=null){quantizedSetup.IsExpanded=true;selectRuntime?.Invoke(2);}})) };
         start=Button("Start & connect",async(_,_)=>
         {
             if((list.SelectedItem as LibraryEntry)?.File is not ModelLibraryCard card || aiOperation!=null)return;var m=card.Model;
@@ -466,9 +468,18 @@ public sealed partial class MainWindow
         }
         adaptive=Adaptive;
         library.SizeChanged+=(_,_)=>Adaptive();
+        // X2: when a model is chosen, start from the context that fits its memory (Goose sizes context the same way).
+        // A value the user typed for this model is kept until they choose another model.
+        string? fittedFor=null;
+        list.SelectionChanged+=(_,_)=>{
+            if(aiOperation!=null||(list.SelectedItem as LibraryEntry)?.File?.Model is not {} chosen||chosen.Task!="Chat"||chosen.Path==fittedFor)return;
+            if(memoryProfiles.GetValueOrDefault(chosen.Path) is not {} profile)return;
+            var suggested=ModelMemory.Recommend(profile,gpuSample);fittedFor=chosen.Path;
+            device.SelectedIndex=suggested.Gpu?0:1;contextChoice.Value=suggested.Context;
+        };
         list.SelectionChanged+=(_,_)=>Selection();search.TextChanged+=(_,_)=>Render();task.SelectionChanged+=(_,_)=>Render();sort.SelectionChanged+=(_,_)=>Render();resourceKind.SelectionChanged+=(_,_)=>Render();
-        running.SelectionChanged+=(_,_)=> { if(running.SelectedItem is ServedModel s) { serverSummary.Text=$"{s.Model.Task} · {s.Profile.Name}\n{s.Profile.Endpoint} · {(!s.Owner.IsRunning ? "Stopped unexpectedly" : "Running locally")}\n"+string.Join(" · ",s.Profile.Checks.Select(x=>$"{x.Capability}: {x.State}")); serverDetail.Text=$"{s.Model.Name}\n{s.Profile.Endpoint}\nExact model ID: {s.Profile.Model}\nRequested context: {s.Options?.ContextTokens??4096} tokens (model/tokenizer cap also applies)\nPID: {s.Owner.Process.Id}\nRuntime log: {s.Log}\n"+string.Join("\n",s.Profile.Checks.Select(x=>$"{x.Capability}: {x.State} · {x.Detail}")); } };
-        var stop=Button("Stop selected model",async(_,_)=> { if(aiOperation!=null)return;if(running.SelectedItem is not ServedModel s)return;try{modelServing.Stop(s);ResetStoppedProfile(s);Render();Selection();activity.IsOpen=true;serverDetail.Text="Server stopped. The connection remains saved; its capability checks were cleared.";activity.Message="Model stopped. Its saved connection is kept for next time.";}catch(Exception e){await Notice("Stop server",e.Message);} });
+        running.SelectionChanged+=(_,_)=> { if(running.SelectedItem is ServedModel s) { serverSummary.Text=$"{s.Model.Task} · {s.Profile.Name}\n{s.Profile.Endpoint} · {(!s.Owner.IsRunning ? "Stopped unexpectedly" : "Running locally")}\n"+string.Join(" · ",s.Profile.Checks.Select(x=>$"{x.Capability}: {x.State}")); serverDetail.Content=DetailList(("Model",s.Model.Name,false),("Endpoint",s.Profile.Endpoint,true),("Model ID",s.Profile.Model,true),("Context",(s.Options?.ContextTokens??4096).ToString("N0")+" tokens requested",false),("Runs",s.Owner.Embedded?"Inside Mason Agent · no separate server process":"Own process · PID "+s.Owner.ProcessId,false),("Runtime log",s.Log,true),("Checks",string.Join("\n",s.Profile.Checks.Select(x=>$"{x.Capability}: {x.State} · {x.Detail}")),false)); } };
+        var stop=Button("Stop selected model",async(_,_)=> { if(aiOperation!=null)return;if(running.SelectedItem is not ServedModel s)return;try{modelServing.Stop(s);ResetStoppedProfile(s);Render();Selection();activity.IsOpen=true;serverDetail.Content=Muted("Server stopped. The connection remains saved; its capability checks were cleared.",14);activity.Message="Model stopped. Its saved connection is kept for next time.";}catch(Exception e){await Notice("Stop server",e.Message);} });
         stop.IsEnabled=false;
         running.SelectionChanged+=(_,_)=>stop.IsEnabled=running.SelectedItem is ServedModel && aiOperation==null;
         var workflow=new ComboBox {Header="Use this model in",MinWidth=180};
@@ -642,11 +653,83 @@ public sealed partial class MainWindow
         }
         views.SelectionChanged+=(_,_)=>Show();Show();ShowLocations();Render();Selection();
         selectModelView=ShowView;
-        common.Checked+=async(_,_)=>{try{Save();}catch(Exception e){await Notice("Model locations",e.Message);}};
-        common.Unchecked+=async(_,_)=>{try{Save();}catch(Exception e){await Notice("Model locations",e.Message);}};
+        common.Toggled+=async(_,_)=>{try{Save();}catch(Exception e){await Notice("Model locations",e.Message);}};
+        embedGguf.Toggled+=async(_,_)=>{try{Save();}catch(Exception e){await Notice("Runtime setup",e.Message);}};
         refreshModelLibrary=()=>{Render();Selection();};
         cancelScan=Button("Cancel operation",(_,_)=>{scan?.Cancel();aiOperation?.Cancel();});cancelScan.Visibility=Visibility.Collapsed;
-        var headerActions=ScrollTools(Row(Button("Scan library",async(_,_)=>await Scan()),folderTools,Button("Find models",(_,_)=>ShowView(3)),cancelScan));
+        // G2: one-click local setup. Detect the GPU, install the matching llama.cpp build if needed, recommend the
+        // best-quality coding model that fits, download it after confirmation, then start it inside Mason.
+        async Task QuickSetupFlow()
+        {
+            if(aiOperation!=null)return;
+            if(modelHub==null||modelDownloads==null){await Notice("Quick setup","Downloads are unavailable in this window. Another Mason window may own the download queue.");return;}
+            using var ct=new CancellationTokenSource();aiOperation=ct;cancelScan!.Visibility=Visibility.Visible;
+            void Progress(string text){activity.Severity=InfoBarSeverity.Informational;activity.Title="Quick setup";activity.Message=text;activity.IsOpen=true;}
+            try
+            {
+                Progress("Checking this computer…");
+                gpuSample??=await GpuTelemetry.Read(ct.Token);
+                var backend=QuickSetup.Backend(gpuSample);var budget=QuickSetup.BudgetGiB(gpuSample);
+                bool needRuntime=!File.Exists(llama.Text)||EmbeddedLlamaServer.Unavailable(llama.Text)?.Contains("llama-server-impl")==true;
+                LlamaRelease? release=null;
+                using(var http=new HttpClient(new SocketsHttpHandler{AllowAutoRedirect=false}){Timeout=TimeSpan.FromSeconds(30)})
+                    if(needRuntime){Progress("Finding the current llama.cpp release…");release=await LlamaRuntime.Latest(http,ct.Token)??throw new InvalidOperationException("No llama.cpp release for Windows was found.");}
+                Progress("Finding coding models that fit "+budget.ToString("0.0")+" GiB…");
+                var found=await modelHub.Search("coder","","GGUF",ct.Token);
+                var picks=new List<QuickSetup.Choice>();
+                foreach(var candidate in found.Where(m=>m.Role==AgentRole.Implementer&&QuickSetup.Suggestible(m.Id)).OrderByDescending(m=>QuickSetup.Trusted(m.Id)).Take(10))
+                {
+                    try{var repo=await modelHub.Inspect(candidate.Id,ct.Token);if(!repo.Gated&&QuickSetup.Fit(repo,budget) is {} fit)picks.Add(fit);}
+                    catch(Exception e) when(e is IOException or InvalidDataException or HttpRequestException){}
+                    if(picks.Count>=4)break;
+                }
+                picks=QuickSetup.Rank(picks).ToList();
+                if(picks.Count==0)throw new InvalidOperationException("No coding model on Hugging Face fits in "+budget.ToString("0.0")+" GiB. Free GPU memory or choose a model in Discover.");
+                activity.IsOpen=false;
+                var gpuName=gpuSample?.Adapters.FirstOrDefault()?.Name??"No GPU detected";
+                var model=new ComboBox{ItemsSource=picks.Select(p=>p.Repository.Id.Split('/').Last()+" · "+p.Variant.Name+" · "+HubFormat.Size(p.Variant.Bytes)).ToArray(),SelectedIndex=0,MinWidth=300};
+                var reason=new TextBlock{Text=picks[0].Reason,Style=Token("MasonCaptionSecondary")};
+                model.SelectionChanged+=(_,_)=>reason.Text=picks[Math.Max(0,model.SelectedIndex)].Reason;
+                var plan=SettingsPage(
+                    SettingsCard("\uE7F8","This computer",gpuName+" · "+budget.ToString("0.0")+" GiB for the model"),
+                    SettingsCard("\uE9F5","Runtime",needRuntime&&release!=null?$"Install llama.cpp {release.Tag} · {LlamaRuntime.BackendLabel(backend)} · {HubFormat.Size(release.For(backend)?.Sum(a=>a.Size)??0)}":"Use the installed llama.cpp build"),
+                    SettingsCard("\uE943","Coding model",null,model),reason,
+                    SettingsCard("\uE8B7","Saved to",downloadSettings.Folder),
+                    SettingsCard("\uE7EF","Runs inside Mason","No separate server. The model starts when the download is verified."));
+                plan.MaxHeight=440;plan.Padding=new Thickness(0);
+                if(await new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Set up local AI",Content=plan,PrimaryButtonText="Download and start",CloseButtonText="Cancel",DefaultButton=ContentDialogButton.Primary}.ShowAsync()!=ContentDialogResult.Primary)return;
+                if(needRuntime&&release!=null)
+                {
+                    using var http=new HttpClient(new SocketsHttpHandler{AllowAutoRedirect=false}){Timeout=Timeout.InfiniteTimeSpan};
+                    var path=await LlamaRuntime.Install(http,release,backend,message=>DispatcherQueue.TryEnqueue(()=>Progress(message)),ct.Token);
+                    llama.Text=path;Save(0);await RefreshRuntimeFacts();
+                }
+                var pick=picks[Math.Max(0,model.SelectedIndex)];
+                var job=modelDownloads.Enqueue(pick.Repository,pick.Variant,downloadSettings.Folder);
+                while(true)
+                {
+                    var now=modelDownloads.Snapshot().FirstOrDefault(j=>j.Id==job.Id)??throw new InvalidOperationException("The download was removed.");
+                    if(now.State=="Ready in library")break;
+                    if(now.State is "Needs attention" or "Paused")throw new InvalidOperationException("The download stopped ("+now.State+"). Resume it in Downloads.");
+                    Progress("Downloading "+pick.Repository.Id.Split('/').Last()+" · "+now.ProgressText+(now.RateText.Length>0?" · "+now.RateText:""));
+                    await Task.Delay(1000,ct.Token);
+                }
+                Progress("Adding the model to your library…");
+                await Scan();
+                var entry=list.Items.OfType<LibraryEntry>().FirstOrDefault(e=>e.File?.Model.Path.StartsWith(job.Folder,StringComparison.OrdinalIgnoreCase)==true);
+                if(entry==null){Progress("Downloaded. Choose it in My models and select Start & connect.");return;}
+                list.SelectedItem=entry;
+                Progress("Starting "+pick.Repository.Id.Split('/').Last()+" inside Mason…");
+                aiOperation=null;
+                if(start!=null && new Microsoft.UI.Xaml.Automation.Peers.ButtonAutomationPeer(start) is Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider invoke)invoke.Invoke();
+            }
+            catch(OperationCanceledException){Progress("Quick setup cancelled. Anything already installed or downloaded is kept.");}
+            catch(Exception e){activity.Severity=InfoBarSeverity.Error;activity.Title="Quick setup";activity.Message=e.Message;activity.IsOpen=true;}
+            finally{if(aiOperation==ct)aiOperation=null;cancelScan!.Visibility=Visibility.Collapsed;}
+        }
+        var quickSetup=IconButton("\uE945","Quick setup",async(_,_)=>await QuickSetupFlow(),true);
+        ToolTipService.SetToolTip(quickSetup,"Detect your GPU, install llama.cpp if needed, download the best coding model that fits and start it inside Mason.");
+        var headerActions=ScrollTools(Row(quickSetup,Button("Scan library",async(_,_)=>await Scan()),folderTools,Button("Find models",(_,_)=>ShowView(3)),cancelScan));
         var header=new Grid {ColumnSpacing=12};header.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});header.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
         // Header: the page name with the collection summary under it; collection actions on the right.
         summary.Opacity = .8; summary.MaxLines = 2; summary.TextTrimming = TextTrimming.CharacterEllipsis;

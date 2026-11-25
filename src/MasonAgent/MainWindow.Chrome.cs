@@ -20,7 +20,7 @@ public sealed partial class MainWindow
     TitleBar? titleBar;
     readonly AutoSuggestBox titleSearch = new() { PlaceholderText = "Search Mason (Ctrl+K)", QueryIcon = new SymbolIcon(Symbol.Find), MinWidth = 240, MaxWidth = 520, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center };
     List<TitleHit> titleHits = [];
-    readonly Button titleModel = new() { Padding = new Thickness(10, 4, 12, 4), MinHeight = 30, CornerRadius = new CornerRadius(15), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 10, 0), BorderThickness = new Thickness(1) };
+    readonly Button titleModel = new() { Padding = new Thickness(10, 4, 12, 4), MinHeight = 32, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
     readonly DispatcherTimer titleModelTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     string titleModelShown = "";
 
@@ -56,7 +56,7 @@ public sealed partial class MainWindow
             IsPaneToggleButtonVisible = false,
             LeftHeader = Row(brand, BuildRouteSwitcher()),
             Content = BrandControl(titleSearch),
-            RightHeader = titleModel,
+            RightHeader = Row(titleModel, BuildAppSettingsButton()),
             Height = 48
         };
         SetTitleBar(titleBar);
@@ -169,13 +169,8 @@ public sealed partial class MainWindow
         string key = text + "|" + root.ActualTheme;
         if (key == titleModelShown) return;
         titleModelShown = key;
-        bool dark = root.ActualTheme == ElementTheme.Dark;
-        var dot = new Ellipse { Width = 8, Height = 8, VerticalAlignment = VerticalAlignment.Center };
-        if (BrandHighContrast) { dot.Fill = new SolidColorBrush(brandSystemColors.UIElementColor(live.Length > 0 ? UIElementType.Highlight : UIElementType.GrayText)); }
-        else if (live.Length > 0) dot.Fill = new SolidColorBrush(BrandAccentColor(dark));
-        else { dot.Stroke = new SolidColorBrush(dark ? BrandSilver : BrandMuted); dot.StrokeThickness = 1.2; }
-        var label = new TextBlock { Text = text, FontSize = 12, MaxWidth = 220, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-        if (live.Length == 0 && !BrandHighContrast) label.Foreground = new SolidColorBrush(dark ? BrandSilver : BrandMuted);
+        var dot = new Ellipse { Style = Token(live.Length > 0 ? "MasonDotSuccess" : "MasonDotNeutral"), VerticalAlignment = VerticalAlignment.Center };
+        var label = new TextBlock { Text = text, Style = Token(live.Length > 0 ? "MasonCaption" : "MasonCaptionSecondary"), TextWrapping = TextWrapping.NoWrap, MaxWidth = 220, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
         var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         content.Children.Add(dot); content.Children.Add(label);
         titleModel.Content = content;
@@ -214,17 +209,9 @@ public sealed partial class MainWindow
     /// </summary>
     void ApplyShellSurface()
     {
-        // BrandControl(nav) created these dictionaries; NavigationView reads its pane and content brushes from them.
-        foreach (var (theme, dark) in new[] { ("Light", false), ("Default", true) })
-        {
-            var dictionary = (ResourceDictionary)nav.Resources.ThemeDictionaries[theme];
-            dictionary["NavigationViewDefaultPaneBackground"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-            // The pane that slides over the page in the narrow icon-rail layout keeps a material of its own.
-            var surface = dark ? BrandNight : BrandPaper;
-            dictionary["NavigationViewExpandedPaneBackground"] = new AcrylicBrush { TintColor = surface, TintOpacity = .82, TintLuminosityOpacity = .9, FallbackColor = surface };
-            dictionary["NavigationViewContentBackground"] = new SolidColorBrush(surface);
-            dictionary["NavigationViewContentGridBorderBrush"] = new SolidColorBrush(BrandLine(dark));
-        }
+        // Mica shows through the pane and title bar. The content area keeps NavigationView's own layer
+        // (LayerFillColorDefaultBrush over Mica, CardStroke edge, 8 px corner where it meets the pane).
+        nav.Resources["NavigationViewDefaultPaneBackground"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         nav.Resources["NavigationViewContentGridBorderThickness"] = new Thickness(1, 1, 0, 0);
         nav.Resources["NavigationViewContentGridCornerRadius"] = new CornerRadius(8, 0, 0, 0);
     }

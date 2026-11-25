@@ -25,7 +25,7 @@ public sealed record ModelInventory(LocalModel[] Models, string[] Notes, int Fil
 {
     public bool RedirectionBlocked { get; init; }
 }
-public sealed record ModelLibrarySettings(List<ModelLocation> Locations, string LlamaServer, string Python, bool IncludeCommon = true, string QuantizedPython = "")
+public sealed record ModelLibrarySettings(List<ModelLocation> Locations, string LlamaServer, string Python, bool IncludeCommon = true, string QuantizedPython = "", bool EmbedGguf = true)
 {
     public static ModelLibrarySettings? ReadSaved(string path)
     {

@@ -31,7 +31,7 @@ internal static class CodeMcp
                 uri.Scheme!="http"||!IPAddress.TryParse(uri.Host.Trim('[',']'),out var ip)||!IPAddress.IsLoopback(ip)||uri.UserInfo.Length!=0||uri.Fragment.Length!=0)
                 throw new InvalidDataException("Register MCP servers by literal HTTP loopback address and explicit tool names.");
     }
-    internal static async Task<string> Request(McpRegistration server,string? tool,JsonElement arguments,CancellationToken ct,bool resources=false,string? uri=null)
+    internal static async Task<string> Request(McpRegistration server,string? tool,JsonElement arguments,CancellationToken ct,bool resources=false,string? uri=null,bool discover=false)
     {
         if(tool!=null&&!server.Tools.Contains(tool,StringComparer.Ordinal))throw new UnauthorizedAccessException("Tool is outside the registered allowlist.");
         if(uri!=null && server.Resources?.Contains(uri,StringComparer.Ordinal)!=true)throw new UnauthorizedAccessException("Resource is outside the registered allowlist.");
@@ -93,8 +93,8 @@ internal static class CodeMcp
             var found=new List<JsonElement>();string? cursor=null;
             for(int page=0;page<16;page++){
                 var listed=await Send(resources?"resources/list":"tools/list",cursor==null?(object)new{}:new{cursor},2+page);
-                if(resources)found.AddRange(listed.GetProperty("resources").EnumerateArray().Where(t=>server.Resources?.Contains(t.GetProperty("uri").GetString()!)==true));
-                else found.AddRange(listed.GetProperty("tools").EnumerateArray().Where(t=>server.Tools.Contains(t.GetProperty("name").GetString())));
+                if(resources)found.AddRange(listed.GetProperty("resources").EnumerateArray().Where(t=>discover||server.Resources?.Contains(t.GetProperty("uri").GetString()!)==true));
+                else found.AddRange(listed.GetProperty("tools").EnumerateArray().Where(t=>discover||server.Tools.Contains(t.GetProperty("name").GetString())));
                 cursor=listed.TryGetProperty("nextCursor",out var token)?token.GetString():null;
                 if(string.IsNullOrEmpty(cursor))return JsonSerializer.Serialize(found);
             }
@@ -102,5 +102,37 @@ internal static class CodeMcp
         }finally{
             if(session!=null)try{using var end=new HttpRequestMessage(HttpMethod.Delete,server.Endpoint);end.Headers.Add("Mcp-Session-Id",session);end.Headers.Add("MCP-Protocol-Version","2025-06-18");using var closed=await client.SendAsync(end,ct);}catch(HttpRequestException){}
         }
+    }
+}
+
+public sealed record McpToolInfo(string Name,string Description);
+
+/// <summary>Management surface for the profile's mcp-servers.json: every registration including disabled ones,
+/// validated saves, and discovery of a server's tools so the user can choose the allowlist.</summary>
+public static class CodeMcpRegistry
+{
+    static string Path_(string root)=>Path.Combine(root,"mcp-servers.json");
+    public static List<McpRegistration> ReadAll(string root)
+    {
+        var path=Path_(root);
+        if(!File.Exists(path))return [];
+        return JsonSerializer.Deserialize<List<McpRegistration>>(File.ReadAllText(path),new JsonSerializerOptions{PropertyNameCaseInsensitive=true})??[];
+    }
+    public static void Save(string root,IReadOnlyList<McpRegistration> servers)
+    {
+        if(servers.Count>16||servers.Select(s=>s.Name).Distinct(StringComparer.Ordinal).Count()!=servers.Count)throw new InvalidDataException("Register up to 16 MCP servers with distinct names.");
+        foreach(var s in servers.Where(s=>s.Enabled))CodeMcp.Validate(s);
+        Directory.CreateDirectory(root);
+        var path=Path_(root);var temp=path+"."+Guid.NewGuid().ToString("N")[..8]+".tmp";
+        var json=JsonSerializer.Serialize(servers,new JsonSerializerOptions{WriteIndented=true,DefaultIgnoreCondition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull});
+        if(Encoding.UTF8.GetByteCount(json)>32768)throw new InvalidDataException("MCP configuration exceeds 32 KiB.");
+        File.WriteAllText(temp,json);File.Move(temp,path,true);
+    }
+    /// <summary>Connects once and lists every tool the server offers, regardless of the current allowlist.</summary>
+    public static async Task<McpToolInfo[]> Discover(McpRegistration server,CancellationToken ct)
+    {
+        CodeMcp.Validate(server);
+        using var doc=JsonDocument.Parse(await CodeMcp.Request(server,null,default,ct,discover:true));
+        return doc.RootElement.EnumerateArray().Select(t=>new McpToolInfo(t.GetProperty("name").GetString()??"",t.TryGetProperty("description",out var d)&&d.ValueKind==JsonValueKind.String?d.GetString()??"":"")).ToArray();
     }
 }

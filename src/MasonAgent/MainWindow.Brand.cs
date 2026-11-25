@@ -31,55 +31,23 @@ public sealed partial class MainWindow
     static Color BrandAccentColor(bool dark) => dark ? BrandBright : BrandViolet;
     static Color BrandLine(bool dark) => dark ? BrandLineDark : BrandLineLight;
 
-    /// <summary>A display heading in Manrope. Use for page and panel titles only.</summary>
+    /// <summary>A page or panel title on the type ramp. Title sizes and above use Manrope, the brand display face.</summary>
     static TextBlock Heading(string text, double size = 22)
     {
         var label = Text(text, size);
-        label.FontFamily = DisplayFont;
-        label.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        if (size >= 25) label.FontFamily = DisplayFont;
         return label;
     }
 
-    /// <summary>Secondary text in the muted token colour (silver on dark).</summary>
-    static TextBlock Muted(string text, double size = 13)
-    {
-        var label = new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap };
-        void Theme()
-        {
-            if (BrandHighContrast) { label.ClearValue(TextBlock.ForegroundProperty); return; }
-            label.Foreground = new SolidColorBrush(label.ActualTheme == ElementTheme.Dark ? BrandSilver : BrandMuted);
-        }
-        label.Loaded += (_, _) => Theme();
-        label.ActualThemeChanged += (_, _) => Theme();
-        Theme();
-        return label;
-    }
+    /// <summary>Secondary text: Caption at 12 and below, Body above, in the theme's secondary text colour.</summary>
+    static TextBlock Muted(string text, double size = 13) => new() { Text = text, Style = Token(size < 12.5 ? "MasonCaptionSecondary" : "MasonBodySecondary") };
 
-    /// <summary>A token surface: white on paper in light, raised on night in dark.</summary>
+    /// <summary>A card on the content layer: translucent card fill, 1 px stroke, 8 px corners (Fluent layering).</summary>
     static Border BrandSurface(UIElement? content, Thickness? padding = null, double radius = RadiusSmall)
     {
-        var surface = new Border
-        {
-            Child = content,
-            Padding = padding ?? new Thickness(16),
-            CornerRadius = new CornerRadius(radius),
-            BorderThickness = new Thickness(1)
-        };
-        void Theme()
-        {
-            bool dark = surface.ActualTheme == ElementTheme.Dark;
-            if (BrandHighContrast)
-            {
-                surface.Background = new SolidColorBrush(brandSystemColors.UIElementColor(UIElementType.Window));
-                surface.BorderBrush = new SolidColorBrush(brandSystemColors.UIElementColor(UIElementType.WindowText));
-                return;
-            }
-            surface.Background = new SolidColorBrush(dark ? BrandRaised : BrandWhite);
-            surface.BorderBrush = new SolidColorBrush(BrandLine(dark));
-        }
-        surface.Loaded += (_, _) => Theme();
-        surface.ActualThemeChanged += (_, _) => Theme();
-        Theme();
+        var surface = new Border { Child = content, Style = Token("MasonCard") };
+        if (padding is { } p) surface.Padding = p;
+        if (radius < 8) surface.CornerRadius = new CornerRadius(radius);
         return surface;
     }
 
@@ -150,19 +118,8 @@ public sealed partial class MainWindow
         return notice;
     }
 
-    /// <summary>Links use the brand accent; the system accent would otherwise show through.</summary>
-    static HyperlinkButton BrandLink(HyperlinkButton link)
-    {
-        foreach (var (theme, rest, hover) in new[] { ("Light", "#4849A8", "#343580"), ("Default", "#C3C2FF", "#DAD9FF") })
-        {
-            var dictionary = new ResourceDictionary();
-            foreach (var key in new[] { "HyperlinkButtonForeground", "HyperlinkButtonForegroundPointerOver", "HyperlinkButtonForegroundPressed" })
-                dictionary[key] = (SolidColorBrush)Microsoft.UI.Xaml.Markup.XamlReader.Load($"<SolidColorBrush xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Color='{(key.EndsWith("Foreground") ? rest : hover)}'/>");
-            link.Resources.ThemeDictionaries[theme] = dictionary;
-        }
-        link.Resources.ThemeDictionaries["HighContrast"] = new ResourceDictionary();
-        return link;
-    }
+    /// <summary>Links take the app accent from App.xaml; nothing to override per control.</summary>
+    static HyperlinkButton BrandLink(HyperlinkButton link) => link;
 
     /// <summary>A pill button used for starter prompts. Native hover, pressed and focus states apply.</summary>
     static Button PromptChip(string label, string glyph, Action action)
@@ -172,7 +129,7 @@ public sealed partial class MainWindow
         {
             Content = Row(new FontIcon { Glyph = glyph, FontSize = 13 }, caption),
             Padding = new Thickness(14, 8, 16, 8),
-            CornerRadius = new CornerRadius(RadiusLarge)
+            CornerRadius = new CornerRadius(16)
         };
         chip.Click += (_, _) => action();
         AutomationProperties.SetName(chip, "Use prompt: " + label);
@@ -198,53 +155,11 @@ public sealed partial class MainWindow
         return icon;
     }
 
-    static void BrandAccent(Button button)
-    {
-        void Update()
-        {
-            string[] keys = ["AccentButtonBackground", "AccentButtonBackgroundPointerOver", "AccentButtonBackgroundPressed", "AccentButtonForeground", "AccentButtonForegroundPointerOver", "AccentButtonForegroundPressed"];
-            if (new AccessibilitySettings().HighContrast)
-            {
-                foreach (var key in keys) button.Resources.Remove(key);
-                button.ClearValue(Control.BackgroundProperty); button.ClearValue(Control.ForegroundProperty); return;
-            }
-            bool dark = button.ActualTheme == ElementTheme.Dark;
-            var fill = new SolidColorBrush(BrandAccentColor(dark));
-            var hover = new SolidColorBrush(dark ? Rgb(0xB3B2EF) : Rgb(0x3E3F94));
-            var pressed = new SolidColorBrush(dark ? Rgb(0xA3A2DF) : Rgb(0x343580));
-            var foreground = new SolidColorBrush(dark ? BrandNight : BrandWhite);
-            foreach (var key in keys)
-                button.Resources[key] = key.Contains("Foreground") ? foreground : key.EndsWith("PointerOver") ? hover : key.EndsWith("Pressed") ? pressed : fill;
-            button.Background = fill; button.Foreground = foreground;
-        }
-        // Contrast changes do not necessarily change ActualTheme in an unpackaged app.
-        // Only retain the system event subscription while this button is mounted.
-        void ColorsChanged(UISettings _, object args) => button.DispatcherQueue.TryEnqueue(Update);
-        button.Loaded += (_, _) => { Update(); brandSystemColors.ColorValuesChanged -= ColorsChanged; brandSystemColors.ColorValuesChanged += ColorsChanged; };
-        button.Unloaded += (_, _) => brandSystemColors.ColorValuesChanged -= ColorsChanged;
-        button.ActualThemeChanged += (_, _) => Update();
-    }
+    /// <summary>The accent ramp lives in App.xaml, so accent buttons need no per-control recolouring.</summary>
+    static void BrandAccent(Button button) { }
 
-    // Scope the overrides on the control before its native template is created.
-    // An application-level brush can be shadowed by WinUI's merged resources.
-    static T BrandControl<T>(T control) where T : FrameworkElement
-    {
-        string[] fills = ["AccentFillColorDefaultBrush", "AccentFillColorSecondaryBrush", "AccentFillColorTertiaryBrush", "ToggleButtonBackgroundChecked", "ToggleButtonBackgroundCheckedPointerOver", "ToggleButtonBackgroundCheckedPressed", "NavigationViewSelectionIndicatorForeground", "ListViewItemSelectionIndicatorBrush", "TreeViewItemSelectionIndicatorForeground", "TreeViewItemSelectionIndicatorForegroundPointerOver", "TreeViewItemSelectionIndicatorForegroundPressed", "ProgressBarForeground", "ProgressRingForegroundThemeBrush", "CheckBoxCheckBackgroundFillChecked", "CheckBoxCheckBackgroundStrokeChecked", "CheckBoxCheckBackgroundFillIndeterminate", "CheckBoxCheckBackgroundStrokeIndeterminate", "TextControlBorderBrushFocused"];
-        string[] foregrounds = ["ToggleButtonForegroundChecked", "ToggleButtonForegroundCheckedPointerOver", "ToggleButtonForegroundCheckedPressed", "CheckBoxCheckGlyphForegroundChecked"];
-        foreach (var (theme, fill, foreground) in new[] { ("Light", "#4849A8", "#FFFFFF"), ("Default", "#C3C2FF", "#171A2B") })
-        {
-            var dictionary = new ResourceDictionary();
-            foreach (var key in fills.Concat(foregrounds))
-            {
-                var color = foregrounds.Contains(key) ? foreground : fill;
-                dictionary[key] = (SolidColorBrush)Microsoft.UI.Xaml.Markup.XamlReader.Load($"<SolidColorBrush xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Color='{color}'/>");
-            }
-            control.Resources.ThemeDictionaries[theme] = dictionary;
-        }
-        // Let the native high-contrast template use Windows' selected colors.
-        control.Resources.ThemeDictionaries["HighContrast"] = new ResourceDictionary();
-        return control;
-    }
+    /// <summary>Kept for call sites: controls take the accent ramp from App.xaml.</summary>
+    static T BrandControl<T>(T control) where T : FrameworkElement => control;
 
     /// <summary>
     /// Title bar lockup, sized for the 48 px caption: Mortar is the logo, followed by the approved outlined wordmark.
@@ -304,6 +219,7 @@ public sealed partial class MainWindow
             else root.Resources[key] = new SolidColorBrush(color);
         }
         foreach (var key in accents) Set(key, BrandAccentColor(dark));
-        Set(inkKey, ink);
+        // Text keeps the Fluent text ramp; an older build set the brand ink here.
+        root.Resources.Remove(inkKey);
     }
 }

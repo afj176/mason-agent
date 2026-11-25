@@ -59,7 +59,7 @@ public sealed partial class MainWindow
                     var profile=choices.SingleOrDefault(p=>p.Id==selectedId)??throw new InvalidOperationException("A selected model connection was removed.");
                     var live=modelServing.Running.FirstOrDefault(s=>s.Profile.Id==selectedId && s.Owner.IsRunning);
                     var key=aiSessionKeys.TryGetValue(selectedId,out var sessionKey)?(string.IsNullOrEmpty(sessionKey)?"":Store.Protect(sessionKey)):profile.Secret;
-                    return new(LocalAiClient.ValidateEndpoint((live?.Profile??profile).Endpoint).AbsoluteUri,profile.Model,key,live?.Owner.LifetimeId);
+                    return new(LocalAiClient.ValidateEndpoint((live?.Profile??profile).Endpoint).AbsoluteUri,profile.Model,key,live?.Owner.Lifetime);
                 }
                 var main=Binding(id);
                 var models=new TaskModelOptions(main,session.ReviewerModel is {} reviewer?Binding(reviewer):null,

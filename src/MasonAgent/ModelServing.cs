@@ -6,9 +6,9 @@ public enum ModelStartupPhase { Inspecting, Loading, Checking, Ready }
 
 public sealed class ModelCudaUnavailableException(string message) : InvalidOperationException(message) { }
 
-public sealed record ServedModel(Guid Id, LocalModel Model, AiEndpointProfile Profile, OwnedModelProcess Owner, string Log, ModelLaunchOptions? Options=null)
+public sealed record ServedModel(Guid Id, LocalModel Model, AiEndpointProfile Profile, IModelHost Owner, string Log, ModelLaunchOptions? Options=null)
 {
-    public override string ToString() => $"{Model.Name}\n{Model.Task} · {Profile.Endpoint} · {(!Owner.IsRunning ? "Stopped unexpectedly" : "Running · owned by Mason Agent")}";
+    public override string ToString() => $"{Model.Name}\n{Model.Task} · {Profile.Endpoint} · {(!Owner.IsRunning ? "Stopped unexpectedly" : Owner.Embedded ? "Running inside Mason Agent" : "Running · owned by Mason Agent")}";
 }
 public sealed class ModelServing : IDisposable
 {
@@ -96,13 +96,24 @@ public sealed class ModelServing : IDisposable
         var runtime = RuntimePath(model, settings);
         if (!HasRuntime(model, settings))
             throw new ArgumentException(ModelAdapters.UsesPython(model) ? "Choose an existing Python executable in Setup." : "Choose an existing llama-server.exe in Setup.");
-        var cudaLibraries = gpu && !ModelAdapters.UsesPython(model)
-            ? await CheckCuda(runtime, settings.Python, folder, progress, ct)
-            : null;
-        File.WriteAllText(Path.Combine(folder,"launch.json"),System.Text.Json.JsonSerializer.Serialize(new { Runtime=runtime, Arguments=argv, CudaLibraries=cudaLibraries, Python=settings.Python, SettingsRead=SettingsReadDiagnostics(), AppVersion=typeof(ModelServing).Assembly.GetName().Version?.ToString() },new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));
+        // GGUF models run inside Mason unless the setting is off or this build cannot be embedded now.
+        string? processReason = null;
+        bool embed = !ModelAdapters.UsesPython(model) && settings.EmbedGguf;
+        if (embed)
+        {
+            try { await EmbeddedLlamaServer.WaitForStopping(TimeSpan.FromSeconds(90), ct); }
+            catch (TimeoutException) { }
+            processReason = EmbeddedLlamaServer.Unavailable(runtime);
+            if (processReason != null) { embed = false; progress?.Invoke(processReason + " Starting it as a separate process."); }
+        }
+        else if (!ModelAdapters.UsesPython(model)) processReason = "Run GGUF models inside Mason is off.";
+        var cudaLibraries = !gpu || ModelAdapters.UsesPython(model) ? null
+            : embed ? CheckEmbeddedCuda(runtime, settings.Python, progress)
+            : await CheckCuda(runtime, settings.Python, folder, progress, ct);
+        File.WriteAllText(Path.Combine(folder,"launch.json"),System.Text.Json.JsonSerializer.Serialize(new { Runtime=runtime, Host=embed?"embedded":"process", ProcessReason=processReason, Arguments=argv, CudaLibraries=cudaLibraries, Python=settings.Python, SettingsRead=SettingsReadDiagnostics(), AppVersion=typeof(ModelServing).Assembly.GetName().Version?.ToString() },new System.Text.Json.JsonSerializerOptions{WriteIndented=true}));
         ct.ThrowIfCancellationRequested();
         phase?.Invoke(ModelStartupPhase.Loading);
-        var owner = OwnedModelProcess.Start(runtime, argv, log,cudaLibraries);
+        IModelHost owner = embed ? EmbeddedLlamaServer.Start(runtime, argv, log, cudaLibraries) : OwnedModelProcess.Start(runtime, argv, log,cudaLibraries);
         var profileId = new Guid(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(model.Task + "\n" + Path.GetFullPath(model.Path).ToUpperInvariant()+(model.AdapterPath==null?"":"\n"+Path.GetFullPath(model.AdapterPath).ToUpperInvariant())))[..16]);
         var capability = model.Task switch { "Embeddings" => AiCapability.Embeddings, "Reranking" => AiCapability.Reranking, _ => AiCapability.Chat };
         var profile = new AiEndpointProfile { Id = profileId, Name = model.Name, ManagedCapability = capability, Endpoint = $"http://127.0.0.1:{port}/", Model = alias };
@@ -115,7 +126,7 @@ public sealed class ModelServing : IDisposable
                 deadline.Token.ThrowIfCancellationRequested();
                 var status=ReadStatus(Path.Combine(folder,"manifest.json"));
                 if(status!=null)progress?.Invoke(status);
-                if (owner.Process.HasExited) throw new InvalidOperationException((status==null?RuntimeFailure(log,owner.ExitCode):status+" "+RuntimeFailure(log,owner.ExitCode)));
+                if (!owner.IsRunning) throw new InvalidOperationException((status==null?RuntimeFailure(log,owner.ExitCode):status+" "+RuntimeFailure(log,owner.ExitCode)));
                 listing = await client.Check(profile, AiCapability.Models, "", deadline.Token);
                 if (listing.State == "Passed" && listing.Models?.Contains(alias, StringComparer.Ordinal) == true) break;
                 await Task.Delay(750, deadline.Token);
@@ -134,6 +145,19 @@ public sealed class ModelServing : IDisposable
         }
         catch(OperationCanceledException) when(!ct.IsCancellationRequested) {owner.Dispose();throw new TimeoutException("Model startup exceeded five minutes. Try a smaller model or inspect the runtime log: "+log);}
         catch { owner.Dispose(); throw; }
+    }
+    /// <summary>Loads the build into Mason and confirms it registered CUDA0, without starting a process.</summary>
+    static string? CheckEmbeddedCuda(string runtime, string python, Action<string>? progress)
+    {
+        progress?.Invoke("Loading llama.cpp into Mason and checking for CUDA…");
+        var folder = Path.GetDirectoryName(Path.GetFullPath(runtime))!;
+        // CUDA runtime libraries beside the build win; otherwise use the selected PyTorch environment's copies.
+        var libraries = Directory.EnumerateFiles(folder, "cudart64_*.dll").Any() ? null : RuntimeDiscovery.CudaLibraryCandidates(runtime, python).FirstOrDefault(x => x != null);
+        IReadOnlyList<string> devices;
+        try { devices = EmbeddedLlamaServer.Load(runtime, libraries); }
+        catch (InvalidOperationException e) { throw new ModelCudaUnavailableException(e.Message); }
+        if (devices.Contains("CUDA0")) return libraries;
+        throw new ModelCudaUnavailableException("The selected GGUF runtime did not register CUDA0 inside Mason. Devices found: " + (devices.Count == 0 ? "none" : string.Join(", ", devices)) + ".");
     }
     static async Task<string?> CheckCuda(string runtime, string python, string folder, Action<string>? progress, CancellationToken ct)
     {
