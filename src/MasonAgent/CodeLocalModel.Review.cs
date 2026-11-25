@@ -169,9 +169,9 @@ public sealed partial class CodeLocalModel : ICodeInvestigator, IDesktopVision, 
                 var rows=observation.ElementIds.FirstOrDefault(id=>id is "#cart-items" or "#basket-items");
                 if(rows!=null)orderSteps.Add(new("empty",rows));
             }
-            orderSteps.AddRange([new("reload"),new("same",receipt)]);
+            orderSteps.AddRange(new BrowserStep[] { new("reload"),new("same",receipt) });
             if(CatalogSpec.RequiresFreshReceipt(request)){
-                orderSteps.AddRange([new("click",add),new("click",pay),new("new_id",receipt,prefix),new("reload"),new("same",receipt)]);
+                orderSteps.AddRange(new BrowserStep[] { new("click",add),new("click",pay),new("new_id",receipt,prefix),new("reload"),new("same",receipt) });
             }
             scenarios.Add(new("independent-receipt","Checkout produces the requested identifier and retains it on reload",path,[..orderSteps]));
         }

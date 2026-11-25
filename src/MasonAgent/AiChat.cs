@@ -315,7 +315,7 @@ public sealed partial class LocalAiClient
             }, timeout.Token, onReasoning,options.ToolDefinitions.HasValue,onToolArguments);
             // A model that wrote its call as text (wrong tags, a fenced block) still gets its action executed.
             if(answer!=null && result.ToolCalls.Count==0 && ToolCallRecovery.TryParse(answer.ToString(),ToolCallRecovery.Names(options.ToolDefinitions!.Value)) is {} recovered)
-                result=result with{FinishReason="tool_calls",ToolCalls=[recovered],RecoveredToolCall=true};
+                result=result with{FinishReason="tool_calls",ToolCalls=new[] { recovered },RecoveredToolCall=true};
             if(trace!=null)Record(JsonSerializer.Serialize(new{result.ObservedModel,result.FinishReason,result.ToolCalls,result.PromptTokens,result.CompletionTokens,elapsedMs=requestClock.ElapsedMilliseconds}));
             return result with { TimeToFirstTokenSeconds = result.TimeToFirstTokenSeconds + headersSeconds, RequestSeconds = requestClock.Elapsed.TotalSeconds };
         }
@@ -426,6 +426,6 @@ public sealed partial class LocalAiClient
             }
         }
         return new(finish!, output, observedModel, thinking, promptTokens, completionTokens, generationRate, firstSeconds, streamClock.Elapsed.TotalSeconds)
-        { ToolCalls=hasTool?[new(toolId,toolName,toolArguments.ToString())]:[] };
+        { ToolCalls=hasTool?new AiToolCall[] { new(toolId,toolName,toolArguments.ToString()) }:Array.Empty<AiToolCall>() };
     }
 }

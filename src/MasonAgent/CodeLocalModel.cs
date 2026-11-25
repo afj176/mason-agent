@@ -440,7 +440,7 @@ public static class CodeNativeProtocol
                 if(paired)
                 {
                     pending="call_"+(++sequence).ToString("D6");
-                    result.Add(new("assistant",action.Message) { ReasoningContent=message.ReasoningContent,ToolCalls=[new(pending,action.Tool!,action.Arguments.GetRawText())] });continue;
+                    result.Add(new("assistant",action.Message) { ReasoningContent=message.ReasoningContent,ToolCalls=new AiToolCall[] { new(pending,action.Tool!,action.Arguments.GetRawText()) } });continue;
                 }
                 result.Add(new("assistant",string.IsNullOrWhiteSpace(action.Message)?"An unconfirmed tool intent was recorded without an execution receipt. Do not assume it succeeded.":action.Message) { ReasoningContent=message.ReasoningContent });continue;
             }

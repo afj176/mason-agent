@@ -604,7 +604,7 @@ public sealed partial class MainWindow
         {
             if(!registeredDownloads.TryGetValue(job.Id,out var models))
             {
-                var inventory=await Task.Run(()=>ModelDiscovery.Scan([new("Downloaded · "+job.Repository,job.Folder)],CancellationToken.None));
+                var inventory=await Task.Run(()=>ModelDiscovery.Scan(new ModelLocation[] { new("Downloaded · "+job.Repository,job.Folder) },CancellationToken.None));
                 models=inventory.Models.Select(DownloadIdentity).ToArray();
                 if(models.Length==0)models=[new(job.Name,job.Folder,"Downloaded · "+job.Repository,job.Format,"Inventory only",job.Total,"Files verified. This bundle is not recognized by a local serving adapter; inspect the model card and files.")];
                 registeredDownloads[job.Id]=models;
