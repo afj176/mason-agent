@@ -6,7 +6,9 @@
 
 **Make the next move clear.** A coding workspace and command line that run on your own local models. Native apps for Windows, macOS and Linux.
 
-[Website](https://masonagent.site) · [Download](https://github.com/afj176/mason-agent/releases/latest) · [Installer (x64)](https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-Setup-x64.exe) · [Portable ZIP](https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-win-x64.zip)
+[Website](https://masonagent.site) · [All releases](https://github.com/afj176/mason-agent/releases)
+
+**Download:** [Windows installer](https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-Setup-x64.exe) · [macOS installer (preview)](https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.pkg) · [Linux .deb (preview)](https://github.com/afj176/mason-agent/releases/download/preview/mason-agent-linux-amd64.deb) · [more options](#install)
 
 </div>
 
@@ -19,10 +21,19 @@ Each platform has its own native app and its own engine, written for that system
 | | App | Engine and `mason` | Sandbox for Auto | Status |
 | --- | --- | --- | --- | --- |
 | **Windows** | WinUI 3 | C# | Windows sandbox limited to the project | Released |
-| **macOS** | SwiftUI | Swift | macOS sandbox (`sandbox-exec`) | In development: builds, installs and runs on a macOS 15 runner, no download yet |
-| **Linux** | GTK 4 and libadwaita | C++ | bubblewrap | In development: builds and runs on Ubuntu 24.04, no download yet |
+| **macOS** | SwiftUI | Swift | macOS sandbox (`sandbox-exec`) | Preview download |
+| **Linux** | GTK 4 and libadwaita | C++ | bubblewrap | Preview download |
 
-The Windows app is the complete one. The macOS and Linux engines and command lines cover the core: sessions, reading and searching a project, reviewed edits with diffs and undo, commands with approvals and always-allow rules, the four permission modes, and finding, downloading and running GGUF models with llama.cpp. Verification receipts, browser checks, milestones, MCP servers, custom agents and scheduling are Windows-only for now.
+The Windows app is the complete one. The macOS and Linux previews cover the core: sessions, reading and searching a project, reviewed edits with diffs and undo, commands with approvals and always-allow rules, the four permission modes, and finding, downloading and running GGUF models with llama.cpp. Verification receipts, browser checks, milestones, MCP servers, custom agents and scheduling are Windows-only for now.
+
+Each platform lives in its own folder and builds on its own, with nothing shared but the brand kit, the docs and this README:
+
+| Folder | What it holds |
+| --- | --- |
+| [`windows/`](windows) | The WinUI 3 app, the C# engine and `mason`, their checks, build scripts and installer |
+| [`macos/`](macos) | The Swift package: engine, `mason`, the SwiftUI app, tests and packaging |
+| [`linux/`](linux) | The Meson project: C++ engine, `mason`, the GTK 4 app, tests and packaging |
+| [`site/`](site), [`brand/`](brand), [`docs/`](docs) | The website, the brand kit and shared documentation |
 
 ## Install
 
@@ -30,7 +41,7 @@ The Windows app is the complete one. The macOS and Linux engines and command lin
 
 Download from the [latest release](https://github.com/afj176/mason-agent/releases/latest):
 
-- **Installer** (`MasonAgent-Setup-x64.exe`, about 106 MB): installs for your Windows account into `%LOCALAPPDATA%\Programs\MasonAgent`; no administrator rights needed. It can add the `mason` command to your PATH. Requires Windows 11.
+- **Installer** (`MasonAgent-Setup-x64.exe`, about 106 MB): installs for your Windows account into `%LOCALAPPDATA%\Programs\MasonAgent`; no administrator rights needed. From version 2.2.1 it can also add the `mason` command to your PATH. Requires Windows 11.
 - **Portable ZIP** (`MasonAgent-win-x64.zip`, about 125 MB): extract the whole folder anywhere and run `MasonAgent.exe`. Runs on Windows 11 and on Windows 10 version 2004 or later.
 
 Both are x64 and self-contained (.NET and the Windows App SDK are included). Releases are not code-signed yet, so Windows SmartScreen may warn on first run: choose **More info → Run anyway**. SHA-256 files are attached to each release.
@@ -47,29 +58,35 @@ Git for Windows is optional and adds Git Bash as a shell for commands. Using Pow
 
 ### macOS
 
-There is no download yet. Every push is built and checked on a macOS 15 runner: the tests (including real commands under the sandbox), the `.pkg` install, a sandboxed `mason` request in Auto, and a request typed into the app and approved there. It has not been used on anyone's own Mac yet, and that check uses a stand-in model rather than a real one. To build it on a Mac (macOS 14 or later, Xcode command line tools):
+Preview, for macOS 14 or later on Apple silicon and Intel. Download from the [preview release](https://github.com/afj176/mason-agent/releases/tag/preview):
 
-```sh
-cd macos
-swift test
-Scripts/build-app.sh        # dist/Mason Agent.app, a .zip and a .pkg
-```
+- **Installer** ([`MasonAgent-macos.pkg`](https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.pkg)): puts Mason Agent in Applications and links `mason` into `/usr/local/bin`, so it works in every terminal.
+- **App only** ([`MasonAgent-macos.zip`](https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.zip)): drag the app into Applications, then choose **Agent → Install Command Line Tool…** in the menu bar if you want `mason`.
 
-The `.pkg` installs the app and links `mason` into `/usr/local/bin`. If you copy the app into Applications yourself, choose **Agent → Install Command Line Tool…** in the menu bar. Builds are signed ad hoc and not notarized, so macOS asks you to confirm the first launch (right-click the app and choose **Open**).
+The preview is signed ad hoc and not notarized by Apple, so macOS blocks it the first time. Open **System Settings → Privacy & Security** and choose **Open Anyway**; on macOS 14 you can also right-click the file and choose **Open**.
+
+Every change is built and checked on a macOS 15 runner: the tests (including real commands under the sandbox), the `.pkg` install, a sandboxed `mason` request in Auto, and a request typed into the app and approved there. That check uses a stand-in model, and the preview has had little use on people's own Macs yet.
 
 Settings, sessions and downloaded models live in `~/Library/Application Support/MasonAgent`. `MASON_DATA_HOME` overrides the location.
 
 ### Linux
 
-There is no download yet. The app, the `mason` command and both packages build and run on Ubuntu 24.04:
+Preview, for x64. Download from the [preview release](https://github.com/afj176/mason-agent/releases/tag/preview):
 
-```sh
-sudo apt install build-essential meson ninja-build pkg-config libcurl4-openssl-dev nlohmann-json3-dev libgtkmm-4.0-dev libadwaita-1-dev bubblewrap dpkg-dev
-linux/packaging/build-packages.sh
-sudo apt install ./linux/dist/mason-agent_*.deb      # Debian and Ubuntu: mason and mason-agent in /usr/bin
-```
+- **Debian and Ubuntu** ([`mason-agent-linux-amd64.deb`](https://github.com/afj176/mason-agent/releases/download/preview/mason-agent-linux-amd64.deb)): installs `mason` and `mason-agent` in `/usr/bin` with a menu entry. Built on Ubuntu 24.04; needs that or a newer Debian or Ubuntu.
 
-On other distributions, extract `linux/dist/mason-agent-*-linux-*.tar.gz` and run its `install.sh`. It installs for your user under `~/.local` without administrator rights, tells you if `~/.local/bin` is not on your PATH yet, and `install.sh --uninstall` removes it. The programs need GTK 4, gtkmm 4.10 or later, libadwaita 1.4 or later and libcurl from your distribution. A Flatpak is not available yet.
+  ```sh
+  sudo apt install ./mason-agent-linux-amd64.deb
+  ```
+
+- **Other distributions** ([`mason-agent-linux-amd64.tar.gz`](https://github.com/afj176/mason-agent/releases/download/preview/mason-agent-linux-amd64.tar.gz)): installs for your user under `~/.local` without administrator rights, tells you if `~/.local/bin` is not on your PATH yet, and `install.sh --uninstall` removes it. Needs GTK 4, gtkmm 4.10 or later, libadwaita 1.4 or later and libcurl from your distribution; the installer lists any that are missing.
+
+  ```sh
+  tar -xzf mason-agent-linux-amd64.tar.gz
+  cd mason-agent-*-linux-amd64 && ./install.sh
+  ```
+
+Install bubblewrap to use Auto. Without it Mason still works, and Auto refuses to run commands instead of running them unprotected. The preview is built and checked on Ubuntu 24.04 for every change and has not been tried on other distributions. There is no Flatpak, RPM or arm64 build yet.
 
 Settings, sessions and downloaded models live in `~/.local/share/MasonAgent` (or `$XDG_DATA_HOME/MasonAgent`). `MASON_DATA_HOME` overrides the location.
 
@@ -77,7 +94,7 @@ Settings, sessions and downloaded models live in `~/.local/share/MasonAgent` (or
 
 This section describes `mason` on Windows. On macOS (Swift) and Linux (C++) the same command has the session and model commands below; it does not have `/compact`, `/agent`, `/commands`, `/queue` or the script operations yet, and its `/undo` covers edits only.
 
-`mason` is the same agent in your terminal. The installer puts it on your PATH; with the portable ZIP, add its `bin` folder to PATH yourself.
+`mason` is the same agent in your terminal. The macOS installer and both Linux packages put it on your PATH. On Windows it arrives with version 2.2.1: the installer can add it to your PATH, and with the portable ZIP you add its `bin` folder yourself.
 
 ```powershell
 cd D:\src\shop
@@ -118,6 +135,8 @@ Each run gets its own journal, so builds can run in parallel against separate wo
 
 ## Windows app
 
+A WinUI 3 app with the engine written in C#, in [`windows/`](windows).
+
 ### What it does
 
 - **Projects that keep their history.** Add a folder to keep its sessions, files and changes together. Right-click a project in the sidebar or open its project menu and choose **Remove project from Mason**. Its files stay on disk. Adding the same folder again restores its sessions and project notes. Switch between Code, Chat and Models in the title bar. Ctrl+K searches sessions, projects, workspace files and commands. Each session remembers its workspace view. Workbench pairs the conversation with its artifacts, Review opens line comments beside the recorded checks, and Notebook gives the conversation a wider reading layout and follows your Mason appearance setting.
@@ -134,7 +153,7 @@ Each run gets its own journal, so builds can run in parallel against separate wo
 
 Build retains feature requirements, command failures and verification receipts across follow-ups and restarts. Start a new session or enter `/new` followed by a request to begin a separate task. Each verification records the revision of its inputs. In Auto, Mason checks fully specified literals when a relevant file already exists and after a file edit.
 
-For multi-step browser checks, put a version 1 `mason.acceptance.json` in the project root and ask Mason to “verify the features in mason.acceptance.json”. Use “implement the features in mason.acceptance.json” to authorize edits. The [checkout fixture](tests/fixtures/checkout/mason.acceptance.json) checks distinct products, discount thresholds and order persistence in Edge at phone and desktop widths. A static project can omit `Application`. A Python WSGI project specifies a local `module:callable`. Mason starts it in an isolated temporary copy with a fresh database, observes same-origin requests and discards the copy at the end of each viewport check.
+For multi-step browser checks, put a version 1 `mason.acceptance.json` in the project root and ask Mason to “verify the features in mason.acceptance.json”. Use “implement the features in mason.acceptance.json” to authorize edits. The [checkout fixture](windows/tests/fixtures/checkout/mason.acceptance.json) checks distinct products, discount thresholds and order persistence in Edge at phone and desktop widths. A static project can omit `Application`. A Python WSGI project specifies a local `module:callable`. Mason starts it in an isolated temporary copy with a fresh database, observes same-origin requests and discards the copy at the end of each viewport check.
 
 For an empty project, you can end the Build request with a fenced code block labeled `mason.acceptance.json` containing the same contract. Its scenarios define the automated acceptance criteria for that turn. Mason retains them in the session so edits to the project cannot change the assertions. Use `click_if_enabled` followed by an assertion to check controls that may legitimately be disabled, such as checkout on an empty cart. After `capture`, use `new_id` to require a distinct identifier and `same` to verify that identifier after a reload.
 
@@ -210,7 +229,7 @@ Auto records a baseline and reruns the pinned check before completion. Results d
 
 ## macOS app
 
-A SwiftUI app with the engine written in Swift, in [`macos/`](macos). It has not been released. The screenshot is from the automated check on a Mac runner, where a stand-in model asks to create a file and waits for approval.
+A SwiftUI app with the engine written in Swift, in [`macos/`](macos), available as a [preview download](#macos). The screenshot is from the automated check on a Mac runner, where a stand-in model asks to create a file and waits for approval.
 
 <img src="docs/images/mac-app.png" alt="Mason Agent on macOS: a session with a completed shell command and an approval card for creating hello.txt">
 
@@ -222,7 +241,7 @@ A SwiftUI app with the engine written in Swift, in [`macos/`](macos). It has not
 
 ## Linux app
 
-A GTK 4 and libadwaita app with its engine in C++, in [`linux/`](linux). It has not been released. It has been built, packaged and run on Ubuntu 24.04, including a real request approved through the app against a local model.
+A GTK 4 and libadwaita app with its engine in C++, in [`linux/`](linux), available as a [preview download](#linux). It has been built, packaged and run on Ubuntu 24.04, including a real request approved through the app against a local model.
 
 <img src="docs/images/linux-app.png" alt="Mason Agent on Linux: a session's tool calls, an approval card for a shell command, and the Changes pane with a diff">
 
@@ -244,10 +263,12 @@ Prerequisites:
 - For the installer: [Inno Setup 6](https://jrsoftware.org/isinfo.php).
 
 ```powershell
+cd windows
+
 # Run a Debug build (use MASON_DATA_HOME to keep test data away from your real profile)
 dotnet build src\MasonAgent\MasonAgent.csproj -c Debug -p:Platform=x64
 
-# Release payload and ZIP in artifacts\MasonAgent-<version>-win-x64
+# Release payload and ZIP in windows\artifacts\MasonAgent-<version>-win-x64
 .\scripts\Invoke-ModelBenchmark.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -OutputDirectory .cache\qualification
 .\scripts\Invoke-WorkflowQualification.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -SecondaryEndpoint http://127.0.0.1:8081 -SecondaryModel SECOND_MODEL -OutputDirectory .cache\workflow
 
@@ -259,15 +280,16 @@ dotnet build src\MasonAgent\MasonAgent.csproj -c Debug -p:Platform=x64
 
 #### Checks
 
-`tests/Mason.CodeChecks` covers the coding engine, projects and sessions, shells, the Windows sandbox and its network denial. The sandbox checks need a small native probe, built with the MSVC tools:
+`windows/tests/Mason.CodeChecks` covers the coding engine, projects and sessions, shells, the Windows sandbox and its network denial. The sandbox checks need a small native probe, built with the MSVC tools:
 
 ```powershell
+cd windows
 .\scripts\Build-CodeSandboxProbe.ps1
 $env:MASON_SANDBOX_PROBE = (Resolve-Path .cache\code-sandbox-probe\SandboxNativeProbe.exe)
 dotnet run --project tests\Mason.CodeChecks -c Release
 ```
 
-The default run uses scripted model responses and needs no model. The `--evaluate-*` modes in `tests/Mason.CodeChecks/Program.cs` run real coding tasks and need a local model server.
+The default run uses scripted model responses and needs no model. The `--evaluate-*` modes in `windows/tests/Mason.CodeChecks/Program.cs` run real coding tasks and need a local model server.
 
 ### macOS
 
@@ -283,16 +305,17 @@ Scripts/build-app.sh        # universal app, .zip and .pkg in macos/dist
 
 ### Linux
 
-On Ubuntu 24.04, with the packages listed under [Install](#linux):
+On Ubuntu 24.04:
 
 ```sh
+sudo apt install build-essential meson ninja-build pkg-config libcurl4-openssl-dev nlohmann-json3-dev libgtkmm-4.0-dev libadwaita-1-dev bubblewrap dpkg-dev
 cd linux
 meson setup builddir && meson compile -C builddir && meson test -C builddir
 ./builddir/mason                # the command line
 ./builddir/mason-agent          # the app
 ```
 
-`-Dapp=false` builds only the engine and `mason`, without GTK. [`linux/packaging/Dockerfile.build`](linux/packaging/Dockerfile.build) is the same environment as a container, and the [Linux workflow](.github/workflows/linux.yml) builds, tests, packages and starts the app on each change. The sandbox tests run real commands under bubblewrap where it can create a sandbox, and otherwise check that Auto refuses.
+`linux/packaging/build-packages.sh` builds the `.deb` and the portable archive into `linux/dist`. `-Dapp=false` builds only the engine and `mason`, without GTK. [`linux/packaging/Dockerfile.build`](linux/packaging/Dockerfile.build) is the same environment as a container, and the [Linux workflow](.github/workflows/linux.yml) builds, tests, packages and starts the app on each change. The sandbox tests run real commands under bubblewrap where it can create a sandbox, and otherwise check that Auto refuses.
 
 ## Privacy
 

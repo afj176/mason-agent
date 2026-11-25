@@ -1,6 +1,7 @@
 param([Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,[Parameter(Mandatory)][string]$ModelEvidence,[Parameter(Mandatory)][string]$WorkflowEvidence,[switch]$Installer,[string]$InnoCompiler='')
 $ErrorActionPreference='Stop'
 $appRoot=Split-Path $PSScriptRoot -Parent
+$repoRoot=Split-Path $appRoot -Parent
 $commit=git -C $appRoot rev-parse --verify HEAD
 if($LASTEXITCODE -ne 0 -or $commit -notmatch '^[a-f0-9]{40}$'){throw 'Release requires a Git source commit.'}
 function Confirm-Source {
@@ -59,12 +60,12 @@ Copy-Item -LiteralPath $WorkflowEvidence -Destination (Join-Path $payload 'workf
 & (Join-Path $PSScriptRoot 'Assert-WorkflowQualification.ps1') -Report "$payload/workflow-evidence.json" -Commit $commit -PrimaryModel (Get-Content "$payload/model-benchmark.json" -Raw | ConvertFrom-Json).Model
 if(!([Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $payload 'MasonAgent.dll')).ProductVersion).EndsWith("+$commit")){throw 'Published app has the wrong source revision.'}
 [pscustomobject]@{Version=$Version;Commit=$commit;Tree=(git -C $appRoot rev-parse 'HEAD^{tree}');BenchmarkSha256=(Get-FileHash -LiteralPath (Join-Path $payload 'model-benchmark.json')).Hash;WorkflowSha256=(Get-FileHash -LiteralPath (Join-Path $payload 'workflow-evidence.json')).Hash} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $payload 'release-source.json') -Encoding utf8
-Copy-Item -LiteralPath (Join-Path $appRoot 'README.md') -Destination $payload
-Copy-Item -LiteralPath (Join-Path $appRoot 'LICENSE') -Destination $payload
-$notices=Join-Path $appRoot 'THIRD-PARTY-NOTICES.md'
+Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md') -Destination $payload
+Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination $payload
+$notices=Join-Path $repoRoot 'THIRD-PARTY-NOTICES.md'
 if(Test-Path -LiteralPath $notices){Copy-Item -LiteralPath $notices -Destination $payload}
 New-Item -ItemType Directory -Path (Join-Path $payload 'licenses') -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $appRoot 'brand/logo-kit/fonts/LICENSE-Manrope.txt') -Destination (Join-Path $payload 'licenses')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'brand/logo-kit/fonts/LICENSE-Manrope.txt') -Destination (Join-Path $payload 'licenses')
 if(-not(Test-Path -LiteralPath (Join-Path $payload 'MasonAgent.exe')) -or -not(Test-Path -LiteralPath (Join-Path $payload 'MasonAgent.pri'))){throw 'Executable or WinUI resources missing'}
 # Mason Agent never ships the Postgres provider, and always ships its native coding handoff and sandbox setup.
 if(Test-Path -LiteralPath (Join-Path $payload 'Npgsql.dll')){throw 'Database provider leaked into Mason Agent'}

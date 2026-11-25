@@ -45,11 +45,11 @@ Using those same release binaries and LFM3-Omni-2B-BF16 at 80,128 tokens, four i
 ## Reproduce
 
 ```powershell
-dotnet run --project tests/Mason.CodeChecks -c Release -- --harness-recovery-checks $env:TEMP
-dotnet run --project tests/Mason.CodeChecks -c Release -- --evaluate-acceptance $endpoint $modelId $freshAcceptanceTrial
-dotnet run --project tests/Mason.CodeChecks -c Release -- --evaluate-empty-project $endpoint $modelId $freshTrial
-dotnet run --project tests/Mason.CodeChecks -c Release -- --evaluate-empty-project $endpoint $modelId $resumeTrial $savedSessionJson
-node tests/browser/check-bear-store.cjs $chromiumExecutable $freshTrial $resumeTrial
+dotnet run --project windows/tests/Mason.CodeChecks -c Release -- --harness-recovery-checks $env:TEMP
+dotnet run --project windows/tests/Mason.CodeChecks -c Release -- --evaluate-acceptance $endpoint $modelId $freshAcceptanceTrial
+dotnet run --project windows/tests/Mason.CodeChecks -c Release -- --evaluate-empty-project $endpoint $modelId $freshTrial
+dotnet run --project windows/tests/Mason.CodeChecks -c Release -- --evaluate-empty-project $endpoint $modelId $resumeTrial $savedSessionJson
+node windows/tests/browser/check-bear-store.cjs $chromiumExecutable $freshTrial $resumeTrial
 ```
 
 Use a fresh directory for each trial and a local endpoint hosting the selected weights. The optional saved session supplies model-visible history and its terminal state. All new tools run in the disposable project. The built-in acceptance evaluator uses the packaged Playwright driver and installed Microsoft Edge. It writes the passing run to `report.json`, the disconnected-button result to `negative.json` and the three-feature assessment to `coverage.json`. The separate Node storefront evaluator needs its own Playwright installation.

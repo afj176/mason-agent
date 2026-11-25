@@ -19,7 +19,7 @@ permissions:
 
 env:
   APP: MasonAgent
-  ISS: packaging/MasonAgent.iss
+  ISS: windows/packaging/MasonAgent.iss
 
 jobs:
   qualify:
@@ -37,8 +37,8 @@ jobs:
           MASON_SECONDARY_EVAL_MODEL: ${{ vars.MASON_SECONDARY_EVAL_MODEL }}
         run: |
           $area="$env:RUNNER_TEMP/mason-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          ./scripts/Invoke-ModelBenchmark.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -OutputDirectory $area
-          ./scripts/Invoke-WorkflowQualification.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -SecondaryEndpoint $env:MASON_SECONDARY_EVAL_ENDPOINT -SecondaryModel $env:MASON_SECONDARY_EVAL_MODEL -OutputDirectory "$area/workflow"
+          ./windows/scripts/Invoke-ModelBenchmark.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -OutputDirectory $area
+          ./windows/scripts/Invoke-WorkflowQualification.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -SecondaryEndpoint $env:MASON_SECONDARY_EVAL_ENDPOINT -SecondaryModel $env:MASON_SECONDARY_EVAL_MODEL -OutputDirectory "$area/workflow"
       - uses: actions/upload-artifact@v7
         with:
           name: model-evidence
@@ -85,7 +85,7 @@ jobs:
 
       - name: Publish installer and portable ZIP
         shell: pwsh
-        run: ./scripts/Publish.ps1 -Version ${{ steps.version.outputs.value }} -ModelEvidence "$env:RUNNER_TEMP/model-evidence/report.json" -WorkflowEvidence "$env:RUNNER_TEMP/model-evidence/workflow/workflow-evidence.json" -Installer -InnoCompiler '${{ steps.inno.outputs.path }}'
+        run: ./windows/scripts/Publish.ps1 -Version ${{ steps.version.outputs.value }} -ModelEvidence "$env:RUNNER_TEMP/model-evidence/report.json" -WorkflowEvidence "$env:RUNNER_TEMP/model-evidence/workflow/workflow-evidence.json" -Installer -InnoCompiler '${{ steps.inno.outputs.path }}'
 
       - uses: actions/download-artifact@v8
         with:
@@ -99,7 +99,7 @@ jobs:
         run: |
           $v = '${{ steps.version.outputs.value }}'
           $out = New-Item -ItemType Directory -Force release
-          $setup = "artifacts/$env:APP-$v-Setup-x64.exe"; $zip = "artifacts/$env:APP-$v-win-x64.zip"
+          $setup = "windows/artifacts/$env:APP-$v-Setup-x64.exe"; $zip = "windows/artifacts/$env:APP-$v-win-x64.zip"
           Copy-Item $setup, $zip $out
           # Stable names for the website's "latest" download links.
           Copy-Item $setup "$out/$env:APP-Setup-x64.exe"; Copy-Item $zip "$out/$env:APP-win-x64.zip"

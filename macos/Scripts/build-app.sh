@@ -6,7 +6,7 @@
 # Run on a Mac with Xcode's command line tools. The build is signed ad hoc, not notarized.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION="${VERSION:-$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' ../src/MasonAgent/MasonAgent.csproj | head -1)}"
+VERSION="${VERSION:-$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' ../windows/src/MasonAgent/MasonAgent.csproj | head -1)}"
 [ -n "$VERSION" ] || { echo "Set VERSION."; exit 1; }
 ARCHS="${ARCHS:---arch arm64 --arch x86_64}"
 
