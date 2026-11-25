@@ -8,6 +8,8 @@ public sealed record CodeFile(string Path, string Content, string Sha256, bool B
 public sealed record CodeFiles(string[] Files, bool Truncated)
 {
     [System.Text.Json.Serialization.JsonIgnore] public bool RootIsOnlyDirectory { get; init; }
+    /// <summary>Existing unittest methods as "path · Class · test_name", so acceptance planning names real tests.</summary>
+    [System.Text.Json.Serialization.JsonIgnore] public string[] PythonTests { get; init; } = [];
 }
 public sealed record CodeReplacement(string OldText, string NewText);
 

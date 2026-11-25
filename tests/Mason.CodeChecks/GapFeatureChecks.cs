@@ -110,6 +110,47 @@ static class GapFeatureChecks
         Check(File.ReadAllText(crlf) == "def f():\r\n    return 10\r\n\r\ndef g():\r\n    return 2\r\n", "an LF replacement edits a CRLF file and keeps its line endings");
         try { scope.ApplyEdits("crlf.py", scope.Read("crlf.py").Sha256, [new("def missing():\n", "x")], (_, _) => { }); Check(false, "a replacement that matches nowhere is still rejected"); }
         catch (CodeSnippetMismatchException) { Check(true, "a replacement that matches nowhere is still rejected"); }
+
+        // Verification: a python_test check pins only its own test, so adding the requested test elsewhere in the file
+        // keeps it valid; a misnamed class resolves to the real one; a test the request asks for is found and run.
+        Directory.CreateDirectory(Path.Combine(workspace, "tests"));
+        var testFile = Path.Combine(workspace, "tests", "test_ledger.py");
+        File.WriteAllText(testFile, "import unittest\r\n\r\n\r\nclass ParseRowsTests(unittest.TestCase):\r\n    def test_one(self):\r\n        self.assertEqual(1, 1)\r\n");
+        var one = CodePythonTests.Find(File.ReadAllText(testFile), "test_one");
+        Check(one.Count == 1 && one[0].Class == "ParseRowsTests", "a test method is located with its real class");
+        Check(CodePythonTests.RequestsNewTest("Fix the importer and add a regression test.") && !CodePythonTests.RequestsNewTest("Fix the importer; don't change the tests."), "a request to write a test is recognised");
+        var pinnedPlan = new CodeAcceptancePlan { Request = "r", Units = ["r"] };
+        pinnedPlan.Checks.Add(new(1, "one", "python_test", "tests/test_ledger.py", "ParseRowsTests", "test_one"));
+        var testSource = File.ReadAllText(testFile); var testNames = CodePythonTests.Names(testSource);
+        pinnedPlan.TestHashes[CodePythonTests.NamesKey("tests/test_ledger.py")] = string.Join(",", testNames);
+        pinnedPlan.TestHashes[CodePythonTests.StructureKey("tests/test_ledger.py")] = CodePythonTests.Structure(testSource, testNames);
+        File.AppendAllText(testFile, "\r\n    def test_two(self):\r\n        self.assertTrue(True)\r\n");
+        CodeAcceptance.Verify(pinnedPlan, scope, CodePermission.Auto, default).GetAwaiter().GetResult();
+        Check(pinnedPlan.Results.Single().Passed, "adding another test to the file keeps a pinned check valid");
+        File.WriteAllText(testFile, File.ReadAllText(testFile).Replace("self.assertEqual(1, 1)", "self.assertTrue(True)"));
+        CodeAcceptance.Verify(pinnedPlan, scope, CodePermission.Auto, default).GetAwaiter().GetResult();
+        Check(!pinnedPlan.Results.Single().Passed && pinnedPlan.Results.Single().Detail.Contains("changed after planning"), "changing the pinned test itself still voids the check");
+        File.WriteAllText(testFile, testSource + "\r\n\r\nclass ParseRowsTests(unittest.TestCase):\r\n    def test_one(self):\r\n        pass\r\n");
+        CodeAcceptance.Verify(pinnedPlan, scope, CodePermission.Auto, default).GetAwaiter().GetResult();
+        Check(!pinnedPlan.Results.Single().Passed, "a class that shadows the pinned test voids the check");
+        File.WriteAllText(testFile, "import builtins\r\n" + testSource);
+        CodeAcceptance.Verify(pinnedPlan, scope, CodePermission.Auto, default).GetAwaiter().GetResult();
+        Check(!pinnedPlan.Results.Single().Passed, "a changed import in a pinned test file voids the check");
+        File.WriteAllText(testFile, testSource + "\r\n\r\nclass ExtraTests(unittest.TestCase):\r\n    \"\"\"Added by the task.\"\"\"\r\n    def test_extra(self):\r\n        self.assertTrue(True)\r\n");
+        CodeAcceptance.Verify(pinnedPlan, scope, CodePermission.Auto, default).GetAwaiter().GetResult();
+        Check(pinnedPlan.Results.Single().Passed, "a new test-only class keeps a pinned check valid");
+        File.WriteAllText(testFile, testSource);
+        var newPlan = new CodeAcceptancePlan { Request = "r", Units = ["r"] };
+        newPlan.Checks.Add(new(1, "three", "python_test", "tests/test_ledger.py", "TestImporter", "test_three") { NewTest = true });
+        CodeAcceptance.Verify(newPlan, scope, CodePermission.Auto, default).GetAwaiter().GetResult();
+        Check(!newPlan.Results.Single().Passed && newPlan.Results.Single().Detail.Contains("was not found"), "a requested test that was never written fails");
+        File.AppendAllText(testFile, "\r\n    def test_three(self):\r\n        self.assertIn(',', 'a,b')\r\n");
+        CodeAcceptance.Verify(newPlan, scope, CodePermission.Auto, default).GetAwaiter().GetResult();
+        Check(newPlan.Results.Single().Passed && newPlan.Results.Single().Detail.Contains("ParseRowsTests.test_three · new test written in this task"), "a requested test runs under its real class and is reported as new");
+
+        // A probe whose own text could not be parsed is not an outstanding failure; a real test failure still is.
+        Check(CodeCommandProbe.Malformed("{\"ExitCode\":1,\"Output\":\"  File \\u0022<string>\\u0022, line 1\\r\\n    rows = parse_rows([\\u0027a\\r\\n                     ^\\r\\nSyntaxError: unterminated string literal\"}"), "an inline python -c syntax error is recognised as a malformed probe");
+        Check(!CodeCommandProbe.Malformed("{\"ExitCode\":1,\"Output\":\"FAIL: test_one (tests.test_ledger.ParseRowsTests)\\r\\nAssertionError: 1 != 2\"}"), "a failing test is not treated as a malformed probe");
         try { Directory.Delete(root, true); } catch (IOException) { }
         Console.WriteLine("gap feature checks passed");
     }

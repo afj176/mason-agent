@@ -1,4 +1,6 @@
 # Publishes the one-page website in site/ to GitHub Pages (custom domain from site/CNAME).
+# Upload and deploy run as separate jobs: deploying in the same job as the upload raced the artifact's
+# registration and failed with "No artifacts named github-pages were found".
 name: Website
 
 on:
@@ -12,21 +14,27 @@ permissions:
   pages: write
   id-token: write
 
+# Let an in-progress deployment finish; a newer run queues behind it.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@v4

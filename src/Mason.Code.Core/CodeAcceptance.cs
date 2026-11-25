@@ -8,6 +8,9 @@ public sealed record AcceptanceCheck(int Unit, string Feature, string Kind, stri
     public BrowserStep[]? Steps {get;init;}
     public bool FromContract {get;init;}
     public string? Application {get;init;}
+    /// <summary>A python_test the request asked the agent to write. It did not exist at planning, so it cannot be
+    /// pinned; verification runs it and reports that the agent wrote it.</summary>
+    public bool NewTest {get;init;}
 }
 public sealed record AcceptanceResult(AcceptanceCheck Check, bool Passed, string Detail)
 {
@@ -158,7 +161,7 @@ public static class CodeAcceptance
         var exact = plan.Units.Select((s,i)=>ExplicitCheck(s,i+1,pages)).Where(c=>c!=null).Cast<AcceptanceCheck>().ToList();
         if (exact.Concat(repositoryChecks).Select(c=>c.Unit).Distinct().Count() != plan.Units.Length && plan.Units.Length <= 32 && model is ICodeAcceptancePlanner planner)
         {
-            try { proposed = await planner.PlanAcceptance(request, plan.Units, files, ct); }
+            try { proposed = await planner.PlanAcceptance(request, plan.Units, files with { PythonTests = CodePythonTests.Inventory(scope, files) }, ct); }
             catch (Exception e) when (e is not OperationCanceledException) { reason = "Acceptance planning failed: " + e.Message; }
         }
         else if (plan.Units.Length > 32) reason = "The request exceeds the 32-clause acceptance planning limit.";
@@ -169,8 +172,9 @@ public static class CodeAcceptance
             if (matches.Count == 0) matches = proposed.Where(c => c.Unit == i+1).Distinct().ToList();
             if (matches.Count == 0 || proposed.Count > 64)
                 plan.Checks.Add(new(i+1, plan.Units[i], "unverified", "", "", reason));
-            else foreach (var c in matches)
+            else foreach (var proposedCheck in matches)
             {
+                var c = proposedCheck;
                 bool valid = !string.IsNullOrWhiteSpace(c.Feature) && c.Feature.Length <= 400 && c.Target is { Length: <= 200 } &&
                     c.Expected is { Length: > 0 and <= 500 } && c.Path is { Length: > 0 and <= 260 };
                 bool browser = c.Kind is "browser_heading" or "browser_text" or "browser_click" or "browser_layout" or "browser_flow";
@@ -178,11 +182,25 @@ public static class CodeAcceptance
                 bool page = browser && Path.GetExtension(c.Path)?.ToLowerInvariant() is ".html" or ".htm";
                 bool document = c.Kind == "document_text" && Path.GetExtension(c.Path)?.ToLowerInvariant() is ".txt" or ".md" or ".csv";
                 bool test = false;
-                if (valid && c.Kind == "python_test" && files.Files.Contains(c.Path) &&
+                if (valid && c.Kind == "python_test" &&
                     Regex.IsMatch(c.Path, @"^(?:[A-Za-z_]\w*/)*test\w*\.py$") &&
                     Regex.IsMatch(c.Target ?? "", @"^[A-Za-z_]\w*$") && Regex.IsMatch(c.Expected ?? "", @"^test_\w+$"))
                 {
-                    try { plan.TestHashes[c.Path] = scope.Read(c.Path).Sha256; test = true; }
+                    // Bind the check to the test that exists: correct a misnamed class, and pin only that test's source
+                    // so adding other tests to the file (often the request itself) does not void the check.
+                    try
+                    {
+                        var content = files.Files.Contains(c.Path) ? scope.Read(c.Path).Content : null;
+                        var located = content == null ? [] : CodePythonTests.Find(content, c.Expected);
+                        void Pin(string source)
+                        {
+                            var names = CodePythonTests.Names(source);
+                            plan.TestHashes[CodePythonTests.NamesKey(c.Path)] = string.Join(",", names);
+                            plan.TestHashes[CodePythonTests.StructureKey(c.Path)] = CodePythonTests.Structure(source, names);
+                        }
+                        if (located.Count == 1) { c = c with { Target = located[0].Class }; Pin(content!); test = true; }
+                        else if (located.Count == 0 && CodePythonTests.RequestsNewTest(request)) { c = c with { NewTest = true }; if (content != null) Pin(content); test = true; }
+                    }
                     catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException) { }
                 }
                 var unit = plan.Units[i];
@@ -257,13 +275,38 @@ public static class CodeAcceptance
             try
             {
                 if (permission != CodePermission.Auto) throw new InvalidOperationException("Use Auto to run this isolated Python acceptance check.");
-                if (!plan.TestHashes.TryGetValue(check.Path, out var hash) || scope.Read(check.Path).Sha256 != hash)
-                    throw new InvalidDataException("The acceptance test changed after planning.");
-                string name = check.Path[..^3].Replace('/','.') + "." + check.Target + "." + check.Expected;
+                // Pinned: the test's own source must be unchanged. Legacy plans pinned the whole file. A new test was
+                // written in this task, so it is located by name and reported as such.
+                string testClass = check.Target, note = "";
+                Func<bool> unchanged;
+                Func<bool> structure = () => true;
+                if (plan.TestHashes.TryGetValue(CodePythonTests.StructureKey(check.Path), out var pinned))
+                {
+                    var names = plan.TestHashes.GetValueOrDefault(CodePythonTests.NamesKey(check.Path), "").Split(',', StringSplitOptions.RemoveEmptyEntries);
+                    structure = () => File.Exists(scope.Resolve(check.Path)) && CodePythonTests.Structure(scope.Read(check.Path).Content, names) == pinned;
+                    if (!structure()) throw new InvalidDataException("The acceptance test file changed after planning beyond adding tests.");
+                }
+                if (!check.NewTest && plan.TestHashes.ContainsKey(CodePythonTests.StructureKey(check.Path)))
+                    unchanged = structure;
+                else if (plan.TestHashes.TryGetValue(check.Path, out var fileHash))
+                {
+                    unchanged = () => scope.Read(check.Path).Sha256 == fileHash;
+                    if (!unchanged()) throw new InvalidDataException("The acceptance test changed after planning.");
+                }
+                else if (check.NewTest)
+                {
+                    var written = File.Exists(scope.Resolve(check.Path)) ? CodePythonTests.Find(scope.Read(check.Path).Content, check.Expected) : [];
+                    if (written.Count != 1) throw new InvalidDataException($"The requested test {check.Expected} was not found in {check.Path}.");
+                    testClass = written[0].Class; var source = CodePythonTests.Hash(written[0].Source);
+                    unchanged = () => structure() && CodePythonTests.Find(scope.Read(check.Path).Content, check.Expected).Any(t => t.Class == testClass && CodePythonTests.Hash(t.Source) == source);
+                    note = " · new test written in this task";
+                }
+                else throw new InvalidDataException("The acceptance test changed after planning.");
+                string name = check.Path[..^3].Replace('/','.') + "." + testClass + "." + check.Expected;
                 var run = await CodeCommand.Run(CodeCommand.ResolveExecutable("python",scope.Root), ["-B","-m","unittest","-v",name], scope.Root,ct,scope.Root);
                 bool ok = run.ExitCode == 0 && !run.Truncated && Regex.IsMatch(run.Output, @"(?m)^"+Regex.Escape(check.Expected)+@" \([^\r\n]*\) \.\.\. ok\s*$") &&
-                    Regex.IsMatch(run.Output, @"(?m)^Ran 1 test in ") && Regex.IsMatch(run.Output, @"(?m)^OK\s*$") && scope.Read(check.Path).Sha256 == hash;
-                plan.Results.Add(new(check,ok,$"{name} · exit {run.ExitCode} · {run.Output[..Math.Min(run.Output.Length,800)]}"));
+                    Regex.IsMatch(run.Output, @"(?m)^Ran 1 test in ") && Regex.IsMatch(run.Output, @"(?m)^OK\s*$") && unchanged();
+                plan.Results.Add(new(check,ok,$"{name}{note} · exit {run.ExitCode} · {run.Output[..Math.Min(run.Output.Length,800)]}"));
             }
             catch (Exception e) when (e is not OperationCanceledException) { plan.Results.Add(new(check,false,e.Message)); }
         }

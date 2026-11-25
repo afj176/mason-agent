@@ -30,7 +30,7 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
             browser_heading checks a visible exact accessible heading. browser_text checks exact visible text. browser_click clicks an exact button/link label (Target) and requires Expected text to BECOME visible. For a user interaction use browser_click. Use index.html for a new web page unless another path was requested. Path is workspace-relative (index.html). Target and Expected are plain text labels. Example: {"Unit":1,"Feature":"Order confirmation","Kind":"browser_click","Path":"index.html","Target":"Place order","Expected":"Order received"}.
             browser_layout checks that a nonempty static page fits both mobile and desktop widths. Use only for an explicit responsive layout requirement.
             browser_flow runs a sequence of Steps. Target in each step is a CSS selector. count_distinct counts distinct visible item texts. fill enters Value into an input. money compares a displayed numeric amount with an exact decimal. click activates the control. capture retains a nonempty visible identifier with the supplied prefix, reload refreshes the current page, and same compares against the captured identifier. Use concrete values derived from the request. Mark missing business rules unverified.
-            document_text checks literal requested text inside a .md, .txt or .csv document. python_test runs one pre-existing named unittest (Path=test module .py, Target=TestCase class, Expected=test_method). Never use text matching as proof of program behavior.
+            document_text checks literal requested text inside a .md, .txt or .csv document. python_test runs one named unittest (Path=test module .py, Target=TestCase class, Expected=test_method). Choose from existing_tests, which lists every test that exists now; never guess a class or test name. Only when the requirement itself asks to add or write a test may you name a new test_method (in an existing test module and class where possible); the agent will write it. A requirement to keep behaviour unchanged is covered by existing tests of that behaviour. A requirement that only describes the defect is covered by the test that reproduces it. Never use text matching as proof of program behavior.
             For unsupported, subjective, ambiguous or externally dependent behavior use unverified with a short reason in Expected. Do not substitute weaker checks. Output concise JSON only.
             """;
         var checks = new List<AcceptanceCheck>();
@@ -38,7 +38,7 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
         {
             // Bind one source clause per planning call. Smaller models can otherwise repeatedly
             // test the last feature of a multi-part request under every earlier clause's ID.
-            var specification=JsonSerializer.Serialize(new { existing_files=inventory.Files, original_request=request, unit_number=i+1, requirement=units[i] });
+            var specification=JsonSerializer.Serialize(new { existing_files=inventory.Files, existing_tests=inventory.PythonTests, original_request=request, unit_number=i+1, requirement=units[i] });
             try {
                 var proposed = await Generate(prompt+" Design checks only for this single requirement. If its meaning is ambiguous, mark it unverified.", specification, schema);
                 var assertions = proposed.GetProperty("checks").Deserialize<List<AcceptanceCheck>>() ?? [];

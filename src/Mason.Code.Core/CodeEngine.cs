@@ -194,7 +194,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     using var args=JsonDocument.Parse(receipt.Arguments);
                     var op=new CodeAction("",receipt.Tool,args.RootElement.Clone());
                     failedCommands.RemoveAll(prior=>SameOperation(prior,op));
-                    if(receipt.State!="Completed")failedCommands.Add(op);
+                    if(receipt.State!="Completed" && !(receipt.State=="Failed" && CodeCommandProbe.Malformed(receipt.Result)))failedCommands.Add(op);
                 }
                 if(resume && previous!=null)
                 {
@@ -517,7 +517,9 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if (action.Tool is ("run_command" or "run_shell" or "run_workflow") && activity.State is ("Completed" or "Failed"))
                 {
                     failedCommands.RemoveAll(previous => SameOperation(previous, action));
-                    if (activity.State == "Failed") failedCommands.Add(action);
+                    // A command whose own text could not be parsed (a quoting slip in an inline probe) says nothing about
+                    // the workspace, so it does not hold the task open; it stays in the activity log.
+                    if (activity.State == "Failed" && !CodeCommandProbe.Malformed(activity.Result)) failedCommands.Add(action);
                 }
                 session.Messages.Add(new("user", JsonSerializer.Serialize(new { tool_result = action.Tool, activity_id = activity.Id, state = activity.State, result = modelReceipt })));
                 if(system.SourceEdit!=null && activity.State=="Failed")failedSourceCheck=activity.Result;
