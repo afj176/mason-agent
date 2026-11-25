@@ -31,24 +31,50 @@ public sealed class ModelServing : IDisposable
 
     public static string[] Arguments(LocalModel model, string alias, int port, bool gpu, string scriptDirectory, string manifest, ModelLaunchOptions? options=null)
     {
-        if(model.Task!="Chat")throw new ArgumentException("This app serves language models only.");
+        if(!model.Launchable)throw new ArgumentException("Mason serves chat, embeddings and reranking models.");
+        if(model.Task!="Chat"&&ModelAdapters.UsesPython(model))throw new ArgumentException("Embeddings and rerankers run in llama.cpp. Use a GGUF build.");
         options??=new(4096);options.Validate();
         if (!model.Launchable || !Path.IsPathFullyQualified(model.Path) || string.IsNullOrWhiteSpace(alias) || port is < 1024 or > 65535) throw new ArgumentException("Invalid model launch plan.");
         if (!ModelAdapters.UsesPython(model))
         {
             using var input = File.OpenRead(model.Path); Span<byte> header = stackalloc byte[4];
             if (input.Read(header) != 4 || !header.SequenceEqual("GGUF"u8)) throw new InvalidDataException("Model is no longer a GGUF file.");
-            string Family(string path)=>System.Text.RegularExpressions.Regex.Replace(Path.GetFileNameWithoutExtension(path),@"^(?:mmproj-)|-(?:BF16|F16|F32|Q\d[\w_]*)$","",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            var candidates=Directory.EnumerateFiles(Path.GetDirectoryName(model.Path)!,"mmproj-*.gguf")
-                .Where(p=>Family(p).Equals(Family(model.Path),StringComparison.OrdinalIgnoreCase)).ToArray();
-            var companion=candidates.FirstOrDefault(p=>Path.GetFileName(p).Equals("mmproj-"+Path.GetFileName(model.Path),StringComparison.OrdinalIgnoreCase))??(candidates.Length==1?candidates[0]:null);
-            return ["-m", model.Path, "--host", "127.0.0.1", "--port", port.ToString(), "--alias", alias, "-c", options.ContextTokens.ToString(), "--parallel", "1", "-b", "256", "-ub", "128", "--reasoning", "auto", "--spec-type", "none", "--device", gpu?"CUDA0":"none", "--split-mode", "none", "-ngl", gpu ? "99" : "0",..(companion==null?Array.Empty<string>():new[]{"--mmproj",companion})];
+            var companion=Projector(model.Path);
+            var common=new List<string>{"-m", model.Path, "--host", "127.0.0.1", "--port", port.ToString(), "--alias", alias, "-c", options.ContextTokens.ToString(), "--parallel", "1", "--device", gpu?"CUDA0":"none", "--split-mode", "none", "-ngl", gpu ? "99" : "0"};
+            // Embeddings and reranking batch whole inputs; the batch must cover the context.
+            if(model.Task=="Embeddings")return [..common,"--embeddings","-b",options.ContextTokens.ToString(),"-ub",options.ContextTokens.ToString()];
+            if(model.Task=="Reranking")return [..common,"--reranking","-b",options.ContextTokens.ToString(),"-ub",options.ContextTokens.ToString()];
+            common.AddRange(["-b", "256", "-ub", "128", "--reasoning", "auto"]);
+            if(options.DraftPath is {} draft)
+            {
+                var head=GgufHeader.TryRead(draft)?.Architecture??"";
+                var type=head.Contains("dspark",StringComparison.OrdinalIgnoreCase)?"draft-dspark":head.Contains("eagle",StringComparison.OrdinalIgnoreCase)?"draft-eagle3":head.Contains("dflash",StringComparison.OrdinalIgnoreCase)?"draft-dflash":"draft-simple";
+                common.AddRange(["--spec-type", type, "-md", draft, "-ngld", gpu ? "99" : "0", "-devd", gpu?"CUDA0":"none"]);
+            }
+            else common.AddRange(["--spec-type", "none"]);
+            if(options.LoraPath is {} lora)common.AddRange(["--lora", lora]);
+            if(companion!=null)common.AddRange(["--mmproj",companion]);
+            return common.ToArray();
         }
         var script=Path.Combine(scriptDirectory,"Serve-Transformers.py");
         if(!File.Exists(script))throw new FileNotFoundException("The packaged chat serving adapter is missing.",script);
         var argv=new List<string>{script,"--model-dir",model.Path,"--model-id",alias,"--device",gpu?"cuda":"cpu","--port",port.ToString(),"--manifest",manifest,"--context",options.ContextTokens.ToString()};
         if(model.AdapterPath!=null){if(!Directory.Exists(model.AdapterPath)||!Path.IsPathFullyQualified(model.AdapterPath))throw new ArgumentException("Invalid local adapter selection.");argv.Add("--adapter-dir");argv.Add(model.AdapterPath);}
         return argv.ToArray();
+    }
+    /// <summary>The vision projector beside a GGUF: an exact "mmproj-&lt;file&gt;" match, else the closest name, preferring F16, BF16, then F32.</summary>
+    public static string? Projector(string modelPath)
+    {
+        var folder=Path.GetDirectoryName(modelPath)!;var file=Path.GetFileNameWithoutExtension(modelPath);
+        var candidates=Directory.EnumerateFiles(folder,"*mmproj*.gguf").Where(p=>!p.Equals(modelPath,StringComparison.OrdinalIgnoreCase)).ToArray();
+        if(candidates.FirstOrDefault(p=>Path.GetFileName(p).Equals("mmproj-"+Path.GetFileName(modelPath),StringComparison.OrdinalIgnoreCase)) is {} exact)return exact;
+        // A projector belongs to this model only if it is generic (mmproj-F16.gguf) or shares the model's name.
+        bool Generic(string p)=>System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileNameWithoutExtension(p),@"(?i)^mmproj(-model)?(-(BF16|F16|F32|Q\d\w*))?$");
+        candidates=candidates.Where(p=>Generic(p)||Shared(p)>=Math.Min(8,file.Length)).ToArray();
+        if(candidates.Length<=1)return candidates.FirstOrDefault();
+        int Shared(string p){var stem=System.Text.RegularExpressions.Regex.Replace(Path.GetFileNameWithoutExtension(p),"(?i)-?mmproj-?","");int n=0;while(n<stem.Length&&n<file.Length&&char.ToLowerInvariant(stem[n])==char.ToLowerInvariant(file[n]))n++;return n;}
+        int Precision(string p){var n=Path.GetFileNameWithoutExtension(p);return n.EndsWith("-F16",StringComparison.OrdinalIgnoreCase)?0:n.EndsWith("-BF16",StringComparison.OrdinalIgnoreCase)?1:n.EndsWith("-F32",StringComparison.OrdinalIgnoreCase)?2:3;}
+        return candidates.OrderByDescending(Shared).ThenBy(Precision).First();
     }
     public async Task<ServedModel> Start(LocalModel model, ModelLibrarySettings settings, bool gpu, string scriptDirectory, CancellationToken ct, Action<string>? progress = null, ModelLaunchOptions? options=null,Action<ModelStartupPhase>? phase=null)
     {
@@ -78,7 +104,8 @@ public sealed class ModelServing : IDisposable
         phase?.Invoke(ModelStartupPhase.Loading);
         var owner = OwnedModelProcess.Start(runtime, argv, log,cudaLibraries);
         var profileId = new Guid(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(model.Task + "\n" + Path.GetFullPath(model.Path).ToUpperInvariant()+(model.AdapterPath==null?"":"\n"+Path.GetFullPath(model.AdapterPath).ToUpperInvariant())))[..16]);
-        var profile = new AiEndpointProfile { Id = profileId, Name = model.Name, ManagedCapability = AiCapability.Chat, Endpoint = $"http://127.0.0.1:{port}/", Model = alias };
+        var capability = model.Task switch { "Embeddings" => AiCapability.Embeddings, "Reranking" => AiCapability.Reranking, _ => AiCapability.Chat };
+        var profile = new AiEndpointProfile { Id = profileId, Name = model.Name, ManagedCapability = capability, Endpoint = $"http://127.0.0.1:{port}/", Model = alias };
         try
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromMinutes(5));
@@ -93,7 +120,6 @@ public sealed class ModelServing : IDisposable
                 if (listing.State == "Passed" && listing.Models?.Contains(alias, StringComparer.Ordinal) == true) break;
                 await Task.Delay(750, deadline.Token);
             }
-            var capability=AiCapability.Chat;
             phase?.Invoke(ModelStartupPhase.Checking);
             var inference = await client.Check(profile, capability, "", deadline.Token);
             profile = profile with { Checks = [listing, inference] };

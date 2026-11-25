@@ -47,7 +47,16 @@ public sealed partial class MainWindow
     }
     FrameworkElement ModelRolesView(CodeSession session,CodeViewerEntry entry)
     {
-        var profiles=(Store.Read<List<AiEndpointProfile>>("ai-connections.json")??[]).Where(p=>p.Model.Length>0 && p.ManagedCapability is null or AiCapability.Chat).ToArray();
+        var all=Store.Read<List<AiEndpointProfile>>("ai-connections.json")??[];
+        var profiles=all.Where(p=>p.Model.Length>0 && p.ForChat).ToArray();
+        // Code search applies to every session: embeddings find code by meaning, a reranker orders the hits.
+        var embedders=all.Where(p=>p.ManagedCapability==AiCapability.Embeddings||p.Checks.Any(c=>c.Capability==AiCapability.Embeddings&&c.State=="Passed")).ToArray();
+        var rerankers=all.Where(p=>p.ManagedCapability==AiCapability.Reranking||p.Checks.Any(c=>c.Capability==AiCapability.Reranking&&c.State=="Passed")).ToArray();
+        var search=CodeSearchSettings.Read();
+        ComboBox SearchCombo(string header,AiEndpointProfile[] options,Guid? selected,string none)=>new(){Header=header,ItemsSource=new[]{none}.Concat(options.Select(p=>p.DisplayName+" · "+p.Endpoint)).ToArray(),SelectedIndex=selected.HasValue?Math.Max(0,Array.FindIndex(options,p=>p.Id==selected)+1):0,HorizontalAlignment=HorizontalAlignment.Stretch};
+        var embedChoice=SearchCombo("Code search · embeddings model",embedders,search.Embeddings,embedders.Length==1?"Automatic · "+embedders[0].DisplayName:"Automatic · the one checked embeddings connection");
+        var rerankChoice=SearchCombo("Code search · reranker",rerankers,search.Reranker,"Automatic · the one checked reranker, if any");
+        var searchState=CodeNote(Mason.Code.CodeSemanticIndex.Available?"Semantic code search is available to the agent now.":embedders.Length==0?"No embeddings model yet. Start one in Models (My models → Code search) or connect one, and the agent gains a semantic_search tool.":"An embeddings model is saved but not running or not checked. Start it in Models to enable semantic_search.");
         var names=new[]{"Use coding model"}.Concat(profiles.Select(p=>p.DisplayName+" · "+p.Endpoint)).ToArray();
         ComboBox Combo(string name,Guid? selected)=>new(){Header=name,ItemsSource=names,SelectedIndex=selected.HasValue?Array.FindIndex(profiles,p=>p.Id==selected)+1:0,HorizontalAlignment=HorizontalAlignment.Stretch};
         var review=Combo("Independent reviewer",session.ReviewerModel);
@@ -65,7 +74,9 @@ public sealed partial class MainWindow
                 session.RecordModelDecisions=record.IsChecked==true;
                 if(!double.IsFinite(limit.Value)||limit.Value<1||limit.Value>128)throw new ArgumentException("Choose a role budget from 1 to 128.");
                 session.ManageRoleMemory=manage.IsChecked==true;session.RoleCallLimit=(int)limit.Value;
-                codeStore!.Save(session);status.Text="Session model roles saved.";
+                codeStore!.Save(session);
+                Store.Write(CodeSearchSettings.File,new CodeSearchSettings(embedChoice.SelectedIndex<=0?null:embedders[embedChoice.SelectedIndex-1].Id,rerankChoice.SelectedIndex<=0?null:rerankers[rerankChoice.SelectedIndex-1].Id));
+                status.Text="Model roles saved. Code search settings apply to every session.";
             }catch(Exception e){(session.ReviewerModel,session.VisualModel,session.RecordModelDecisions,session.ManageRoleMemory,session.RoleCallLimit)=prior;status.Text=e.Message;}
         });
         string folder=Path.Combine(Store.Root,"model-decisions",session.Id.ToString("N"));
@@ -93,7 +104,7 @@ public sealed partial class MainWindow
             }catch(Exception e){status.Text=e.Message;}finally{compare.IsEnabled=true;}
         };
         Refresh();
-        var body=Stack(Heading("Model roles"),review,vision,manage,limit,record,save,status,Heading("Decision inspector",19),files,comparison,
+        var body=Stack(Heading("Model roles"),review,vision,manage,limit,record,Heading("Code search",19),embedChoice,rerankChoice,searchState,save,status,Heading("Decision inspector",19),files,comparison,
             Row(Button("Refresh decisions",(_,_)=>Refresh()),compare),output);
         body.Padding=new Thickness(18);return CodeScroll(body);
     }

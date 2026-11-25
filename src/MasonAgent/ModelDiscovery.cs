@@ -10,7 +10,14 @@ public sealed record ModelLocation(string Name, string Path, bool Custom = false
 public sealed record LocalModel(string Name, string Path, string Source, string Format, string Task, long Bytes, string Support)
 {
     public string? AdapterPath {get;init;}
-    public bool Launchable => Task == "Chat";
+    /// <summary>GGUF general.architecture or Transformers model_type.</summary>
+    public string Architecture {get;init;}="";
+    AgentRole? role;
+    /// <summary>The job this file can do for the agent. Older saved launch recipes predate roles.</summary>
+    public AgentRole Role {get=>role??Task switch{"Chat"=>AgentRole.Implementer,"Embeddings"=>AgentRole.CodeSearch,"Reranking"=>AgentRole.Reranker,"Draft"=>AgentRole.Draft,"Adapter"=>AgentRole.Adapter,"Projector"=>AgentRole.Projector,_=>AgentRole.NotUsed};init=>role=value;}
+    /// <summary>Tasks Mason can serve on its own: chat for agent roles, plus embeddings and reranking for code search.</summary>
+    public bool Launchable => Task is "Chat" or "Embeddings" or "Reranking";
+    public static string TaskFor(AgentRole role) => role switch { AgentRole.Implementer or AgentRole.Vision => "Chat", AgentRole.CodeSearch => "Embeddings", AgentRole.Reranker => "Reranking", AgentRole.Draft => "Draft", AgentRole.Adapter => "Adapter", AgentRole.Projector => "Projector", _ => "Inventory only" };
     public string Size => Bytes >= 1L << 30 ? $"{Bytes / (double)(1L << 30):0.0} GiB" : Bytes>=1L<<20?$"{Bytes / 1048576d:0.0} MiB":$"{Bytes:N0} B";
     public override string ToString() => $"{Name}\n{Task} · {Format} · {Size} · {Source}\n{Support}";
 }
@@ -111,8 +118,9 @@ public static partial class ModelDiscovery
                         string ext = System.IO.Path.GetExtension(entry).ToLowerInvariant();
                         if (ext == ".gguf") AddGguf(entry, location.Name, System.IO.Path.GetFileNameWithoutExtension(entry));
                         else if (System.IO.Path.GetFileName(entry) == "config.json") AddTransformers(current.Path, location.Name);
-                        else if (ext is ".safetensors" or ".ckpt" or ".pt" or ".pth" && !File.Exists(System.IO.Path.Combine(current.Path, "config.json")))
-                            models.TryAdd(entry, new(System.IO.Path.GetFileName(entry), entry, location.Name, ext[1..], "Inventory only", FileLength(entry), "Image/checkpoint or unknown architecture · not served by this app"));
+                        else if (System.IO.Path.GetFileName(entry) == "adapter_config.json") AddAdapter(current.Path, location.Name);
+                        else if (ext is ".safetensors" or ".ckpt" or ".pt" or ".pth" && !File.Exists(System.IO.Path.Combine(current.Path, "config.json")) && !File.Exists(System.IO.Path.Combine(current.Path, "adapter_config.json")))
+                            models.TryAdd(entry, new(System.IO.Path.GetFileName(entry), entry, location.Name, ext[1..], "Inventory only", FileLength(entry), "Checkpoint without a model configuration, such as image-generation weights. These don't take part in coding work.") { Role = AgentRole.NotUsed });
                         else if (entry.Contains(System.IO.Path.DirectorySeparatorChar + "manifests" + System.IO.Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) AddOllama(entry, location.Path);
                         }
                         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException)
@@ -132,10 +140,31 @@ public static partial class ModelDiscovery
             using var stream = File.OpenRead(path); Span<byte> magic = stackalloc byte[4];
             if (stream.Read(magic) != 4 || !magic.SequenceEqual("GGUF"u8)) return;
             var resolved = new FileInfo(path).ResolveLinkTarget(true)?.FullName ?? path;
-            bool nonChat = NonChatPattern().IsMatch(name);
-            bool split = SplitPattern().IsMatch(name);
-            models.TryAdd(resolved, new(name, path, source, "GGUF", nonChat || split ? "Inventory only" : "Chat", stream.Length,
-                split ? "Split GGUF · serving not enabled in this release" : nonChat ? "Embedding, reranker or projection GGUF · use a supported endpoint" : "Launch with a local llama-server runtime · compatibility checked at startup"));
+            var split = SplitPattern().Match(name);
+            // llama.cpp loads every shard from the first one; later shards are part of that entry.
+            if (split.Success && split.Groups[1].Value != "00001") return;
+            long bytes = stream.Length;
+            if (split.Success)
+            {
+                var folder = System.IO.Path.GetDirectoryName(path)!; var stem = name[..^split.Length];
+                var shards = Directory.EnumerateFiles(folder, stem + "-*-of-" + split.Groups[2].Value + ".gguf").ToArray();
+                if (shards.Length != int.Parse(split.Groups[2].Value)) { models.TryAdd(resolved, new(stem, path, source, "GGUF", "Inventory only", bytes, $"Needs local files: {shards.Length} of {int.Parse(split.Groups[2].Value)} shards are present.") { Role = AgentRole.Implementer }); return; }
+                bytes = shards.Sum(FileLength); name = stem;
+            }
+            stream.Position = 0; GgufHeader? header; try { header = GgufHeader.Read(stream); } catch (InvalidDataException) { header = null; }
+            var role = ModelCompatibility.ClassifyGguf(header, System.IO.Path.GetFileName(path));
+            if (role == AgentRole.Implementer && System.IO.Path.GetDirectoryName(path) is { } dir && Directory.EnumerateFiles(dir, "*mmproj*.gguf").Any()) role = AgentRole.Vision;
+            string support = role switch
+            {
+                AgentRole.CodeSearch => "Embeddings model · serve it to power the agent's semantic code search.",
+                AgentRole.Reranker => "Reranker · serve it to reorder the agent's code search results.",
+                AgentRole.Draft => "Draft model · choose it when starting a larger model of the same family for faster turns.",
+                AgentRole.Adapter => "LoRA adapter · choose it when starting its base model.",
+                AgentRole.Projector => "Vision projector · loaded automatically with a chat model in this folder.",
+                AgentRole.Vision => "Chat with image input · llama.cpp loads the projector in this folder.",
+                _ => split.Success ? "Split GGUF · llama.cpp loads all shards from the first file." : "Chat model · runs in llama.cpp."
+            };
+            models.TryAdd(resolved, new(name, path, source, "GGUF", LocalModel.TaskFor(role), bytes, support) { Role = role, Architecture = header?.Architecture ?? "" });
         }
         void AddTransformers(string folder, string source)
         {
@@ -149,12 +178,34 @@ public static partial class ModelDiscovery
             if (name.Length == 40 && name.All(Uri.IsHexDigit) && parent?.Name != "snapshots") name = parent?.Name ?? name;
             if (parent?.Name == "snapshots") name = parent.Parent?.Name.Replace("models--", "").Replace("--", "/") ?? name;
             string task = "Inventory only", support = "Transformers weights · this architecture has no managed serving adapter";
-            if(ModelAdapters.TextSupport(folder,root) is string textSupport)
+            var architectureNames = root.TryGetProperty("architectures", out var archs) && archs.ValueKind == JsonValueKind.Array ? string.Join(" ", archs.EnumerateArray().Select(x => x.GetString())) : "";
+            var role = architectureNames.Contains("ForCausalLM") || architectureNames.Contains("ForConditionalGeneration") || architectureNames.Contains("LMHeadModel") ? AgentRole.Implementer
+                : System.Text.RegularExpressions.Regex.IsMatch(name, "(?i)rerank") || architectureNames.Contains("ForSequenceClassification") ? AgentRole.Reranker
+                : architectureNames.Contains("BertModel") || architectureNames.Contains("RobertaModel") || System.Text.RegularExpressions.Regex.IsMatch(name, "(?i)embed") ? AgentRole.CodeSearch
+                : architectureNames.Length > 0 ? AgentRole.NotUsed : AgentRole.Unknown;
+            if (role == AgentRole.Implementer && System.Text.RegularExpressions.Regex.IsMatch(name, "(?i)embed")) role = AgentRole.CodeSearch;
+            if(role==AgentRole.Implementer && ModelAdapters.TextSupport(folder,root) is string textSupport)
             { support=textSupport; if(textSupport.StartsWith("Python ·"))task="Chat"; }
-            else support="Inventory only: no managed adapter for " + type + ". Image/audio models and custom architectures need a compatible external server.";
+            else support = role switch
+            {
+                AgentRole.CodeSearch or AgentRole.Reranker => "Mason serves embeddings and rerankers through llama.cpp. Download a GGUF build of this model.",
+                AgentRole.Implementer => $"No local Transformers adapter for “{type}”. Download a GGUF build of this model to run it in llama.cpp.",
+                AgentRole.NotUsed => $"{type} ({architectureNames}) isn't a chat, embedding or reranking model, so the agent doesn't use it.",
+                _ => "The configuration doesn't declare an architecture."
+            };
             var quantization=ModelAdapters.Quantization(root);
             var format="safetensors · " + type+(quantization.StartsWith("GPTQ") || quantization.StartsWith("AWQ")?" · "+quantization:"");
-            models.TryAdd(folder, new(name, folder, source, format, task, files.Sum(FileLength), support));
+            models.TryAdd(folder, new(name, folder, source, format, task, files.Sum(FileLength), support) { Role = role, Architecture = type });
+        }
+        void AddAdapter(string folder, string source)
+        {
+            var configPath = System.IO.Path.Combine(folder, "adapter_config.json");
+            if (FileLength(configPath) > 262144) return;
+            using var config = JsonDocument.Parse(File.ReadAllText(configPath));
+            var baseModel = config.RootElement.TryGetProperty("base_model_name_or_path", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString() ?? "" : "";
+            var weights = Directory.EnumerateFiles(folder, "adapter_model.*").ToArray(); if (weights.Length == 0) return;
+            models.TryAdd(folder, new(new DirectoryInfo(folder).Name, folder, source, "LoRA · safetensors", "Adapter", weights.Sum(FileLength),
+                "LoRA adapter" + (baseModel.Length > 0 ? " for " + baseModel : "") + " · choose it when starting the base model with the Transformers runtime.") { Role = AgentRole.Adapter });
         }
         void AddOllama(string manifestPath, string root)
         {
@@ -184,7 +235,7 @@ public static partial class ModelDiscovery
                         {
                             using var file = File.OpenRead(blob); Span<byte> header = new byte[4];
                             if (file.Read(header) == 4 && header.SequenceEqual("GGUF"u8))
-                                models.TryAdd(manifestPath,new(name,blob,"Ollama","GGUF + companion","Inventory only",file.Length,"Ollama adapter/projector required · this release does not reconstruct that bundle"));
+                                models.TryAdd(manifestPath,new(name,blob,"Ollama","GGUF + companion","Inventory only",file.Length,"Ollama bundle with an adapter or projector. Mason doesn't rebuild Ollama bundles; connect to Ollama under Connections to use it.") { Role = AgentRole.Vision });
                         }
                         else
                         {
@@ -205,8 +256,7 @@ public static partial class ModelDiscovery
     {
         var file = new FileInfo(path); return (file.ResolveLinkTarget(true) as FileInfo ?? file).Length;
     }
-    [GeneratedRegex("(rerank|embed|bge|mmproj|clip|vision)", RegexOptions.IgnoreCase)] private static partial Regex NonChatPattern();
-    [GeneratedRegex(@"-\d{5}-of-\d{5}$")] private static partial Regex SplitPattern();
+    [GeneratedRegex(@"-(\d{5})-of-(\d{5})$")] private static partial Regex SplitPattern();
     [GeneratedRegex(@"^sha256:[0-9a-f]{64}$")] private static partial Regex DigestPattern();
 }
 

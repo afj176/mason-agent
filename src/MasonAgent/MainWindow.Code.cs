@@ -743,7 +743,7 @@ public sealed partial class MainWindow
             try
             {
                 var current = session?.Model;
-                var choices = (Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []).Where(p => p.Model.Length > 0 && (p.ManagedCapability is null or AiCapability.Chat)).ToArray();
+                var choices = (Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []).Where(p => p.Model.Length > 0 && p.ForChat).ToArray();
                 updating = true; PresentChatModels(profiles, choices);
                 profiles.ItemTemplate = (DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><TextBlock Text='{Binding DisplayName}' FontSize='13' MaxWidth='210' TextTrimming='CharacterEllipsis'/></DataTemplate>");
                 profiles.SelectedItem = profiles.Items.OfType<ChatModelChoice>().FirstOrDefault(c => c.Unwrap().Id == current);

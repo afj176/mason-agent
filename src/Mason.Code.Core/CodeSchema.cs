@@ -12,6 +12,8 @@ public static class CodeSchema
         names.Add("enable_tools");
         if(session.Desktop!=null)names.Add("desktop_visual");
         names.UnionWith(["search_next","read_lines"]);
+        // Meaning-based code search is offered whenever the host has a code search model connected.
+        if(CodeSemanticIndex.Available)names.Add("semantic_search");
         if(session.Desktop!=null){names.Add("desktop_observe");if(session.Mode=="build"&&session.Permission!=CodePermission.ReadOnly)names.Add("desktop_act");}
         if(session.Mode=="ask"||session.Permission==CodePermission.ReadOnly)return names;
         names.UnionWith(["edit_file","apply_edits","replace_file","create_file","create_directory","run_command"]);
@@ -33,8 +35,9 @@ public static class CodeSchema
     {
         "navigate_code"=>"Find symbol definitions, references, related tests or compiler diagnostics in a workspace directory. C# uses compiler binding. Other supported source languages return labeled text candidates.",
         "repository_map"=>"Find ranked definitions, callers, import and test references by identifier or qualified name. C# references are compiler bound. Exact JavaScript, TypeScript and Python declarations can include language-service references. Other matches are labelled as candidates.",
+        "semantic_search"=>"Find code by meaning when you don't know the exact names, for example \"where are invoice totals calculated\". Uses the connected embeddings model, and its reranker when one is connected. Returns ranked line ranges to read next.",
         "inspect_symbol"=>"Resolve TypeScript/JavaScript or Python definitions, references or diagnostics at a 1-based source position.",
-        "enable_tools"=>"Load specialized tools for code (repository map and symbol navigation), workflows (named tasks and skills), jobs (background processes), browser (interactive project Edge), or mcp (registered tools).",
+        "enable_tools"=>"Load specialized tools for code (repository map, semantic code search when a search model is connected, and symbol navigation), workflows (named tasks and skills), jobs (background processes), browser (interactive project Edge), or mcp (registered tools).",
         "computer_use"=>"Operate the project page in disposable offline Edge using a fresh accessibility observation after each click or fill. Supply a workspace HTML path and task.",
         "desktop_observe"=>"Read the control names and available actions from the native window the user attached for this session.",
         "desktop_visual"=>"Inspect the attached window with a local vision model. For a canvas operation specify one requested click or drag. Every action needs approval and a fresh matching frame.",
@@ -117,6 +120,7 @@ public static class CodeSchema
         tools.Add(Tool("search_next",Fields(("cursor",Text()))));
         tools.Add(Tool("git_status",Fields()));
         tools.Add(Tool("repository_map",Fields(("query",Text()))));
+        tools.Add(Tool("semantic_search",Fields(("query",Text()),("path",existingDirectory))));
         tools.Add(Tool("delegate_readonly",Fields(("question",Text()),("paths",new{type="array",minItems=1,maxItems=8,items=Text()}))));
         tools.Add(Tool("read_lines",Fields(("path",Text()),("start",integer),("count",new{type="integer",minimum=1,maximum=200}))));
         tools.Add(Tool("enable_tools",Fields(("group",new{type="string",@enum=new[]{"code","workflows","jobs","browser","mcp","docs"}}))));

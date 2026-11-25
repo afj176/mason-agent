@@ -386,7 +386,7 @@ public sealed partial class MainWindow
             try
             {
                 // Same saved connections the Code page offers: any external endpoint with a model, or a managed chat model.
-                var choices = (Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []).Where(p => p.Model.Length > 0 && (p.ManagedCapability is null or AiCapability.Chat)).ToArray();
+                var choices = (Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []).Where(p => p.Model.Length > 0 && p.ForChat).ToArray();
                 PresentChatModels(profiles, choices);
                 profiles.SelectedItem = (profiles.ItemsSource as IEnumerable<ChatModelChoice>)?.FirstOrDefault(p => p.Id == conversation.ProfileId);
             }

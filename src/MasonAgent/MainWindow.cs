@@ -74,13 +74,23 @@ public sealed partial class MainWindow : Window
         pages["Code"] = BuildCodeWorkspace();
         pages["Chat"] = BuildChatWorkspace();
         var endpoints = BuildAiConnections();
-        var library = BuildModelLibrary();
-        var resources = ModeSwitcher(("Models", library), ("Connections", endpoints));
-        selectResources = index => resources.SelectedIndex = index == 2 ? 1 : 0;
+        // Models, Discover, Connections, Downloads and Runtimes share one page with a section rail.
+        var resources = BuildModelLibrary(endpoints);
+        selectResources = index => selectModelView?.Invoke(index == 2 ? 5 : 0);
         pages["Models and connections"] = resources;
         // "Use for coding" in the model library opens Code with that model selected;
         // "Open in chat" goes through openNativeChat, which the Chat page owns.
         openCodeWithModel = id => { Navigate("Code"); selectCodingModel?.Invoke(id); };
+        // The agent's semantic_search tool is offered only while an embeddings connection is assigned and checked.
+        Mason.Code.CodeSemanticIndex.Provider = () =>
+        {
+            List<AiEndpointProfile> profiles; try { profiles = Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []; } catch { return null; }
+            var settings = CodeSearchSettings.Read();
+            var embeddings = CodeSearchModels.Pick(profiles, settings.Embeddings, AiCapability.Embeddings); if (embeddings == null) return null;
+            var reranker = CodeSearchModels.Pick(profiles, settings.Reranker, AiCapability.Reranking);
+            string Key(AiEndpointProfile p) { try { return aiSessionKeys.GetValueOrDefault(p.Id) ?? Store.Unprotect(p.Secret); } catch { return ""; } }
+            return new CodeSearchModels(embeddings, Key(embeddings), reranker, reranker == null ? "" : Key(reranker));
+        };
 
         var content = new Grid { Padding = new Thickness(20, 14, 20, 10) };
         // Lifted cards and the floating composers cast their shadow onto this empty layer behind the pages

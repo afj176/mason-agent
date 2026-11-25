@@ -5,7 +5,15 @@ namespace Mason;
 
 public sealed record ModelLaunchOptions(int ContextTokens=2048)
 {
-    public void Validate(){if(ContextTokens < 64)throw new ArgumentException("Choose a whole context window of at least 64 tokens, within the model's declared capacity.");}
+    /// <summary>Optional GGUF draft model for speculative decoding (faster agent turns).</summary>
+    public string? DraftPath {get;init;}
+    /// <summary>Optional GGUF LoRA adapter applied on top of the base weights.</summary>
+    public string? LoraPath {get;init;}
+    public void Validate()
+    {
+        if(ContextTokens < 64)throw new ArgumentException("Choose a whole context window of at least 64 tokens, within the model's declared capacity.");
+        foreach(var path in new[]{DraftPath,LoraPath})if(path!=null&&(!Path.IsPathFullyQualified(path)||!File.Exists(path)||!path.EndsWith(".gguf",StringComparison.OrdinalIgnoreCase)))throw new ArgumentException("Draft models and adapters must be local GGUF files.");
+    }
 }
 public sealed record ModelMemoryProfile(double WeightBytes,double KvBytesPerToken,double WorkspaceBytes,int MaxContext,string Basis,string? Unknown=null,double WorkspacePerToken=0,bool ContextDeclared=true);
 public sealed record ModelFit(string State,string Detail,double? LowGiB=null,double? HighGiB=null)
