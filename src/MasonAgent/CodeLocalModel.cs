@@ -102,7 +102,7 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
     {
         using var client = clientFactory?.Invoke() ?? new LocalAiClient();
         var server = await client.ChatServer(profile, key, cancellation); Verify(server);
-        var options = digest?new ChatGenerationOptions { Reasoning=server.Reasoning?"off":"default",Temperature=0,TimeoutMinutes=15 }:CodeNativeProtocol.Options(server,reasoning,CodeSchema.Available(messages),messages.FirstOrDefault()?.RootIsOnlyDirectory == true);
+        var options = digest?new ChatGenerationOptions { Reasoning=server.Reasoning?"off":"default",Temperature=0,TimeoutMinutes=15 }:CodeNativeProtocol.Options(server,reasoning,CodeSchema.Available(messages),messages.FirstOrDefault()?.RootIsOnlyDirectory == true);if(!digest)profile.Sampling?.Apply(options);
         var request=!digest&&server.FlintTools?CodeNativeProtocol.Project(messages):messages.Select(m=>new AiMessage(m.Role,m.Content)).ToArray();
         var count = await client.MeasureChat(profile, key, request, options, server, cancellation) ?? throw new InvalidOperationException("Exact coding context measurement is unavailable.");
         return new(count.Prompt, count.Context, count.Available, profile.Model);
@@ -369,7 +369,7 @@ public sealed partial class CodeLocalModel(AiEndpointProfile profile, string key
     }
     async Task<CodeAction> NativeNext(LocalAiClient client,ChatServerInfo server,IReadOnlyList<CodeMessage> messages,Action<string> onMessage,CancellationToken ct)
     {
-        var request=CodeNativeProtocol.Project(messages);var options=CodeNativeProtocol.Options(server,reasoning,CodeSchema.Available(messages),messages.FirstOrDefault()?.RootIsOnlyDirectory == true);
+        var request=CodeNativeProtocol.Project(messages);var options=CodeNativeProtocol.Options(server,reasoning,CodeSchema.Available(messages),messages.FirstOrDefault()?.RootIsOnlyDirectory == true);profile.Sampling?.Apply(options);
         ApplyResponseRecovery(options, server, messages);
         var measured=await client.MeasureChat(profile,key,request,options,server,ct)??throw new InvalidOperationException("Exact native tool context measurement is unavailable.");
         // Flint's reasoning and action share the output budget. Never reserve a fixed small JSON-only response window.

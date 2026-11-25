@@ -17,8 +17,21 @@ public sealed record ManagedEmbeddingProcessing(string QueryPrompt,string Docume
         if(QueryPrompt is null||DocumentPrompt is null||Fingerprint is null||QueryPrompt.Length>2000||DocumentPrompt.Length>2000||Fingerprint.Length!=64||!Fingerprint.All(Uri.IsHexDigit)||Dimensions is <1 or >16000||Normalization is not ("none" or "L2"))throw new ArgumentException("Invalid managed embedding processing identity. Restart and check the model.");
     }
 }
+/// <summary>Generation settings a connection applies to the coding agent's actions. Null values keep the model's defaults.
+/// Helper calls that need deterministic output (reviews, validators) keep their own settings.</summary>
+public sealed record CodeSampling(double? Temperature = null, double? TopP = null, int? TopK = null, double? MinP = null, double? RepeatPenalty = null, int? Seed = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore] public bool Empty => Temperature == null && TopP == null && TopK == null && MinP == null && RepeatPenalty == null && Seed == null;
+    public void Apply(ChatGenerationOptions options)
+    {
+        if (Temperature is { } t) options.Temperature = t; if (TopP is { } p) options.TopP = p; if (TopK is { } k) options.TopK = k;
+        if (MinP is { } m) options.MinP = m; if (RepeatPenalty is { } r) options.RepeatPenalty = r; if (Seed is { } s) options.Seed = s;
+    }
+}
 public sealed record AiEndpointProfile
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CodeSampling? Sampling { get; init; }
     public Guid Id { get; init; } = Guid.NewGuid();
     public string Name { get; init; } = "Local AI connection";
     public string Endpoint { get; init; } = "";

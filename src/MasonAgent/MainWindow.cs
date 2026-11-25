@@ -8,7 +8,8 @@ namespace Mason;
 
 public sealed partial class MainWindow : Window
 {
-    readonly DropDownButton routeSwitcher = new();
+    readonly SelectorBar routeSwitcher = new() { VerticalAlignment = VerticalAlignment.Center };
+    bool routeSyncing;
 
     readonly Grid root = new() { RequestedTheme = ElementTheme.Default };
     readonly NavigationView nav = new()
@@ -28,26 +29,16 @@ public sealed partial class MainWindow : Window
     bool dialogOpen;
     AppPreferences preferences = new();
 
-    static TextBlock Text(string text, double size = 14)
-    {
-        var ink = new SolidColorBrush();
-        var label = new TextBlock { Text = text, FontSize = size <= 13 ? size + 1 : size, TextWrapping = TextWrapping.Wrap, Foreground = ink };
-        // Display sizes are headings: set them in the brand display face.
-        if (size >= 18) { label.FontFamily = DisplayFont; label.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; }
-        void Theme()
-        {
-            ink.Color = BrandHighContrast
-                ? brandSystemColors.UIElementColor(Windows.UI.ViewManagement.UIElementType.WindowText)
-                : label.ActualTheme == ElementTheme.Dark ? BrandPaper : BrandInk;
-        }
-        label.Loaded += (_, _) => Theme(); label.ActualThemeChanged += (_, _) => Theme(); Theme();
-        return label;
-    }
-    static Button Button(string text, RoutedEventHandler handler, bool accent = false) { var b = new Button { Content = text, Padding = new Thickness(13, 7, 13, 7), VerticalAlignment = VerticalAlignment.Center }; b.Click += handler; if (accent) { b.Style = (Style)Application.Current.Resources["AccentButtonStyle"]; BrandAccent(b); } return b; }
+    /// <summary>Body text on the Windows type ramp. Requested sizes snap to Caption 12, Body 14, Body Strong, Body Large 18,
+    /// Subtitle 20, Title 28 or Title Large 40; the style carries the theme's text colour.</summary>
+    string codeReflectedState = "";
+    static TextBlock Text(string text, double size = 14) => new() { Text = text, Style = Ramp(size) };
+    static Style Ramp(double size) => Token(size < 12.5 ? "MasonCaption" : size < 16 ? "MasonBody" : size < 18 ? "MasonBodyStrong" : size < 19.5 ? "MasonBodyLarge" : size < 25 ? "MasonSubtitle" : size < 34 ? "MasonTitle" : "MasonTitleLarge");
+    static Button Button(string text, RoutedEventHandler handler, bool accent = false) { var b = new Button { Content = text, VerticalAlignment = VerticalAlignment.Center }; b.Click += handler; if (accent) b.Style = Token("AccentButtonStyle"); return b; }
     static StackPanel Row(params UIElement[] items) { var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 }; foreach (var i in items) p.Children.Add(i); return p; }
-    static StackPanel Stack(params UIElement[] items) { var p = new StackPanel { Spacing = 10 }; foreach (var i in items) p.Children.Add(i); return p; }
+    static StackPanel Stack(params UIElement[] items) { var p = new StackPanel { Spacing = 12 }; foreach (var i in items) p.Children.Add(i); return p; }
     static ScrollViewer ScrollTools(FrameworkElement content) => new() { Content = content, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
-    static Grid Vertical(FrameworkElement top, FrameworkElement body) { var g = new Grid { RowSpacing = 10 }; g.RowDefinitions.Add(new() { Height = GridLength.Auto }); g.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); g.Children.Add(top); Grid.SetRow(body, 1); g.Children.Add(body); return g; }
+    static Grid Vertical(FrameworkElement top, FrameworkElement body) { var g = new Grid { RowSpacing = 12 }; g.RowDefinitions.Add(new() { Height = GridLength.Auto }); g.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); g.Children.Add(top); Grid.SetRow(body, 1); g.Children.Add(body); return g; }
 
     public MainWindow()
     {
@@ -92,13 +83,14 @@ public sealed partial class MainWindow : Window
             return new CodeSearchModels(embeddings, Key(embeddings), reranker, reranker == null ? "" : Key(reranker));
         };
 
-        var content = new Grid { Padding = new Thickness(20, 14, 20, 10) };
+        var content = new Grid { Padding = new Thickness(24, 16, 24, 12) };
         // Lifted cards and the floating composers cast their shadow onto this empty layer behind the pages
         // (a ThemeShadow receiver may not contain the element that casts it).
         var shadowLayer = new Grid(); content.Children.Add(shadowLayer); Fluent.AddShadowReceiver(shadowLayer);
         foreach (var view in pages.Values) { view.Visibility = Visibility.Collapsed; content.Children.Add(view); }
         nav.Content = BuildShell(content);
         Navigate("Code");
+        StartScheduler();
 
         root.KeyboardAccelerators.Add(Shortcut(VirtualKey.Escape, VirtualKeyModifiers.None, () => { codeOperation?.Cancel(); aiOperation?.Cancel(); }));
         root.KeyboardAccelerators.Add(Shortcut(VirtualKey.K, VirtualKeyModifiers.Control, FocusTitleSearch));
@@ -123,23 +115,34 @@ public sealed partial class MainWindow : Window
 
     Action<Guid>? openCodeWithModel;
 
+    static readonly (string Route, string Label, string Glyph)[] Routes = [("Code", "Code", "\uE943"), ("Chat", "Chat", "\uE8BD"), ("Models and connections", "Models", "\uE964")];
+
+    /// <summary>Code, Chat and Models as peer sections in the title bar (SelectorBar, Windows 11 pattern for 2–5 peers).</summary>
     FrameworkElement BuildRouteSwitcher()
     {
-        var menu = new Flyout();
-        var choices = new StackPanel { Spacing = 4, MinWidth = 160 };
-        foreach (var route in new[] { "Code", "Chat", "Models and connections" })
+        foreach (var (route, label, glyph) in Routes)
+            routeSwitcher.Items.Add(new SelectorBarItem { Text = label, Icon = new FontIcon { Glyph = glyph }, Tag = route });
+        routeSwitcher.SelectionChanged += (_, _) => { if (!routeSyncing && routeSwitcher.SelectedItem?.Tag is string route) Navigate(route); };
+        AutomationProperties.SetName(routeSwitcher, "Workspace");
+        return routeSwitcher;
+    }
+
+    /// <summary>Appearance and motion, from the gear in the title bar.</summary>
+    FrameworkElement BuildAppSettingsButton()
+    {
+        var panel = new StackPanel { Spacing = 8, MinWidth = 280 };
+        panel.Children.Add(new TextBlock { Text = "Appearance", Style = Token("MasonBodyStrong") });
+        panel.Children.Add(BuildThemeSwitch());
+        var motion = new ToggleSwitch { Header = "Reduce motion", IsOn = preferences.ReducedMotion };
+        motion.Toggled += async (_, _) =>
         {
-            var choice = Button(route == "Models and connections" ? "Models & endpoints" : route,
-                (_, _) => { menu.Hide(); Navigate(route); });
-            choice.HorizontalAlignment = HorizontalAlignment.Stretch;
-            choice.HorizontalContentAlignment = HorizontalAlignment.Left;
-            choices.Children.Add(choice);
-        }
-        choices.Children.Add(BuildThemeSwitch());
-        menu.Content = choices;
-        routeSwitcher.Flyout = menu;
-        ToolTipService.SetToolTip(routeSwitcher, "Switch between Code, Chat and Models");
-        return BrandControl(routeSwitcher);
+            try { preferences = preferences with { ReducedMotion = motion.IsOn }; Store.Write("appearance.json", preferences); }
+            catch (Exception error) { await Notice("Appearance could not be saved", error.Message); }
+        };
+        panel.Children.Add(motion);
+        var button = SubtleIconButton("\uE713", "Appearance and motion", (_, _) => { });
+        button.Flyout = new Flyout { Content = panel, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
+        return button;
     }
 
     /// <summary>Content area above a slim status strip: window status on the left, page context on the right.</summary>
@@ -155,16 +158,14 @@ public sealed partial class MainWindow : Window
         status.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) => ToolTipService.SetToolTip(status, status.Text));
         pageContext.MaxWidth = 420;
 
-        var strip = new Grid { ColumnSpacing = 16, Padding = new Thickness(20, 6, 20, 7) };
+        var strip = new Grid { ColumnSpacing = 16, Padding = new Thickness(20, 6, 20, 6) };
         strip.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
         strip.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        status.Style = Token("MasonCaptionSecondary"); pageContext.Style = Token("MasonCaptionSecondary");
+        status.TextWrapping = pageContext.TextWrapping = TextWrapping.NoWrap;
         strip.Children.Add(status);
         Grid.SetColumn(pageContext, 1); strip.Children.Add(pageContext);
-        var stripFrame = new Border { Child = strip, BorderThickness = new Thickness(0, 1, 0, 0) };
-        // High contrast keeps the separator, drawn in the system text colour.
-        void Line() => stripFrame.BorderBrush = new SolidColorBrush(BrandHighContrast ? brandSystemColors.UIElementColor(Windows.UI.ViewManagement.UIElementType.WindowText) : BrandLine(root.ActualTheme == ElementTheme.Dark));
-        brandSystemColors.ColorValuesChanged += (_, _) => DispatcherQueue.TryEnqueue(Line);
-        root.ActualThemeChanged += (_, _) => Line(); Line();
+        var stripFrame = new Border { Child = strip, Style = Token("MasonStatusStrip") };
 
         var shell = new Grid();
         shell.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
@@ -180,7 +181,7 @@ public sealed partial class MainWindow : Window
     /// <summary>The Auto / Light / Dark choice at the foot of the sidebar. It applies at once and is saved.</summary>
     ThemeSwitch BuildThemeSwitch()
     {
-        var theme = new ThemeSwitch(root.RequestedTheme, segment => BrandControl(segment)) { Margin = new Thickness(12, 4, 12, 10) };
+        var theme = new ThemeSwitch(root.RequestedTheme, segment => BrandControl(segment));
         theme.Changed += async chosen =>
         {
             try { Store.Write("appearance.json", preferences with { Theme = chosen.ToString() }); root.RequestedTheme = chosen; preferences = preferences with { Theme = chosen.ToString() }; }
@@ -218,7 +219,8 @@ public sealed partial class MainWindow : Window
         if(name is "Models" or "AI connections") { selectResources?.Invoke(name == "AI connections" ? 2 : 0); name = "Models and connections"; }
         if(!pages.ContainsKey(name)) return;
         ShowPage(name);
-        routeSwitcher.Content = name == "Models and connections" ? "Models" : name;
-        AutomationProperties.SetName(routeSwitcher, $"Switch workspace · {routeSwitcher.Content}");
+        routeSyncing = true;
+        routeSwitcher.SelectedItem = routeSwitcher.Items.FirstOrDefault(i => (string)i.Tag == name);
+        routeSyncing = false;
     }
 }

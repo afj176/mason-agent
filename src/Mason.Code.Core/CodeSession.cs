@@ -25,6 +25,12 @@ public sealed class CodeTurn
     public bool Rewound {get;set;}
     public bool RewindPending {get;set;}
     public bool PlanningInterrupted {get;set;}
+    /// <summary>Workspace snapshots around this request, for undo and redo of everything the turn changed.</summary>
+    /// <summary>Index of this request in <see cref="CodeSession.Messages"/>, so a fork can keep exactly what came before it.</summary>
+    public int? MessageIndex {get;set;}
+    public Guid? SnapshotBefore {get;set;}
+    public Guid? SnapshotAfter {get;set;}
+    public bool Undone {get;set;}
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Role { get; set; } = "user";
     public string Text { get; set; } = "";
@@ -100,6 +106,8 @@ public sealed class CodeSession
     public string Draft { get; set; } = "";
     public string Reasoning { get; set; } = "default";
     public string Mode { get; set; } = "build";
+    /// <summary>Custom agent from .mason/agents whose instructions apply to this session, or null.</summary>
+    public string? Agent { get; set; }
     public int ActionLimit { get; set; } = 64;
     public string State { get; set; } = "Ready";
     public string Detail { get; set; } = "";
@@ -223,7 +231,10 @@ public interface ICodeModel
 {
     Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages, Action<string> onMessage, CancellationToken cancellation);
 }
-public sealed record CodeApproval(string Tool, string Description, string Detail){public string? Jpeg {get;init;}}
+public sealed record CodeApproval(string Tool, string Description, string Detail){public string? Jpeg {get;init;}
+    /// <summary>What an approval rule matches: the command line, relative path or MCP server/tool. Defaults to the description.</summary>
+    public string? Subject {get;init;}
+    public string RuleSubject => Subject ?? Description;}
 public sealed class CodeResponseException(string message, string response) : Exception(message)
 {
     public string Response { get; } = response.Length > 8000 ? response[..8000] + " [clipped]" : response;

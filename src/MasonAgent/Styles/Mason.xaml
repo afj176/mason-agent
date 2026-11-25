@@ -1,0 +1,219 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+      Mason design tokens on top of Fluent 2 / Windows 11. Everything here uses {ThemeResource} so light, dark and
+      high contrast follow the system without code. The type ramp, radii (4 for controls, 8 for cards and overlays)
+      and layering brushes are the Windows ones; Mason only brings its accent (App.xaml) and a few composites.
+      Code builds elements and assigns these styles by key (MainWindow.Design.cs).
+    -->
+
+    <!-- Type ramp: Caption 12/16 · Body 14/20 · Body Strong · Body Large 18/24 · Subtitle 20/28 · Title 28/36 · Title Large 40/52 -->
+    <Style x:Key="MasonCaption" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonCaptionSecondary" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/></Style>
+    <Style x:Key="MasonCaptionTertiary" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Foreground" Value="{ThemeResource TextFillColorTertiaryBrush}"/></Style>
+    <Style x:Key="MasonCaptionStrong" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}"><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/></Style>
+    <Style x:Key="MasonBody" TargetType="TextBlock" BasedOn="{StaticResource BodyTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonBodySecondary" TargetType="TextBlock" BasedOn="{StaticResource BodyTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/></Style>
+    <Style x:Key="MasonBodyStrong" TargetType="TextBlock" BasedOn="{StaticResource BodyStrongTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonBodyLarge" TargetType="TextBlock" BasedOn="{StaticResource BodyLargeTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonBodyLargeStrong" TargetType="TextBlock" BasedOn="{StaticResource BodyLargeStrongTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonSubtitle" TargetType="TextBlock" BasedOn="{StaticResource SubtitleTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonTitle" TargetType="TextBlock" BasedOn="{StaticResource TitleTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonTitleLarge" TargetType="TextBlock" BasedOn="{StaticResource TitleLargeTextBlockStyle}"><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonAccentText" TargetType="TextBlock" BasedOn="{StaticResource BodyStrongTextBlockStyle}"><Setter Property="Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}"/></Style>
+    <Style x:Key="MasonMono" TargetType="TextBlock" BasedOn="{StaticResource BodyTextBlockStyle}"><Setter Property="FontFamily" Value="Cascadia Mono, Consolas"/><Setter Property="FontSize" Value="12"/><Setter Property="LineHeight" Value="18"/><Setter Property="IsTextSelectionEnabled" Value="True"/><Setter Property="TextWrapping" Value="Wrap"/></Style>
+    <Style x:Key="MasonGlyphSecondary" TargetType="FontIcon"><Setter Property="FontSize" Value="16"/><Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/></Style>
+    <Style x:Key="MasonGlyphAccent" TargetType="FontIcon"><Setter Property="FontSize" Value="16"/><Setter Property="Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}"/></Style>
+
+    <!-- Surfaces: cards sit on the layer over Mica; their fill is translucent so the material reads through. -->
+    <Style x:Key="MasonCard" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource OverlayCornerRadius}"/>
+        <Setter Property="Padding" Value="16"/>
+    </Style>
+    <!-- A settings-style row: 4 px corners, 4 px apart in a stack (Windows Settings, WinUI Gallery). -->
+    <Style x:Key="MasonRowCard" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="Padding" Value="16,12"/>
+        <Setter Property="MinHeight" Value="68"/>
+    </Style>
+    <Style x:Key="MasonInsetCard" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorSecondaryBrush}"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="Padding" Value="12"/>
+    </Style>
+    <Style x:Key="MasonLayer" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource OverlayCornerRadius}"/>
+    </Style>
+    <Style x:Key="MasonDivider" TargetType="Border">
+        <Setter Property="Height" Value="1"/>
+        <Setter Property="Background" Value="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+    </Style>
+    <Style x:Key="MasonTableHeader" TargetType="Border">
+        <Setter Property="BorderBrush" Value="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="0,0,0,1"/>
+        <Setter Property="MinHeight" Value="36"/>
+    </Style>
+    <Style x:Key="MasonStatusStrip" TargetType="Border">
+        <Setter Property="BorderBrush" Value="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="0,1,0,0"/>
+        <Setter Property="MinHeight" Value="32"/>
+    </Style>
+    <Style x:Key="MasonIconTile" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="Width" Value="36"/>
+        <Setter Property="Height" Value="36"/>
+    </Style>
+    <Style x:Key="MasonAccentTile" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="Width" Value="36"/>
+        <Setter Property="Height" Value="36"/>
+    </Style>
+
+    <!-- Pills: status uses the system status pairs, neutral uses the subtle fill. -->
+    <Style x:Key="MasonPill" TargetType="Border"><Setter Property="CornerRadius" Value="10"/><Setter Property="Padding" Value="8,2,8,3"/><Setter Property="MinHeight" Value="20"/><Setter Property="VerticalAlignment" Value="Center"/><Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/></Style>
+    <Style x:Key="MasonPillSuccess" TargetType="Border" BasedOn="{StaticResource MasonPill}"><Setter Property="Background" Value="{ThemeResource SystemFillColorSuccessBackgroundBrush}"/></Style>
+    <Style x:Key="MasonPillCaution" TargetType="Border" BasedOn="{StaticResource MasonPill}"><Setter Property="Background" Value="{ThemeResource SystemFillColorCautionBackgroundBrush}"/></Style>
+    <Style x:Key="MasonPillCritical" TargetType="Border" BasedOn="{StaticResource MasonPill}"><Setter Property="Background" Value="{ThemeResource SystemFillColorCriticalBackgroundBrush}"/></Style>
+    <Style x:Key="MasonPillAttention" TargetType="Border" BasedOn="{StaticResource MasonPill}"><Setter Property="Background" Value="{ThemeResource SystemFillColorAttentionBackgroundBrush}"/></Style>
+    <Style x:Key="MasonPillText" TargetType="TextBlock" BasedOn="{StaticResource CaptionTextBlockStyle}"><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/></Style>
+    <Style x:Key="MasonPillTextSuccess" TargetType="TextBlock" BasedOn="{StaticResource MasonPillText}"><Setter Property="Foreground" Value="{ThemeResource SystemFillColorSuccessBrush}"/></Style>
+    <Style x:Key="MasonPillTextCaution" TargetType="TextBlock" BasedOn="{StaticResource MasonPillText}"><Setter Property="Foreground" Value="{ThemeResource SystemFillColorCautionBrush}"/></Style>
+    <Style x:Key="MasonPillTextCritical" TargetType="TextBlock" BasedOn="{StaticResource MasonPillText}"><Setter Property="Foreground" Value="{ThemeResource SystemFillColorCriticalBrush}"/></Style>
+    <Style x:Key="MasonPillTextAttention" TargetType="TextBlock" BasedOn="{StaticResource MasonPillText}"><Setter Property="Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}"/></Style>
+    <Style x:Key="MasonDotSuccess" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource SystemFillColorSuccessBrush}"/></Style>
+    <Style x:Key="MasonDotCaution" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource SystemFillColorCautionBrush}"/></Style>
+    <Style x:Key="MasonDotCritical" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource SystemFillColorCriticalBrush}"/></Style>
+    <Style x:Key="MasonDotNeutral" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource TextFillColorTertiaryBrush}"/></Style>
+    <Style x:Key="MasonDotAccent" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource AccentFillColorDefaultBrush}"/></Style>
+
+    <!-- Code badge: a path, hash, size or key cap in Cascadia Mono. -->
+    <Style x:Key="MasonCodeBadge" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource ControlFillColorSecondaryBrush}"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="Padding" Value="6,1,6,2"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
+    <!-- Segmented choice: a track with the selected option raised like a default button and an accent pill under it. -->
+    <Style x:Key="MasonSegmentTrack" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource ControlAltFillColorSecondaryBrush}"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="Padding" Value="2"/>
+    </Style>
+    <Style x:Key="MasonSegmentItem" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
+        <Setter Property="Padding" Value="12,4,12,5"/>
+        <Setter Property="MinHeight" Value="28"/>
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+    </Style>
+    <Style x:Key="MasonSegmentSelected" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+        <Setter Property="Padding" Value="12,4,12,5"/>
+        <Setter Property="MinHeight" Value="28"/>
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+    <Style x:Key="MasonSegmentIndicator" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
+        <Setter Property="Height" Value="3"/>
+        <Setter Property="Width" Value="16"/>
+        <Setter Property="CornerRadius" Value="1.5"/>
+        <Setter Property="VerticalAlignment" Value="Bottom"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
+        <Setter Property="Margin" Value="0,0,0,-3"/>
+    </Style>
+
+    <!-- Navigation rail item (Models sections): subtle, with the accent pill on the left when selected. -->
+    <Style x:Key="MasonRailItem" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="Padding" Value="12,8,12,8"/>
+        <Setter Property="MinHeight" Value="36"/>
+    </Style>
+    <Style x:Key="MasonRailIndicator" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource AccentFillColorDefaultBrush}"/>
+        <Setter Property="Width" Value="3"/>
+        <Setter Property="Height" Value="16"/>
+        <Setter Property="CornerRadius" Value="1.5"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="HorizontalAlignment" Value="Left"/>
+    </Style>
+    <Style x:Key="MasonRailSelectedFill" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+    </Style>
+
+    <!-- Segmented toggle: one of a small set of views. Checked is raised like a default button with an accent pill. -->
+    <Style x:Key="MasonSegmentToggle" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <Setter Property="Padding" Value="12,4,12,6"/>
+        <Setter Property="MinHeight" Value="32"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="UseSystemFocusVisuals" Value="True"/>
+        <Setter Property="FocusVisualMargin" Value="-3"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton">
+            <Grid x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" BorderThickness="1" BorderBrush="Transparent">
+                <ContentPresenter x:Name="Content" Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}" AutomationProperties.AccessibilityView="Raw"/>
+                <Border x:Name="Indicator" Background="{ThemeResource AccentFillColorDefaultBrush}" Height="3" Width="16" CornerRadius="1.5" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,1" Opacity="0"/>
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CommonStates">
+                    <VisualState x:Name="Normal"/>
+                    <VisualState x:Name="PointerOver"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Pressed"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Disabled"><VisualState.Setters><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorDisabledBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Checked"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource ControlFillColorDefaultBrush}"/><Setter Target="Root.BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/><Setter Target="Indicator.Opacity" Value="1"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="CheckedPointerOver"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource ControlFillColorSecondaryBrush}"/><Setter Target="Root.BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/><Setter Target="Indicator.Opacity" Value="1"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="CheckedPressed"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource ControlFillColorTertiaryBrush}"/><Setter Target="Root.BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}"/><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/><Setter Target="Indicator.Opacity" Value="1"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="CheckedDisabled"><VisualState.Setters><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorDisabledBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Indeterminate"/><VisualState x:Name="IndeterminatePointerOver"/><VisualState x:Name="IndeterminatePressed"/><VisualState x:Name="IndeterminateDisabled"/>
+                </VisualStateGroup></VisualStateManager.VisualStateGroups>
+            </Grid>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <!-- Chip toggle: shows or hides a panel. Checked takes the subtle fill and accent ink; no loud accent block. -->
+    <Style x:Key="MasonChipToggle" TargetType="ToggleButton">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <Setter Property="Padding" Value="8,6,8,6"/>
+        <Setter Property="MinHeight" Value="32"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="UseSystemFocusVisuals" Value="True"/>
+        <Setter Property="FocusVisualMargin" Value="-3"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton">
+            <Grid x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="{TemplateBinding CornerRadius}" BorderThickness="1" BorderBrush="Transparent">
+                <ContentPresenter x:Name="Content" Content="{TemplateBinding Content}" ContentTemplate="{TemplateBinding ContentTemplate}" Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{TemplateBinding Foreground}" AutomationProperties.AccessibilityView="Raw"/>
+                
+                <VisualStateManager.VisualStateGroups><VisualStateGroup x:Name="CommonStates">
+                    <VisualState x:Name="Normal"/>
+                    <VisualState x:Name="PointerOver"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Pressed"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Disabled"><VisualState.Setters><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorDisabledBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Checked"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/><Setter Target="Content.Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="CheckedPointerOver"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/><Setter Target="Content.Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="CheckedPressed"><VisualState.Setters><Setter Target="Root.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/><Setter Target="Content.Foreground" Value="{ThemeResource AccentTextFillColorPrimaryBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="CheckedDisabled"><VisualState.Setters><Setter Target="Content.Foreground" Value="{ThemeResource TextFillColorDisabledBrush}"/></VisualState.Setters></VisualState>
+                    <VisualState x:Name="Indeterminate"/><VisualState x:Name="IndeterminatePointerOver"/><VisualState x:Name="IndeterminatePressed"/><VisualState x:Name="IndeterminateDisabled"/>
+                </VisualStateGroup></VisualStateManager.VisualStateGroups>
+            </Grid>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+</ResourceDictionary>

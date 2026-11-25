@@ -15,11 +15,11 @@ namespace Mason;
 public sealed partial class MainWindow
 {
     [Microsoft.UI.Xaml.Data.Bindable]
-    sealed class ChatModelChoice(AiEndpointProfile profile, string availability)
+    sealed class ChatModelChoice(AiEndpointProfile profile, string availability, string mark = "")
     {
         public Guid Id => profile.Id;
-        public string DisplayName => profile.DisplayName;
-        public string ConnectionDetail => availability + " · " + profile.Endpoint;
+        public string DisplayName => (mark == "favourite" ? "★ " : "") + profile.DisplayName;
+        public string ConnectionDetail => (mark == "recent" ? "Recent · " : "") + availability + " · " + profile.Endpoint;
         public AiEndpointProfile Unwrap() => profile;
         // Combo items are announced by ToString; without this a screen reader hears the type name.
         public override string ToString() => DisplayName + ", " + ConnectionDetail;
@@ -34,7 +34,21 @@ public sealed partial class MainWindow
             return new(profile,availability);
         }
         box.ItemTemplate=(DataTemplate)Microsoft.UI.Xaml.Markup.XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><StackPanel Spacing='3' Padding='2,4'><TextBlock Text='{Binding DisplayName}' FontWeight='SemiBold' TextTrimming='CharacterEllipsis'/><TextBlock Text='{Binding ConnectionDetail}' FontSize='11' Opacity='.65' TextTrimming='CharacterEllipsis'/></StackPanel></DataTemplate>");
-        box.ItemsSource=profiles.Select(Choice).ToArray();
+        // X3: favourites first, then the most recently used, then the rest (OpenCode's model picker order).
+        var picks=ModelPicks.Read();
+        var ordered=profiles.OrderBy(p=>picks.Favourites.Contains(p.Id)?0:picks.Recent.Contains(p.Id)?1:2).ThenBy(p=>picks.Recent.IndexOf(p.Id) is var i&&i>=0?i:int.MaxValue).ToArray();
+        var previous=(box.SelectedItem as ChatModelChoice)?.Id;
+        box.ItemsSource=ordered.Select(p=>{var c=Choice(p);return new ChatModelChoice(p,c.ConnectionDetail[..c.ConnectionDetail.LastIndexOf(" · ",StringComparison.Ordinal)],picks.Favourites.Contains(p.Id)?"favourite":picks.Recent.Contains(p.Id)?"recent":"");}).ToArray();
+        if(previous is {} keep)box.SelectedItem=box.Items.OfType<ChatModelChoice>().FirstOrDefault(c=>c.Id==keep);
+        if(box.Tag as string=="picks")return;
+        box.Tag="picks";
+        box.SelectionChanged+=(_,_)=>{if(box.SelectedItem is ChatModelChoice chosen)ModelPicks.Use(chosen.Id);};
+        var favourite=new MenuFlyoutItem{Text="Add to favourites",Icon=new FontIcon{Glyph=""}};
+        favourite.Click+=(_,_)=>{if(box.SelectedItem is ChatModelChoice chosen){ModelPicks.ToggleFavourite(chosen.Id);PresentChatModels(box,box.Items.OfType<ChatModelChoice>().Select(c=>c.Unwrap()).ToArray());}};
+        var menu=new MenuFlyout{Items={favourite}};
+        menu.Opening+=(_,_)=>favourite.Text=box.SelectedItem is ChatModelChoice c&&ModelPicks.Read().Favourites.Contains(c.Id)?"Remove from favourites":"Add selected model to favourites";
+        box.ContextFlyout=menu;
+        ToolTipService.SetToolTip(box,"Favourites (★) and recent models come first. Right-click to favourite the selected model.");
     }
     Action<Guid>? openNativeChat;
     Action? refreshNativeChatProfiles;

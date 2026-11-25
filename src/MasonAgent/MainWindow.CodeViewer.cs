@@ -220,10 +220,10 @@ public sealed partial class MainWindow
             else text = scope.Read(model.Target).Content;
             var contentHost = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
             bool previewSelected = !(model.ViewMode == "source" || model.ViewMode.Length == 0 && extension is not (".md" or ".markdown" or ".docx"));
-            var previewMode = BrandControl(new ToggleButton { Content = "Preview", Width = 76, MinHeight = 32, FontSize = 12, CornerRadius = new CornerRadius(3), Padding = new Thickness(8, 4, 8, 4) });
-            var sourceMode = BrandControl(new ToggleButton { Content = "Source", Width = 76, MinHeight = 32, FontSize = 12, CornerRadius = new CornerRadius(3), Padding = new Thickness(8, 4, 8, 4) });
+            var previewMode = SegmentToggle(new ToggleButton { Content = "Preview", MinWidth = 72 });
+            var sourceMode = SegmentToggle(new ToggleButton { Content = "Source", MinWidth = 72 });
             var modeButtons = Row(previewMode, sourceMode); modeButtons.Spacing = 0;
-            var mode = new Border { Child = modeButtons, Padding = new Thickness(1) };
+            modeButtons.Spacing = 2; var mode = new Border { Child = modeButtons, Style = Token("MasonSegmentTrack") };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(mode, "Document preview or source");
             var note = CodeNote(extension == ".docx" ? "Word text preview · original layout and images are not reproduced" : model.Target);
             var find = new TextBox { PlaceholderText = "Find in source…", Width = 175, MaxLength = 200 };

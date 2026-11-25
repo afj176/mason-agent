@@ -41,43 +41,44 @@ public static class ModelTones
 
 public sealed partial class MainWindow
 {
-    /// <summary>A rounded status label. Re-tints itself when the theme changes.</summary>
+    static string ToneKey(Tone tone) => tone switch { Tone.Good => "Success", Tone.Warn => "Caution", Tone.Bad => "Critical", Tone.Accent or Tone.Search => "Attention", _ => "" };
+
+    /// <summary>A status pill on the system status colour pairs (success, caution, critical, attention, neutral).</summary>
     static Border Pill(string text, Tone tone, double size = 11)
     {
-        var label = new TextBlock { Text = text, FontSize = size, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1 };
-        var pill = new Border { Child = label, Padding = new Thickness(8, 2, 8, 3), CornerRadius = new CornerRadius(10), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
-        void Theme() { bool dark = pill.ActualTheme == ElementTheme.Dark; label.Foreground = ModelTones.InkBrush(tone, dark); pill.Background = ModelTones.FillBrush(tone, dark); pill.BorderThickness = new Thickness(BrandHighContrast ? 1 : 0); pill.BorderBrush = label.Foreground; }
-        pill.Loaded += (_, _) => Theme(); pill.ActualThemeChanged += (_, _) => Theme(); Theme();
+        var label = new TextBlock { Text = text, Style = Token("MasonPillText" + ToneKey(tone)), TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1 };
+        var pill = new Border { Child = label, Style = Token("MasonPill" + ToneKey(tone)), HorizontalAlignment = HorizontalAlignment.Left };
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(pill, text);
         return pill;
     }
 
-    /// <summary>A small coloured dot for readiness lists.</summary>
-    static Border Dot(Tone tone)
+    /// <summary>A small status dot.</summary>
+    static Border Dot(Tone tone) => new()
     {
-        var dot = new Border { Width = 8, Height = 8, CornerRadius = new CornerRadius(4), VerticalAlignment = VerticalAlignment.Center };
-        void Theme() => dot.Background = ModelTones.InkBrush(tone, dot.ActualTheme == ElementTheme.Dark);
-        dot.Loaded += (_, _) => Theme(); dot.ActualThemeChanged += (_, _) => Theme(); Theme();
-        return dot;
-    }
+        VerticalAlignment = VerticalAlignment.Center,
+        Child = new Microsoft.UI.Xaml.Shapes.Ellipse { Style = Token(tone switch { Tone.Good => "MasonDotSuccess", Tone.Warn => "MasonDotCaution", Tone.Bad => "MasonDotCritical", Tone.Accent or Tone.Search => "MasonDotAccent", _ => "MasonDotNeutral" }) }
+    };
 
     sealed record RailEntry(string Label, string Glyph, Grid Row, TextBlock Count, Border Indicator, Button Button);
 
-    /// <summary>The section rail: one button per section with a glyph, a label, a count and a selection bar.</summary>
+    /// <summary>The section rail: subtle buttons with a glyph, label and count; the selected one gets the subtle fill and the
+    /// accent pill on its left edge, like a NavigationView item.</summary>
     static (FrameworkElement View, RailEntry[] Entries, Action<int> Select, Action<bool> Compact) SectionRail(Action<int> chosen, params (string Label, string Glyph)[] sections)
     {
-        var list = new StackPanel { Spacing = 2 };
+        var list = new StackPanel { Spacing = 4 };
         var entries = new List<RailEntry>();
         foreach (var (section, index) in sections.Select((s, i) => (s, i)))
         {
-            var indicator = new Border { Width = 3, Height = 18, CornerRadius = new CornerRadius(2), VerticalAlignment = VerticalAlignment.Center, Opacity = 0 };
+            var indicator = new Border { Style = Token("MasonRailIndicator"), Opacity = 0 };
             var glyph = new FontIcon { Glyph = section.Glyph, FontSize = 16, VerticalAlignment = VerticalAlignment.Center };
-            var label = new TextBlock { Text = section.Label, FontSize = 14, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
-            var count = new TextBlock { FontSize = 12, Opacity = .75, VerticalAlignment = VerticalAlignment.Center };
-            var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(6, 9, 12, 9) };
+            var label = new TextBlock { Text = section.Label, Style = Token("MasonBody"), TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+            var count = new TextBlock { Style = Token("MasonCaptionSecondary"), VerticalAlignment = VerticalAlignment.Center };
+            var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(4, 8, 12, 8) };
             foreach (var width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto }) row.ColumnDefinitions.Add(new() { Width = width });
             row.Children.Add(indicator); Grid.SetColumn(glyph, 1); row.Children.Add(glyph); Grid.SetColumn(label, 2); row.Children.Add(label); Grid.SetColumn(count, 3); row.Children.Add(count);
-            var button = new Button { Content = row, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(0), BorderThickness = new Thickness(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), CornerRadius = new CornerRadius(RadiusSmall) };
+            var fill = new Border { Style = Token("MasonRailSelectedFill"), Opacity = 0 };
+            var holder = new Grid(); holder.Children.Add(fill); holder.Children.Add(row);
+            var button = new Button { Content = holder, Style = Token("SubtleButtonStyle"), HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(0) };
             Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, section.Label);
             int at = index; button.Click += (_, _) => chosen(at);
             list.Children.Add(button); entries.Add(new(section.Label, section.Glyph, row, count, indicator, button));
@@ -87,14 +88,12 @@ public sealed partial class MainWindow
         {
             foreach (var (entry, i) in entries.Select((e, i) => (e, i)))
             {
-                bool on = i == current, dark = entry.Button.ActualTheme == ElementTheme.Dark;
+                bool on = i == current;
                 entry.Indicator.Opacity = on ? 1 : 0;
-                entry.Indicator.Background = ModelTones.InkBrush(Tone.Accent, dark);
-                entry.Button.Background = on && !BrandHighContrast ? new SolidColorBrush(dark ? Color.FromArgb(255, 0x2C, 0x30, 0x4A) : Color.FromArgb(255, 0xEE, 0xEE, 0xF7)) : new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+                ((Grid)entry.Button.Content).Children[0].Opacity = on ? 1 : 0;
                 ((TextBlock)entry.Row.Children[2]).FontWeight = on ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal;
             }
         }
-        list.ActualThemeChanged += (_, _) => Paint();
         void Compact(bool compact) { foreach (var e in entries) { e.Row.Children[2].Visibility = e.Row.Children[3].Visibility = compact ? Visibility.Collapsed : Visibility.Visible; ToolTipService.SetToolTip(e.Button, compact ? e.Label : null); } }
         return (list, entries.ToArray(), i => { current = i; Paint(); }, Compact);
     }

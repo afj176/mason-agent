@@ -17,6 +17,47 @@ Reviewed against the installed Windows build 2.1.1 and source commit `6f27413` o
 
 The release workflow binds both model identities and these evaluation reports to the source commit. Debugger integration, cloud workers, cross-device clients and team administration remain future product decisions.
 
+## Goose Desktop and OpenCode Desktop comparison (November 25, 2026)
+
+Compared against Goose v1.61.0 (`aaif-goose/goose`) and OpenCode v2.4.1 (`anomalyco/opencode`) from their source and docs. Mason already leads on the Windows sandbox, verification receipts, compiler-backed navigation (OpenCode v2 removed LSP) and browser checks. Items where they are ahead:
+
+| # | Gap | Who does it | Mason today | Status |
+| --- | --- | --- | --- | --- |
+| G1 | **Models run inside the app, no server process.** | Goose embeds llama.cpp in-process (`crates/oi-kit-local-inference`). | `llama-server.exe` or Python runs as an owned child process on a loopback port. | **Implemented**: GGUF models run inside Mason through `llama-server-impl.dll` (see below). |
+| G2 | One-click local onboarding: detect the GPU, install the matching runtime, download the recommended quantization that fits memory. | Goose `recommend_variant`, onboarding `LocalModelPicker`. | Runtime installer, Hugging Face downloads and fit estimate exist as separate steps. | **Implemented**: Models → Quick setup detects the GPU, installs the matching llama.cpp build if needed, ranks trusted coding GGUFs by the best quantization that fits 85% of free VRAM, downloads after confirmation and starts the model inside Mason (`QuickSetup.cs`). |
+| G3 | Undo/redo of a whole step, including files changed by commands. | OpenCode git snapshots per model step. | Rewind covers files changed through edit tools only. | **Implemented**: each request records content-addressed workspace snapshots in the profile; Undo/Redo in session settings restores everything the request changed and leaves later edits alone (`CodeSnapshots.cs`). |
+| G4 | Permission rules with "always allow" saved per project, matched on path, shell prefix and URL. | OpenCode `permissions`. | Per-action approvals and project policy profiles. | **Implemented**: approvals offer Always allow with an editable prefix; deny wins; rules are listed and revoked in Harness settings (`CodeApprovalRules.cs`). |
+| G5 | Custom agents and slash commands as Markdown files. | OpenCode agents/commands, Goose recipes and `.agents/agents`. | Skills and named workflows; fixed Ask/Build and roles. | **Implemented**: `.mason/agents` and `.mason/commands` (also `.claude/…`, `.agents/agents`, `.opencode/command`); agent picker in session settings, commands in Ctrl+K, `$ARGUMENTS`/`$1–$9` (`CodeCustomization.cs`). |
+| G6 | MCP management UI with stdio and HTTP servers, toggles and approvals. | Both. | `mcp-servers.json` and bundles; no add/toggle UI. | **Implemented**: Harness settings lists, adds, edits, enables and removes stdio and HTTP servers, with tool discovery for the allowlist (`CodeMcpRegistry`). |
+| G7 | Scheduled or triggered runs. | Goose scheduler, OpenCode automations. | Background tasks run on demand. | **Implemented**: hourly, daily, weekday or weekly runs started as background tasks while Mason is open; a missed run starts once (`CodeSchedules.cs`). |
+| G8 | Edit a past message or fork from it; session import/export. | Goose sessions, OpenCode `session export --sanitize`. | Fork into a worktree from the current turn. | **Implemented**: fork before any request (optionally restoring files), export with redaction, import (`CodeSessionTransfer.cs`). |
+| G9 | Windows taskbar progress and a flash when an approval waits. | OpenCode v2.4.0. | In-app notices only. | **Implemented**: taskbar progress and flash, plus a Windows notification when Mason is in the background (`TaskbarStatus.cs`, `Notifications.cs`). |
+| G10 | Tool-calling fallback for models whose template has no native tools. | Goose emulated tools. | Native tool calls, with a Flint-specific path. | **Implemented**: a call written as text (wrong tags, fenced JSON) for an offered tool is recovered; llama.cpp already emulates tools for templates without them (`ToolCallRecovery.cs`). |
+
+### Extra recommendations
+
+| # | Item | Source | Status |
+| --- | --- | --- | --- |
+| X1 | Generation settings per coding connection (temperature, top-p/k, min-p, repeat penalty, seed) | Goose `ModelSettingsPanel` | Implemented: Connections → Coding generation |
+| X2 | Apply the memory-fit context automatically when a model is selected | Goose `estimate_max_context_for_memory` | Implemented: selecting a model applies its memory-fit context |
+| X3 | Model switcher in the composer with favourites and recents | OpenCode v2 model picker | Implemented: ★ favourites and recents first in Code and Chat pickers |
+| X4 | Windows notification when a run finishes or waits for approval while Mason is in the background | OpenCode taskbar/inbox | Implemented with G9 |
+| D1 | Fluent 2 foundations: type ramp, 4/8 radii, system layering brushes over Mica, one accent ramp instead of per-control overrides | Windows design guidance | Implemented: `Styles/Mason.xaml`, App.xaml accent ramp |
+| D2 | One component set: settings cards, segmented choices, tables, detail lists, icon buttons, pills, empty states | WinUI Gallery, PowerToys, Files | Implemented: `MainWindow.Design.cs` |
+
+### G1: models inside Mason
+
+Recent llama.cpp Windows builds split every tool into a thin `.exe` and an `-impl.dll`. `llama-server-impl.dll` exports `int llama_server(int, char**)` and `void llama_server_terminate()`, the entry points llama-cli uses to embed the server. Mason loads that DLL from the selected runtime folder and runs the server on a thread in its own process. Templates, tool-call parsing, JSON-schema grammars, vision projectors and speculative decoding are therefore identical to `llama-server.exe`, and every client keeps the same loopback API.
+
+Constraints, all enforced in `EmbeddedLlamaServer`:
+
+- One embedded model at a time. The server keeps its shutdown handler in a static, so additional models run as owned processes.
+- One llama.cpp build per Mason process. Loading a second build's DLLs would bind to the first build's `llama.dll`. Selecting a different build takes effect for embedding after Mason restarts; until then that build runs as a process.
+- `llama_server_terminate` is only called after the server reports that it is listening; before that the static handler can refer to the previous run.
+- A native abort (`GGML_ASSERT`, a CUDA failure) ends Mason itself. Clear **Run GGUF models inside Mason** in Runtime setup to isolate models in their own processes again.
+- An embedded model stops when Mason closes, so a background task that must outlive the desktop needs the process mode.
+- Transformers and GPTQ/AWQ models still run in Python. Embedding CPython with PyTorch and CUDA is not practical in a self-contained app.
+
 ## Original six
 
 - [ ] **1. Recover at the failed edit.** A failed snippet match currently pauses snippet tools for the rest of the run. Refresh the affected file and offer a bounded, hash-checked patch. Prove it with a concurrent edit that survives while the intended change lands and a second file remains patchable. [Edit recovery](src/Mason.Code.Core/CodeEngine.cs)

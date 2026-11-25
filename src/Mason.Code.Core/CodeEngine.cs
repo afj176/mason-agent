@@ -39,8 +39,18 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             do{
                 using var turn=CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 activeTurn=turn;
-                try{await RunTurn(session,next?.Text??input,turn.Token,next,next?.Review ?? review);}
-                catch(OperationCanceledException) when(turn.IsCancellationRequested && !cancellation.IsCancellationRequested){session.State="Stopped";store.Save(session);}
+                int turnsBefore=session.Turns.Count;
+                var before=Snapshot(session);
+                try{
+                    try{await RunTurn(session,next?.Text??input,turn.Token,next,next?.Review ?? review);}
+                    catch(OperationCanceledException) when(turn.IsCancellationRequested && !cancellation.IsCancellationRequested){session.State="Stopped";store.Save(session);}
+                }
+                finally{
+                    if(session.Turns.Skip(turnsBefore).FirstOrDefault(t=>t.Role=="user") is {} started && before!=null){
+                        started.SnapshotBefore=before;started.SnapshotAfter=Snapshot(session);
+                        try{store.Save(session);}catch(IOException){}
+                    }
+                }
                 activeTurn=null;
                 if(cancellation.IsCancellationRequested)return;
                 next=Next();
@@ -48,12 +58,19 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             }while(next!=null);
         }finally{session.RepairingFile=null;activeTurn=null;activeSession=null;}
     }
+    Guid? Snapshot(CodeSession session)
+    {
+        // Undo is a convenience: a snapshot failure must never block or fail the run.
+        try{return CodeSnapshots.Capture(store.SettingsRoot,session.Workspace).Id;}
+        catch(Exception e) when(e is IOException or UnauthorizedAccessException or InvalidDataException or DirectoryNotFoundException){diagnostic?.Invoke(e);return null;}
+    }
     async Task RunTurn(CodeSession session,string input,CancellationToken cancellation,CodeFollowUp? followUp,CodeReviewComment[] review)
     {
         // WinUI TextBox uses CR for paragraph breaks, while files and API callers use LF or CRLF.
         input=input?.ReplaceLineEndings("\n")??"";
         bool newTask=input?.StartsWith("/new ",StringComparison.OrdinalIgnoreCase)==true;
         if(newTask)input=input![5..].Trim();
+        var modelRequest=CodeCustomization.Prepare(store.SettingsRoot,session,input!);
         if (string.IsNullOrWhiteSpace(input) || input.Length > 16_000) throw new ArgumentException("Describe a change in 1–16,000 characters.");
         bool verificationOnly=session.Mode=="build" && session.Permission==CodePermission.Auto &&
             System.Text.RegularExpressions.Regex.IsMatch(input.Trim(),@"^(?:verify|run|check)\s+(?:(?:the|all|features|checks|scenarios|in|from|specified|by|using)\s+)*mason\.acceptance\.json[.!]?$",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
@@ -80,19 +97,19 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         int queueIndex = followUp == null ? -1 : session.PendingInput.FindIndex(m => m.Id == followUp.Id);
         var evidence = followUp == null ? session.Evidence.ToArray() : [];
         var developer_evidence = evidence.Select(e => e.ForModel(scope)).ToArray();
-        var user = new CodeTurn { Evidence = evidence, Text = input, FirstActivity = firstActivity, SubmittedReview = review }; session.Turns.Add(user);
+        var user = new CodeTurn { Evidence = evidence, Text = input, FirstActivity = firstActivity, SubmittedReview = review, MessageIndex = session.Messages.Count }; session.Turns.Add(user);
         if(queueIndex >= 0) session.PendingInput.RemoveAt(queueIndex);
         string? handoff = newTask ? "The user explicitly started a new task. The current request defines its requirements." : session.State is "Blocked" or "Interrupted" or "Failed" or "Stopped" or "Needs verification"
             ? $"Previous run: {session.State}. Current workspace root: '.'. Use the current file inventory to resume. " +
               (listing.RootIsOnlyDirectory && listing.Files.Length == 0 ? "The selected project exists and is empty. Create the requested files here using bare filenames." : "")
             : null;
         session.Messages.Add(new("user", review.Length > 0 ? JsonSerializer.Serialize(new {
-            request = input, references, developer_evidence, host_resume_context = handoff,
+            request = modelRequest, references, developer_evidence, host_resume_context = handoff,
             review_comments = review.Select(c => new { c.Path, c.Line, side = c.Original ? "original" : "updated", Quote = c.Quote.Length <= 1500 ? c.Quote : c.Quote[..1500], quote_truncated = c.Quote.Length > 1500, revision_at_submission = c.Revision, feedback = c.Note }),
             review_context = "Quoted source is a snapshot. Read the current file before making edits."
-        }) : developer_evidence.Length>0 ? JsonSerializer.Serialize(new {request=input,references,developer_evidence,host_resume_context=handoff})
-            : handoff==null?JsonSerializer.Serialize(new {request=input,references})
-            : JsonSerializer.Serialize(new {request=input,references,host_resume_context=handoff})));
+        }) : developer_evidence.Length>0 ? JsonSerializer.Serialize(new {request=modelRequest,references,developer_evidence,host_resume_context=handoff})
+            : handoff==null?JsonSerializer.Serialize(new {request=modelRequest,references})
+            : JsonSerializer.Serialize(new {request=modelRequest,references,host_resume_context=handoff})));
         if (session.Title == "New session") session.Title = input.Length > 55 ? input[..55] + "…" : input;
         session.ViewerDismissed = false;
         session.Draft = ""; session.State = "Running"; session.Detail = "Preparing workspace context…";
@@ -884,12 +901,12 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 var server=CodeMcp.Read(store.SettingsRoot).SingleOrDefault(s=>s.Name==S(a,"server"))??throw new ArgumentException("Unknown user-registered MCP server.");
                 string transport=server.Executable==null?server.Endpoint:server.Executable+" "+JsonSerializer.Serialize(server.Arguments??[]);
                 if(tool is "mcp_tools" or "mcp_resources" or "mcp_read"){
-                    if(server.Executable!=null || tool=="mcp_read")await Review(new(tool,"Use "+server.Name+" for "+tool+"?",transport+(tool=="mcp_read"?"\n"+S(a,"uri"):"")));
+                    if(server.Executable!=null || tool=="mcp_read")await Review(new(tool,"Use "+server.Name+" for "+tool+"?",transport+(tool=="mcp_read"?"\n"+S(a,"uri"):"")){Subject=server.Name});
                     return new(await CodeMcp.Request(server,null,default,ct,resources:tool=="mcp_resources",uri:tool=="mcp_read"?S(a,"uri"):null));
                 }
                 var externalTool=S(a,"tool");using(var args=JsonDocument.Parse(S(a,"arguments_json"))){
                     if(args.RootElement.ValueKind!=JsonValueKind.Object || !server.Tools.Contains(externalTool))throw new ArgumentException("Choose a registered tool and JSON object arguments.");
-                    await Review(new(tool,"Call "+server.Name+" / "+externalTool+"?",transport+"\n"+args.RootElement.GetRawText()));
+                    await Review(new(tool,"Call "+server.Name+" / "+externalTool+"?",transport+"\n"+args.RootElement.GetRawText()){Subject=server.Name+"/"+externalTool});
                     return new(await CodeMcp.Request(server,externalTool,args.RootElement,ct));
                 }
             case "navigate_code":
@@ -966,7 +983,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if (session.Permission == CodePermission.ReviewEdits || dirty!=null)
                 {
                     string diff=editing?string.Join("\n\n",replacements.Select(e=>"Replace exactly:\n"+e.OldText+"\nWith:\n"+e.NewText)):S(a,"content");
-                    await Review(new(tool,(editing?"Edit ":"Create ")+path,dirty==null?diff:"The attached editor buffer has unsaved changes. This edit writes the on-disk file.\n"+dirty.Details+"\n\n"+diff));
+                    await Review(new(tool,(editing?"Edit ":"Create ")+path,dirty==null?diff:"The attached editor buffer has unsaved changes. This edit writes the on-disk file.\n"+dirty.Details+"\n\n"+diff){Subject=path},allowRule:dirty==null);
                 }
                 ct.ThrowIfCancellationRequested();
                 var change = session.Changes.FirstOrDefault(c => c.Path.Equals(path, StringComparison.OrdinalIgnoreCase) && !c.Restored);
@@ -996,7 +1013,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 var arguments = shellCommand?.Arguments ?? a.GetProperty("arguments").EnumerateArray().Select(p => p.GetString() ?? throw new ArgumentException("Command arguments must be strings.")).ToArray();
                 if (arguments.Length > 40 || arguments.Sum(p => p.Length) > 8000) throw new ArgumentException("Command arguments exceed the resource bound.");
                 activity.Authorization = session.Permission == CodePermission.Auto ? "Auto · Windows LPAC workspace sandbox · "+(session.Network==CodeNetworkMode.Ask?"network asks per destination":"network offline") : "Review required";
-                if (session.Permission != CodePermission.Auto) await Review(new(tool, CodeCommand.CommandLine(executable, arguments), "Working directory: " + directory + "\n\nRuns with your Windows account and inherited environment. Workspace file restrictions do not isolate this command. Deadline: 120 seconds. Interactive input is unavailable."));
+                if (session.Permission != CodePermission.Auto) await Review(new(tool, CodeCommand.CommandLine(executable, arguments), "Working directory: " + directory + "\n\nRuns with your Windows account and inherited environment. Workspace file restrictions do not isolate this command. Deadline: 120 seconds. Interactive input is unavailable."){Subject=CodeCommand.CommandLine(executable, arguments)});
                 ct.ThrowIfCancellationRequested(); activity.State = "Running"; store.Save(session); changed();
                 if (session.Permission == CodePermission.Auto) { session.Detail = "Preparing isolated Auto command · workspace writes only"; changed(); }
                 var context=SynchronizationContext.Current;
@@ -1019,8 +1036,15 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 return new(JsonSerializer.Serialize(command), Failed: command.ExitCode != 0 || command.Truncated,RuntimeFailure:command.Failure);
             default: throw new ArgumentException("Unsupported coding tool: " + tool);
         }
-        async Task Review(CodeApproval request)
+        async Task Review(CodeApproval request,bool allowRule=true)
         {
+            // Saved project rules answer the prompt; a deny rule always wins. Rules never change what the sandbox allows.
+            if(CodeApprovalRules.Match(CodeApprovalRules.Load(store.SettingsRoot,scope.Root),request.Tool,request.RuleSubject) is {} rule && (allowRule || !rule.Allow))
+            {
+                activity.Authorization=(rule.Allow?"Allowed by project rule · ":"Denied by project rule · ")+(rule.Subject.Length==0?"any":rule.Subject);
+                if(!rule.Allow)throw new UnauthorizedAccessException("A saved project rule denies this operation. Do not retry it; ask the user if it is required.");
+                return;
+            }
             session.State = "Awaiting review"; session.Detail = "Review required · " + request.Tool.Replace('_', ' '); store.Save(session); changed();
             bool allowed = await approve(request, ct); ct.ThrowIfCancellationRequested(); session.State = "Running";
             activity.Authorization = allowed ? "Allowed once" : "Declined";

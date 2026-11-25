@@ -18,6 +18,8 @@ public sealed record AiMessage(string Role, string Content)
 }
 public sealed record AiChatResult(string FinishReason, int Characters, string? ObservedModel, int ReasoningCharacters = 0, int? PromptTokens = null, int? CompletionTokens = null, double? GenerationTokensPerSecond = null, double? TimeToFirstTokenSeconds = null, double? RequestSeconds = null)
 {
+    /// <summary>The tool call was recovered from text the model wrote instead of its native tool format.</summary>
+    public bool RecoveredToolCall { get; init; }
     public IReadOnlyList<AiToolCall> ToolCalls { get; init; } = [];
     public string PerformanceSummary => (GenerationTokensPerSecond is double speed ? $"{speed:0.0} tok/s generation" : CompletionTokens is int tokens && RequestSeconds is > 0 ? $"{tokens / RequestSeconds.Value:0.0} tok/s request average" : "Speed unavailable") +
         (TimeToFirstTokenSeconds is double first ? $" · first token {first:0.00}s" : "") +
@@ -305,10 +307,15 @@ public sealed partial class LocalAiClient
                 throw new InvalidDataException("The endpoint did not return an event stream.");
             await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
             double headersSeconds = requestClock.Elapsed.TotalSeconds;
+            var answer = options.ToolDefinitions.HasValue ? new StringBuilder() : null;
             var result = await ReadChatStream(stream, part=>{
                 if(captured!=null && captured.Length<100000)captured.Append(part.AsSpan(0,Math.Min(part.Length,100000-captured.Length)));
+                if(answer!=null && answer.Length<200_000)answer.Append(part);
                 onText(part);
             }, timeout.Token, onReasoning,options.ToolDefinitions.HasValue,onToolArguments);
+            // A model that wrote its call as text (wrong tags, a fenced block) still gets its action executed.
+            if(answer!=null && result.ToolCalls.Count==0 && ToolCallRecovery.TryParse(answer.ToString(),ToolCallRecovery.Names(options.ToolDefinitions!.Value)) is {} recovered)
+                result=result with{FinishReason="tool_calls",ToolCalls=[recovered],RecoveredToolCall=true};
             if(trace!=null)Record(JsonSerializer.Serialize(new{result.ObservedModel,result.FinishReason,result.ToolCalls,result.PromptTokens,result.CompletionTokens,elapsedMs=requestClock.ElapsedMilliseconds}));
             return result with { TimeToFirstTokenSeconds = result.TimeToFirstTokenSeconds + headersSeconds, RequestSeconds = requestClock.Elapsed.TotalSeconds };
         }

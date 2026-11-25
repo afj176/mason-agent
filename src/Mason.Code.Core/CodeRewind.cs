@@ -9,6 +9,36 @@ namespace Mason.Code;
 public sealed record TurnEdit(string Path,string? Before,bool Bom,string AfterHash,bool ExternalChange=false);
 public static class CodeRewind
 {
+    /// <summary>The newest request whose whole effect (edit tools, commands, workflows) can be undone.</summary>
+    public static CodeTurn? LatestUndoable(CodeSession session)=>session.Turns.LastOrDefault(t=>t.Role=="user" && t.SnapshotBefore!=null && t.SnapshotAfter!=null && !t.Undone);
+    /// <summary>The most recently undone request, which redo restores.</summary>
+    public static CodeTurn? LatestRedoable(CodeSession session)=>session.Turns.LastOrDefault(t=>t.Role=="user" && t.Undone);
+
+    /// <summary>Files the undo of <paramref name="turn"/> would change, with conflicts marked.</summary>
+    public static SnapshotChange[] PreviewUndo(CodeStore store,CodeSession session,CodeTurn turn)=>
+        CodeSnapshots.Plan(store.SettingsRoot,session.Workspace,turn.SnapshotAfter!.Value,turn.SnapshotBefore!.Value);
+
+    public static SnapshotRestore Undo(CodeStore store,CodeSession session,Guid turnId)=>Move(store,session,turnId,undo:true);
+    public static SnapshotRestore Redo(CodeStore store,CodeSession session,Guid turnId)=>Move(store,session,turnId,undo:false);
+
+    static SnapshotRestore Move(CodeStore store,CodeSession session,Guid turnId,bool undo)
+    {
+        if(session.State is "Running" or "Awaiting review")throw new InvalidOperationException("Stop the active turn before undoing or redoing.");
+        var turn=(undo?LatestUndoable(session):LatestRedoable(session))??throw new InvalidOperationException(undo?"Nothing left to undo.":"Nothing to redo.");
+        if(turn.Id!=turnId)throw new InvalidOperationException("The latest request has changed. Refresh and try again.");
+        var result=undo
+            ?CodeSnapshots.Restore(store.SettingsRoot,session.Workspace,turn.SnapshotAfter!.Value,turn.SnapshotBefore!.Value)
+            :CodeSnapshots.Restore(store.SettingsRoot,session.Workspace,turn.SnapshotBefore!.Value,turn.SnapshotAfter!.Value);
+        turn.Undone=undo;
+        foreach(var prior in session.Turns.Where(t=>t.Acceptance!=null)){prior.Acceptance!.Results.Clear();prior.Acceptance.VerifiedRevision=null;}
+        string summary=$"{(undo?"Undid":"Redid")} “{(turn.Text.Length>60?turn.Text[..60]+"…":turn.Text)}”: {result.Restored} restored, {result.Created} recreated, {result.Deleted} removed"+(result.Conflicts.Length>0?$", {result.Conflicts.Length} left as they are because they changed since":"")+".";
+        session.Messages.Add(new("user",summary+" Re-read affected files before relying on earlier observations."+(result.Conflicts.Length>0?" Unchanged because of later edits: "+string.Join(", ",result.Conflicts.Take(20)):"")));
+        session.State="Needs verification";session.Detail=summary;
+        session.Activities.Add(new(){Tool=undo?"undo_turn":"redo_turn",State="Completed",Result=summary});
+        store.Save(session);
+        return result;
+    }
+
     public static CodeTurn? Latest(CodeSession session)=>session.Turns.LastOrDefault(t=>t.Edits.Count>0 && !t.Rewound);
     internal static void Record(CodeTurn turn,string path,CodeFile? before,string after)
     {

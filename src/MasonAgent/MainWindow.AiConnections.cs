@@ -77,6 +77,16 @@ public sealed partial class MainWindow
         };
         picker.SelectionChanged+=(_,_)=> { if(picker.SelectedItem is string id) model.Text=id; };
         use.SelectionChanged+=(_,_)=>ShowChecks();
+        // X1: per-connection generation settings for the coding agent (Goose's model settings panel).
+        NumberBox Number(string header,double min,double max,double step,string help)=>new NumberBox{Header=header,Minimum=min,Maximum=max,SmallChange=step,LargeChange=step*10,SpinButtonPlacementMode=NumberBoxSpinButtonPlacementMode.Compact,PlaceholderText="Model default",Value=double.NaN,Description=help};
+        var temperature=Number("Temperature",0,2,.05,"Lower is more deterministic. Coding usually works best at 0–0.3.");
+        var topP=Number("Top P",0,1,.05,"Nucleus sampling cut-off.");var topK=Number("Top K",0,500,1,"Candidates per token; 0 turns it off.");
+        var minP=Number("Min P",0,1,.01,"Drops tokens below this share of the best one.");var repeat=Number("Repeat penalty",0,3,.05,"Above 1 discourages loops.");
+        var seed=Number("Seed",-1,int.MaxValue,1,"Fixed seed for repeatable runs.");
+        double? Value(NumberBox box)=>double.IsNaN(box.Value)?null:box.Value;
+        CodeSampling? SamplingFields(){var s=new CodeSampling(Value(temperature),Value(topP),Value(topK) is {} k?(int)k:null,Value(minP),Value(repeat),Value(seed) is {} sd?(int)sd:null);return s.Empty?null:s;}
+        void ShowSampling(CodeSampling? s){temperature.Value=s?.Temperature??double.NaN;topP.Value=s?.TopP??double.NaN;topK.Value=s?.TopK??double.NaN;minP.Value=s?.MinP??double.NaN;repeat.Value=s?.RepeatPenalty??double.NaN;seed.Value=s?.Seed??double.NaN;}
+        list.SelectionChanged+=(_,_)=>ShowSampling(selected?.Sampling);
         AiEndpointProfile SaveFields()
         {
             if(aiOperation!=null) throw new InvalidOperationException("Finish or cancel the active AI request first.");
@@ -84,7 +94,7 @@ public sealed partial class MainWindow
             var uri=LocalAiClient.ValidateEndpoint(endpoint.Text);
             if(string.IsNullOrWhiteSpace(name.Text)) throw new ArgumentException("Enter a connection name.");
             bool same=selected!=null&&selected.Endpoint==uri.AbsoluteUri&&selected.Model==model.Text.Trim();
-            var p=new AiEndpointProfile { Id=selected?.Id ?? Guid.NewGuid(), Name=name.Text.Trim(), Endpoint=uri.AbsoluteUri, Model=model.Text.Trim(), RerankingRoute=selected?.RerankingRoute,ManagedCapability=same?selected!.ManagedCapability:null,EmbeddingProcessing=same?selected!.EmbeddingProcessing:null,Secret=remember.IsChecked==true ? Store.Protect(key.Password) : "",
+            var p=new AiEndpointProfile { Id=selected?.Id ?? Guid.NewGuid(), Name=name.Text.Trim(), Endpoint=uri.AbsoluteUri, Model=model.Text.Trim(), RerankingRoute=selected?.RerankingRoute,Sampling=SamplingFields(),ManagedCapability=same?selected!.ManagedCapability:null,EmbeddingProcessing=same?selected!.EmbeddingProcessing:null,Secret=remember.IsChecked==true ? Store.Protect(key.Password) : "",
                 Checks=selected!=null && selected.Endpoint==uri.AbsoluteUri && key.Password==(aiSessionKeys.GetValueOrDefault(selected.Id) ?? Store.Unprotect(selected.Secret)) ? selected.Checks.Where(x=>x.Capability==AiCapability.Models || selected.Model==model.Text.Trim()).ToList() : [] };
             var next=saved.Where(x=>x.Id!=p.Id).Append(p).ToList(); Store.Write("ai-connections.json",next); saved=next; aiSessionKeys[p.Id]=key.Password; Refresh(p); NotifyProfiles();Edited();
             return p;
@@ -151,7 +161,10 @@ public sealed partial class MainWindow
             catch(Exception e){foundStatus.Text="Couldn't scan local ports: "+e.Message;}
         }
         root.Unloaded+=(_,_)=>running?.Cancel(); Refresh(null); ShowChecks();
-        var editor=ScrollPage(Stack(editHeading,Text("A connection points the agent at a model server running on this PC. Mason doesn't start or stop servers it didn't launch.",13),fields,editStatus,ScrollTools(mutations)));
+        var resetSampling=Button("Use model defaults",(_,_)=>ShowSampling(null));
+        var sampling=new Expander{Header="Coding generation",HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Stretch,
+            Content=Stack(Muted("Applied to the coding agent's actions with this connection. Reviews and checks keep deterministic settings. Save the connection to keep changes.",12),FormGrid(temperature,topP,topK,minP,repeat,seed),resetSampling)};
+        var editor=ScrollPage(Stack(editHeading,Text("A connection points the agent at a model server running on this PC. Mason doesn't start or stop servers it didn't launch.",13),fields,sampling,editStatus,ScrollTools(mutations)));
         var capabilityPanel=ScrollPage(Stack(Text("Dated results from short synthetic requests. No project content is sent.",12),capabilityRows,ScrollTools(probes),stop,new Expander{Header="Check details",Content=report,HorizontalAlignment=HorizontalAlignment.Stretch,IsExpanded=true},
             Text("Used by",15),usedBy));
         refreshAiConnectionUsage=()=>

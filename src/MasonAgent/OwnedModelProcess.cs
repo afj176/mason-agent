@@ -5,9 +5,24 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Mason;
 
-/// <summary>Starts suspended, assigns a kill-on-close job, then resumes; children cannot escape ownership during startup.</summary>
-public sealed class OwnedModelProcess : IDisposable
+/// <summary>What runs a served model: an owned child process or the llama.cpp server embedded in Mason.</summary>
+public interface IModelHost : IDisposable
 {
+    bool IsRunning { get; }
+    uint ExitCode { get; }
+    int ProcessId { get; }
+    /// <summary>Named lifetime a background task can retain; null when the model cannot outlive this process.</summary>
+    Guid? Lifetime { get; }
+    bool Embedded { get; }
+    void Stop();
+}
+
+/// <summary>Starts suspended, assigns a kill-on-close job, then resumes; children cannot escape ownership during startup.</summary>
+public sealed class OwnedModelProcess : IModelHost
+{
+    public int ProcessId => Process.Id;
+    public Guid? Lifetime => LifetimeId;
+    public bool Embedded => false;
     readonly SafeFileHandle job;
     public Guid LifetimeId { get; }
     static string LifetimeName(Guid id) => @"Local\Mason.ModelLifetime." + id.ToString("N");
