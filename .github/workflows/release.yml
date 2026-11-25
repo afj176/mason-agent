@@ -26,7 +26,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Qualify the release against both local models
         shell: pwsh
         env:
@@ -38,7 +38,7 @@ jobs:
           $area="$env:RUNNER_TEMP/mason-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           ./scripts/Invoke-ModelBenchmark.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -OutputDirectory $area
           ./scripts/Invoke-WorkflowQualification.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -SecondaryEndpoint $env:MASON_SECONDARY_EVAL_ENDPOINT -SecondaryModel $env:MASON_SECONDARY_EVAL_MODEL -OutputDirectory "$area/workflow"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: model-evidence
           if-no-files-found: error
@@ -49,14 +49,14 @@ jobs:
     needs: qualify
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: model-evidence
           path: ${{ runner.temp }}/model-evidence
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
