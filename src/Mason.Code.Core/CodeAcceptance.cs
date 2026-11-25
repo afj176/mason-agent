@@ -184,14 +184,14 @@ public static class CodeAcceptance
                 bool test = false;
                 if (valid && c.Kind == "python_test" &&
                     Regex.IsMatch(c.Path, @"^(?:[A-Za-z_]\w*/)*test\w*\.py$") &&
-                    Regex.IsMatch(c.Target ?? "", @"^[A-Za-z_]\w*$") && Regex.IsMatch(c.Expected ?? "", @"^test_\w+$"))
+                    Regex.IsMatch(c.Target ?? "", @"^[A-Za-z_]\w*$") && c.Expected is { } testMethod && Regex.IsMatch(testMethod, @"^test_\w+$"))
                 {
                     // Bind the check to the test that exists: correct a misnamed class, and pin only that test's source
                     // so adding other tests to the file (often the request itself) does not void the check.
                     try
                     {
                         var content = files.Files.Contains(c.Path) ? scope.Read(c.Path).Content : null;
-                        var located = content == null ? [] : CodePythonTests.Find(content, c.Expected);
+                        var located = content == null ? [] : CodePythonTests.Find(content, testMethod);
                         void Pin(string source)
                         {
                             var names = CodePythonTests.Names(source);

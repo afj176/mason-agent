@@ -49,7 +49,6 @@ public sealed partial class MainWindow
         GpuSample? gpuSample=null;
         var memoryProfiles=new Dictionary<string,ModelMemoryProfile>(StringComparer.OrdinalIgnoreCase);
         var registeredDownloads=new Dictionary<Guid,LocalModel[]>();
-        FrameworkElement? libraryTop=null;
         var discovered = Array.Empty<LocalModel>(); CancellationTokenSource? scan = null; bool scanned = false;
         modelScanBusy=()=>scan!=null;modelScanCancel=()=>scan?.Cancel();
         var views=new ViewSwitcher {UseSegments=true};
@@ -847,7 +846,7 @@ public sealed partial class MainWindow
             gpuStats.Visibility = layout.ActualWidth < 900 ? Visibility.Collapsed : Visibility.Visible;
         };
         root.ActualThemeChanged += (_, _) => { Render(); UpdateShell(); };
-        libraryTop = null; Show(); UpdateShell();
+        Show(); UpdateShell();
         var gpuTimer=new DispatcherTimer {Interval=TimeSpan.FromSeconds(5)};
         CancellationTokenSource? gpuRead=null;bool gpuClosed=false;
         async Task RefreshGpu()

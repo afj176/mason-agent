@@ -19,7 +19,7 @@ public static class QuantizedRuntime
         var log=Path.Combine(Store.Root,"runtime-setup","quantized-setup.log");
         Directory.CreateDirectory(Path.GetDirectoryName(manifest)!);
         if(File.Exists(manifest))File.WriteAllText(manifest,"{}");
-        using var process=OwnedModelProcess.Start(sourcePython,[Path.Combine(scripts,"Setup-QuantizedRuntime.py"),"--target",folder,"--manifest",manifest],log);
+        using var process=OwnedModelProcess.Start(sourcePython,new[] { Path.Combine(scripts,"Setup-QuantizedRuntime.py"),"--target",folder,"--manifest",manifest },log);
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(cancellation);timeout.CancelAfter(TimeSpan.FromMinutes(15));
         string message="Preparing quantized runtime…";bool ready=false;
         try
