@@ -1,0 +1,24 @@
+# Builds and tests the macOS Swift engine and command line tool on a real Mac, since they are developed on Windows.
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    paths: ['macos/**', '.github/workflows/macos.yml']
+  pull_request:
+    paths: ['macos/**', '.github/workflows/macos.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        working-directory: macos
+        run: swift build
+      - name: Test
+        working-directory: macos
+        run: swift test
