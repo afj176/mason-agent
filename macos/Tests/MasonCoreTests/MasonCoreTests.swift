@@ -263,6 +263,15 @@ final class ModelTests: XCTestCase {
 }
 
 final class ShellTests: XCTestCase {
+    func testOnlyTheCommandsOwnOutputIsReturned() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-shell-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let result = try await Shell.run("echo out; echo err 1>&2; exit 3", in: try Workspace(path: folder.path), sandboxed: false)
+        XCTAssertEqual(result.exitCode, 3)
+        XCTAssertEqual(result.output.split(separator: "\n").map(String.init).sorted(), ["err", "out"], "no job-control notices from the wrapper shell")
+    }
+
     func testACommandPastItsDeadlineIsStopped() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-shell-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

@@ -17,7 +17,8 @@ core_sources = files(
 core = static_library('masoncore', core_sources, dependencies: [curl, json, threads])
 core_dep = declare_dependency(link_with: core, include_directories: include_directories('core'), dependencies: [curl, json, threads])
 
-executable('mason', files('cli/main.cpp'), dependencies: core_dep, install: true)
+version_define = '-DMASON_VERSION="' + meson.project_version() + '"'
+executable('mason', files('cli/main.cpp'), dependencies: core_dep, cpp_args: version_define, install: true)
 
 tests = executable('mason-tests', files('tests/tests.cpp'), dependencies: core_dep)
 test('engine', tests, timeout: 120)
