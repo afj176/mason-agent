@@ -254,6 +254,9 @@ struct Composer: View {
                     }
                 }
                 .accessibilityLabel("Request")
+                // While an approval is waiting, the request box gives up the keyboard so Return answers "Allow Once"
+                // and Escape declines, instead of typing into the box.
+                .disabled(model.approval != nil)
             HStack {
                 Picker("Permission", selection: Binding(get: { session.permission }, set: { model.setPermission($0) })) {
                     Text("Read-only").tag(Permission.readOnly)
@@ -276,6 +279,7 @@ struct Composer: View {
         }
         .padding(16)
         .onAppear { focused = true }
+        .onChange(of: model.approval == nil) { _, answered in if answered { focused = true } }
     }
 }
 
