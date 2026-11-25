@@ -21,8 +21,20 @@ public enum SandboxProfile {
         "\"" + path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 
-    public static func profile(workspace: String, scratch: String) -> String {
+    /// The per-user temporary folder that macOS programs use even when TMPDIR points elsewhere (mktemp, compilers).
+    public static var userTemporaryFolder: String? {
+        #if os(macOS)
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, buffer.count) > 0 else { return nil }
+        return realPath(String(cString: buffer))
+        #else
+        return nil
+        #endif
+    }
+
+    public static func profile(workspace: String, scratch: String, temporary: String? = nil) -> String {
         let home = NSHomeDirectory()
+        let temporaryRule = temporary.map { " (subpath \(quoted($0)))" } ?? ""
         // Later rules win, so the denials for credentials follow the general read allowance.
         return """
         (version 1)
@@ -35,7 +47,7 @@ public enum SandboxProfile {
         (allow ipc-posix-shm-read*)
         (allow file-read*)
         (deny file-read* (subpath \(quoted(home + "/.ssh"))) (subpath \(quoted(home + "/.aws"))) (subpath \(quoted(home + "/.gnupg"))) (subpath \(quoted(home + "/Library/Keychains"))))
-        (allow file-write* (subpath \(quoted(workspace))) (subpath \(quoted(scratch))))
+        (allow file-write* (subpath \(quoted(workspace))) (subpath \(quoted(scratch)))\(temporaryRule))
         (allow file-write* (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$"))
         (allow file-ioctl (literal "/dev/null") (literal "/dev/tty"))
         (deny network*)
@@ -92,7 +104,7 @@ public enum Shell {
         let process = Process()
         if sandboxed {
             process.executableURL = URL(fileURLWithPath: SandboxProfile.tool)
-            process.arguments = ["-p", SandboxProfile.profile(workspace: workspace.root.path, scratch: realPath(scratch.path))] + wrapped
+            process.arguments = ["-p", SandboxProfile.profile(workspace: workspace.root.path, scratch: realPath(scratch.path), temporary: SandboxProfile.userTemporaryFolder)] + wrapped
             var environment = ProcessInfo.processInfo.environment
             environment["TMPDIR"] = scratch.path
             process.environment = environment
