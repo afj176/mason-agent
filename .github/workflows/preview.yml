@@ -21,7 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - id: read
-        run: echo "value=$(sed -n "s/^  version: '\(.*\)',$/\1/p" linux/meson.build | head -1)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "value=$(sed -n "s/^  version: '\(.*\)',$/\1/p" linux/meson.build | head -1)" >> "$GITHUB_OUTPUT"
 
   packages:
     needs: version
