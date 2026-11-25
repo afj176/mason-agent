@@ -52,18 +52,46 @@ Store reusable instructions in `.mason/skills/NAME/SKILL.md`. Named workflows li
 
 Add local MCP servers under **MCP servers** in Harness settings (project menu → **Project policy & extensions**): enter the endpoint, choose **Discover tools** to list what the server offers, and tick the tools the agent may call. Servers can be edited, switched off or removed there. They are saved in the Mason profile's `mcp-servers.json`, for example `[{"Name":"docs","Endpoint":"http://127.0.0.1:8088/mcp","Tools":["search_docs"]}]`. Mason negotiates MCP 2025-06-18 over HTTP, lists allowlisted tools, and shows the tool arguments for approval before a call unless an **Always allow** rule covers it. An unattended run declines approvals.
 
-### Command line and parallel tasks
+### Command line
 
-Launch `mason.exe` beside `MasonAgent.exe` in the install directory. The CLI emits JSON Lines and uses the desktop engine and local model adapter. Each run gets its own journal. Supply a running local endpoint and its exact model ID. The default for `exec` is read-only. Pass `--auto` for a sandboxed build.
+`mason` is the same agent in your terminal. The installer puts it on your PATH; with the portable ZIP, add its `bin` folder to PATH yourself.
 
 ```powershell
-.\mason.exe exec --workspace D:\src\shop --endpoint http://127.0.0.1:8080 --model YOUR_MODEL --auto --prompt-file brief.txt
-.\mason.exe review --workspace D:\src\shop --endpoint http://127.0.0.1:8080 --model YOUR_MODEL --prompt-file brief.txt
-.\mason.exe worktree --workspace D:\src\shop --destination D:\src\shop-pricing --branch mason/pricing
-.\mason.exe symbol --workspace D:\src\shop --path src/cart.ts --line 12 --column 8 --mode references
+cd D:\src\shop
+mason
 ```
 
-The project menu also offers **New isolated worktree**. Start builds concurrently with the CLI against separate worktrees. Run `mason.exe --help` for browser tasks and session resume. For a real development server, invoke `serve --workflow preview --port 8123` with the same workspace, endpoint, model and prompt options. This explicit CLI operation runs the named workflow under your Windows account, verifies the loopback listener belongs to its process tree, proxies the disposable browser to that service, then stops the tree.
+No options are needed. On start, `mason` uses a model that is already running, otherwise restarts the one you used last, otherwise lists the coding models on your computer to pick from, and with none installed offers to download one that fits your GPU.
+
+Type a request and each tool call prints as it finishes. Approvals take one key: `y` once, `a` always for this project, `n` decline. Esc stops a run.
+
+| In a session | |
+| --- | --- |
+| `/diff` · `/undo` · `/redo` | See what changed; put back or reapply everything the last request did |
+| `/permission read\|review\|edits\|auto` | What Mason may do without asking. `auto` runs commands in the Windows sandbox |
+| `/ask` · `/build` | Answer questions only, or make changes |
+| `/new` · `/resume` · `/compact` · `/status` | Start, continue, shrink or inspect a session |
+| `/model` | Switch between running models and saved connections |
+| `/models` | The models on this computer and what each can do for the agent |
+| `/models start` · `/models stop` | Run a GGUF coding model with llama.cpp for this session |
+| `/models search TEXT` · `/models download REPO` | Find a model on Hugging Face, see its builds and which fit, download one |
+| `/models setup` · `/models runtime` | Suggest and download a model that fits; install llama.cpp for your GPU |
+| `/rules` · `/agent` · `/commands` | Saved approvals, and your agents and commands from `.mason/` |
+
+`/help` has the full list. Options when starting: `--workspace PATH`, `--resume [SESSION]`, a permission (`--read-only`, `--review`, `--edits`, `--auto`), and `--endpoint URL --model ID` for any OpenAI-compatible server on localhost.
+
+Good to know: a model started from the terminal stops when you leave `mason`. Downloads share one queue with the desktop app, so close the app or download there while it is open. Approval rules, model files, agents and commands are shared with the desktop app; terminal sessions are kept separately and do not appear in its session list.
+
+**For scripts.** The same executable runs single operations that print JSON Lines and exit 0 on success. `exec` is read-only unless you pass `--auto`.
+
+```powershell
+mason exec --workspace D:\src\shop --endpoint http://127.0.0.1:8080 --model YOUR_MODEL --auto --prompt-file brief.txt
+mason review --workspace D:\src\shop --endpoint http://127.0.0.1:8080 --model YOUR_MODEL --prompt-file brief.txt
+mason worktree --workspace D:\src\shop --destination D:\src\shop-pricing --branch mason/pricing
+mason symbol --workspace D:\src\shop --path src/cart.ts --line 12 --column 8 --mode references
+```
+
+Each run gets its own journal, so builds can run in parallel against separate worktrees (the project menu also offers **New isolated worktree**). `mason --help` lists browser tasks, background tasks and session resume. For a real development server, `serve --workflow preview --port 8123` runs the named workflow under your Windows account, verifies the loopback listener belongs to its process tree, proxies the disposable browser to it, then stops the tree.
 
 | Review changes | Chat |
 | --- | --- |
@@ -75,7 +103,7 @@ The project menu also offers **New isolated worktree**. Start builds concurrentl
 
 Download from the [latest release](https://github.com/afj176/mason-agent/releases/latest):
 
-- **Installer** (`MasonAgent-Setup-x64.exe`, about 106 MB): installs for your Windows account into `%LOCALAPPDATA%\Programs\MasonAgent`; no administrator rights needed. Requires Windows 11.
+- **Installer** (`MasonAgent-Setup-x64.exe`, about 106 MB): installs for your Windows account into `%LOCALAPPDATA%\Programs\MasonAgent`; no administrator rights needed. It can add the `mason` command to your PATH. Requires Windows 11.
 - **Portable ZIP** (`MasonAgent-win-x64.zip`, about 125 MB): extract the whole folder anywhere and run `MasonAgent.exe`. Runs on Windows 11 and on Windows 10 version 2004 or later.
 
 Both are x64 and self-contained (.NET and the Windows App SDK are included). Releases are not code-signed yet, so Windows SmartScreen may warn on first run: choose **More info → Run anyway**. SHA-256 files are attached to each release.
