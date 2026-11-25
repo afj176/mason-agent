@@ -1,0 +1,172 @@
+import SwiftUI
+import MasonCore
+
+@main
+struct MasonAgentApp: App {
+    @StateObject private var model = AppModel()
+
+    var body: some Scene {
+        WindowGroup("Mason Agent") {
+            RootView()
+                .environmentObject(model)
+                .frame(minWidth: 860, minHeight: 540)
+        }
+        .defaultSize(width: 1180, height: 760)
+        .commands {
+            CommandGroup(replacing: .newItem) {
+                Button("New Session") { model.newSession() }.keyboardShortcut("n")
+                Button("Open Project…") { model.openFolder() }.keyboardShortcut("o")
+            }
+            CommandGroup(after: .undoRedo) {
+                Divider()
+                Button("Undo Last Request's Edits") { model.undo() }.keyboardShortcut("z", modifiers: [.command, .option]).disabled(model.running)
+                Button("Redo Last Request's Edits") { model.undo(redo: true) }.keyboardShortcut("z", modifiers: [.command, .option, .shift]).disabled(model.running)
+            }
+            CommandMenu("Agent") {
+                Button("Send") { model.send() }.keyboardShortcut(.return, modifiers: .command).disabled(model.running)
+                Button("Stop") { model.stop() }.keyboardShortcut(".", modifiers: .command).disabled(!model.running)
+                Divider()
+                Picker("Permission", selection: Binding(get: { model.session?.permission ?? .reviewEdits }, set: { model.setPermission($0) })) {
+                    Text("Read-Only").tag(Permission.readOnly)
+                    Text("Review Edits").tag(Permission.reviewEdits)
+                    Text("Workspace Edits").tag(Permission.workspaceEdits)
+                    Text("Auto (Sandboxed)").tag(Permission.auto)
+                }
+                Divider()
+                Button("Install Command Line Tool…") { model.installCommandLineTool() }
+            }
+        }
+
+        Settings {
+            SettingsView().environmentObject(model)
+        }
+    }
+}
+
+enum Pane: String, CaseIterable, Identifiable {
+    case code = "Code", models = "Models"
+    var id: String { rawValue }
+}
+
+struct RootView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var pane: Pane = .code
+    @State private var showChanges = false
+
+    var body: some View {
+        NavigationSplitView {
+            Sidebar()
+                .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 340)
+        } detail: {
+            Group {
+                switch pane {
+                case .code: SessionView(showChanges: $showChanges)
+                case .models: ModelsView()
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker("View", selection: $pane) {
+                        ForEach(Pane.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .help("Switch between your coding sessions and the models on this Mac")
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if pane == .code {
+                        Toggle(isOn: $showChanges) { Label("Changes", systemImage: "plusminus") }
+                            .help("Show the files this session changed")
+                    }
+                    Button { pane = .models } label: {
+                        Label(model.endpoint == nil ? "No model" : model.endpointName, systemImage: model.endpoint == nil ? "exclamationmark.triangle" : "cpu")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .help(model.endpoint == nil ? "No model is running. Open Models to start one." : "Running at \(model.endpoint?.url ?? "")")
+                }
+            }
+        }
+        .alert("Mason Agent", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
+            Button("OK", role: .cancel) { model.notice = nil }
+        } message: {
+            Text(model.notice ?? "")
+        }
+    }
+}
+
+struct Sidebar: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        List(selection: $model.selection) {
+            ForEach(model.projects, id: \.self) { project in
+                Section {
+                    ForEach(model.sessions(in: project)) { session in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.title).lineLimit(1)
+                            Text(session.state).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .tag(session.id)
+                        .contextMenu {
+                            Button("Delete Session", role: .destructive) { model.delete(session) }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Label(URL(fileURLWithPath: project).lastPathComponent, systemImage: "folder")
+                            .help(project)
+                        Spacer()
+                        Button { model.newSession(in: project) } label: { Image(systemName: "plus") }
+                            .buttonStyle(.borderless)
+                            .help("New session in \(URL(fileURLWithPath: project).lastPathComponent)")
+                            .accessibilityLabel("New session in \(URL(fileURLWithPath: project).lastPathComponent)")
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .overlay {
+            if model.sessions.isEmpty {
+                ContentUnavailableView {
+                    Label("No projects yet", systemImage: "folder.badge.plus")
+                } description: {
+                    Text("Open a project folder to start a session.")
+                } actions: {
+                    Button("Open Project…") { model.openFolder() }
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            Button { model.openFolder() } label: { Label("Open Project…", systemImage: "folder.badge.plus").frame(maxWidth: .infinity, alignment: .leading) }
+                .buttonStyle(.borderless)
+                .padding(10)
+        }
+    }
+}
+
+struct SettingsView: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Form {
+            Section("Command line") {
+                LabeledContent("mason") {
+                    Button("Install Command Line Tool…") { model.installCommandLineTool() }
+                }
+                Text("Adds the mason command to /usr/local/bin so it works in any Terminal window. macOS asks for an administrator password.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Section("Storage") {
+                LabeledContent("Sessions and settings", value: DataHome.url.path)
+                LabeledContent("Downloaded models", value: ModelLibrary.downloadFolder.path)
+                Button("Show in Finder") { NSWorkspace.shared.open(DataHome.url) }
+            }
+            Section("Privacy") {
+                Text("Everything stays on this Mac. Mason talks to models on localhost only, and reaches the internet only when you search or download a model or install llama.cpp.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 520, height: 360)
+    }
+}

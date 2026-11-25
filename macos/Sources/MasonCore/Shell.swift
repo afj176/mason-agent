@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public struct CommandResult: Equatable {
     public let exitCode: Int32
@@ -60,27 +65,38 @@ public enum Shell {
         #endif
     }
 
-    /// Runs one shell command in the project folder and returns its combined output.
-    /// The command gets no terminal input. The shell is stopped at the deadline or when the task is cancelled; programs it left running in the background are not tracked yet.
+    /// The command runs in its own process group under a small wrapper. Removing the run file makes the wrapper stop
+    /// the whole group with SIGKILL, so a stop also ends programs the command started, and it cannot be blocked by an
+    /// inherited signal mask. The wrapper also stops the group if Mason itself goes away.
+    static let wrapper = """
+        set -m
+        "$1" -c "$2" &
+        child=$!
+        ( while kill -0 $child 2>/dev/null; do if [ ! -e "$3" ] || ! kill -0 $PPID 2>/dev/null; then kill -9 -$child 2>/dev/null; break; fi; sleep 0.2; done ) >/dev/null 2>&1 &
+        wait $child
+        """
+
     public static func run(_ command: String, in workspace: Workspace, sandboxed: Bool, timeout: TimeInterval = 120) async throws -> CommandResult {
         guard !command.isEmpty, command.utf8.count <= 8000, !command.contains("\0") else { throw MasonError("Use a shell command of 1–8,000 characters.") }
+        if sandboxed, !sandboxAvailable { throw MasonError("The macOS sandbox is unavailable, so Auto cannot run commands here. No unrestricted fallback was run.") }
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mason-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let runFile = scratch.appendingPathComponent("running")
+        _ = FileManager.default.createFile(atPath: runFile.path, contents: nil)
+        let bash = FileManager.default.isExecutableFile(atPath: "/bin/bash") ? "/bin/bash" : "/bin/sh"
+        let wrapped = [bash, "-c", wrapper, "mason-command", path, command, runFile.path]
         let process = Process()
-        var scratch: URL?
         if sandboxed {
-            guard sandboxAvailable else { throw MasonError("The macOS sandbox is unavailable, so Auto cannot run commands here. No unrestricted fallback was run.") }
-            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-" + UUID().uuidString)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            scratch = folder
             process.executableURL = URL(fileURLWithPath: SandboxProfile.tool)
-            process.arguments = ["-p", SandboxProfile.profile(workspace: workspace.root.path, scratch: folder.resolvingSymlinksInPath().path), path, "-c", command]
+            process.arguments = ["-p", SandboxProfile.profile(workspace: workspace.root.path, scratch: scratch.resolvingSymlinksInPath().path)] + wrapped
             var environment = ProcessInfo.processInfo.environment
-            environment["TMPDIR"] = folder.path
+            environment["TMPDIR"] = scratch.path
             process.environment = environment
         } else {
-            process.executableURL = URL(fileURLWithPath: path)
-            process.arguments = ["-c", command]
+            process.executableURL = URL(fileURLWithPath: bash)
+            process.arguments = Array(wrapped.dropFirst())
         }
-        defer { if let scratch { try? FileManager.default.removeItem(at: scratch) } }
         process.currentDirectoryURL = workspace.root
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -96,12 +112,14 @@ public enum Shell {
         process.terminationHandler = { _ in finished.fire() }
         do { try process.run() } catch { throw MasonError("The command could not start: \(error.localizedDescription)") }
 
+        let stop: @Sendable () -> Void = { try? FileManager.default.removeItem(at: runFile) }
         let deadline = Task {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-            if !Task.isCancelled, process.isRunning { collected.markTimedOut(); process.terminate() }
+            if !Task.isCancelled, process.isRunning { collected.markTimedOut(); stop() }
         }
-        await withTaskCancellationHandler { await finished.wait() } onCancel: { if process.isRunning { process.terminate() } }
+        await withTaskCancellationHandler { await finished.wait() } onCancel: { stop() }
         deadline.cancel()
+        stop()
         pipe.fileHandleForReading.readabilityHandler = nil
         if let rest = try? pipe.fileHandleForReading.readToEnd(), !rest.isEmpty { collected.append(rest) }
         try Task.checkCancellation()

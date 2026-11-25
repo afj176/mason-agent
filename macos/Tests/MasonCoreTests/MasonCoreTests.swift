@@ -208,3 +208,120 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(profile.hasPrefix("(version 1)\n(deny default)"))
     }
 }
+
+final class ModelTests: XCTestCase {
+    func testSha256MatchesKnownDigests() {
+        var empty = Sha256()
+        XCTAssertEqual(empty.hex(), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        empty.update(Data("abc".utf8))
+        XCTAssertEqual(empty.hex(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        // Fed in uneven pieces across block boundaries, the digest is the same as in one piece.
+        let text = Data(String(repeating: "mason agent ", count: 1000).utf8)
+        var whole = Sha256(); whole.update(text)
+        var pieces = Sha256(); var offset = 0
+        for size in [1, 63, 64, 65, 1000, 7] + [Int](repeating: 500, count: 30) where offset < text.count {
+            let end = min(text.count, offset + size); pieces.update(text.subdata(in: offset..<end)); offset = end
+        }
+        if offset < text.count { pieces.update(text.subdata(in: offset..<text.count)) }
+        XCTAssertEqual(whole.hex(), pieces.hex())
+    }
+
+    func testModelFilesAreClassifiedAndNeverHidden() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("mason-models-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["coder/Qwen-Coder-Q4_K_M.gguf", "vision/Seer-Q8_0.gguf", "vision/mmproj-Seer-f16.gguf", "search/nomic-embed-text-Q8.gguf", "split/Big-00001-of-00002.gguf", "split/Big-00002-of-00002.gguf", "tiny/stub.gguf"] {
+            let file = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(count: name.contains("stub") ? 10 : 1_100_000).write(to: file)
+        }
+        let models = ModelLibrary.scan([(name: "Test", url: root)])
+        XCTAssertEqual(models.map(\.name), ["Big-00001-of-00002", "Qwen-Coder-Q4_K_M", "Seer-Q8_0", "mmproj-Seer-f16", "nomic-embed-text-Q8"])
+        XCTAssertEqual(models.map(\.role), [.coding, .coding, .vision, .projector, .embeddings])
+        XCTAssertTrue(models.allSatisfy { !$0.verdict.isEmpty })
+    }
+
+    func testMemoryFitAndSuggestedBuild() {
+        let budget = MemoryFit.budgetBytes
+        XCTAssertGreaterThan(budget, 0)
+        let repository = HubRepository(id: "a/b", revision: String(repeating: "a", count: 40), license: "mit", gated: false, builds: [
+            HubBuild(file: "m-Q8_0.gguf", bytes: 400 << 30, sha256: ""), HubBuild(file: "m-Q4_K_M.gguf", bytes: 1 << 20, sha256: ""), HubBuild(file: "mmproj-Q8_0.gguf", bytes: 1 << 20, sha256: ""),
+        ])
+        XCTAssertEqual(repository.suggested(budget: 8 << 30)?.file, "m-Q4_K_M.gguf", "the best quality that fits wins, and projectors are not suggested")
+        XCTAssertNil(repository.suggested(budget: 1 << 20))
+        XCTAssertEqual(HubBuild(file: "x.Q5_K_M.gguf", bytes: 1, sha256: "").quant, "Q5_K_M")
+    }
+
+    func testHubResultsCarryAVerdict() {
+        func model(_ id: String, _ tags: [String], _ task: String) -> HubModel { HubModel(id: id, downloads: 1, likes: 0, tags: tags, task: task, gated: false) }
+        XCTAssertTrue(model("Qwen/Coder-GGUF", ["gguf"], "text-generation").verdict.hasPrefix("Coding agent · GGUF"))
+        XCTAssertTrue(model("a/sdxl", [], "text-to-image").verdict.hasPrefix("Not used by the agent"))
+        XCTAssertTrue(model("a/coder", ["safetensors"], "text-generation").verdict.contains("look for a GGUF build"))
+        XCTAssertTrue(model("nomic/embed-GGUF", ["gguf"], "feature-extraction").verdict.hasPrefix("Code search"))
+        XCTAssertThrowsError(try Hub.checked("../etc"))
+    }
+}
+
+final class ShellTests: XCTestCase {
+    func testACommandPastItsDeadlineIsStopped() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-shell-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let started = Date()
+        let result = try await Shell.run("echo before; sleep 30; echo after", in: try Workspace(path: folder.path), sandboxed: false, timeout: 1)
+        XCTAssertTrue(result.timedOut)
+        XCTAssertTrue(result.output.contains("before"))
+        XCTAssertFalse(result.output.contains("after"))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+    }
+}
+
+final class RecoveryTests: XCTestCase {
+    func testACallWrittenAsTextIsRecoveredOnlyForOfferedTools() throws {
+        let fenced = "I'll fix it.\n```json\n{\n  \"name\": \"edit_file\",\n  \"arguments\": {\"path\": \"calc.py\", \"old_text\": \"a - b\", \"new_text\": \"a + b\"}\n}\n```\nThen run it."
+        let call = try XCTUnwrap(ToolCallRecovery.recover(from: fenced, tools: Agent.tools))
+        XCTAssertEqual(call.name, "edit_file")
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: String], ["path": "calc.py", "old_text": "a - b", "new_text": "a + b"])
+        XCTAssertEqual(ToolCallRecovery.recover(from: "<tool_call>\n{\"name\": \"read_file\", \"arguments\": {\"path\": \"a.txt\"}}\n</tool_call>", tools: Agent.tools)?.name, "read_file")
+        XCTAssertEqual(ToolCallRecovery.recover(from: "{\"function\": {\"name\": \"run_shell\", \"arguments\": \"{\\\"command\\\": \\\"ls\\\"}\"}}", tools: Agent.tools)?.arguments, "{\"command\": \"ls\"}")
+        XCTAssertNil(ToolCallRecovery.recover(from: "```json\n{\"name\": \"launch_rocket\", \"arguments\": {}}\n```", tools: Agent.tools))
+        XCTAssertNil(ToolCallRecovery.recover(from: "```python\nprint(1)\n```\nDone.", tools: Agent.tools))
+        XCTAssertNil(ToolCallRecovery.recover(from: "The config is {\"name\": \"edit_file\"} in prose.", tools: Agent.tools))
+    }
+}
+
+#if os(macOS)
+/// Runs real commands under the Auto sandbox. These only run on a Mac, where sandbox-exec exists.
+final class SandboxTests: XCTestCase {
+    func testAutoWritesInsideTheProjectButNotOutsideAndHasNoNetwork() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-sandbox-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let workspace = try Workspace(path: folder.path)
+        let outside = NSHomeDirectory() + "/mason-sandbox-outside-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: outside) }
+
+        let inside = try await Shell.run("echo hello > inside.txt && cat inside.txt && ls", in: workspace, sandboxed: true)
+        XCTAssertEqual(inside.exitCode, 0, inside.output)
+        XCTAssertTrue(inside.output.contains("hello"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("inside.txt").path))
+
+        let escape = try await Shell.run("echo leaked > '\(outside)'", in: workspace, sandboxed: true)
+        XCTAssertNotEqual(escape.exitCode, 0, "a write outside the project must be refused")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outside))
+
+        let network = try await Shell.run("/usr/bin/curl -m 5 -s -o /dev/null https://example.com", in: workspace, sandboxed: true)
+        XCTAssertNotEqual(network.exitCode, 0, "network access must be refused")
+
+        let secrets = try await Shell.run("ls ~/.ssh", in: workspace, sandboxed: true)
+        XCTAssertNotEqual(secrets.exitCode, 0, "credential folders must not be readable")
+
+        let temporary = try await Shell.run("f=$(mktemp) && echo ok > \"$f\" && cat \"$f\"", in: workspace, sandboxed: true)
+        XCTAssertEqual(temporary.exitCode, 0, "commands may use their own temporary folder: " + temporary.output)
+
+        let started = Date()
+        let hung = try await Shell.run("sleep 30", in: workspace, sandboxed: true, timeout: 1)
+        XCTAssertTrue(hung.timedOut)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10, "a sandboxed command past its deadline is stopped")
+    }
+}
+#endif

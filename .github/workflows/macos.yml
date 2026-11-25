@@ -1,12 +1,14 @@
-# Builds and tests the macOS Swift engine and command line tool on a real Mac, since they are developed on Windows.
+# Builds, tests and packages Mason Agent for macOS on a real Mac. The Swift code is developed on Windows,
+# so this is where the SwiftUI app is compiled and the macOS sandbox is exercised.
 name: macOS
 
 on:
   push:
-    branches: [main]
+    branches: [main, cross-platform]
     paths: ['macos/**', '.github/workflows/macos.yml']
   pull_request:
     paths: ['macos/**', '.github/workflows/macos.yml']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,9 +18,33 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
-      - name: Build
-        working-directory: macos
-        run: swift build
+      - name: Swift version
+        run: swift --version
       - name: Test
         working-directory: macos
         run: swift test
+      - name: Build the app, zip and installer
+        working-directory: macos
+        run: Scripts/build-app.sh
+      - name: The app starts and stays up
+        working-directory: macos
+        run: |
+          "dist/Mason Agent.app/Contents/MacOS/MasonAgent" &
+          pid=$!
+          sleep 8
+          kill -0 $pid
+          kill $pid
+      - name: The command line tool runs a session
+        working-directory: macos
+        run: |
+          mkdir -p "$RUNNER_TEMP/project" && cd "$RUNNER_TEMP/project"
+          printf '/status\n/permission auto\n/models\n/exit\n' | MASON_DATA_HOME="$RUNNER_TEMP/home" "$GITHUB_WORKSPACE/macos/dist/Mason Agent.app/Contents/Resources/bin/mason" | tee "$RUNNER_TEMP/session.txt"
+          grep -q "sandbox available for Auto" "$RUNNER_TEMP/session.txt"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: MasonAgent-macos
+          path: |
+            macos/dist/*.zip
+            macos/dist/*.pkg
+            macos/dist/SHA256SUMS.txt
+          if-no-files-found: error

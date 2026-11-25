@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs as root after the installer copies Mason Agent.app: puts the mason command on every user's PATH.
+mkdir -p /usr/local/bin
+ln -sf "/Applications/Mason Agent.app/Contents/Resources/bin/mason" /usr/local/bin/mason
+exit 0

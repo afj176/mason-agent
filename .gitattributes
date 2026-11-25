@@ -7,3 +7,9 @@
 *.ttf binary
 *.pdf binary
 *.bmp binary
+
+# Mac and Linux sources and scripts are built on those systems and must keep Unix line endings.
+macos/** text eol=lf
+linux/** text eol=lf
+*.sh text eol=lf
+*.swift text eol=lf

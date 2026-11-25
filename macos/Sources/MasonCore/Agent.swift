@@ -111,7 +111,9 @@ public final class Agent {
             var finished = false
             for _ in 0..<Agent.actionLimit {
                 try Task.checkCancellation()
-                let reply = try await model.complete(messages: session.messages, tools: Agent.tools) { [emit] text in emit(.text(text)) }
+                var reply = try await model.complete(messages: session.messages, tools: Agent.tools) { [emit] text in emit(.text(text)) }
+                // A call the model wrote as text instead of through the tool-call channel is recovered.
+                if reply.toolCalls.isEmpty, let written = ToolCallRecovery.recover(from: reply.text, tools: Agent.tools) { reply.toolCalls = [written] }
                 if let tokens = reply.promptTokens { session.promptTokens = tokens }
                 session.messages.append(ChatMessage(role: "assistant", content: reply.text, toolCalls: reply.toolCalls.isEmpty ? nil : reply.toolCalls))
                 if reply.toolCalls.isEmpty {
