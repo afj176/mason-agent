@@ -154,6 +154,16 @@ h3 { font-size: 1.15rem; font-weight: 700; }
   background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow);
 }
 .card p { margin: 8px 0 0; color: var(--muted); font-size: 1rem; }
+.status { display: inline-block; margin-bottom: 14px; padding: 3px 10px; border-radius: 999px; font-size: .85rem; font-weight: 600; border: 1px solid var(--line); }
+.status.available { color: var(--accent); background: var(--surface-2); }
+.status.building { color: var(--muted); }
+.terminal {
+  margin-top: 28px; border-radius: var(--radius); border: 1px solid var(--line); box-shadow: var(--shadow);
+  background: #171A2B; color: #E8E6F5; overflow-x: auto;
+}
+.terminal pre { margin: 0; padding: 22px 24px; font: .92rem/1.6 ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace; }
+.terminal code { font: inherit; background: none; padding: 0; color: inherit; }
+.t-dim { color: #9C9BB5; } .t-accent { color: #C3C2FF; font-weight: 600; } .t-ok { color: #8FD3A4; } .t-warn { color: #E6BE6E; } .t-bad { color: #F09090; }
 .icon {
   display: inline-grid; place-items: center; width: 44px; height: 44px; margin-bottom: 16px;
   border-radius: 12px; background: var(--surface-2); color: var(--accent);

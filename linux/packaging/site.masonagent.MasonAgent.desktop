@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Mason Agent
+GenericName=Coding Agent
+Comment=A coding workspace that runs on your own local models
+Exec=mason-agent
+Icon=site.masonagent.MasonAgent
+Terminal=false
+Categories=Development;GTK;
+Keywords=code;agent;ai;llm;local;
+StartupNotify=true

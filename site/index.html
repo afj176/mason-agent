@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mason Agent: a coding workspace for your local models</title>
-<meta name="description" content="Mason Agent is a Windows coding workspace that runs on your own local models. Add a project, choose what the agent may do, and review every change before you keep it.">
+<title>Mason Agent: a coding workspace and command line for your local models</title>
+<meta name="description" content="Mason Agent is a coding workspace and command line that run on your own local models. Add a project, choose what the agent may do, and review every change. Available for Windows; native macOS and Linux apps are in development.">
 <link rel="canonical" href="https://masonagent.site/">
 <meta name="theme-color" content="#F8F6F2" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#171A2B" media="(prefers-color-scheme: dark)">
@@ -12,7 +12,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Mason Agent">
 <meta property="og:title" content="Mason Agent: make the next move clear">
-<meta property="og:description" content="A coding workspace for Windows that runs on your own local models. Projects, reviewed edits and chat, all on your computer.">
+<meta property="og:description" content="A coding workspace and command line that run on your own local models. Projects, reviewed edits and chat, all on your computer. Windows today; macOS and Linux in development.">
 <meta property="og:url" content="https://masonagent.site/">
 <meta property="og:image" content="https://masonagent.site/assets/og.png">
 <meta property="og:image:width" content="1200">
@@ -20,7 +20,7 @@
 <meta property="og:image:alt" content="Mortar the wombat beside a Mason Agent coding session">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Mason Agent: make the next move clear">
-<meta name="twitter:description" content="A coding workspace for Windows that runs on your own local models.">
+<meta name="twitter:description" content="A coding workspace and command line that run on your own local models.">
 <meta name="twitter:image" content="https://masonagent.site/assets/og.png">
 <link rel="icon" href="favicon.ico" sizes="48x48">
 <link rel="icon" href="favicon-32x32.png" type="image/png" sizes="32x32">
@@ -45,6 +45,7 @@
     <nav aria-label="Main">
       <ul>
         <li class="wide"><a href="#features">Features</a></li>
+        <li class="wide"><a href="#platforms">Platforms</a></li>
         <li class="wide"><a href="#screenshots">Screenshots</a></li>
         <li><a href="#download">Download</a></li>
         <li><a class="github" href="https://github.com/afj176/mason-agent">
@@ -59,16 +60,16 @@
   <section class="hero" id="top" aria-labelledby="hero-title">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">Local coding agent for Windows</p>
+        <p class="eyebrow">Local coding agent · desktop app and command line</p>
         <h1 id="hero-title">Make the next move clear.</h1>
-        <p class="lede">Mason Agent is a coding workspace that runs on your own local models. Add a project, decide what the agent may do, and review every change before you keep it.</p>
+        <p class="lede">Mason Agent is a coding workspace that runs on your own local models. Add a project, decide what the agent may do, and review every change before you keep it. In the app, or in your terminal with <code>mason</code>.</p>
         <div class="ctas">
           <a class="button primary" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-Setup-x64.exe">
             <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2.5a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 10 2.5ZM3.75 15.5a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z"/></svg>
             Download for Windows</a>
           <a class="button secondary" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-win-x64.zip">Portable ZIP</a>
         </div>
-        <p class="fine">Version <span data-version>1.7.2</span> · Installer <span data-size="installer">106 MB</span> · ZIP <span data-size="portable">125 MB</span> · Windows x64</p>
+        <p class="fine">Version <span data-version>1.7.2</span> · Installer <span data-size="installer">106 MB</span> · ZIP <span data-size="portable">125 MB</span> · Windows x64 · <a href="#platforms">macOS and Linux in development</a></p>
       </div>
       <div class="hero-mascot">
         <img src="assets/mortar.png" width="440" height="440" alt="Mortar, the violet paper-craft wombat who is Mason Agent's mascot, giving a thumbs up">
@@ -135,6 +136,44 @@
     </div>
   </section>
 
+  <section class="features" id="platforms" aria-labelledby="platforms-title">
+    <div class="wrap">
+      <h2 id="platforms-title">Native on each system</h2>
+      <p class="section-lede">Each app is written for its own platform, with that system's interface, sandbox and conventions. The <code>mason</code> command brings the same agent to your terminal.</p>
+      <ul class="cards">
+        <li class="card">
+          <span class="status available">Available now</span>
+          <h3>Windows</h3>
+          <p>WinUI 3 and C#. Commands in Auto run in a Windows sandbox limited to your project. Installer or portable ZIP, with <code>mason</code> on your PATH.</p>
+        </li>
+        <li class="card">
+          <span class="status building">In development</span>
+          <h3>macOS</h3>
+          <p>SwiftUI and Swift, engine included. Auto uses the macOS sandbox. The app, installer and <code>mason</code> tool are built and checked on a Mac in CI; a download follows once it has been used on real Macs with real models.</p>
+        </li>
+        <li class="card">
+          <span class="status building">In development</span>
+          <h3>Linux</h3>
+          <p>GTK 4, libadwaita and C++. Auto uses a bubblewrap sandbox. The app, <code>mason</code> and a <code>.deb</code> build and run on Ubuntu today; a download follows after wider testing.</p>
+        </li>
+      </ul>
+      <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, Mason starts a local model, reads a file, asks before editing it, and reports the change">
+        <pre><code><span class="t-dim">~/src/shop $</span> mason
+  <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
+  <span class="t-dim">Nothing is answering yet, so Mason is starting the model you used last.</span>
+  <span class="t-ok">✓ Qwen2.5-Coder-7B is running</span>
+
+<span class="t-dim">review edits</span> <span class="t-accent">›</span> the cart total ignores the discount, fix it
+  <span class="t-ok">✓</span> read file src/cart.py
+  <span class="t-warn">▌ Review edit file</span>  src/cart.py
+  <span class="t-warn">▌</span> <span class="t-bad">-     return subtotal</span>
+  <span class="t-warn">▌</span> <span class="t-ok">+     return subtotal - discount(subtotal)</span>
+  Allow?  y once   a always for this project…   n decline</code></pre>
+      </div>
+      <p class="section-lede"><strong>The command line needs no setup flags.</strong> Run <code>mason</code> in a project folder. It uses a model that is already running, restarts the one you used last, or helps you choose or download one. <code>/models</code> searches and downloads from Hugging Face, <code>/diff</code> and <code>/undo</code> review and reverse changes, and <code>/permission</code> sets what Mason may do without asking.</p>
+    </div>
+  </section>
+
   <section class="screens" id="screenshots" aria-labelledby="screens-title">
     <div class="wrap">
       <h2 id="screens-title">Screenshots</h2>
@@ -179,7 +218,7 @@
         <div class="download-grid">
           <div>
             <h3>Installer or portable</h3>
-            <p>The installer sets Mason Agent up for your Windows account, with no administrator rights needed. The portable ZIP runs from any folder: extract it and start <code>MasonAgent.exe</code>. Put an empty <code>portable.flag</code> file beside it to keep settings and sessions in a <code>data</code> folder next to the app.</p>
+            <p>The installer sets Mason Agent up for your Windows account, with no administrator rights needed, and can add the <code>mason</code> command to your PATH. The portable ZIP runs from any folder: extract it and start <code>MasonAgent.exe</code>. Put an empty <code>portable.flag</code> file beside it to keep settings and sessions in a <code>data</code> folder next to the app.</p>
           </div>
           <div>
             <h3>Requirements</h3>
@@ -192,6 +231,7 @@
           </div>
         </div>
         <p class="note"><strong>Windows SmartScreen:</strong> releases are not code-signed yet, so Windows may warn the first time you run them. Choose <em>More info → Run anyway</em>. SHA-256 files are attached to each release if you want to verify a download.</p>
+        <p class="note"><strong>macOS and Linux:</strong> there is no download yet. Both are being built as native apps and can be built from source as they come together. See the <a href="https://github.com/afj176/mason-agent#platforms">README</a> for where each one stands.</p>
         <p class="all-releases"><a href="https://github.com/afj176/mason-agent/releases">All releases</a></p>
       </div>
     </div>

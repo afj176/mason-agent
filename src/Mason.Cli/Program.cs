@@ -7,7 +7,14 @@ using var stop=new CancellationTokenSource();
 if(!OperatingSystem.IsWindows()){Event("error",new{message="Mason requires Windows."});return 1;}
 Console.CancelKeyPress+=(_,e)=>{e.Cancel=true;stop.Cancel();};
 try{
-    if(args.Length==0||args[0] is "--help" or "-h"){
+    // No arguments in a terminal, "chat", or options alone open the interactive session. Scripts keep the JSON Lines operations below.
+    bool help=args.Length>0&&args[0] is "--help" or "-h";
+    if(!help&&(args.Length==0?!Console.IsInputRedirected:args[0]=="chat"||args[0].StartsWith("--",StringComparison.Ordinal))){
+        try{return await Interactive.Start(args.Length>0&&args[0]=="chat"?args[1..]:args);}
+        catch(Exception e) when(e is ArgumentException or DirectoryNotFoundException or UnauthorizedAccessException or InvalidDataException){Console.Error.WriteLine(e.Message);return 1;}
+    }
+    if(args.Length==0||help){
+        Console.WriteLine(Interactive.Usage);
         Console.WriteLine("""
             mason exec --workspace PATH --endpoint LOOPBACK --model ID --prompt TEXT [--auto] [--profile PATH]
             mason review --workspace PATH --endpoint LOOPBACK --model ID --prompt TEXT [--page index.html]

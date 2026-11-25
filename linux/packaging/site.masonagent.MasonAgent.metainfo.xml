@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>site.masonagent.MasonAgent</id>
+  <name>Mason Agent</name>
+  <summary>A coding workspace that runs on your own local models</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="site.masonagent">
+    <name>Mason Agent</name>
+  </developer>
+  <description>
+    <p>Add a project, decide what the agent may do, and review every change before you keep it. Mason Agent talks only to models running on this computer.</p>
+    <ul>
+      <li>Sessions per project, with each tool call shown as it finishes</li>
+      <li>Read-only, review, workspace-edit and sandboxed Auto permission modes</li>
+      <li>Diffs of every change, with undo and redo of a request's edits</li>
+      <li>Finds, downloads and runs GGUF models with llama.cpp</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">site.masonagent.MasonAgent.desktop</launchable>
+  <url type="homepage">https://masonagent.site</url>
+  <url type="vcs-browser">https://github.com/afj176/mason-agent</url>
+  <provides>
+    <binary>mason-agent</binary>
+    <binary>mason</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+</component>

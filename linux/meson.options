@@ -1,0 +1,1 @@
+option('app', type: 'boolean', value: true, description: 'Build the GTK 4 / libadwaita app as well as the engine and command line')

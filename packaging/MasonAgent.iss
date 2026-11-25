@@ -20,6 +20,10 @@ SolidCompression=yes
 CloseApplications=yes
 RestartApplications=no
 UninstallDisplayIcon={app}\MasonAgent.exe
+; Setup tells running programs that PATH changed, so new terminals see the mason command at once.
+ChangesEnvironment=yes
+[Tasks]
+Name: "clipath"; Description: "Add the mason command to PATH (use Mason Agent from any terminal)"
 [Files]
 ; The pre-publish payload check rejects root-level profile directories. Nested data
 ; directories belong to the shipped language tools and must match the release manifest.
@@ -107,3 +111,52 @@ Type: files; Name: "{app}\Import-DbCowboyProfile.ps1"
 Type: files; Name: "{app}\Assets\Brand\logo-dark.png"
 Type: files; Name: "{app}\Assets\Brand\logo-light.png"
 Type: files; Name: "{app}\Assets\Brand\symbol.png"
+[Code]
+// The mason command: {app}\bin holds only the CLI launcher. It is added to this user's PATH when the
+// task is selected and removed on uninstall. Entries are compared case-insensitively and other entries are kept as they are.
+const EnvironmentKey = 'Environment';
+
+function WithoutEntry(Paths, Entry: string): string;
+var
+  Rest, Item, Kept: string;
+  P: Integer;
+begin
+  Rest := Paths; Kept := '';
+  while Rest <> '' do
+  begin
+    P := Pos(';', Rest);
+    if P = 0 then begin Item := Rest; Rest := ''; end
+    else begin Item := Copy(Rest, 1, P - 1); Rest := Copy(Rest, P + 1, Length(Rest)); end;
+    if (Item <> '') and (CompareText(RemoveBackslashUnlessRoot(Item), RemoveBackslashUnlessRoot(Entry)) <> 0) then
+    begin
+      if Kept <> '' then Kept := Kept + ';';
+      Kept := Kept + Item;
+    end;
+  end;
+  Result := Kept;
+end;
+
+procedure SetCliPath(Add: Boolean);
+var
+  Paths, Entry, Updated: string;
+begin
+  Entry := ExpandConstant('{app}\bin');
+  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then Paths := '';
+  Updated := WithoutEntry(Paths, Entry);
+  if Add then
+  begin
+    if Updated <> '' then Updated := Updated + ';';
+    Updated := Updated + Entry;
+  end;
+  if Updated <> Paths then RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Updated);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then SetCliPath(WizardIsTaskSelected('clipath'));
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then SetCliPath(False);
+end;
