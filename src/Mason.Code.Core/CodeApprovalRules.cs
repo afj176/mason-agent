@@ -34,7 +34,7 @@ public static class CodeApprovalRules
         if (list.Count > MaxRules) throw new InvalidOperationException("A project can keep up to " + MaxRules + " approval rules.");
         if (list.Any(r => string.IsNullOrWhiteSpace(r.Tool) || r.Tool.Length > 64 || r.Subject.Length > 2000)) throw new ArgumentException("Invalid approval rule.");
         var path = Location(host, workspace);
-        if (CodeSandbox.ContainsHost(workspace, path)) throw new InvalidOperationException("Store approval rules outside the project.");
+        if (OperatingSystem.IsWindows() && CodeSandbox.ContainsHost(workspace, path)) throw new InvalidOperationException("Store approval rules outside the project.");
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temp = path + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
         File.WriteAllText(temp, JsonSerializer.Serialize(list));

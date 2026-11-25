@@ -44,16 +44,16 @@ public sealed class ModelServing : IDisposable
             // Embeddings and reranking batch whole inputs; the batch must cover the context.
             if(model.Task=="Embeddings")return [..common,"--embeddings","-b",options.ContextTokens.ToString(),"-ub",options.ContextTokens.ToString()];
             if(model.Task=="Reranking")return [..common,"--reranking","-b",options.ContextTokens.ToString(),"-ub",options.ContextTokens.ToString()];
-            common.AddRange(["-b", "256", "-ub", "128", "--reasoning", "auto"]);
+            common.AddRange(new[] { "-b", "256", "-ub", "128", "--reasoning", "auto" });
             if(options.DraftPath is {} draft)
             {
                 var head=GgufHeader.TryRead(draft)?.Architecture??"";
                 var type=head.Contains("dspark",StringComparison.OrdinalIgnoreCase)?"draft-dspark":head.Contains("eagle",StringComparison.OrdinalIgnoreCase)?"draft-eagle3":head.Contains("dflash",StringComparison.OrdinalIgnoreCase)?"draft-dflash":"draft-simple";
-                common.AddRange(["--spec-type", type, "-md", draft, "-ngld", gpu ? "99" : "0", "-devd", gpu?"CUDA0":"none"]);
+                common.AddRange(new[] { "--spec-type", type, "-md", draft, "-ngld", gpu ? "99" : "0", "-devd", gpu?"CUDA0":"none" });
             }
-            else common.AddRange(["--spec-type", "none"]);
-            if(options.LoraPath is {} lora)common.AddRange(["--lora", lora]);
-            if(companion!=null)common.AddRange(["--mmproj",companion]);
+            else common.AddRange(new[] { "--spec-type", "none" });
+            if(options.LoraPath is {} lora)common.AddRange(new[] { "--lora", lora });
+            if(companion!=null)common.AddRange(new[] { "--mmproj", companion });
             return common.ToArray();
         }
         var script=Path.Combine(scriptDirectory,"Serve-Transformers.py");
