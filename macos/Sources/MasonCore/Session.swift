@@ -64,6 +64,8 @@ public struct Turn: Codable, Equatable, Identifiable {
     public var changes: [FileChange] = []
     public var undone = false
     public var firstActivity = 0
+
+    public init(request: String, firstActivity: Int = 0) { self.request = request; self.firstActivity = firstActivity }
 }
 
 public struct Session: Codable, Identifiable {
