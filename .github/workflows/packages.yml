@@ -1,0 +1,89 @@
+# Builds, checks and stages the macOS and Linux downloads. Called by the Release and Preview workflows,
+# which publish what this leaves in the packages-macos and packages-linux artifacts.
+# Each artifact holds versioned files plus stable-named copies for the website's download links.
+name: Packages
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to build, such as 1.2.3 (a leading v is ignored)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    env:
+      REQUESTED: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version
+        run: |
+          v="${REQUESTED#v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version must look like 1.2.3, got '$v'"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: Test
+        working-directory: macos
+        run: swift test
+      - name: Build the app, zip and installer
+        working-directory: macos
+        run: Scripts/build-app.sh
+      - name: Install the package, then check the command line and the app
+        working-directory: macos
+        run: |
+          sudo installer -pkg "dist/MasonAgent-$VERSION-macos.pkg" -target /
+          Scripts/check-installed.sh
+      - name: Stage
+        run: |
+          mkdir out
+          cp "macos/dist/MasonAgent-$VERSION-macos.pkg" "macos/dist/MasonAgent-$VERSION-macos.zip" out/
+          cp "macos/dist/MasonAgent-$VERSION-macos.pkg" out/MasonAgent-macos.pkg
+          cp "macos/dist/MasonAgent-$VERSION-macos.zip" out/MasonAgent-macos.zip
+          ls -la out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-macos
+          path: out
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-24.04
+    env:
+      REQUESTED: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Version
+        run: |
+          v="${REQUESTED#v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Version must look like 1.2.3, got '$v'"; exit 1; }
+          built="$(sed -n "s/^  version: '\(.*\)',$/\1/p" linux/meson.build | head -1)"
+          [ "$built" = "$v" ] || { echo "linux/meson.build says $built but the release is $v. Update meson.build first."; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential meson ninja-build pkg-config \
+            libcurl4-openssl-dev nlohmann-json3-dev libgtkmm-4.0-dev libadwaita-1-dev bubblewrap dpkg-dev xvfb
+      - name: Build, test and package
+        run: linux/packaging/build-packages.sh
+      - name: Install the package, run the command line and start the app
+        run: |
+          sudo apt-get install -y ./linux/dist/mason-agent_${VERSION}_amd64.deb
+          mason --version
+          MASON_DATA_HOME="$RUNNER_TEMP/home" GSK_RENDERER=cairo xvfb-run -a bash -c 'mason-agent & pid=$!; sleep 8; kill -0 $pid && kill $pid'
+      - name: Stage
+        run: |
+          mkdir out
+          cp "linux/dist/mason-agent_${VERSION}_amd64.deb" "linux/dist/mason-agent-$VERSION-linux-amd64.tar.gz" out/
+          cp "linux/dist/mason-agent_${VERSION}_amd64.deb" out/mason-agent-linux-amd64.deb
+          cp "linux/dist/mason-agent-$VERSION-linux-amd64.tar.gz" out/mason-agent-linux-amd64.tar.gz
+          ls -la out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages-linux
+          path: out
+          if-no-files-found: error

@@ -1,4 +1,5 @@
-# Builds the Windows installer and portable ZIP and attaches them to a GitHub Release.
+# Builds the Windows installer and portable ZIP, and the macOS and Linux packages, and attaches them to a GitHub Release.
+# Nothing is published unless the Windows build passes its model qualification, so a release always carries all three.
 # Push a tag such as v1.2.3, or run it by hand from the Actions tab with a version number.
 # Each release carries versioned files plus stable-named copies, so the website's download buttons
 # can always point at releases/latest/download/<name>.
@@ -45,8 +46,13 @@ jobs:
           path: |
             ${{ runner.temp }}/mason-${{ github.run_id }}-${{ github.run_attempt }}/report.json
             ${{ runner.temp }}/mason-${{ github.run_id }}-${{ github.run_attempt }}/workflow/workflow-evidence.json
+  packages:
+    uses: ./.github/workflows/packages.yml
+    with:
+      version: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
+
   build:
-    needs: qualify
+    needs: [qualify, packages]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -81,6 +87,12 @@ jobs:
         shell: pwsh
         run: ./scripts/Publish.ps1 -Version ${{ steps.version.outputs.value }} -ModelEvidence "$env:RUNNER_TEMP/model-evidence/report.json" -WorkflowEvidence "$env:RUNNER_TEMP/model-evidence/workflow/workflow-evidence.json" -Installer -InnoCompiler '${{ steps.inno.outputs.path }}'
 
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: packages-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/packages
+
       - name: Stage release files
         id: stage
         shell: pwsh
@@ -91,6 +103,8 @@ jobs:
           Copy-Item $setup, $zip $out
           # Stable names for the website's "latest" download links.
           Copy-Item $setup "$out/$env:APP-Setup-x64.exe"; Copy-Item $zip "$out/$env:APP-win-x64.zip"
+          # The macOS and Linux packages, already staged with versioned and stable names.
+          Copy-Item "$env:RUNNER_TEMP/packages/*" $out
           Get-ChildItem $out -File | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash)  $($_.Name)" } | Set-Content "$out/SHA256SUMS.txt" -Encoding ascii
           Get-ChildItem $out | Format-Table Name, Length | Out-Host
 
