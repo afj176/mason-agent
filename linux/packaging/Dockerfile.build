@@ -1,0 +1,12 @@
+# Build and test environment for Mason Agent on Linux: the same packages a developer installs on Ubuntu 24.04.
+#   docker build -t mason-linux-build -f linux/packaging/Dockerfile.build linux/packaging
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential meson ninja-build pkg-config ca-certificates git \
+      libcurl4-openssl-dev nlohmann-json3-dev \
+      libgtkmm-4.0-dev libadwaita-1-dev \
+      bubblewrap python3 curl file dpkg-dev rpm \
+      xvfb xauth dbus-x11 at-spi2-core fonts-cantarell fonts-dejavu-core adwaita-icon-theme imagemagick x11-apps xdotool \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src

@@ -36,7 +36,8 @@ public struct ModelEndpoint: Codable, Equatable {
             throw MasonError("Use an http URL on this computer, such as http://127.0.0.1:8080.")
         }
         let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        guard bare == "localhost" || bare == "::1" || bare.hasPrefix("127.") else {
+        // A literal loopback address only: a name such as 127.0.0.1.example.com resolves wherever its owner likes.
+        guard bare == "localhost" || bare == "::1" || bare.range(of: #"^127(\.\d{1,3}){3}$"#, options: .regularExpression) != nil else {
             throw MasonError("Local model connections require localhost or a loopback address.")
         }
         guard ["", "/", "/v1", "/v1/"].contains(parts.path) else { throw MasonError("Use the server's root URL or its /v1 base URL.") }

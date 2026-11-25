@@ -100,6 +100,7 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertThrowsError(try ModelEndpoint.validated("https://api.example.com/v1"))
         XCTAssertThrowsError(try ModelEndpoint.validated("http://user:pw@127.0.0.1:8080"))
         XCTAssertThrowsError(try ModelEndpoint.validated("http://127.0.0.1:8080/other"))
+        XCTAssertThrowsError(try ModelEndpoint.validated("http://127.0.0.1.evil.example:8080"))
     }
 
     // MARK: agent
