@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mason Agent: a coding workspace and command line for your local models</title>
-<meta name="description" content="Mason Agent is a coding workspace and command line that run on your own local models. Add a project, choose what the agent may do, and review every change. Available for Windows; native macOS and Linux apps are in development.">
+<meta name="description" content="Mason Agent is a coding workspace and command line that run on your own local models. Add a project, choose what the agent may do, and review every change. Native apps for Windows, macOS and Linux, each with the mason command line.">
 <link rel="canonical" href="https://masonagent.site/">
 <meta name="theme-color" content="#F8F6F2" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#171A2B" media="(prefers-color-scheme: dark)">
@@ -12,7 +12,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Mason Agent">
 <meta property="og:title" content="Mason Agent: make the next move clear">
-<meta property="og:description" content="A coding workspace and command line that run on your own local models. Projects, reviewed edits and chat, all on your computer. Windows today; macOS and Linux in development.">
+<meta property="og:description" content="A coding workspace and command line that run on your own local models. Projects and reviewed edits, all on your computer. Native apps for Windows, macOS and Linux.">
 <meta property="og:url" content="https://masonagent.site/">
 <meta property="og:image" content="https://masonagent.site/assets/og.png">
 <meta property="og:image:width" content="1200">
@@ -20,7 +20,7 @@
 <meta property="og:image:alt" content="Mortar the wombat beside a Mason Agent coding session">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Mason Agent: make the next move clear">
-<meta name="twitter:description" content="A coding workspace and command line that run on your own local models.">
+<meta name="twitter:description" content="A coding workspace and command line that run on your own local models. For Windows, macOS and Linux.">
 <meta name="twitter:image" content="https://masonagent.site/assets/og.png">
 <link rel="icon" href="favicon.ico" sizes="48x48">
 <link rel="icon" href="favicon-32x32.png" type="image/png" sizes="32x32">
@@ -60,16 +60,21 @@
   <section class="hero" id="top" aria-labelledby="hero-title">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">Local coding agent · desktop app and command line</p>
+        <p class="eyebrow">Local coding agent · Windows, macOS and Linux</p>
         <h1 id="hero-title">Make the next move clear.</h1>
-        <p class="lede">Mason Agent is a coding workspace that runs on your own local models. Add a project, decide what the agent may do, and review every change before you keep it. In the app, or in your terminal with <code>mason</code>.</p>
-        <div class="ctas">
-          <a class="button primary" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-Setup-x64.exe">
-            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2.5a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 10 2.5ZM3.75 15.5a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z"/></svg>
-            Download for Windows</a>
-          <a class="button secondary" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-win-x64.zip">Portable ZIP</a>
+        <p class="lede">Mason Agent is a coding workspace that runs on your own local models. Add a project, decide what the agent may do, and review every change before you keep it. A native app on Windows, macOS and Linux, and <code>mason</code> in your terminal.</p>
+        <div class="ctas os-buttons" aria-label="Download Mason Agent">
+          <a class="button secondary os" data-os="windows" data-asset="MasonAgent-Setup-x64.exe" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-Setup-x64.exe">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/></svg>
+            <span class="os-name">Windows<small>Installer · x64</small></span></a>
+          <a class="button secondary os" data-os="macos" data-asset="MasonAgent-macos.pkg" href="https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.pkg">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>
+            <span class="os-name">macOS<small>Preview · universal</small></span></a>
+          <a class="button secondary os" data-os="linux" data-asset="mason-agent-linux-amd64.deb" href="https://github.com/afj176/mason-agent/releases/download/preview/mason-agent-linux-amd64.deb">
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><rect x="2.5" y="4" width="19" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="os-name">Linux<small>Preview · .deb, x64</small></span></a>
         </div>
-        <p class="fine">Version <span data-version>1.7.2</span> · Installer <span data-size="installer">106 MB</span> · ZIP <span data-size="portable">125 MB</span> · Windows x64 · <a href="#platforms">macOS and Linux in development</a></p>
+        <p class="fine">Free and open source. <a href="#download">Other formats, requirements and install steps</a></p>
       </div>
       <div class="hero-mascot">
         <img src="assets/mortar.png" width="440" height="440" alt="Mortar, the violet paper-craft wombat who is Mason Agent's mascot, giving a thumbs up">
@@ -95,42 +100,45 @@
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1.5V4M15 1.5V4M9 20v2.5M15 20v2.5M1.5 9H4M1.5 15H4M20 9h2.5M20 15h2.5"/></svg></span>
           <h3>Runs on your own models</h3>
-          <p>Mason Agent runs GGUF models itself through llama.cpp, so there is no separate server to start or keep alive. Transformers models run with Python, or you can connect to an OpenAI-compatible server on this computer.</p>
+          <p>Mason Agent runs GGUF models itself through llama.cpp, so there is no separate server to start or keep alive. Or connect to an OpenAI-compatible server on this computer. On Windows, Transformers models also run with Python.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>
           <h3>Quick setup</h3>
-          <p>One button checks your GPU, installs the right llama.cpp build, suggests a coding model that fits in its memory and, once you confirm the download, starts it.</p>
+          <p>Mason checks your memory, installs the right llama.cpp build, suggests a coding model that fits and, once you confirm the download, starts it.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5.5c0 4.2 2.9 7.9 7 9.5 4.1-1.6 7-5.3 7-9.5V6z"/><path d="m9 12 2 2 4-4"/></svg></span>
           <h3>You set the permissions</h3>
-          <p>Sessions start read-only. Approve each edit and command, allow workspace edits, or use Auto, which runs commands in a Windows sandbox. Choose <em>Always allow</em> to stop being asked about a command, folder or tool you trust.</p>
+          <p>Sessions start read-only. Approve each edit and command, allow workspace edits, or use Auto, which runs commands in your system's own sandbox, limited to the project. Choose <em>Always allow</em> to stop being asked about a command, folder or tool you trust.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M13 10v6M10 19h6"/></svg></span>
           <h3>Undo a whole request</h3>
-          <p>Edits show as diffs against the original files. Undo puts back everything a request changed, including files its commands touched, and Redo reapplies it. Files you edited since are left alone.</p>
+          <p>Edits show as diffs against the original files. Undo puts back the files a request edited and Redo reapplies them; on Windows that includes files its commands touched. Files you edited since are left alone.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg></span>
           <h3>Your agents and commands</h3>
+          <span class="only">Windows only for now</span>
           <p>Write agents and slash commands as Markdown files in your project. Mason Agent also reads the ones you keep for Claude Code and OpenCode. Add MCP servers and choose which of their tools the agent may use.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></svg></span>
           <h3>Schedules and notifications</h3>
+          <span class="only">Windows only for now</span>
           <p>Schedule a request to run hourly, daily, on weekdays or weekly as a background task. While you work in another app, the taskbar button shows a session's progress, and Windows notifies you when it finishes or needs your approval.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 4v-4h0A1.5 1.5 0 0 1 4 14.5z"/><path d="M8 9h8M8 12h5"/></svg></span>
           <h3>Chat beside your code</h3>
+          <span class="only">Windows only for now</span>
           <p>Talk a problem through with any connected model. Answers can include code blocks and tables, and you can attach documents. Favourite models stay at the top, and long conversations compact automatically.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16.5 4.5l3.8 1-4 15.4-3.8-1z"/></svg></span>
           <h3>A model library</h3>
-          <p>Scan your folders for GGUF and safetensors weights, see what each one can do for the agent and whether it fits in your GPU memory, and download models from Hugging Face when you choose to.</p>
+          <p>Scan your folders for model weights, see what each one can do for the agent and whether it fits in your memory, and download models from Hugging Face when you choose to.</p>
         </li>
       </ul>
     </div>
@@ -142,21 +150,25 @@
       <p class="section-lede">Each app is written for its own platform, with that system's interface, sandbox and conventions. The <code>mason</code> command brings the same agent to your terminal.</p>
       <ul class="cards">
         <li class="card">
-          <span class="status available">Available now</span>
+          <span class="status available">Available</span>
           <h3>Windows</h3>
-          <p>WinUI 3 and C#. Commands in Auto run in a Windows sandbox limited to your project. Installer or portable ZIP, with <code>mason</code> on your PATH.</p>
+          <p>WinUI 3 and C#. Commands in Auto run in a Windows sandbox limited to your project. The complete app: installer or portable ZIP.</p>
+          <p><a href="#download" data-platform="windows">Download for Windows</a></p>
         </li>
         <li class="card">
-          <span class="status building">In development</span>
+          <span class="status preview">Preview</span>
           <h3>macOS</h3>
-          <p>SwiftUI and Swift, engine included. Auto uses the macOS sandbox. The app, installer and <code>mason</code> tool are built and checked on a Mac in CI; a download follows once it has been used on real Macs with real models.</p>
+          <p>SwiftUI and Swift, engine included. Auto uses the macOS sandbox. A universal app for Apple silicon and Intel, with an installer that puts <code>mason</code> on your PATH.</p>
+          <p><a href="#download" data-platform="macos">Download for macOS</a></p>
         </li>
         <li class="card">
-          <span class="status building">In development</span>
+          <span class="status preview">Preview</span>
           <h3>Linux</h3>
-          <p>GTK 4, libadwaita and C++. Auto uses a bubblewrap sandbox. The app, <code>mason</code> and a <code>.deb</code> build and run on Ubuntu today; a download follows after wider testing.</p>
+          <p>GTK 4, libadwaita and C++. Auto uses a bubblewrap sandbox. A <code>.deb</code> for Debian and Ubuntu, and an archive that installs for your user on other distributions.</p>
+          <p><a href="#download" data-platform="linux">Download for Linux</a></p>
         </li>
       </ul>
+      <p class="section-lede">The previews have the core of Mason Agent: sessions, reviewed edits with diffs and undo, commands with approvals and saved rules, the four permission modes, and finding, downloading and running models. Features marked <em>Windows only for now</em> above are not in them yet.</p>
       <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, Mason starts a local model, reads a file, asks before editing it, and reports the change">
         <pre><code><span class="t-dim">~/src/shop $</span> mason
   <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
@@ -177,23 +189,31 @@
   <section class="screens" id="screenshots" aria-labelledby="screens-title">
     <div class="wrap">
       <h2 id="screens-title">Screenshots</h2>
-      <p class="section-lede">Built with Windows 11's own design language: Mica, Fluent controls and the Windows type ramp. Shown here in dark mode. Light mode is there too: Mason Agent follows your Windows setting, or you can choose either one from the settings button in the title bar.</p>
+      <p class="section-lede">Each app uses its own system's design language: Fluent and Mica on Windows, SwiftUI on macOS, libadwaita on Linux. All three follow your light or dark setting.</p>
       <div class="gallery">
+        <figure class="shot">
+          <img src="assets/mac-app.png" width="1024" height="681" loading="lazy" decoding="async" alt="Mason Agent on macOS: a session with a completed shell command and an approval card asking to create hello.txt">
+          <figcaption>macOS: an edit waits for your approval, with its diff.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/linux-app.png" width="1280" height="860" loading="lazy" decoding="async" alt="Mason Agent on Linux: a session's tool calls, an approval card for a shell command, and the Changes pane with a diff">
+          <figcaption>Linux: a session, an approval card and the Changes pane.</figcaption>
+        </figure>
         <figure class="shot wide">
           <img src="assets/changes-dark.png" width="1600" height="1001" loading="lazy" decoding="async" alt="The Changes viewer beside a coding session, showing a unified diff of the edited importer with added and removed lines">
-          <figcaption>Review a session's edits as diffs, then keep or restore them.</figcaption>
+          <figcaption>Windows: review a session's edits as diffs, then keep or restore them.</figcaption>
         </figure>
         <figure class="shot">
           <img src="assets/chat-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="Chat: a question about reading CSV files with quoted commas in Python, the local model's answer with a code block, and the code opened in the Reference panel">
-          <figcaption>Chat with a local model. Conversations are saved on this computer.</figcaption>
+          <figcaption>Windows: chat with a local model. Conversations are saved on this computer.</figcaption>
         </figure>
         <figure class="shot">
           <img src="assets/models-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="The Models library: GPU memory, a Quick setup button, and local GGUF models with what each can do for the coding agent">
-          <figcaption>Your local models, what each can do for the agent, and Quick setup.</figcaption>
+          <figcaption>Windows: your local models, what each can do for the agent, and Quick setup.</figcaption>
         </figure>
         <figure class="shot wide">
           <img src="assets/harness-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="Harness settings beside a new coding session: saved allow and deny rules, a reviewer agent, two project commands and an MCP server">
-          <figcaption>Saved approvals, your agents and commands, MCP servers and schedules on one settings page.</figcaption>
+          <figcaption>Windows: saved approvals, your agents and commands, MCP servers and schedules on one settings page.</figcaption>
         </figure>
       </div>
     </div>
@@ -206,33 +226,100 @@
           <img src="assets/mortar.png" width="440" height="440" loading="lazy" decoding="async" alt="">
           <div>
             <h2 id="download-title">Download Mason Agent</h2>
-            <p>Version <span data-version>1.7.2</span> for Windows x64. Free to download from GitHub Releases.</p>
+            <p>Free, from GitHub Releases. Choose your system.</p>
           </div>
         </div>
-        <div class="ctas">
-          <a class="button primary" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-Setup-x64.exe">
-            <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2.5a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 10 2.5ZM3.75 15.5a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z"/></svg>
-            Installer · <span data-size="installer">106 MB</span></a>
-          <a class="button secondary" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-win-x64.zip">Portable ZIP · <span data-size="portable">125 MB</span></a>
+        <div class="platform-tabs" role="tablist" aria-label="Your system">
+          <button type="button" role="tab" id="tab-windows" aria-controls="panel-windows" aria-selected="true">Windows</button>
+          <button type="button" role="tab" id="tab-macos" aria-controls="panel-macos" aria-selected="false" tabindex="-1">macOS <span class="tag">Preview</span></button>
+          <button type="button" role="tab" id="tab-linux" aria-controls="panel-linux" aria-selected="false" tabindex="-1">Linux <span class="tag">Preview</span></button>
         </div>
-        <div class="download-grid">
-          <div>
-            <h3>Installer or portable</h3>
-            <p>The installer sets Mason Agent up for your Windows account, with no administrator rights needed, and can add the <code>mason</code> command to your PATH. The portable ZIP runs from any folder: extract it and start <code>MasonAgent.exe</code>. Put an empty <code>portable.flag</code> file beside it to keep settings and sessions in a <code>data</code> folder next to the app.</p>
+
+        <div class="platform-panel" id="panel-windows" role="tabpanel" aria-labelledby="tab-windows">
+          <h3 class="panel-title">Windows <span class="fine">Version <span data-version>1.7.2</span> · x64</span></h3>
+          <div class="ctas">
+            <a class="button primary" data-asset="MasonAgent-Setup-x64.exe" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-Setup-x64.exe">
+              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2.5a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 10 2.5ZM3.75 15.5a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z"/></svg>
+              Installer · <span data-size="MasonAgent-Setup-x64.exe">106 MB</span></a>
+            <a class="button secondary" data-asset="MasonAgent-win-x64.zip" href="https://github.com/afj176/mason-agent/releases/latest/download/MasonAgent-win-x64.zip">Portable ZIP · <span data-size="MasonAgent-win-x64.zip">125 MB</span></a>
           </div>
-          <div>
-            <h3>Requirements</h3>
-            <ul>
-              <li>Windows 11, x64. The portable ZIP also runs on Windows 10 version 2004 or later.</li>
-              <li>A local model. <strong>Quick setup</strong> under Models installs llama.cpp and downloads a coding model that fits your GPU. You can also use GGUF weights you already have, Transformers weights with Python, or an OpenAI-compatible server on this computer.</li>
-              <li>A GPU is recommended. Larger models need more video memory, and Mason Agent shows whether each one fits before you start it.</li>
-              <li>Optional: Git for Windows, to use Git Bash as a shell for commands.</li>
-            </ul>
+          <div class="download-grid">
+            <div>
+              <h4>Installer or portable</h4>
+              <p>The installer sets Mason Agent up for your Windows account, with no administrator rights needed. The portable ZIP runs from any folder: extract it and start <code>MasonAgent.exe</code>. Put an empty <code>portable.flag</code> file beside it to keep settings and sessions in a <code>data</code> folder next to the app.</p>
+            </div>
+            <div>
+              <h4>Requirements</h4>
+              <ul>
+                <li>Windows 11, x64. The portable ZIP also runs on Windows 10 version 2004 or later.</li>
+                <li>A local model. <strong>Quick setup</strong> under Models installs llama.cpp and downloads a coding model that fits your GPU.</li>
+                <li>A GPU is recommended. Mason Agent shows whether each model fits before you start it.</li>
+                <li>Optional: Git for Windows, to use Git Bash as a shell for commands.</li>
+              </ul>
+            </div>
           </div>
+          <p class="note" data-before="2.2.1"><strong>The <code>mason</code> command on Windows</strong> arrives with version 2.2.1. From then on the installer can add it to your PATH. Until that release, build it from <a href="https://github.com/afj176/mason-agent#build-from-source">source</a>.</p>
+          <p class="note" data-from="2.2.1" hidden><strong>The <code>mason</code> command:</strong> tick <em>Add the mason command to PATH</em> in the installer, then run <code>mason</code> in any project folder. With the portable ZIP, add its <code>bin</code> folder to your PATH.</p>
+          <p class="note"><strong>Windows SmartScreen:</strong> releases are not code-signed yet, so Windows may warn the first time you run them. Choose <em>More info → Run anyway</em>.</p>
         </div>
-        <p class="note"><strong>Windows SmartScreen:</strong> releases are not code-signed yet, so Windows may warn the first time you run them. Choose <em>More info → Run anyway</em>. SHA-256 files are attached to each release if you want to verify a download.</p>
-        <p class="note"><strong>macOS and Linux:</strong> there is no download yet. Both are being built as native apps and can be built from source as they come together. See the <a href="https://github.com/afj176/mason-agent#platforms">README</a> for where each one stands.</p>
-        <p class="all-releases"><a href="https://github.com/afj176/mason-agent/releases">All releases</a></p>
+
+        <div class="platform-panel" id="panel-macos" role="tabpanel" aria-labelledby="tab-macos">
+          <h3 class="panel-title">macOS <span class="fine">Preview <span data-preview-version>2.2.1</span> · Apple silicon and Intel</span></h3>
+          <div class="ctas">
+            <a class="button primary" data-asset="MasonAgent-macos.pkg" href="https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.pkg">
+              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2.5a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 10 2.5ZM3.75 15.5a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z"/></svg>
+              Installer (.pkg)<span data-size="MasonAgent-macos.pkg"></span></a>
+            <a class="button secondary" data-asset="MasonAgent-macos.zip" href="https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.zip">App only (.zip)<span data-size="MasonAgent-macos.zip"></span></a>
+          </div>
+          <div class="download-grid">
+            <div>
+              <h4>Installer or app only</h4>
+              <p>The installer puts Mason Agent in Applications and the <code>mason</code> command in <code>/usr/local/bin</code>, so it works in every terminal. With the ZIP, drag the app into Applications yourself and choose <strong>Agent → Install Command Line Tool…</strong> in the menu bar.</p>
+            </div>
+            <div>
+              <h4>Requirements</h4>
+              <ul>
+                <li>macOS 14 or later, on Apple silicon or Intel.</li>
+                <li>A local model. <strong>Models → Suggest for this Mac</strong> installs llama.cpp and downloads a coding model that fits your memory, or use GGUF weights or a local server you already have.</li>
+              </ul>
+            </div>
+          </div>
+          <p class="note"><strong>First launch:</strong> the preview is not notarized by Apple, so macOS blocks it the first time. Open <em>System Settings → Privacy &amp; Security</em> and choose <em>Open Anyway</em>. On macOS 14 you can also right-click the file and choose <em>Open</em>.</p>
+          <p class="note"><strong>Preview:</strong> built and checked on a Mac for every change, but new. It has the core of Mason Agent; the features marked Windows only are not in it yet.</p>
+        </div>
+
+        <div class="platform-panel" id="panel-linux" role="tabpanel" aria-labelledby="tab-linux">
+          <h3 class="panel-title">Linux <span class="fine">Preview <span data-preview-version>2.2.1</span> · x64</span></h3>
+          <div class="ctas">
+            <a class="button primary" data-asset="mason-agent-linux-amd64.deb" href="https://github.com/afj176/mason-agent/releases/download/preview/mason-agent-linux-amd64.deb">
+              <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2.5a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 10 2.5ZM3.75 15.5a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z"/></svg>
+              Debian and Ubuntu (.deb)<span data-size="mason-agent-linux-amd64.deb"></span></a>
+            <a class="button secondary" data-asset="mason-agent-linux-amd64.tar.gz" href="https://github.com/afj176/mason-agent/releases/download/preview/mason-agent-linux-amd64.tar.gz">Other distributions (.tar.gz)<span data-size="mason-agent-linux-amd64.tar.gz"></span></a>
+          </div>
+          <div class="download-grid">
+            <div>
+              <h4>Install</h4>
+              <p>The package installs the app and <code>mason</code> for everyone on the computer:</p>
+              <pre class="cmd"><code>sudo apt install ./mason-agent-linux-amd64.deb</code></pre>
+              <p>The archive installs for your user under <code>~/.local</code>, with no administrator rights, and tells you if <code>~/.local/bin</code> is not on your PATH:</p>
+              <pre class="cmd"><code>tar -xzf mason-agent-linux-amd64.tar.gz
+cd mason-agent-*-linux-amd64 &amp;&amp; ./install.sh</code></pre>
+            </div>
+            <div>
+              <h4>Requirements</h4>
+              <ul>
+                <li>x64. The <code>.deb</code> is built on Ubuntu 24.04 and needs that or a newer Debian or Ubuntu.</li>
+                <li>For the archive: GTK 4, gtkmm 4.10 or later, libadwaita 1.4 or later and libcurl from your distribution. The installer lists any that are missing.</li>
+                <li>bubblewrap for Auto. Without it Mason still works, and Auto refuses to run commands instead of running them unprotected.</li>
+                <li>A local model. <code>mason</code> and the Models page install llama.cpp and download one that fits.</li>
+              </ul>
+            </div>
+          </div>
+          <p class="note"><strong>Preview:</strong> built and checked on Ubuntu 24.04 for every change, and not yet tried on other distributions. It has the core of Mason Agent; the features marked Windows only are not in it yet.</p>
+        </div>
+
+        <p class="note">SHA-256 checksums are attached to each release if you want to verify a download.</p>
+        <p class="all-releases"><a href="https://github.com/afj176/mason-agent/releases">All releases</a> · <a href="https://github.com/afj176/mason-agent#build-from-source">Build from source</a></p>
       </div>
     </div>
   </section>
@@ -241,7 +328,7 @@
 <footer class="site-footer">
   <div class="wrap footer-grid">
     <div>
-      <p class="made">Made for Windows 11</p>
+      <p class="made">Native on Windows, macOS and Linux</p>
       <p><a href="https://github.com/afj176/mason-agent">github.com/afj176/mason-agent</a></p>
       <p class="muted"><a href="https://github.com/afj176/mason-agent/blob/main/LICENSE">MIT License</a>.</p>
     </div>

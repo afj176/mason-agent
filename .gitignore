@@ -13,7 +13,7 @@ __pycache__/
 crash.txt
 
 # Brand production material: generation prompts, reviews, manifests and duplicates of what the app ships.
-# The app's own copies live in src/*/Assets; the logo kit, characters, graphics and tokens stay here.
+# The app's own copies live in windows/src/*/Assets; the logo kit, characters, graphics and tokens stay here.
 brand-source/
 brand/mascot-art/
 brand/site/

@@ -1,0 +1,31 @@
+# Builds the Windows app and command line and runs the coding harness checks, so a broken build shows up before a release.
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    paths: ['windows/**', 'brand/**', '.github/workflows/windows.yml']
+  pull_request:
+    paths: ['windows/**', 'brand/**', '.github/workflows/windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build the app
+        shell: pwsh
+        run: dotnet build windows/src/MasonAgent/MasonAgent.csproj -c Release -p:Platform=x64 -nologo
+      - name: Build the command line
+        shell: pwsh
+        run: dotnet build windows/src/Mason.Cli/Mason.Cli.csproj -c Release -nologo
+      - name: Verify coding harness recovery
+        shell: pwsh
+        run: dotnet run --project windows/tests/Mason.CodeChecks -c Release -- --harness-recovery-checks "$env:RUNNER_TEMP"
