@@ -184,7 +184,7 @@ public sealed partial class MainWindow
         ToolTipService.SetToolTip(draft,"Build keeps the current task’s requirements across follow-ups. Type /new followed by a request to start a separate task.");
         AutomationProperties.SetName(draft, "Coding message"); ComposerBox(draft);
         reasoning = new ComboBox { ItemsSource = new[] { "Default", "Off", "Low", "Medium", "High" }, SelectedIndex = 0, MinWidth = 95 }; AutomationProperties.SetName(reasoning, "Coding reasoning");
-        agentMode = new Segmented("Coding mode", [("Build", ""), ("Ask", "")], 0, stretch: true);
+        agentMode = new Segmented("Coding mode", new (string Label, string? Glyph)[] { ("Build", ""), ("Ask", "") }, 0, stretch: true);
         ToolTipService.SetToolTip(agentMode.View, "Build performs workspace work. Ask explores without file writes or commands.");
         spinner = BrandControl(new ProgressRing { Width = 15, Height = 15, Visibility = Visibility.Collapsed });
         stop = Button("Stop", (_, _) => codeOperation?.Cancel()); stop.Visibility = Visibility.Collapsed;

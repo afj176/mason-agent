@@ -103,7 +103,7 @@ public sealed partial class MainWindow
         async Task EditMcp(McpRegistration? existing)
         {
             var name = new TextBox { Header = "Name", Text = existing?.Name ?? "", PlaceholderText = "docs", IsEnabled = existing == null };
-            var kind = new Segmented("Transport", [("Local program (stdio)", "\uE756"), ("HTTP on this computer", "\uE774")], existing?.Executable == null && existing != null ? 1 : 0);
+            var kind = new Segmented("Transport", new (string Label, string? Glyph)[] { ("Local program (stdio)", "\uE756"), ("HTTP on this computer", "\uE774") }, existing?.Executable == null && existing != null ? 1 : 0);
             var executable = new TextBox { Header = "Program", Text = existing?.Executable ?? "", PlaceholderText = @"C:\Tools\docs-mcp.exe" };
             var arguments = new TextBox { Header = "Arguments (one per line)", Text = string.Join("\n", existing?.Arguments ?? []), AcceptsReturn = true, MinHeight = 64 };
             var endpoint = new TextBox { Header = "Endpoint", Text = existing?.Executable == null ? existing?.Endpoint ?? "" : "", PlaceholderText = "http://127.0.0.1:8088/mcp" };
@@ -172,7 +172,7 @@ public sealed partial class MainWindow
             if (connections.Count == 0) { Say("Save a chat model connection in Models first; schedules run with a saved connection.", InfoBarSeverity.Warning); return; }
             var name = new TextBox { Header = "Name", PlaceholderText = "Nightly tests" };
             var prompt = new TextBox { Header = "Request", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 96, PlaceholderText = "Run the test suite and summarise any failures with file and line." };
-            var cadence = new Segmented("Cadence", [("Hourly", null), ("Daily", null), ("Weekdays", null), ("Weekly", null)], 2);
+            var cadence = new Segmented("Cadence", new (string Label, string? Glyph)[] { ("Hourly", null), ("Daily", null), ("Weekdays", null), ("Weekly", null) }, 2);
             var time = new TimePicker { Header = "At", Time = new TimeSpan(9, 0, 0), MinuteIncrement = 5 };
             var day = new ComboBox { Header = "Day", ItemsSource = Enum.GetNames<DayOfWeek>(), SelectedIndex = 1 };
             var model = new ComboBox { Header = "Model connection", ItemsSource = connections.Select(c => c.DisplayName).ToArray(), SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };

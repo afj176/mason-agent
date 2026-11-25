@@ -51,7 +51,7 @@ public sealed partial class MainWindow
                         if (!double.IsFinite(line.Value) || line.Value != Math.Truncate(line.Value)) throw new ArgumentException("Choose a current line number.");
                         next = next.OnCurrentLine(file, checked((int)line.Value));
                     }
-                    CodeReviewComment.Validate(scope, [next]);
+                    CodeReviewComment.Validate(scope, new[] { next });
                     var pending = session.ReviewComments.ToList();
                     if (isNew) pending.Add(next); else pending[pending.FindIndex(c => c.Id == next.Id)] = next;
                     SaveReview(pending);

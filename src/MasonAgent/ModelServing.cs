@@ -171,7 +171,7 @@ public sealed class ModelServing : IDisposable
             ct.ThrowIfCancellationRequested();
             if (deadline.IsCancellationRequested) break;
             var log = Path.Combine(folder, attempt++ == 0 ? "devices.log" : $"devices-retry-{attempt - 1}.log");
-            using var probe = OwnedModelProcess.Start(runtime, ["--list-devices"], log, libraries);
+            using var probe = OwnedModelProcess.Start(runtime, new[] { "--list-devices" }, log, libraries);
             try { await probe.Process.WaitForExitAsync(deadline.Token); }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
