@@ -1,5 +1,7 @@
 // Sessions: the conversation with the model, what the tools did, and what each request changed.
 #pragma once
+#include <mutex>
+
 #include "util.hpp"
 
 namespace mason {
@@ -84,6 +86,8 @@ public:
 private:
     fs::path home_, folder_;
     std::vector<Session> sessions_;
+    /// The app saves from the engine thread and the main thread; saving, creating and removing take this lock.
+    mutable std::mutex lock_;
 };
 
 }  // namespace mason

@@ -99,7 +99,8 @@ final class CLI {
             if let chosen = ["auto": Permission.auto, "edits": .workspaceEdits, "review": .reviewEdits, "read-only": .readOnly].first(where: { flags.contains($0.key) })?.value { cli.setPermission(chosen) }
             if let url = values["endpoint"], let model = values["model"] {
                 _ = try ModelEndpoint.validated(url)
-                cli.endpoint = ModelEndpoint(url: url, model: model); cli.endpointName = model
+                // Remembered, so the next plain "mason" and the app use the same server while it is running.
+                cli.use(ModelEndpoint(url: try ModelEndpoint.validated(url).absoluteString, model: model), name: model)
             }
             await cli.loop(resumed: flags.contains("resume"))
             cli.server?.stop()

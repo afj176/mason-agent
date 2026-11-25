@@ -194,7 +194,12 @@ final class AppModel: ObservableObject {
 
     /// Finds running servers and local files. On launch, with nothing answering, it restarts the model used last.
     func refreshModels(startLastIfNeeded: Bool = false) async {
-        let found = await LocalServers.detect()
+        var found = await LocalServers.detect()
+        // The endpoint used last may be on a port the scan does not cover (a server the user started themselves).
+        if let last = Preferences.load().lastEndpoint, !found.contains(where: { $0.endpoint == last }),
+           let listed = await OpenAIClient.models(at: last.url), listed.contains(last.model) {
+            found.insert((name: "Local server", endpoint: last), at: 0)
+        }
         let files = await Task.detached { ModelLibrary.scan() }.value
         servers = found; localModels = files; runtimePath = LlamaRuntime.find()
         if let current = endpoint, found.contains(where: { $0.endpoint == current }) { return }

@@ -75,6 +75,8 @@ public:
     std::optional<ModelEndpoint> endpoint;
     std::string endpoint_name;
 
+    void remember(const ModelEndpoint& chosen, const std::string& name) { use(chosen, name); }
+
     void set_permission(Permission permission) {
         session_.permission = permission;
         session_.ask_only = permission == Permission::ReadOnly;
@@ -852,8 +854,8 @@ int main(int argc, char** argv) {
         Cli cli(store, workspace, *session);
         if (permission) cli.set_permission(*permission);
         if (!endpoint_url.empty()) {
-            cli.endpoint = ModelEndpoint{validated_endpoint(endpoint_url), model_id, ""};
-            cli.endpoint_name = model_id;
+            // Remembered, so the next plain "mason" and the app use the same server while it is running.
+            cli.remember(ModelEndpoint{validated_endpoint(endpoint_url), model_id, ""}, model_id);
         }
         cli.loop(resume);
         cli.shutdown();

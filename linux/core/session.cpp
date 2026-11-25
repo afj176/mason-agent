@@ -122,6 +122,7 @@ SessionStore::SessionStore(fs::path home) : home_(std::move(home)), folder_(home
 }
 
 std::vector<Session> SessionStore::sessions_in(const std::string& workspace) const {
+    std::lock_guard<std::mutex> guard(lock_);
     std::vector<Session> mine;
     for (const Session& session : sessions_) {
         if (session.workspace == workspace) mine.push_back(session);
@@ -138,6 +139,7 @@ Session SessionStore::create(const std::string& workspace, Permission permission
 }
 
 void SessionStore::save(Session& session) {
+    std::lock_guard<std::mutex> guard(lock_);
     session.updated = now_iso();
     write_file_atomic(folder_ / (session.id + ".json"), to_json(session).dump(1, ' ', false, json::error_handler_t::replace));
     auto existing = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& s) { return s.id == session.id; });
@@ -146,6 +148,7 @@ void SessionStore::save(Session& session) {
 }
 
 void SessionStore::remove(const std::string& id) {
+    std::lock_guard<std::mutex> guard(lock_);
     std::error_code failure;
     fs::remove(folder_ / (id + ".json"), failure);
     sessions_.erase(std::remove_if(sessions_.begin(), sessions_.end(), [&](const Session& s) { return s.id == id; }), sessions_.end());
