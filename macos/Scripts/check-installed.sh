@@ -30,8 +30,7 @@ printf 'use the shell to make a file\n/status\n/exit\n' | mason --auto --endpoin
 grep -q "Done." "$WORK/cli.txt" || { echo "The request did not finish with the model's answer."; exit 1; }
 
 # Hand the same session to the app in Review edits, so its next edit has to be approved.
-printf '/exit
-' | mason --resume --review --endpoint "http://127.0.0.1:$PORT" --model stub >/dev/null
+printf '/exit\n' | mason --resume --review --endpoint "http://127.0.0.1:$PORT" --model stub >/dev/null
 
 echo "--- app ---"
 "$APP/Contents/MacOS/MasonAgent" &

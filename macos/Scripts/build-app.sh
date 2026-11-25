@@ -41,7 +41,11 @@ ditto -c -k --keepParent "$APP" "dist/MasonAgent-$VERSION-macos.zip"
 ROOT="$(mktemp -d)" && mkdir -p "$ROOT/Applications" "$ROOT/scripts"
 ditto "$APP" "$ROOT/Applications/Mason Agent.app"
 install -m 755 Packaging/postinstall "$ROOT/scripts/postinstall"
-pkgbuild --root "$ROOT/Applications" --install-location /Applications --scripts "$ROOT/scripts" \
+# Without this, the installer treats the app as relocatable: it updates any copy of Mason Agent it finds elsewhere
+# on the disk instead of installing into /Applications, and the mason link would then point at nothing.
+pkgbuild --analyze --root "$ROOT/Applications" "$ROOT/component.plist" >/dev/null
+/usr/libexec/PlistBuddy -c "Set :0:BundleIsRelocatable false" "$ROOT/component.plist"
+pkgbuild --root "$ROOT/Applications" --component-plist "$ROOT/component.plist" --install-location /Applications --scripts "$ROOT/scripts" \
   --identifier site.masonagent.MasonAgent --version "$VERSION" "dist/MasonAgent-$VERSION-macos.pkg"
 ( cd dist && shasum -a 256 "MasonAgent-$VERSION-macos.zip" "MasonAgent-$VERSION-macos.pkg" > SHA256SUMS.txt )
 ls -la dist
