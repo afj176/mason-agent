@@ -68,13 +68,14 @@ public enum Shell {
     /// The command runs in its own process group under a small wrapper. Removing the run file makes the wrapper stop
     /// the whole group with SIGKILL, so a stop also ends programs the command started, and it cannot be blocked by an
     /// inherited signal mask. The wrapper also stops the group if Mason itself goes away.
+    /// Inside the sandbox the wrapper may not signal Mason, so only "no such process" counts as Mason being gone.
     /// The wrapper silences its own messages (job-control notices) so only the command's output is returned.
     static let wrapper = """
         set -m
         exec 3>&1 4>&2 2>/dev/null
         "$1" -c "$2" >&3 2>&4 3>&- 4>&- &
         child=$!
-        ( while kill -0 $child 2>/dev/null; do if [ ! -e "$3" ] || ! kill -0 $PPID 2>/dev/null; then kill -9 -$child 2>/dev/null; break; fi; sleep 0.2; done ) >/dev/null 2>&1 &
+        ( while kill -0 $child 2>/dev/null; do gone=; case "$(LC_ALL=C kill -0 $PPID 2>&1)" in *"No such process"*) gone=1;; esac; if [ ! -e "$3" ] || [ -n "$gone" ]; then kill -9 -$child 2>/dev/null; break; fi; sleep 0.2; done ) >/dev/null 2>&1 &
         wait $child
         """
 
@@ -91,7 +92,7 @@ public enum Shell {
         let process = Process()
         if sandboxed {
             process.executableURL = URL(fileURLWithPath: SandboxProfile.tool)
-            process.arguments = ["-p", SandboxProfile.profile(workspace: workspace.root.path, scratch: scratch.resolvingSymlinksInPath().path)] + wrapped
+            process.arguments = ["-p", SandboxProfile.profile(workspace: workspace.root.path, scratch: realPath(scratch.path))] + wrapped
             var environment = ProcessInfo.processInfo.environment
             environment["TMPDIR"] = scratch.path
             process.environment = environment

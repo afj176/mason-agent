@@ -68,6 +68,17 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(try workspace.search("RETURN A").map(\.path), ["calc.py"])
     }
 
+    func testAProjectOpenedThroughALinkListsTheSameRelativePaths() throws {
+        let link = folder.deletingLastPathComponent().appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try "x".write(to: folder.appendingPathComponent("src/a.txt"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: link.path)
+        XCTAssertEqual(try workspace.files().paths, ["calc.py", "src/a.txt"])
+        XCTAssertEqual(try workspace.files(under: "src").paths, ["src/a.txt"])
+        XCTAssertNoThrow(try workspace.write("src/b.txt", "y"))
+    }
+
     // MARK: diff
 
     func testDiffReportsOnlyTheChangedLine() {

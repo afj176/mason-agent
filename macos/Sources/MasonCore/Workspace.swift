@@ -1,4 +1,17 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
+
+/// The path with every link followed, as the system itself names it. On macOS this keeps the /private prefix of
+/// temporary folders, which the sandbox and directory listings use; Foundation's own resolution drops it.
+func realPath(_ path: String) -> String {
+    guard let resolved = realpath(path, nil) else { return path }
+    defer { free(resolved) }
+    return String(cString: resolved)
+}
 
 public struct MasonError: Error, CustomStringConvertible, LocalizedError {
     public let description: String
@@ -25,7 +38,7 @@ public struct Workspace {
     public static let maxFileBytes = 2 * 1024 * 1024
 
     public init(path: String) throws {
-        let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        let url = URL(fileURLWithPath: realPath(URL(fileURLWithPath: path).standardizedFileURL.path))
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw MasonError("Open an existing project folder.")
@@ -54,7 +67,7 @@ public struct Workspace {
         // A link inside the project must not lead out of it. For a file that does not exist yet, check its nearest existing parent.
         var existing = url
         while !FileManager.default.fileExists(atPath: existing.path), existing.path.count > root.path.count { existing.deleteLastPathComponent() }
-        let real = existing.resolvingSymlinksInPath().path
+        let real = realPath(existing.path)
         guard real == root.path || real.hasPrefix(root.path + "/") else {
             throw MasonError("Rejected path \"\(shown)\". It follows a link out of the project.")
         }
@@ -93,18 +106,20 @@ public struct Workspace {
     public func files(under relative: String = ".", limit: Int = 2000) throws -> (paths: [String], truncated: Bool) {
         let start = relative == "." || relative.isEmpty ? root : try resolve(relative)
         var found: [String] = []
-        var pending = [start]
+        // Each folder travels with its project-relative prefix, so the result never depends on how the system spells the root.
+        let startPrefix = start.path == root.path ? "" : String(start.path.dropFirst(root.path.count + 1)) + "/"
+        var pending = [(start, startPrefix)]
         var truncated = false
-        while let folder = pending.popLast(), !truncated {
+        while let (folder, prefix) = pending.popLast(), !truncated {
             let entries = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey])) ?? []
             for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 let name = entry.lastPathComponent
                 if Workspace.forbidden(name) || name == ".DS_Store" { continue }
                 let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 if values?.isSymbolicLink == true { continue }
-                if values?.isDirectory == true { pending.append(entry); continue }
+                if values?.isDirectory == true { pending.append((entry, prefix + name + "/")); continue }
                 if found.count >= limit { truncated = true; break }
-                found.append(String(entry.path.dropFirst(root.path.count + 1)))
+                found.append(prefix + name)
             }
         }
         return (found.sorted(), truncated)
