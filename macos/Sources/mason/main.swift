@@ -83,6 +83,7 @@ final class CLI {
         var values: [String: String] = [:]; var flags = Set<String>()
         var arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.first == "chat" { arguments.removeFirst() }
+        if arguments.contains("--version") { print("mason \(MasonVersion.current)"); return 0 }
         if arguments.contains("--help") || arguments.contains("-h") { print(usage); print(ScriptOperations.usage); return 0 }
         // A script operation prints JSON Lines and exits; everything else opens the interactive session.
         if let first = arguments.first, ScriptOperations.names.contains(first) {

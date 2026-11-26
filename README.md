@@ -298,6 +298,21 @@ A GTK 4 and libadwaita app with its engine in C++, in [`linux/`](linux). [Downlo
 - **Models.** The list includes running local servers and every GGUF file on the computer. Mason installs the official llama.cpp build (Vulkan when a GPU and the Vulkan loader are present, otherwise CPU). Transformers weights use an NVIDIA GPU where its driver is installed, otherwise the CPU.
 - **Chat.** Chats are stored in `chats` in Mason's data folder on this computer.
 
+## Versions and releases
+
+Each platform keeps its version in its own folder: `windows/src/MasonAgent/MasonAgent.csproj`, `macos/Sources/MasonCore/Version.swift` and `linux/meson.build`. They are released together, so `scripts/version.sh` reads and changes all three: run it alone to print the version, with `set 2.3.0`, or with `bump patch`.
+
+Every pull request merged into `main` is a release. Its label sets the version:
+
+| Label | Version | |
+| --- | --- | --- |
+| `release: patch` | 2.2.1 → 2.2.2 | the default with no label |
+| `release: minor` | 2.2.1 → 2.3.0 | new features |
+| `release: major` | 2.2.1 → 3.0.0 | breaking changes |
+| `release: skip` | unchanged | documentation, CI, no release |
+
+On merge, `release-on-merge.yml` commits the new version to `main`, tags it `vX.Y.Z` and builds and publishes Windows, macOS and Linux to that release. The website and the download links read the latest release.
+
 ## Build from source
 
 ### Windows
@@ -316,15 +331,15 @@ dotnet build src\MasonAgent\MasonAgent.csproj -c Debug -p:Platform=x64
 
 # Release payload and ZIP in windows\artifacts\MasonAgent-<version>-win-x64.
 # Omit -Installer and -InnoCompiler for the portable package alone.
-.\scripts\Publish.ps1 -Version 2.2.1 -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+.\scripts\Publish.ps1 -Version X.Y.Z -Installer -InnoCompiler "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
 # Optional: try the release against your own local models first, and ship what they did with it.
 .\scripts\Invoke-ModelBenchmark.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -OutputDirectory .cache\qualification
 .\scripts\Invoke-WorkflowQualification.ps1 -Endpoint http://127.0.0.1:8080 -Model YOUR_LOADED_MODEL -SecondaryEndpoint http://127.0.0.1:8081 -SecondaryModel SECOND_MODEL -OutputDirectory .cache\workflow
-.\scripts\Publish.ps1 -Version 2.2.1 -ModelEvidence .cache\qualification\report.json -WorkflowEvidence .cache\workflow\workflow-evidence.json
+.\scripts\Publish.ps1 -Version X.Y.Z -ModelEvidence .cache\qualification\report.json -WorkflowEvidence .cache\workflow\workflow-evidence.json
 ```
 
-`Publish.ps1` requires a clean checkout and runs the scripted checks, which need no model. Pushing a version tag does the same on GitHub and publishes the release; no model runs there. The two model scripts are optional and run only on your own computer: when you pass their evidence, `Publish.ps1` checks it is for the exact source commit and ships it with the release. In them, each model builds a store from an empty directory four times, reviews a working store and six single-defect variants, and repairs a separate JavaScript application during a concurrent edit. Edge exercises discount boundaries and two checkouts at phone and desktop widths. Both packages include the two reports and their SHA-256 hashes. Configure two running local llama.cpp servers on the Windows runner labeled `mason-model-evals` using `MASON_EVAL_ENDPOINT`, `MASON_EVAL_MODEL`, `MASON_SECONDARY_EVAL_ENDPOINT` and `MASON_SECONDARY_EVAL_MODEL`.
+`Publish.ps1` takes the current version (`bash scripts/version.sh` prints it), requires a clean checkout and runs the scripted checks, which need no model. The release on GitHub does the same; no model runs there. The two model scripts are optional and run only on your own computer: when you pass their evidence, `Publish.ps1` checks it is for the exact source commit and ships it with the release. In them, each model builds a store from an empty directory four times, reviews a working store and six single-defect variants, and repairs a separate JavaScript application during a concurrent edit. Edge exercises discount boundaries and two checkouts at phone and desktop widths. Both packages include the two reports and their SHA-256 hashes. Configure two running local llama.cpp servers on the Windows runner labeled `mason-model-evals` using `MASON_EVAL_ENDPOINT`, `MASON_EVAL_MODEL`, `MASON_SECONDARY_EVAL_ENDPOINT` and `MASON_SECONDARY_EVAL_MODEL`.
 
 #### Checks
 

@@ -10,6 +10,11 @@ on:
         description: Version to build, such as 1.2.3 (a leading v is ignored)
         required: true
         type: string
+      ref:
+        description: Commit or tag to build. Empty builds the commit that started the run.
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -21,6 +26,8 @@ jobs:
       REQUESTED: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
       - name: Version
         run: |
           v="${REQUESTED#v}"
@@ -56,6 +63,8 @@ jobs:
       REQUESTED: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
       - name: Version
         run: |
           v="${REQUESTED#v}"
