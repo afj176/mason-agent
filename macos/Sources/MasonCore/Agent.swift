@@ -13,6 +13,8 @@ public enum AgentEvent {
     case activityStarted(Activity)
     case activityFinished(Activity)
     case status(String)
+    /// A follow-up is about to run: the session as the previous request left it, and the follow-up's text.
+    case followUp(Session, String)
 }
 
 /// Always-allow rules a user saved for one project. They only skip the prompt; they never widen the sandbox.
@@ -60,6 +62,12 @@ public final class Agent {
     /// The project as last read, so each command only re-reads the files that changed.
     var snapshot: [String: Snapshot.Entry] = [:]
     var home: URL { store.folder.deletingLastPathComponent() }
+    /// Follow-ups that arrive while a request runs, from whichever thread the user interface is on.
+    private let inboxLock = NSLock()
+    private var inbox: [FollowUp] = []
+    private var accepting = false
+    private var activeTurn: Task<Session, Never>?
+    public static let followUpLimit = 16
 
     public init(store: SessionStore, model: ChatModel, approve: @escaping (ApprovalRequest) async -> Bool, emit: @escaping (AgentEvent) -> Void) {
         self.store = store; self.model = model; self.approve = approve; self.emit = emit
@@ -109,8 +117,73 @@ public final class Agent {
         """
     }
 
-    /// Runs one request to completion. The session is saved after every step, so an interruption loses nothing that already happened.
+    /// Adds a message while a request is running. Steering stops the model's current step and handles the message
+    /// next; otherwise the message is queued until the request completes.
+    public func sendWhileRunning(_ text: String, steer: Bool) throws {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.count <= 16_000 else { throw MasonError("Write a message of 1–16,000 characters.") }
+        let outcome: (problem: String?, turn: Task<Session, Never>?) = withInbox {
+            guard accepting else { return ("No request is running in this session.", nil) }
+            guard inbox.count < Agent.followUpLimit else { return ("At most \(Agent.followUpLimit) messages can wait at once.", nil) }
+            inbox.append(FollowUp(text: trimmed, steer: steer))
+            return (nil, activeTurn)
+        }
+        if let problem = outcome.problem { throw MasonError(problem) }
+        if steer { outcome.turn?.cancel() }
+    }
+
+    /// The follow-up handled next: a steering message first, else the oldest queued one.
+    static func nextFollowUp(_ session: Session) -> FollowUp? {
+        let pending = session.pendingInput ?? []
+        return pending.first { $0.steer } ?? pending.first
+    }
+
+    /// Runs a request, then any follow-ups sent while it ran. "/queue" resumes follow-ups left from an earlier stop.
+    /// A queued follow-up runs only after a request that completed; a steering one runs whatever happened.
     public func run(_ session: inout Session, request: String) async {
+        var input = request
+        if request.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "/queue" {
+            guard let next = Agent.nextFollowUp(session) else { session.state = "Failed"; session.detail = "No messages are queued."; return }
+            session.pendingInput?.removeAll { $0.id == next.id }
+            input = next.text
+        }
+        withInbox { accepting = true }
+        while true {
+            let start = session, text = input
+            let turn = Task { [self] () -> Session in var working = start; await self.runTurn(&working, request: text); return working }
+            // A steering message that arrived between requests interrupts this one at once.
+            if withInbox({ activeTurn = turn; return inbox.contains { $0.steer } }) { turn.cancel() }
+            session = await withTaskCancellationHandler { await turn.value } onCancel: { turn.cancel() }
+            let stopping = Task.isCancelled, state = session.state, waiting = Agent.nextFollowUp(session)
+            let (arrived, next, continuing): ([FollowUp], FollowUp?, Bool) = withInbox {
+                activeTurn = nil
+                let arrived = inbox; inbox = []
+                let next = stopping ? nil : (arrived.first { $0.steer } ?? waiting ?? arrived.first)
+                let continuing = next.map { $0.steer || state == "Completed" } ?? false
+                if !continuing { accepting = false }
+                return (arrived, next, continuing)
+            }
+            if !arrived.isEmpty { session.pendingInput = Array(((session.pendingInput ?? []) + arrived).suffix(Agent.followUpLimit)) }
+            if continuing, let next {
+                session.pendingInput?.removeAll { $0.id == next.id }
+                input = next.text
+            }
+            if session.pendingInput?.isEmpty == true { session.pendingInput = nil }
+            if !arrived.isEmpty || continuing { try? store.save(session) }
+            if !continuing { return }
+            emit(.followUp(session, input))
+            emit(.status(next?.steer == true ? "Steering" : "Starting the queued message"))
+        }
+    }
+
+    /// Everything about follow-ups is read and changed under one lock.
+    private func withInbox<T>(_ body: () -> T) -> T {
+        inboxLock.lock(); defer { inboxLock.unlock() }
+        return body()
+    }
+
+    /// Runs one request to completion. The session is saved after every step, so an interruption loses nothing that already happened.
+    func runTurn(_ session: inout Session, request: String) async {
         let input = request.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty, input.count <= 16_000 else {
             session.state = "Failed"; session.detail = "Describe a request in 1–16,000 characters."; return

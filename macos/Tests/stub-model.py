@@ -6,7 +6,9 @@ a request mentioning "shell" runs one command, any other request writes hello.tx
 tool result has come back it answers "Done." A request without tools gets a one-line summary. Usage: stub-model.py PORT
 """
 import json
+import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
@@ -34,6 +36,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        # STUB_DELAY (seconds) makes the model slow, for checks that act while it is still working.
+        time.sleep(float(os.environ.get("STUB_DELAY", "0")))
         request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
         # A request that offers no tools is a plain question, such as a compaction summary: answer in text.
         call = decide(request.get("messages", [])) if request.get("tools") else None

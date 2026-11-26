@@ -50,8 +50,11 @@ struct RunFeed {
             case AgentEvent::Kind::ActivityStarted: running = label_of(event.activity.tool) + " " + event.activity.subject; live.clear(); break;
             case AgentEvent::Kind::ActivityFinished: finished.push_back(event.activity); running.clear(); break;
             case AgentEvent::Kind::Status: note = event.text; break;
+            case AgentEvent::Kind::FollowUp: started.push_back(event.text); live.clear(); break;
         }
     }
+    /// Follow-ups that have begun since the last look, so the terminal can say so.
+    std::vector<std::string> started;
     /// Called on the engine thread; blocks until the terminal loop has asked the user.
     bool ask(const ApprovalRequest& request) {
         std::unique_lock<std::mutex> guard(lock);
@@ -224,17 +227,26 @@ private:
         term::raw(true);
         int frame = 0;
         bool stopping = false;
+        // What the user types while Mason works: Enter queues it for after this request; a leading ! steers instead.
+        std::string typed;
         while (true) {
             std::vector<Activity> finished;
+            std::vector<std::string> begun;
             const ApprovalRequest* asking = nullptr;
             bool done;
             {
                 std::lock_guard<std::mutex> guard(feed.lock);
                 finished.swap(feed.finished);
+                begun.swap(feed.started);
                 if (feed.asking && !feed.answer) asking = feed.asking;
                 done = feed.done;
             }
             for (const Activity& activity : finished) show(activity);
+            for (const std::string& text : begun) {
+                term::set_status("");
+                term::line();
+                term::line(paint(term::accent, "  ▸ ") + term::clip(replace_all(text, "\n", " "), std::max(20, term::width() - 8)));
+            }
             if (done) break;
             if (asking) {
                 term::set_status("");
@@ -244,13 +256,44 @@ private:
                 continue;
             }
             const int pressed = term::key();
-            if (pressed == 3 || (pressed == 27 && term::was_escape_alone())) cancel->store(true);
+            if (pressed == 3 || (pressed == 27 && term::was_escape_alone())) {
+                cancel->store(true);
+            } else if (!term::interactive || pressed < 0) {
+            } else if (pressed == 13 || pressed == 10) {
+                const std::string line = trim(typed);
+                typed.clear();
+                if (!line.empty()) {
+                    const bool steer = line.front() == '!';
+                    const std::string text = trim(steer ? line.substr(1) : line);
+                    term::set_status("");
+                    try {
+                        agent.send_while_running(text, steer);
+                        term::line(paint(term::dim, steer ? "  ↪ steering: " : "  ＋ queued: ") + term::clip(text, std::max(20, term::width() - 18)));
+                    } catch (const std::exception& error) {
+                        term::line(paint(term::yellow, std::string("  ") + error.what()));
+                    }
+                }
+            } else if (pressed == 127 || pressed == 8) {
+                // Remove one whole character, which may be several bytes.
+                while (!typed.empty()) {
+                    const unsigned char last = static_cast<unsigned char>(typed.back());
+                    typed.pop_back();
+                    if ((last & 0xC0) != 0x80) break;
+                }
+            } else if (pressed >= 32) {
+                typed += static_cast<char>(pressed);
+            }
             if (cancel->load() && !stopping) { stopping = true; term::line(paint(term::dim, "  Stopping…")); }
             const std::string doing = feed.doing();
             const int room = std::max(20, term::width() - 36);
             const long seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count();
-            term::set_status(std::string("  ") + kSpinner[frame++ % 10] + " " + (static_cast<int>(utf8_length(doing)) > room ? "…" + utf8_suffix(doing, static_cast<size_t>(room - 1)) : doing) +
-                             "  ·  " + std::to_string(seconds) + "s  ·  Esc to stop");
+            if (typed.empty()) {
+                term::set_status(std::string("  ") + kSpinner[frame++ % 10] + " " + (static_cast<int>(utf8_length(doing)) > room ? "…" + utf8_suffix(doing, static_cast<size_t>(room - 1)) : doing) +
+                                 "  ·  " + std::to_string(seconds) + "s  ·  Esc to stop · type to queue");
+            } else {
+                term::set_status(std::string("  ") + kSpinner[frame++ % 10] + " " + paint(term::dim, "Enter queues · start with ! to steer  › ") +
+                                 utf8_suffix(typed, static_cast<size_t>(std::max(10, term::width() - 50))));
+            }
         }
         worker.join();
         g_running_cancel = nullptr;
@@ -302,6 +345,7 @@ private:
         else std::snprintf(elapsed, sizeof elapsed, "%.1f min", seconds / 60);
         std::string facts = std::to_string(steps) + " tool call" + (steps == 1 ? "" : "s") + "  ·  " + elapsed;
         if (session_.prompt_tokens > 0) facts += "  ·  " + std::to_string(session_.prompt_tokens) + " tokens of context";
+        if (!session_.pending_input.empty()) facts += "  ·  " + std::to_string(session_.pending_input.size()) + " queued, /queue runs them";
         term::line("  " + state + paint(term::dim, "  ·  " + facts));
         if (!session_.detail.empty()) term::line("  " + paint(term::dim, session_.detail));
     }
@@ -433,6 +477,11 @@ private:
         if (name == "/compact") { compact(); return true; }
         if (name == "/agent" || name == "/agents") { agent(rest); return true; }
         if (name == "/commands") { commands(); return true; }
+        if (name == "/queue") {
+            if (session_.pending_input.empty()) term::line(paint(term::dim, "  Nothing is queued. While Mason works, type a message and press Enter to queue it, or start it with ! to steer."));
+            else send("/queue");
+            return true;
+        }
         if (name == "/mcp") { mcp_command(rest); return true; }
         if (name == "/model") { choose_model(rest); return true; }
         if (name == "/models") { models(rest); return true; }
@@ -451,6 +500,7 @@ private:
             {"/diff [path]", "Show what this session changed"},
             {"/undo · /redo", "Put back, or reapply, everything the latest request changed"},
             {"/compact", "Replace the conversation so far with a summary to free context"},
+            {"/queue", "Run the messages you queued, after a stop or a failure"},
             {"/agent [name|none]", "List your custom agents, or use one for this session"},
             {"/commands", "List your custom slash commands"},
             {"/mcp", "List your MCP servers and the tools Mason may call"},
@@ -472,7 +522,8 @@ private:
         term::line();
         for (const auto& [name, text] : rows) term::line("  " + paint(term::accent, term::pad(name, 36)) + " " + paint(term::dim, text));
         term::line();
-        term::line(paint(term::dim, "  While Mason works: Esc or Ctrl+C stops the run. End a line with \\ to continue on the next line."));
+        term::line(paint(term::dim, "  While Mason works: Esc or Ctrl+C stops the run. Type a message and press Enter to queue it for afterwards,"));
+        term::line(paint(term::dim, "  or start it with ! to interrupt and steer. End a line with \\ to continue on the next line."));
     }
 
     void compact() {

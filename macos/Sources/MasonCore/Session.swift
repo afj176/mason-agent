@@ -64,6 +64,15 @@ public struct FileChange: Codable, Equatable {
     public var byCommand: Bool? = nil
 }
 
+/// A message sent while a request was running. A steering message interrupts the request and is handled next;
+/// a queued one waits until the request completes.
+public struct FollowUp: Codable, Equatable, Identifiable {
+    public var id = UUID()
+    public var text: String
+    public var steer: Bool
+    public init(text: String, steer: Bool) { self.text = text; self.steer = steer }
+}
+
 public struct Turn: Codable, Equatable, Identifiable {
     public var id = UUID()
     public var request: String
@@ -95,6 +104,8 @@ public struct Session: Codable, Identifiable {
     /// Messages a compaction replaced with a summary, oldest first.
     public var archived: [ChatMessage]?
     public var compactions: Int?
+    /// Follow-ups waiting their turn, oldest first. "/queue" resumes them after a stop.
+    public var pendingInput: [FollowUp]?
     public init(workspace: String) { self.workspace = workspace }
 }
 

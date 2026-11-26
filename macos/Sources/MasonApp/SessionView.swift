@@ -278,8 +278,20 @@ struct Composer: View {
                 .help("What Mason may do without asking. Auto runs commands in the macOS sandbox, limited to this project, with network access off.")
                 Spacer()
                 if model.running {
+                    if model.waitingFollowUps > 0 { Text("\(model.waitingFollowUps) waiting").font(.caption).foregroundStyle(.secondary) }
+                    let empty = model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    Button { model.followUp(steer: true) } label: { Label("Steer", systemImage: "arrow.uturn.right") }
+                        .disabled(empty || model.approval != nil)
+                        .help("Interrupt what Mason is doing and handle this message next")
+                    Button { model.followUp(steer: false) } label: { Label("Queue", systemImage: "text.badge.plus") }
+                        .disabled(empty || model.approval != nil)
+                        .help("Handle this message after the current request completes (⌘Return)")
                     Button(role: .cancel) { model.stop() } label: { Label("Stop", systemImage: "stop.fill") }
                 } else {
+                    if let waiting = session.pendingInput, !waiting.isEmpty {
+                        Button { model.runQueued() } label: { Label("Run \(waiting.count) Queued", systemImage: "play") }
+                            .help("Run the messages that were waiting when the last request stopped")
+                    }
                     Button { model.send() } label: { Label("Send", systemImage: "arrow.up.circle.fill") }
                         .buttonStyle(.borderedProminent)
                         .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

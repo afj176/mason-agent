@@ -85,7 +85,8 @@ private:
     Gtk::Box approval_slot_{Gtk::Orientation::VERTICAL, 0};
     Gtk::TextView draft_;
     Gtk::DropDown permission_;
-    Gtk::Button send_{"Send"}, stop_{"Stop"};
+    Gtk::Button send_{"Send"}, stop_{"Stop"}, queue_{"Queue"}, steer_{"Steer"}, run_queued_;
+    Gtk::Label waiting_;
     Gtk::Button model_button_;
     Gtk::ToggleButton changes_toggle_;
     Gtk::Box changes_{Gtk::Orientation::VERTICAL, 12};

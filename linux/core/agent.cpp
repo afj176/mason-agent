@@ -1,7 +1,9 @@
 #include "agent.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <set>
+#include <thread>
 
 namespace mason {
 
@@ -129,7 +131,96 @@ std::vector<ToolSpec> Agent::offered_tools() const {
     return offered;
 }
 
+void Agent::send_while_running(const std::string& text, bool steer) {
+    const std::string trimmed = trim(text);
+    if (trimmed.empty() || utf8_length(trimmed) > 16000) throw Error("Write a message of 1–16,000 characters.");
+    std::lock_guard<std::mutex> guard(inbox_lock_);
+    if (!accepting_) throw Error("No request is running in this session.");
+    if (inbox_.size() >= kFollowUpLimit) throw Error("At most " + std::to_string(kFollowUpLimit) + " messages can wait at once.");
+    FollowUp message;
+    message.text = trimmed;
+    message.steer = steer;
+    inbox_.push_back(std::move(message));
+    if (steer && turn_cancel_) turn_cancel_->store(true);
+}
+
+namespace {
+/// The follow-up handled next: a steering message first, else the oldest queued one.
+const FollowUp* next_follow_up(const std::vector<FollowUp>& pending) {
+    for (const FollowUp& item : pending) {
+        if (item.steer) return &item;
+    }
+    return pending.empty() ? nullptr : &pending.front();
+}
+}  // namespace
+
 void Agent::run(Session& session, const std::string& request, const CancelToken& cancel) {
+    std::string input = request;
+    if (to_lower(trim(request)) == "/queue") {
+        const FollowUp* next = next_follow_up(session.pending_input);
+        if (!next) {
+            session.state = "Failed";
+            session.detail = "No messages are queued.";
+            return;
+        }
+        input = next->text;
+        const std::string id = next->id;
+        session.pending_input.erase(std::remove_if(session.pending_input.begin(), session.pending_input.end(), [&](const FollowUp& item) { return item.id == id; }), session.pending_input.end());
+    }
+    {
+        std::lock_guard<std::mutex> guard(inbox_lock_);
+        accepting_ = true;
+    }
+    while (true) {
+        // Each request has its own stop signal: steering sets it, and so does the caller's stop.
+        const CancelToken turn = make_cancel();
+        {
+            std::lock_guard<std::mutex> guard(inbox_lock_);
+            turn_cancel_ = turn;
+            // A steering message that arrived between requests interrupts this one at once.
+            for (const FollowUp& item : inbox_) {
+                if (item.steer) turn->store(true);
+            }
+        }
+        std::atomic<bool> finished{false};
+        std::thread relay([&] {
+            while (!finished.load()) {
+                if (is_cancelled(cancel)) { turn->store(true); break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            }
+        });
+        run_turn(session, input, turn);
+        finished.store(true);
+        relay.join();
+
+        const bool stopping = is_cancelled(cancel);
+        bool continuing = false, steering = false;
+        std::vector<FollowUp> arrived;
+        {
+            std::lock_guard<std::mutex> guard(inbox_lock_);
+            turn_cancel_.reset();
+            arrived.swap(inbox_);
+            session.pending_input.insert(session.pending_input.end(), arrived.begin(), arrived.end());
+            if (session.pending_input.size() > kFollowUpLimit) session.pending_input.erase(session.pending_input.begin(), session.pending_input.end() - static_cast<std::ptrdiff_t>(kFollowUpLimit));
+            const FollowUp* next = stopping ? nullptr : next_follow_up(session.pending_input);
+            continuing = next && (next->steer || session.state == "Completed");
+            if (continuing) {
+                input = next->text;
+                steering = next->steer;
+                const std::string id = next->id;
+                session.pending_input.erase(std::remove_if(session.pending_input.begin(), session.pending_input.end(), [&](const FollowUp& item) { return item.id == id; }), session.pending_input.end());
+            } else {
+                accepting_ = false;
+            }
+        }
+        if (!arrived.empty() || continuing) store_.save(session);
+        if (!continuing) return;
+        emit_({AgentEvent::Kind::FollowUp, input, {}, std::make_shared<const Session>(session)});
+        emit_({AgentEvent::Kind::Status, steering ? "Steering" : "Starting the queued message", {}});
+    }
+}
+
+void Agent::run_turn(Session& session, const std::string& request, const CancelToken& cancel) {
     const std::string input = trim(request);
     if (input.empty() || utf8_length(input) > 16000) {
         session.state = "Failed";

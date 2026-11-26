@@ -142,7 +142,8 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     auto keys = Gtk::EventControllerKey::create();
     keys->signal_key_pressed().connect([this](guint key, guint, Gdk::ModifierType state) {
         if ((key == GDK_KEY_Return || key == GDK_KEY_KP_Enter) && (state & Gdk::ModifierType::CONTROL_MASK) == Gdk::ModifierType::CONTROL_MASK) {
-            send_.activate();
+            if (controller_.running) queue_.activate();
+            else send_.activate();
             return true;
         }
         return false;
@@ -172,11 +173,30 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     });
     stop_.add_css_class("destructive-action");
     stop_.signal_clicked().connect([this] { controller_.stop(); });
+    // While a request runs, the request box sends follow-ups: queued for afterwards, or steering it now.
+    auto follow_up = [this](bool steer) {
+        const std::string text = draft_.get_buffer()->get_text();
+        if (trim(text).empty() || !controller_.running) return;
+        draft_.get_buffer()->set_text("");
+        controller_.follow_up(text, steer);
+    };
+    queue_.set_tooltip_text("Handle this message after the current request completes (Ctrl+Enter)");
+    queue_.signal_clicked().connect([follow_up] { follow_up(false); });
+    steer_.set_tooltip_text("Interrupt what Mason is doing and handle this message next");
+    steer_.signal_clicked().connect([follow_up] { follow_up(true); });
+    run_queued_.set_tooltip_text("Run the messages that were waiting when the last request stopped");
+    run_queued_.signal_clicked().connect([this] { controller_.run_queued(); });
+    waiting_.add_css_class("dim-label");
+    waiting_.add_css_class("caption");
     auto* controls = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     auto* spacer = Gtk::make_managed<Gtk::Box>();
     spacer->set_hexpand(true);
     controls->append(permission_);
     controls->append(*spacer);
+    controls->append(waiting_);
+    controls->append(steer_);
+    controls->append(queue_);
+    controls->append(run_queued_);
     controls->append(stop_);
     controls->append(send_);
     auto* composer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
@@ -614,9 +634,20 @@ void MainWindow::refresh_composer() {
     if (session) permission_.set_selected(session->ask_only ? 0 : static_cast<guint>(session->permission));
     updating_ = was_updating;
     permission_.set_sensitive(!controller_.running);
+    const bool has_text = !trim(draft_.get_buffer()->get_text()).empty();
+    const bool can_follow_up = has_text && !controller_.approval;
     stop_.set_visible(controller_.running);
     send_.set_visible(!controller_.running);
-    send_.set_sensitive(!trim(draft_.get_buffer()->get_text()).empty());
+    send_.set_sensitive(has_text);
+    queue_.set_visible(controller_.running);
+    steer_.set_visible(controller_.running);
+    queue_.set_sensitive(can_follow_up);
+    steer_.set_sensitive(can_follow_up);
+    waiting_.set_visible(controller_.running && controller_.waiting_follow_ups > 0);
+    waiting_.set_text(std::to_string(controller_.waiting_follow_ups) + " waiting");
+    const size_t queued = session ? session->pending_input.size() : 0;
+    run_queued_.set_visible(!controller_.running && queued > 0);
+    run_queued_.set_label("Run " + std::to_string(queued) + " Queued");
 }
 
 void MainWindow::refresh_changes() {

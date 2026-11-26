@@ -9,8 +9,13 @@ final class ScriptedModel: ChatModel {
     var window: Int?
     init(_ replies: [ModelReply]) { self.replies = replies }
     func contextWindow() async -> Int? { window }
+    /// Called at the start of each request, with its number, so a test can act while the "model" is busy.
+    var onRequest: ((Int) -> Void)?
+    var delay: UInt64 = 0
     func complete(messages: [ChatMessage], tools: [ToolSpec], onText: @escaping (String) -> Void) async throws -> ModelReply {
         seen.append(messages)
+        onRequest?(seen.count)
+        if delay > 0 { try await Task.sleep(nanoseconds: delay) }
         guard !replies.isEmpty else { throw MasonError("The script ran out of replies.") }
         let reply = replies.removeFirst()
         if !reply.text.isEmpty { onText(reply.text) }
@@ -271,6 +276,55 @@ final class MasonCoreTests: XCTestCase {
         let sent = try XCTUnwrap(model.seen.first?.last?.content)
         XCTAssertTrue(sent.contains("Never guess.") && sent.contains("Review calc.py for bugs."))
         XCTAssertEqual(session.turns.last?.request, "/review calc.py bugs", "the session shows what was typed")
+    }
+
+    // MARK: queue and steer
+
+    func testAQueuedMessageRunsAfterTheRequestCompletes() async throws {
+        var (store, session) = try session(.readOnly)
+        let model = ScriptedModel([ModelReply(text: "One."), ModelReply(text: "Two.")])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        model.onRequest = { number in if number == 1 { try? agent.sendWhileRunning("second question", steer: false) } }
+        await agent.run(&session, request: "first question")
+        XCTAssertEqual(session.turns.map(\.request), ["first question", "second question"])
+        XCTAssertEqual(session.turns.map(\.answer), ["One.", "Two."])
+        XCTAssertNil(session.pendingInput)
+        XCTAssertThrowsError(try agent.sendWhileRunning("too late", steer: false), "nothing is running any more")
+    }
+
+    func testAQueuedMessageWaitsAfterAFailureAndQueueResumesIt() async throws {
+        var (store, session) = try session(.readOnly)
+        let failing = ScriptedModel([])
+        let agent = Agent(store: store, model: failing, approve: { _ in true }, emit: { _ in })
+        failing.onRequest = { _ in try? agent.sendWhileRunning("do this next", steer: false) }
+        await agent.run(&session, request: "first question")
+        XCTAssertEqual(session.state, "Failed")
+        XCTAssertEqual(session.pendingInput?.map(\.text), ["do this next"], "a queued message does not run after a failure")
+        XCTAssertEqual(try SessionStore(home: home).sessions[0].pendingInput?.count, 1, "and it is saved")
+
+        await Agent(store: store, model: ScriptedModel([ModelReply(text: "Done next.")]), approve: { _ in true }, emit: { _ in }).run(&session, request: "/queue")
+        XCTAssertEqual(session.turns.last?.request, "do this next")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertNil(session.pendingInput)
+        await Agent(store: store, model: ScriptedModel([]), approve: { _ in true }, emit: { _ in }).run(&session, request: "/queue")
+        XCTAssertEqual(session.detail, "No messages are queued.")
+    }
+
+    func testSteeringInterruptsTheRequestAndIsHandledNext() async throws {
+        var (store, session) = try session(.readOnly)
+        // The first request is interrupted while the model is still working, so it never takes a reply from the script.
+        let model = ScriptedModel([ModelReply(text: "Steered answer.")])
+        model.delay = 300_000_000
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        model.onRequest = { number in if number == 1 { try? agent.sendWhileRunning("actually, do this instead", steer: true) } }
+        let started = Date()
+        await agent.run(&session, request: "long task")
+        XCTAssertEqual(session.turns.map(\.request), ["long task", "actually, do this instead"])
+        XCTAssertEqual(session.turns[0].answer, "", "the interrupted request has no answer")
+        XCTAssertEqual(session.turns[1].answer, "Steered answer.")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(model.seen[1].filter { $0.role == "user" }.count, 2, "the model sees both requests in order")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
     }
 
     // MARK: MCP servers

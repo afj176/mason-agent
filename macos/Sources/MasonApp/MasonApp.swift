@@ -31,7 +31,8 @@ struct MasonAgentApp: App {
                 Divider()
             }
             CommandMenu("Agent") {
-                Button("Send") { model.sendCurrent() }.keyboardShortcut(.return, modifiers: .command).disabled(model.pane == .chat ? model.chatRunning : model.running)
+                Button("Send") { model.sendCurrent() }.keyboardShortcut(.return, modifiers: .command).disabled(model.pane == .chat && model.chatRunning)
+                Button("Steer") { model.followUp(steer: true) }.keyboardShortcut(.return, modifiers: [.command, .shift]).disabled(model.pane != .code || !model.running)
                 Button("Stop") { model.stopCurrent() }.keyboardShortcut(".", modifiers: .command).disabled(model.pane == .chat ? !model.chatRunning : !model.running)
                 Divider()
                 Picker("Permission", selection: Binding(get: { model.session?.permission ?? .reviewEdits }, set: { model.setPermission($0) })) {

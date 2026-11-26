@@ -74,6 +74,10 @@ json to_json(const Session& session) {
                    {"turns", turns}, {"promptTokens", session.prompt_tokens}, {"pendingNote", session.pending_note}};
     if (!session.agent.empty()) result["agent"] = session.agent;
     if (session.compactions > 0) result["compactions"] = session.compactions;
+    if (!session.pending_input.empty()) {
+        result["pendingInput"] = json::array();
+        for (const FollowUp& item : session.pending_input) result["pendingInput"].push_back({{"id", item.id}, {"text", item.text}, {"steer", item.steer}});
+    }
     if (!session.archived.empty()) {
         result["archived"] = json::array();
         for (const ChatMessage& message : session.archived) result["archived"].push_back(message_json(message));
@@ -95,6 +99,9 @@ Session session_from_json(const json& value) {
     session.pending_note = value.value("pendingNote", "");
     session.agent = value.value("agent", "");
     session.compactions = value.value("compactions", 0);
+    for (const json& item : value.value("pendingInput", json::array())) {
+        if (item.is_object()) session.pending_input.push_back({item.value("id", new_id()), item.value("text", ""), item.value("steer", false)});
+    }
     for (const json& item : value.value("messages", json::array())) session.messages.push_back(message_from_json(item));
     for (const json& item : value.value("archived", json::array())) session.archived.push_back(message_from_json(item));
     for (const json& item : value.value("activities", json::array())) {
