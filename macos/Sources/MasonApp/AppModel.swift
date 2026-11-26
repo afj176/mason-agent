@@ -63,7 +63,7 @@ final class AppModel: ObservableObject {
     @Published var runtimePath: String? = LlamaRuntime.find()
     @Published var suggestions: [(repository: HubRepository, build: HubBuild)] = []
 
-    private var store: SessionStore?
+    var store: SessionStore?
     private var runTask: Task<Void, Never>?
     private var modelTask: Task<Void, Never>?
 
