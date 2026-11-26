@@ -42,6 +42,15 @@ jobs:
     needs: [packages]
     runs-on: windows-latest
     steps:
+      # The coding checks start sandboxed programs from deep test folders; Mason shortens those paths with 8.3 names,
+      # which the runner's work drive does not create. Turn them on before the checkout makes any folders.
+      - name: Short names on the work drive
+        shell: pwsh
+        run: |
+          $drive = $env:GITHUB_WORKSPACE.Substring(0, 2)
+          fsutil 8dot3name set $drive 0
+          fsutil 8dot3name query $drive
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
