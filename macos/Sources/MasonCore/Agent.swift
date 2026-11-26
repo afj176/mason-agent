@@ -68,6 +68,10 @@ public final class Agent {
     private var accepting = false
     private var activeTurn: Task<Session, Never>?
     public static let followUpLimit = 16
+    /// Background programs started during the current request.
+    let jobs = Jobs()
+    /// The tools offered for the request in progress, for the message about an unknown tool.
+    var offeredNames: [String] = []
 
     public init(store: SessionStore, model: ChatModel, approve: @escaping (ApprovalRequest) async -> Bool, emit: @escaping (AgentEvent) -> Void) {
         self.store = store; self.model = model; self.approve = approve; self.emit = emit
@@ -170,7 +174,11 @@ public final class Agent {
             }
             if session.pendingInput?.isEmpty == true { session.pendingInput = nil }
             if !arrived.isEmpty || continuing { try? store.save(session) }
-            if !continuing { return }
+            if !continuing {
+                // Whatever the request left running in the background ends with it.
+                await jobs.stopAll()
+                return
+            }
             emit(.followUp(session, input))
             emit(.status(next?.steer == true ? "Steering" : "Starting the queued message"))
         }
@@ -193,9 +201,13 @@ public final class Agent {
         }
         if session.title == "New session" { session.title = input.count > 55 ? String(input.prefix(55)) + "…" : input }
         let servers = Mcp.enabled(home: home)
-        let offered = servers.isEmpty ? Agent.tools : Agent.tools + Agent.mcpTools
-        if session.messages.first?.role == "system" { session.messages[0].content = Agent.systemPrompt(session, servers: servers) }
-        else { session.messages.insert(ChatMessage(role: "system", content: Agent.systemPrompt(session, servers: servers)), at: 0) }
+        let offered = Agent.tools + Agent.extraTools(session: session, workspace: workspace) + (servers.isEmpty ? [] : Agent.mcpTools)
+        offeredNames = offered.map(\.name)
+        var prompt = Agent.systemPrompt(session, servers: servers)
+        let skills = Skills.list(workspace)
+        if !skills.isEmpty { prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + skills.map { "\($0.name) (\($0.description))" }.joined(separator: "; ") + "." }
+        if session.messages.first?.role == "system" { session.messages[0].content = prompt }
+        else { session.messages.insert(ChatMessage(role: "system", content: prompt), at: 0) }
         // A note from undo or redo travels with the next request, so the conversation keeps alternating user and assistant turns.
         // A custom command is expanded and the selected agent's instructions are added; the session still shows what was typed.
         let prepared = Customization.prepare(home: home, session: session, input: input)
@@ -261,7 +273,8 @@ public final class Agent {
     func perform(_ call: ToolCall, in workspace: Workspace, session: inout Session) async -> String {
         let arguments = (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any]) ?? [:]
         func text(_ key: String) -> String? { arguments[key] as? String }
-        let subject = text("command") ?? text("path") ?? text("query") ?? [text("server"), text("tool") ?? text("uri")].compactMap { $0 }.joined(separator: "/")
+        let named = text("command") ?? text("path") ?? text("query") ?? text("name") ?? text("id") ?? text("question")
+        let subject = named ?? [text("server"), text("tool") ?? text("uri")].compactMap { $0 }.joined(separator: "/")
         var activity = Activity(tool: call.name, subject: subject, state: .running, result: "")
         session.activities.append(activity)
         emit(.activityStarted(activity))
@@ -361,7 +374,8 @@ public final class Agent {
                 let operation: Mcp.Operation = call.name == "mcp_read" ? .read(uri: uri ?? "") : call.name == "mcp_resources" ? .resources(all: false) : .tools(all: false)
                 return finish(.completed, try await Mcp.request(server, operation))
             default:
-                throw MasonError("Unknown tool \(call.name). Use one of: " + offeredTools().map(\.name).joined(separator: ", "))
+                if let (state, result) = try await performExtra(call, arguments: arguments, in: workspace, session: &session) { return finish(state, result) }
+                throw MasonError("Unknown tool \(call.name). Use one of: " + offeredNames.joined(separator: ", "))
             }
         } catch is CancellationError {
             return finish(.failed, "Stopped by the user.")

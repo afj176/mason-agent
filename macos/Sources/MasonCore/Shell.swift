@@ -91,7 +91,8 @@ public enum Shell {
         wait $child
         """
 
-    public static func run(_ command: String, in workspace: Workspace, sandboxed: Bool, timeout: TimeInterval = 120) async throws -> CommandResult {
+    /// `onOutput` receives the command's output as it arrives, for a caller that wants to show it before the command ends.
+    public static func run(_ command: String, in workspace: Workspace, sandboxed: Bool, timeout: TimeInterval = 120, onOutput: (@Sendable (Data) -> Void)? = nil) async throws -> CommandResult {
         guard !command.isEmpty, command.utf8.count <= 8000, !command.contains("\0") else { throw MasonError("Use a shell command of 1–8,000 characters.") }
         if sandboxed, !sandboxAvailable { throw MasonError("The macOS sandbox is unavailable, so Auto cannot run commands here. No unrestricted fallback was run.") }
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mason-" + UUID().uuidString)
@@ -121,7 +122,7 @@ public enum Shell {
         let collected = OutputBuffer(limit: outputLimit)
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
-            if !data.isEmpty { collected.append(data) }
+            if !data.isEmpty { collected.append(data); onOutput?(data) }
         }
         let finished = AsyncSignal()
         process.terminationHandler = { _ in finished.fire() }
@@ -136,7 +137,7 @@ public enum Shell {
         deadline.cancel()
         stop()
         pipe.fileHandleForReading.readabilityHandler = nil
-        if let rest = try? pipe.fileHandleForReading.readToEnd(), !rest.isEmpty { collected.append(rest) }
+        if let rest = try? pipe.fileHandleForReading.readToEnd(), !rest.isEmpty { collected.append(rest); onOutput?(rest) }
         try Task.checkCancellation()
         let (text, truncated, timedOut) = collected.snapshot()
         return CommandResult(exitCode: process.terminationStatus, output: text + (truncated ? "\n[Output clipped at 64 KiB.]" : "") + (timedOut ? "\n[Stopped: the command exceeded \(Int(timeout)) seconds.]" : ""),

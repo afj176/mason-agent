@@ -91,7 +91,8 @@ std::vector<std::string> sandbox_arguments(const std::string& workspace) {
     return arguments;
 }
 
-CommandResult run(const std::string& command, const Workspace& workspace, bool sandboxed, double timeout_seconds, const CancelToken& cancel) {
+CommandResult run(const std::string& command, const Workspace& workspace, bool sandboxed, double timeout_seconds, const CancelToken& cancel,
+                  const std::function<void(const char*, size_t)>& on_output) {
     if (command.empty() || command.size() > 8000 || command.find('\0') != std::string::npos) throw Error("Use a shell command of 1–8,000 characters.");
     std::vector<std::string> arguments;
     if (sandboxed) {
@@ -137,6 +138,7 @@ CommandResult run(const std::string& command, const Workspace& workspace, bool s
         while (true) {
             const ssize_t count = read(pipe_ends[0], buffer, sizeof buffer);
             if (count <= 0) break;
+            if (on_output) on_output(buffer, static_cast<size_t>(count));
             const size_t room = kOutputLimit - std::min(kOutputLimit, result.output.size());
             if (static_cast<size_t>(count) > room) result.truncated = true;
             result.output.append(buffer, std::min(static_cast<size_t>(count), room));
@@ -152,7 +154,8 @@ CommandResult run(const std::string& command, const Workspace& workspace, bool s
                 const ssize_t count = read(pipe_ends[0], buffer, sizeof buffer);
                 if (count == 0) break;
                 if (count < 0) { if (errno == EAGAIN) { usleep(10'000); continue; } break; }
-                const size_t room = kOutputLimit - std::min(kOutputLimit, result.output.size());
+                if (on_output) on_output(buffer, static_cast<size_t>(count));
+            const size_t room = kOutputLimit - std::min(kOutputLimit, result.output.size());
                 if (static_cast<size_t>(count) > room) result.truncated = true;
                 result.output.append(buffer, std::min(static_cast<size_t>(count), room));
             }
