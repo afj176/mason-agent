@@ -804,6 +804,16 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(prompts[1].contains("did not work"), "a failed step is reported back")
         XCTAssertTrue(prompts[3].contains("1 tea in the cart for Ada."), "the model sees what its steps really led to")
 
+        // An independent check reads the page afresh, with a picture, and an answer it does not support is not counted as done.
+        let claims = ScriptedModel([ModelReply(text: #"{"action": "done", "answer": "The cart holds three teas."}"#)])
+        let judge = ScriptedModel([ModelReply(text: #"{"supported": false, "reason": "The page says nothing is in the cart."}"#)])
+        let checked = try await Browse.run(workspace, page: "index.html", task: "Say what is in the cart.", model: claims, reviewer: judge, picture: true)
+        XCTAssertFalse(checked.completed)
+        XCTAssertEqual(checked.supported, false)
+        XCTAssertEqual(checked.review, "The page says nothing is in the cart.")
+        XCTAssertTrue(judge.seen.first?.last?.content.contains("Nothing in the cart.") ?? false, "the checker is shown the page as it is")
+        XCTAssertTrue(judge.seen.first?.last?.images?.first?.hasPrefix("data:image/png;base64,iVBOR") ?? false, "and a picture of it")
+
         var lines: [String] = []
         let code = await ScriptOperations.run(["browse", "--workspace", folder.path, "--prompt", "Is there a checkout?"], model: ScriptedModel([ModelReply(text: #"{"action": "fail", "answer": "There is no checkout on this page."}"#)])) { lines.append($0) }
         XCTAssertEqual(code, 2)

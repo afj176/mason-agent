@@ -1444,6 +1444,14 @@ static void test_extra_tools() {
             CHECK(model.seen[1].back().content.find("did not work") != std::string::npos);  // a failed step is reported back
             CHECK(model.seen[3].back().content.find("1 tea in the cart for Ada.") != std::string::npos);  // the model sees what its steps really led to
         }
+        // An independent check reads the page afresh, with a picture, and an answer it does not support is not counted as done.
+        ScriptedModel claims, judge;
+        claims.replies = {say(R"J({"action": "done", "answer": "The cart holds three teas."})J")};
+        judge.replies = {say(R"J({"supported": false, "reason": "The page says nothing is in the cart."})J")};
+        const BrowseOutcome checked = browse::run(workspace, "index.html", "Say what is in the cart.", claims, 12, nullptr, &judge, true);
+        CHECK(!checked.completed && checked.reviewed && !checked.supported && checked.review == "The page says nothing is in the cart.");
+        CHECK(judge.seen.size() == 1 && judge.seen[0].back().content.find("Nothing in the cart.") != std::string::npos);  // the checker is shown the page as it is
+        CHECK(judge.seen.size() == 1 && judge.seen[0].back().images.size() == 1 && judge.seen[0].back().images[0].rfind("data:image/png;base64,iVBOR", 0) == 0);  // and a picture of it
         std::vector<json> events;
         ScriptedModel refusing;
         refusing.replies = {say(R"J({"action": "fail", "answer": "There is no checkout on this page."})J")};

@@ -187,8 +187,18 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
                 owned = std::make_unique<OpenAIClient>(ModelEndpoint{validated_endpoint(get("endpoint")), get("model"), ""});
                 model = owned.get();
             }
-            const BrowseOutcome outcome = browse::run(workspace, values.count("page") ? values["page"] : "index.html", prompt, *model, 12, cancel);
-            event("browser.result", {{"completed", outcome.completed}, {"answer", outcome.answer}, {"steps", outcome.steps}, {"errors", outcome.errors}, {"turns", outcome.turns}});
+            // The answer is checked independently: by the visual model with a picture of the page when one is chosen,
+            // otherwise by the reviewer (or the same model) from what the page shows.
+            const ModelRoles chosen_roles = roles::load(data_home());
+            std::unique_ptr<OpenAIClient> visual;
+            if (owned && chosen_roles.visual) visual = std::make_unique<OpenAIClient>(*chosen_roles.visual);
+            const std::unique_ptr<RoleModel> reviewer = roles::reviewer(*model, &workspace, data_home());
+            ChatModel* checker = values.count("no-review") ? nullptr : visual ? static_cast<ChatModel*>(visual.get()) : reviewer.get();
+            const BrowseOutcome outcome = browse::run(workspace, values.count("page") ? values["page"] : "index.html", prompt, *model, 12, cancel, checker, visual != nullptr);
+            json data = {{"completed", outcome.completed}, {"answer", outcome.answer}, {"steps", outcome.steps}, {"errors", outcome.errors}, {"turns", outcome.turns}};
+            if (outcome.reviewed) data["supported"] = outcome.supported;
+            if (!outcome.review.empty()) data["review"] = outcome.review;
+            event("browser.result", data);
             return outcome.completed ? 0 : 2;
         }
         if (operation == "serve") {

@@ -314,7 +314,8 @@ public enum BrowserCheck {
 
     /// Loads `page` (a project-relative path to an HTML file) and carries out `steps`, each a dictionary such as
     /// {"action": "click", "text": "Add"} or {"action": "fill", "selector": "#name", "value": "Ada"}.
-    public static func run(_ workspace: Workspace, page: String, steps: [[String: Any]] = [], backend: Backend? = nil) async throws -> Result {
+    /// `screenshot`, when given, is where a picture of the page is written after the steps.
+    public static func run(_ workspace: Workspace, page: String, steps: [[String: Any]] = [], backend: Backend? = nil, screenshot: URL? = nil) async throws -> Result {
         guard let browser = findBrowser() else {
             throw MasonError("No Chrome, Chromium, Edge or Brave was found on this computer, so the page cannot be checked. Install one, or set MASON_BROWSER to its program.")
         }
@@ -332,7 +333,7 @@ public enum BrowserCheck {
         // No profile, no extensions, no first-run screens, and no name resolves except this computer.
         let arguments = ["--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-sync", "--mute-audio",
                          "--user-data-dir=" + profile.path, "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1", "--window-size=1320,900",
-                         "--virtual-time-budget=20000", "--dump-dom", address]
+                         "--virtual-time-budget=20000"] + (screenshot.map { ["--screenshot=" + $0.path] } ?? []) + ["--dump-dom", address]
         let process = Process()
         process.executableURL = URL(fileURLWithPath: browser)
         process.arguments = arguments

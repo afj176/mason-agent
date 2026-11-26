@@ -173,8 +173,16 @@ public enum ScriptOperations {
                 let prompt = try values["prompt-file"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? get("prompt")
                 let chosen: ChatModel
                 if let model { chosen = model } else { chosen = try OpenAIClient(ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model"))) }
-                let outcome = try await Browse.run(workspace, page: values["page"] ?? "index.html", task: prompt, model: chosen)
-                event("browser.result", ["completed": outcome.completed, "answer": outcome.answer, "steps": outcome.steps, "errors": outcome.errors, "turns": outcome.turns])
+                // The answer is checked independently: by the visual model with a picture of the page when one is chosen,
+                // otherwise by the reviewer (or the same model) from what the page shows.
+                let roles = Roles.load()
+                let visual = model == nil ? roles.visual.flatMap { try? OpenAIClient($0) } : nil
+                let checker: ChatModel? = values["no-review"] != nil ? nil : (visual ?? Roles.reviewer(main: chosen, workspace: workspace))
+                let outcome = try await Browse.run(workspace, page: values["page"] ?? "index.html", task: prompt, model: chosen, reviewer: checker, picture: visual != nil)
+                var data: [String: Any] = ["completed": outcome.completed, "answer": outcome.answer, "steps": outcome.steps, "errors": outcome.errors, "turns": outcome.turns]
+                if let supported = outcome.supported { data["supported"] = supported }
+                if !outcome.review.isEmpty { data["review"] = outcome.review }
+                event("browser.result", data)
                 return outcome.completed ? 0 : 2
 
             case "serve":
