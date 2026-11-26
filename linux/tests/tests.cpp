@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "agent.hpp"
+#include "navigation.hpp"
 #include "transfer.hpp"
 #include "acceptance.hpp"
 #include "browser.hpp"
@@ -908,7 +909,8 @@ static void test_extra_tools() {
         // check_page is offered wherever a browser is installed, which depends on the computer.
         std::vector<std::string> offered = names(reading);
         offered.erase(std::remove(offered.begin(), offered.end(), "check_page"), offered.end());
-        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"}));  // no editing, job or workflow tools
+        offered.erase(std::remove(offered.begin(), offered.end(), "inspect_symbol"), offered.end());
+        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "navigate_code", "read_skill"}));  // no editing, job or workflow tools
         box.write("mason.workflows.json", "{\"version\": 2}");
         CHECK_THROWS(workflows::load(workspace));
     }
@@ -1236,7 +1238,102 @@ struct FakeDesktop : DesktopAutomation {
         acted.push_back(operation + " " + control + " " + value);
         if (control == "c1") field = value; else saved = field;
     }
+    /// The window's picture changes whenever something is drawn on its canvas.
+    int strokes = 0;
+    std::optional<DesktopFrame> frame(const DesktopWindow&) override { return DesktopFrame{200, 100, "picture " + std::to_string(strokes)}; }
+    void pointer(const DesktopWindow&, const std::string& action, int x, int y, int end_x, int end_y) override {
+        const std::string at = std::to_string(x) + "," + std::to_string(y);
+        acted.push_back(action == "drag" ? "drag " + at + " to " + std::to_string(end_x) + "," + std::to_string(end_y) : "click " + at);
+        strokes++;
+    }
 };
+
+/// Answers about a picture from a script. `draws` makes the window change while the model is looking.
+struct ScriptedVision : DesktopVision {
+    std::deque<std::string> replies;
+    FakeDesktop* draws = nullptr;
+    PixelDecision see(const std::string&, const DesktopFrame& frame, const CancelToken&) override {
+        if (draws) draws->strokes++;
+        const std::string reply = replies.front();
+        replies.pop_front();
+        return desktop::parse_decision(reply, frame);
+    }
+};
+
+static void test_desktop_vision() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+    auto desktop = std::make_shared<FakeDesktop>();
+    session.desktop = desktop->window;
+    const DesktopFrame frame{200, 100, "x"};
+    using Names = std::vector<std::string>;
+
+    // The model's reply is read strictly: a point outside the picture is refused.
+    const PixelDecision read = desktop::parse_decision(R"(Sure: {"observation": "A red circle", "action": "click", "x": 40.4, "y": 20})", frame);
+    CHECK(read.action == "click" && read.x == 40 && read.y == 20 && read.observation == "A red circle");
+    CHECK_THROWS(desktop::parse_decision(R"({"action": "click", "x": 400, "y": 20, "observation": ""})", frame));
+    CHECK_THROWS(desktop::parse_decision(R"({"action": "drag", "x": 4, "y": 2, "endX": 4, "endY": 200, "observation": ""})", frame));
+    CHECK_THROWS(desktop::parse_decision(R"({"action": "type", "observation": ""})", frame));
+    CHECK_THROWS(desktop::parse_decision("I cannot see images.", frame));
+    CHECK(desktop::vision_prompt("Find the circle", frame).find("200 by 100 pixels") != std::string::npos);
+
+    // A picture is a real PNG: its signature, a header with the size, and the pixels stored whole.
+    const std::string png = desktop::encode_png(2, 1, std::string("\xff\x00\x00\x00\xff\x00", 6));
+    CHECK(png.substr(0, 8) == std::string("\x89PNG\r\n\x1a\n", 8) && png.substr(12, 4) == "IHDR" && png.substr(16, 8) == std::string("\0\0\0\x02\0\0\0\x01", 8));
+    CHECK(png.find(std::string("\x00\xff\x00\x00\x00\xff\x00", 7)) != std::string::npos && png.substr(png.size() - 8, 4) == "IEND");
+
+    const auto look = [](const char* task) { return call("desktop_visual", {{"task", task}}); };
+    auto vision = std::make_shared<ScriptedVision>();
+    vision->replies = {R"({"observation": "A chart with three bars", "action": "none"})", R"({"observation": "A canvas with a red circle at the left", "action": "click", "x": 40, "y": 20})",
+                       R"({"observation": "The circle", "action": "drag", "x": 40, "y": 20, "endX": 150, "endY": 60})", R"({"observation": "A Clear button", "action": "click", "x": 10, "y": 10})",
+                       R"({"observation": "The canvas", "action": "click", "x": 5, "y": 5})"};
+    ScriptedModel model;
+    model.replies = {look("What does the chart show?"), look("Click the red circle"), look("Drag the circle to the right"), look("Click Clear"), look("Click the corner"), say("Done.")};
+    Names asked;
+    std::deque<bool> answers = {true, true, false, true};
+    Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.title + " | " + split(request.detail, '\n').front()); const bool answer = answers.front(); answers.pop_front(); return answer; },
+                [](const AgentEvent&) {});
+    agent.set_desktop(desktop);
+    agent.set_vision(vision);
+    agent.run(session, "Use the drawing app");
+    Names states;
+    for (const Activity& activity : session.activities) states.push_back(activity.state);
+    CHECK(states == (Names{"completed", "completed", "completed", "denied", "completed"}));
+    CHECK(session.activities[0].result == "Seen in Notes — Shopping: A chart with three bars");  // looking needs no approval
+    // Every click and drag asks, even in Auto.
+    CHECK(asked == (Names{"Click at (40, 20) in Notes — Shopping | The vision model saw: A canvas with a red circle at the left", "Drag from (40, 20) to (150, 60) in Notes — Shopping | The vision model saw: The circle",
+                          "Click at (10, 10) in Notes — Shopping | The vision model saw: A Clear button", "Click at (5, 5) in Notes — Shopping | The vision model saw: The canvas"}));
+    CHECK(desktop->acted == (Names{"click 40,20", "drag 40,20 to 150,60", "click 5,5"}));  // the declined click was not made
+    CHECK(starts_with(session.activities[1].result, "Click at (40, 20) was made.") && session.activities[1].result.find("c2 · push button · Save") != std::string::npos);
+
+    // A window that changed between the look and the approval is left alone.
+    const Names before = desktop->acted;
+    auto shifting = std::make_shared<ScriptedVision>();
+    shifting->replies = {R"({"observation": "A button", "action": "click", "x": 1, "y": 1})"};
+    shifting->draws = desktop.get();
+    ScriptedModel second;
+    second.replies = {look("Click the button"), say("It changed.")};
+    Agent changed(store, second, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {});
+    changed.set_desktop(desktop);
+    changed.set_vision(shifting);
+    changed.run(session, "Again");
+    CHECK(session.activities.back().state == "failed" && session.activities.back().result.find("The window changed before the click could be made") != std::string::npos);
+    CHECK(desktop->acted == before);  // nothing was clicked
+
+    // A read-only session may look, and is told what was seen, but may not click.
+    session.permission = Permission::ReadOnly;
+    session.ask_only = true;
+    auto last = std::make_shared<ScriptedVision>();
+    last->replies = {R"({"observation": "A big button", "action": "click", "x": 3, "y": 3})"};
+    ScriptedModel third;
+    third.replies = {look("Click it"), say("Read-only.")};
+    Agent reading(store, third, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {});
+    reading.set_desktop(desktop);
+    reading.set_vision(last);
+    reading.run(session, "Look");
+    CHECK(session.activities.back().state == "failed" && session.activities.back().result.find("The model saw: A big button") != std::string::npos && desktop->acted == before);
+}
 
 static void test_desktop() {
     Sandbox box;
@@ -1255,7 +1352,7 @@ static void test_desktop() {
     CHECK(starts_with(desktop::command("", session, desktop), "1. Calculator\n2. Notes — Shopping\nAttach one with /window NUMBER."));
     CHECK_THROWS(desktop::command("9", session, desktop));
     CHECK(starts_with(desktop::command("2", session, desktop), "Attached Notes — Shopping."));
-    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe", "desktop_act"}) && Agent::desktop_tools(session, false).empty());
+    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe", "desktop_visual", "desktop_act"}) && Agent::desktop_tools(session, false).empty());
     desktop->trusted = false;
     CHECK_THROWS(desktop::command("", session, desktop));  // a missing service is said plainly
     desktop->trusted = true;
@@ -1284,7 +1381,7 @@ static void test_desktop() {
     // A read-only session may look but not touch.
     session.permission = Permission::ReadOnly;
     session.ask_only = true;
-    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe"}));
+    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe", "desktop_visual"}));
     CHECK(desktop::command("off", session, desktop) == "No window is attached to this session." && !session.desktop);
 }
 
@@ -1321,7 +1418,6 @@ document.getElementById('checkout').onclick = function () { var id = 'ORD-' + (N
     CHECK_THROWS(acceptance::parse(workspace, one("../x.html", R"({"Op": "text", "Target": "#x", "Value": "y"})")));  // the page must be in the project
     CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "hover", "Target": "#x"}, {"Op": "text", "Target": "#x", "Value": "y"})")));
     CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "money", "Target": "#x", "Value": "ten"})")));
-    CHECK_THROWS(acceptance::run(workspace, acceptance::parse(workspace, R"({"Version": 1, "Application": "store:application", "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]})")));
 
     // A review keeps only findings that quote the line they name.
     {
@@ -1419,6 +1515,104 @@ static void test_transfer() {
     CHECK(SessionStore(box.home).sessions().size() == 4);  // the original, two forks and the import
 }
 
+static void test_navigation() {
+    Sandbox box;
+    box.write("cart.py", "def total(items):\n    return sum(items)\n\n# total is used below\nprint(total([1, 2]))\nsubtotal = 3\n");
+    box.write("tests/test_cart.py", "from cart import total\n\ndef test_total():\n    assert total([1]) == 1\n");
+    box.write("sum.c", "int total(int a, int b) {\n    return a + b;\n}\n");
+    box.write("notes.txt", "total total total");
+    fs::remove(box.project / "calc.py");
+    const Workspace workspace(box.project.string());
+    const auto places = [](const NavigationResult& result) {
+        std::vector<std::string> found;
+        for (const NavigationHit& hit : result.hits) found.push_back(hit.path + ":" + std::to_string(hit.line));
+        return found;
+    };
+    using Names = std::vector<std::string>;
+    const NavigationResult definitions = navigation::query(workspace, ".", "total", "definitions");
+    CHECK(places(definitions) == (Names{"cart.py:1", "sum.c:1"}));  // a def and a C function, not the import or the call
+    CHECK(places(navigation::query(workspace, ".", "total", "references")) == (Names{"cart.py:5", "tests/test_cart.py:1", "tests/test_cart.py:4"}));  // whole words only, not the comment
+    CHECK(places(navigation::query(workspace, ".", "total", "tests")) == (Names{"tests/test_cart.py:1", "tests/test_cart.py:4"}));
+    CHECK(definitions.files == 3);  // only source files are read
+    CHECK_THROWS(navigation::query(workspace, ".", "a b", "definitions"));
+    CHECK_THROWS(navigation::query(workspace, ".", "total", "diagnostics"));
+    CHECK(navigation::report(definitions, "total", "definitions").find("cart.py:1  [definition candidate]  def total(items):") != std::string::npos);
+
+    // A stand-in for the helper: it answers with the position it was asked about and the files it was given.
+    const fs::path tools = box.base / "tools";
+    fs::create_directories(tools / "python" / "jedi");
+    std::ofstream(tools / "python-symbols.py") << "import json, sys\nr = json.load(sys.stdin)\nprint(json.dumps({'engine': 'stand-in', 'asked': [r['path'], r['line'], r['column'], r['mode']], 'files': sorted(r['files'])}))\n";
+    setenv("MASON_LANGUAGE_TOOLS", tools.c_str(), 1);
+    if (transformers::python().empty()) {
+        std::cout << "  (no python3 on this computer: the language service part was not run)\n";
+    } else {
+        CHECK(symbols::available());
+        CHECK(symbols::query(workspace, "cart.py", 5, 7, "definitions") == R"({"engine": "stand-in", "asked": ["cart.py", 5, 7, "definitions"], "files": ["cart.py", "tests/test_cart.py"]})");
+        CHECK_THROWS(symbols::query(workspace, "sum.c", 1, 1, "definitions"));  // only Python and JavaScript or TypeScript
+        CHECK_THROWS(symbols::query(workspace, "cart.py", 0, 1, "definitions"));
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::ReadOnly);
+        ScriptedModel model;
+        model.replies = {call("navigate_code", {{"path", "."}, {"symbol", "total"}, {"mode", "definitions"}}), call("inspect_symbol", {{"path", "cart.py"}, {"line", 5}, {"column", 7}, {"mode", "references"}}), say("Found.")};
+        Agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(session, "Where is total?");
+        CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && session.activities[1].state == "completed");
+        CHECK(session.activities[1].result.find("\"references\"") != std::string::npos);
+    }
+    unsetenv("MASON_LANGUAGE_TOOLS");
+}
+
+static void test_verification_app() {
+    // The checkout fixture the Windows tests use: a WSGI shop with an order database.
+    Sandbox box;
+    const fs::path fixture = fs::path(__FILE__).parent_path().parent_path().parent_path() / "windows" / "tests" / "fixtures" / "checkout";
+    fs::remove(box.project / "calc.py");
+    for (const char* name : {"index.html", "store.py", "mason.acceptance.json"}) fs::copy_file(fixture / name, box.project / name);
+    const Workspace workspace(box.project.string());
+    if (transformers::python().empty()) {
+        std::cout << "  (no python3 on this computer: the application was not run)\n";
+        return;
+    }
+    CHECK_THROWS(VerificationApp(workspace, "store; import os", false));  // only module:callable
+    fs::path copy;
+    {
+        VerificationApp app(workspace, "store:application", shell::sandbox_available());
+        copy = app.folder();
+        CHECK(starts_with(copy.filename().string(), "mason-verify-") && fs::exists(copy / "store.py"));
+        CHECK(!app.answer("GET", "/__mason/harness?page=x", {}, ""));  // the harness stays with the page server
+        const auto page = app.answer("GET", "/index.html", {}, "");
+        CHECK(page && page->status == 200 && page->body.find("window.__masonErrors") != std::string::npos && page->body.find("<li>Honey</li>") != std::string::npos);
+        const auto price = app.answer("GET", "/price?quantity=3", {}, "");
+        CHECK(price && price->body == R"({"total": 27.0})");
+        const auto missing = app.answer("GET", "/missing", {}, "");
+        CHECK(missing && missing->status == 404);
+        CHECK_THROWS(app.check("response_count", "POST /checkout", "1", ""));  // nothing was ordered yet
+        const auto order = app.answer("POST", "/checkout", {{"content-type", "application/json"}}, "{}");
+        const std::string id = order ? json::parse(order->body, nullptr, false).value("id", "") : "";
+        CHECK(starts_with(id, "ORD-"));
+        CHECK(app.check("response_count", "POST /checkout", "1", "") == "1 responses");
+        CHECK(app.check("response_same", "POST /checkout", "id", id) == "1 responses matched " + id);
+        CHECK_THROWS(app.check("response_same", "POST /checkout", "id", "ORD-other"));
+        CHECK(app.check("sqlite_count", "orders.sqlite#orders", "1", "") == "1 rows");
+        CHECK_THROWS(app.check("sqlite_count", "orders.sqlite#orders", "2", ""));
+        CHECK_THROWS(app.check("sqlite_count", "../x.sqlite#orders", "1", ""));
+    }
+    CHECK(!fs::exists(copy));                            // the copy and its database are thrown away
+    CHECK(!fs::exists(box.project / "orders.sqlite"));  // the project itself was never written to
+
+    if (browser::find().empty()) {
+        std::cout << "  (no browser on this computer: the checkout contract was not run)\n";
+        return;
+    }
+    const std::vector<AcceptanceResult> passed = acceptance::run(workspace, acceptance::read(workspace));
+    const bool all = std::all_of(passed.begin(), passed.end(), [](const AcceptanceResult& result) { return result.passed; });
+    CHECK(all);
+    if (!all) std::cerr << acceptance::receipt(passed) << "\n";
+    // An order that is shown but never saved must fail the scenario that reloads the order page.
+    box.write("store.py", replace_all(box.read("store.py"), "SAVE_ORDER = True", "SAVE_ORDER = False"));
+    const std::vector<AcceptanceResult> broken = acceptance::run(workspace, acceptance::read(workspace));
+    CHECK(!std::all_of(broken.begin(), broken.end(), [](const AcceptanceResult& result) { return result.passed; }));
+}
+
 static void test_verification() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
@@ -1509,7 +1703,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

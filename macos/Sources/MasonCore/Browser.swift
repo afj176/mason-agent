@@ -96,6 +96,11 @@ public enum BrowserCheck {
                   var op = s.op, target = String(s.target || ''), expected = String(s.value == null ? '' : s.value);
                   var nodes = function () { return target ? Array.prototype.slice.call(doc().querySelectorAll(target)).filter(function (e) { return e.getClientRects().length > 0; }) : []; };
                   r.action = op + (target ? ' ' + target : '');
+                  if (op === 'sqlite_count' || op === 'response_count' || op === 'response_same') {
+                    var told = await (await fetch('/__mason/assert?op=' + encodeURIComponent(op) + '&target=' + encodeURIComponent(target) + '&value=' + encodeURIComponent(expected) + '&captured=' + encodeURIComponent(captured || ''))).json();
+                    if (!told.ok) throw new Error(told.detail);
+                    r.ok = true; r.detail = told.detail;
+                  } else
                   if (op === 'reload') {
                     out.errors = out.errors.concat((f.contentWindow.__masonErrors || []).slice(0, 20));
                     await new Promise(function (done) { f.onload = done; f.contentWindow.location.reload(); });
@@ -184,16 +189,39 @@ public enum BrowserCheck {
         return (200, kind, data)
     }
 
+    /// Something that answers requests in place of the project's files: an application under test.
+    public struct BackendReply {
+        public var status: Int
+        public var contentType: String
+        public var headers: [(String, String)] = []
+        public var body: Data
+    }
+    public protocol Backend: AnyObject {
+        /// The reply, or nil to let the page server answer from the project's files and the harness.
+        func answer(method: String, target: String, headers: [String: String], body: Data) -> BackendReply?
+    }
+
+    /// A page with the error recorder added at the top, after the doctype when there is one.
+    static func withRecorder(_ html: String) -> String {
+        var page = html
+        if let doctype = page.range(of: "<!doctype[^>]*>", options: [.regularExpression, .caseInsensitive]) { page.insert(contentsOf: recorder, at: doctype.upperBound) }
+        else { page = recorder + page }
+        return page
+    }
+
     /// A server on 127.0.0.1 that answers GET requests for project files until it is stopped.
     final class Server: @unchecked Sendable {
         let port: Int
         private let listener: Int32
         private let workspace: Workspace
+        /// When set, it answers first; nil from it falls back to the project's files and the harness.
+        private let backend: Backend?
         private let stopped = NSLock()
         private var isStopped = false
 
-        init(workspace: Workspace) throws {
+        init(workspace: Workspace, backend: Backend? = nil) throws {
             self.workspace = workspace
+            self.backend = backend
             #if canImport(Darwin)
             let descriptor = socket(AF_INET, SOCK_STREAM, 0)
             #else
@@ -237,8 +265,29 @@ public enum BrowserCheck {
             let line = String(decoding: request, as: UTF8.self).split(separator: "\r\n", maxSplits: 1).first.map(String.init) ?? ""
             let parts = line.split(separator: " ")
             var (status, kind, body) = (405, "text/plain; charset=utf-8", Data("Only GET is served.".utf8))
-            if parts.count >= 2, parts[0] == "GET" || parts[0] == "HEAD" { (status, kind, body) = BrowserCheck.respond(to: String(parts[1]), workspace: workspace) }
-            let head = "HTTP/1.1 \(status) \(status == 200 ? "OK" : "Error")\r\nContent-Type: \(kind)\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
+            var extra = ""
+            var answered = false
+            if let backend, parts.count >= 2, let end = request.range(of: Data("\r\n\r\n".utf8)) {
+                // An application gets the whole request: its headers and, for a POST, its body.
+                var headers: [String: String] = [:]
+                for field in String(decoding: request[..<end.lowerBound], as: UTF8.self).components(separatedBy: "\r\n").dropFirst() {
+                    if let colon = field.firstIndex(of: ":") { headers[field[..<colon].lowercased()] = field[field.index(after: colon)...].trimmingCharacters(in: .whitespaces) }
+                }
+                var sent = Data(request[end.upperBound...])
+                let length = min(Int(headers["content-length"] ?? "") ?? 0, 128 * 1024)
+                while sent.count < length {
+                    let count = recv(client, &buffer, buffer.count, 0)
+                    if count <= 0 { break }
+                    sent.append(buffer, count: count)
+                }
+                if let reply = backend.answer(method: String(parts[0]), target: String(parts[1]), headers: headers, body: sent) {
+                    (status, kind, body) = (reply.status, reply.contentType, reply.body)
+                    extra = reply.headers.map { "\($0.0): \($0.1)\r\n" }.joined()
+                    answered = true
+                }
+            }
+            if !answered, parts.count >= 2, parts[0] == "GET" || parts[0] == "HEAD" { (status, kind, body) = BrowserCheck.respond(to: String(parts[1]), workspace: workspace) }
+            let head = "HTTP/1.1 \(status) \((200..<400).contains(status) ? "OK" : "Error")\r\nContent-Type: \(kind)\r\nContent-Length: \(body.count)\r\n\(extra)Cache-Control: no-store\r\nConnection: close\r\n\r\n"
             var reply = Data(head.utf8)
             if parts.first != "HEAD" { reply.append(body) }
             reply.withUnsafeBytes { bytes in
@@ -264,14 +313,15 @@ public enum BrowserCheck {
 
     /// Loads `page` (a project-relative path to an HTML file) and carries out `steps`, each a dictionary such as
     /// {"action": "click", "text": "Add"} or {"action": "fill", "selector": "#name", "value": "Ada"}.
-    public static func run(_ workspace: Workspace, page: String, steps: [[String: Any]] = []) async throws -> Result {
+    public static func run(_ workspace: Workspace, page: String, steps: [[String: Any]] = [], backend: Backend? = nil) async throws -> Result {
         guard let browser = findBrowser() else {
             throw MasonError("No Chrome, Chromium, Edge or Brave was found on this computer, so the page cannot be checked. Install one, or set MASON_BROWSER to its program.")
         }
-        guard workspace.exists(page), ["html", "htm"].contains((page as NSString).pathExtension.lowercased()) else { throw MasonError("\(page) is not an HTML file in the project.") }
+        // An application serves its own pages, so the page need not be a file.
+        guard backend != nil || (workspace.exists(page) && ["html", "htm"].contains((page as NSString).pathExtension.lowercased())) else { throw MasonError("\(page) is not an HTML file in the project.") }
         guard steps.count <= 40 else { throw MasonError("Use at most 40 steps.") }
         let encoded = try JSONSerialization.data(withJSONObject: steps).base64EncodedString()
-        let server = try Server(workspace: workspace)
+        let server = try Server(workspace: workspace, backend: backend)
         defer { server.stop() }
         let profile = FileManager.default.temporaryDirectory.appendingPathComponent("mason-browser-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: profile) }

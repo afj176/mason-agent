@@ -60,6 +60,8 @@ public:
     static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false);
     /// What reads and operates the attached window. Left unset, it is this computer's accessibility interface.
     void set_desktop(std::shared_ptr<DesktopAutomation> automation) { desktop_ = std::move(automation); }
+    /// What looks at a picture of the attached window. Left unset, it is the running model, which must take images.
+    void set_vision(std::shared_ptr<DesktopVision> vision) { vision_ = std::move(vision); }
     /// The window tools a session is offered: none without an attached window, and no acting in a read-only session.
     static std::vector<ToolSpec> desktop_tools(const Session& session, bool available);
     /// What searches code by meaning. Left unset, it is the embeddings server saved in settings, if there is one.
@@ -119,10 +121,11 @@ private:
     std::optional<std::string> pending_question_;
     std::shared_ptr<SemanticModels> semantic_;
     std::shared_ptr<DesktopAutomation> desktop_;
+    std::shared_ptr<DesktopVision> vision_;
     std::shared_ptr<DesktopAutomation> desktop_automation() const { return desktop_ ? desktop_ : desktop::system(); }
     /// The controls from the latest observation of the attached window; an action must name one of them.
     std::vector<DesktopControl> last_observation_;
-    std::optional<std::pair<std::string, std::string>> perform_desktop(const ToolCall& call, const json& arguments, Session& session);
+    std::optional<std::pair<std::string, std::string>> perform_desktop(const ToolCall& call, const json& arguments, Session& session, const CancelToken& cancel);
     std::shared_ptr<SemanticModels> semantic_models() const;
     /// Follow-ups that arrive while a request runs. Everything here is read and changed under the lock.
     std::mutex inbox_lock_;

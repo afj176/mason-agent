@@ -6,10 +6,13 @@ a request mentioning "shell" runs one command, any other request writes hello.tx
 tool result has come back it answers "Done." A request without tools gets a one-line summary. Usage: stub-model.py PORT
 
 A request "In the window, press NAME" reads the attached window and presses the control with that name.
+A request "In the window, look and TASK" looks at a picture of the window; the stand-in then answers as the vision
+model too, with the picture's size and, when STUB_CLICK is "x,y", a click at that point.
 
 A request that mentions "importer" plays a short, realistic session instead (read a file, fix it, add a test, run
 the tests, explain), for screenshots of the apps. It expects the project made by Scripts/demo-project.sh.
 """
+import base64
 import json
 import os
 import re
@@ -58,6 +61,9 @@ def decide(messages):
     if last_user >= 0 and "importer" in str(messages[last_user].get("content", "")).rsplit("\n\n", 1)[-1].lower():
         return DEMO_STEPS[done] if done < len(DEMO_STEPS) else DEMO_ANSWER
     typed = str(messages[last_user].get("content", "")).rsplit("\n\n", 1)[-1].strip() if last_user >= 0 else ""
+    if typed.lower().startswith("in the window, look and "):
+        # Asks the vision model (this same stand-in) about a picture of the attached window.
+        return ("desktop_visual", {"task": typed[len("in the window, look and "):]}) if not done else "Looked."
     if typed.lower().startswith("in the window, press "):
         # Reads the attached window, then presses the control with that name.
         wanted = typed[len("in the window, press "):].strip(" .")
@@ -93,6 +99,24 @@ class Handler(BaseHTTPRequestHandler):
         # STUB_DELAY (seconds) makes the model slow, for checks that act while it is still working.
         time.sleep(float(os.environ.get("STUB_DELAY", "0")))
         request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))) or b"{}")
+        # A picture: answer without streaming, with the picture's size read from the PNG itself and, when
+        # STUB_CLICK is "x,y", a click there.
+        last = (request.get("messages") or [{}])[-1].get("content")
+        if isinstance(last, list):
+            url = next((part["image_url"]["url"] for part in last if part.get("type") == "image_url"), "")
+            png = base64.b64decode(url.split(",", 1)[-1])
+            width, height = int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+            decision = {"observation": "A %d by %d picture, %s" % (width, height, "a real PNG" if png[:8] == bytes([137, 80, 78, 71, 13, 10, 26, 10]) else "not a PNG"), "action": "none"}
+            if os.environ.get("STUB_CLICK"):
+                x, y = os.environ["STUB_CLICK"].split(",")
+                decision.update(action="click", x=int(x), y=int(y))
+            body = json.dumps({"choices": [{"index": 0, "message": {"role": "assistant", "content": json.dumps(decision)}, "finish_reason": "stop"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         # A request that offers no tools is a plain question, such as a compaction summary: answer in text.
         call = decide(request.get("messages", [])) if request.get("tools") else None
         if isinstance(call, str):

@@ -25,6 +25,11 @@ cp Packaging/mascot.png Packaging/welcome.png "$APP/Contents/Resources/"
 mkdir -p "$APP/Contents/Resources/transformers"
 cp ../windows/scripts/Serve-Transformers.py ../windows/scripts/ModelAdapters.json "$APP/Contents/Resources/transformers/"
 
+# Jedi and the TypeScript compiler for inspect_symbol, the same pinned versions the Windows app ships.
+mkdir -p "$APP/Contents/Resources/language-tools"
+cp ../windows/scripts/language-tools/python-symbols.py ../windows/scripts/language-tools/typescript-symbols.cjs "$APP/Contents/Resources/language-tools/"
+../linux/packaging/prepare-language-tools.sh "$APP/Contents/Resources/language-tools"
+
 # App icon from the brand kit's largest square mark.
 ICON_SOURCE="../brand/logo-kit/favicon/android-chrome-512x512.png"
 ICONSET="$(mktemp -d)/AppIcon.iconset" && mkdir -p "$ICONSET"

@@ -47,6 +47,14 @@ grep -q "notes.py · updated line 1 — Rename x." "$WORK/cli3.txt" || { echo "T
 grep -q "managed text adapter" "$WORK/cli3.txt" || { echo "The Transformers check did not run the program that ships in the app."; exit 1; }
 rm -f notes.py
 
+echo "--- the language tools in the app ---"
+[ -f "/Applications/Mason Agent.app/Contents/Resources/language-tools/python/jedi/__init__.py" ] || { echo "Jedi is not in the app."; exit 1; }
+[ -f "/Applications/Mason Agent.app/Contents/Resources/language-tools/typescript/typescript.js" ] || { echo "The TypeScript compiler is not in the app."; exit 1; }
+printf 'def total(items):\n    return sum(items)\n\nprint(total([1]))\n' > "$WORK/cart.py"
+printf '{"path": "cart.py", "line": 4, "column": 7, "mode": "definitions", "partial": false, "files": {"cart.py": %s}}' "$(python3 -c 'import json,sys; print(json.dumps(open(sys.argv[1]).read()))' "$WORK/cart.py")" \
+  | python3 -I -B "/Applications/Mason Agent.app/Contents/Resources/language-tools/python-symbols.py" | tee "$WORK/jedi.txt"
+grep -q '"line": 1' "$WORK/jedi.txt" || { echo "Jedi did not find where total is defined."; exit 1; }
+
 echo "--- command line, windows of other apps (reported only: it needs the Accessibility permission) ---"
 printf '/window\n/exit\n' | mason --resume --auto --endpoint "http://127.0.0.1:$PORT" --model stub 2>&1 | tail -8 || true
 

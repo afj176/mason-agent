@@ -360,8 +360,8 @@ final class MasonCoreTests: XCTestCase {
         var reading = try store.create(workspace: session.workspace, permission: .readOnly)
         reading.askOnly = true
         // check_page is offered wherever a browser is installed, which depends on the computer.
-        let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name).filter { $0 != "check_page" }
-        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"], "a read-only session gets no editing, job or workflow tools")
+        let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name).filter { $0 != "check_page" && $0 != "inspect_symbol" }
+        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "navigate_code", "read_skill"], "a read-only session gets no editing, job or workflow tools")
         try "{\"version\": 2}".write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try ProjectWorkflows.load(workspace))
     }
@@ -1192,6 +1192,24 @@ final class FakeDesktop: DesktopAutomation {
         acted.append("\(operation) \(control) \(value)")
         if control == "c1" { field = value } else { saved = field }
     }
+    /// The window's picture changes whenever something is drawn on its canvas.
+    var strokes = 0
+    func frame(_ window: DesktopWindow) async throws -> DesktopFrame? { DesktopFrame(width: 200, height: 100, png: Data("picture \(strokes)".utf8)) }
+    func pointer(_ window: DesktopWindow, action: String, x: Int, y: Int, endX: Int, endY: Int) async throws {
+        acted.append(action == "drag" ? "drag \(x),\(y) to \(endX),\(endY)" : "click \(x),\(y)")
+        strokes += 1
+    }
+}
+
+/// Answers about a picture from a script, and records what it was asked.
+final class ScriptedVision: DesktopVision {
+    var replies: [String]
+    var asked: [String] = []
+    init(_ replies: [String]) { self.replies = replies }
+    func see(task: String, frame: DesktopFrame) async throws -> PixelDecision {
+        asked.append(Vision.prompt(task, frame: frame))
+        return try Vision.parse(replies.removeFirst(), frame: frame)
+    }
 }
 
 final class DesktopTests: XCTestCase {
@@ -1208,7 +1226,7 @@ final class DesktopTests: XCTestCase {
         XCTAssertTrue(try Desktop.command("", session: &session, desktop: desktop).hasPrefix("1. Calculator\n2. Notes — Shopping\nAttach one with /window NUMBER."))
         XCTAssertThrowsError(try Desktop.command("9", session: &session, desktop: desktop))
         XCTAssertTrue(try Desktop.command("2", session: &session, desktop: desktop).hasPrefix("Attached Notes — Shopping."))
-        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe", "desktop_act"])
+        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe", "desktop_visual", "desktop_act"])
         XCTAssertTrue(Agent.desktopTools(for: session, available: false).isEmpty)
         desktop.trusted = false
         XCTAssertThrowsError(try Desktop.command("", session: &session, desktop: desktop), "a missing permission is said plainly")
@@ -1229,7 +1247,7 @@ final class DesktopTests: XCTestCase {
 
         // A read-only session may look but not touch.
         session.permission = .readOnly; session.askOnly = true
-        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe"])
+        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe", "desktop_visual"])
         XCTAssertEqual(try Desktop.command("off", session: &session, desktop: desktop), "No window is attached to this session.")
         XCTAssertNil(session.desktop)
     }
@@ -1311,11 +1329,56 @@ final class AcceptanceTests: XCTestCase {
         XCTAssertTrue(model.seen[0][0].content.contains("acceptance scenarios in mason.acceptance.json"))
     }
 
-    func testAnApplicationContractSaysWhereItRuns() async throws {
-        let workspace = try Workspace(path: folder.path)
-        let source = ##"{"Version": 1, "Application": "store:application", "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]}"##
-        do { _ = try await Acceptance.run(workspace, try Acceptance.parse(workspace, source)); XCTFail("expected an error") }
-        catch { XCTAssertTrue("\(error)".contains("on Windows only for now"), "\(error)") }
+    /// The checkout fixture the Windows tests use: a WSGI shop with an order database.
+    func checkout() throws -> Workspace {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("windows/tests/fixtures/checkout")
+        let project = folder.appendingPathComponent("checkout")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        for name in ["index.html", "store.py", "mason.acceptance.json"] { try FileManager.default.copyItem(at: fixture.appendingPathComponent(name), to: project.appendingPathComponent(name)) }
+        return try Workspace(path: project.path)
+    }
+
+    func testAnApplicationRunsInAThrowawayCopyAndIsAskedThroughFiles() async throws {
+        guard VerificationApp.python() != nil else { throw XCTSkip("No python3 on this computer.") }
+        let workspace = try checkout()
+        await XCTAssertThrowsErrorAsync(try await VerificationApp.start(workspace, entry: "store; import os", sandboxed: false), "only module:callable")
+        let app = try await VerificationApp.start(workspace, entry: "store:application", sandboxed: Shell.sandboxAvailable)
+        let copy = app.folder
+        XCTAssertTrue(copy.lastPathComponent.hasPrefix("mason-verify-") && FileManager.default.fileExists(atPath: copy.appendingPathComponent("store.py").path))
+        XCTAssertNil(app.answer(method: "GET", target: "/__mason/harness?page=x", headers: [:], body: Data()), "the harness stays with the page server")
+
+        let page = try XCTUnwrap(app.answer(method: "GET", target: "/index.html", headers: [:], body: Data()))
+        XCTAssertEqual(page.status, 200)
+        XCTAssertTrue(String(decoding: page.body, as: UTF8.self).contains("window.__masonErrors") && String(decoding: page.body, as: UTF8.self).contains("<li>Honey</li>"), "the application's page, with the error recorder added")
+        let price = try XCTUnwrap(app.answer(method: "GET", target: "/price?quantity=3", headers: [:], body: Data()))
+        XCTAssertEqual(String(decoding: price.body, as: UTF8.self), #"{"total": 27.0}"#)
+        XCTAssertEqual(app.answer(method: "GET", target: "/missing", headers: [:], body: Data())?.status, 404)
+
+        XCTAssertThrowsError(try app.check(op: "response_count", target: "POST /checkout", value: "1", captured: ""), "nothing was ordered yet")
+        let order = try XCTUnwrap(app.answer(method: "POST", target: "/checkout", headers: ["content-type": "application/json"], body: Data("{}".utf8)))
+        let id = try XCTUnwrap((try JSONSerialization.jsonObject(with: order.body) as? [String: String])?["id"])
+        XCTAssertEqual(try app.check(op: "response_count", target: "POST /checkout", value: "1", captured: ""), "1 responses")
+        XCTAssertEqual(try app.check(op: "response_same", target: "POST /checkout", value: "id", captured: id), "1 responses matched \(id)")
+        XCTAssertThrowsError(try app.check(op: "response_same", target: "POST /checkout", value: "id", captured: "ORD-other"))
+        XCTAssertEqual(try app.check(op: "sqlite_count", target: "orders.sqlite#orders", value: "1", captured: ""), "1 rows")
+        XCTAssertThrowsError(try app.check(op: "sqlite_count", target: "orders.sqlite#orders", value: "2", captured: ""))
+        XCTAssertThrowsError(try app.check(op: "sqlite_count", target: "../x.sqlite#orders", value: "1", captured: ""))
+
+        await app.stop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path), "the copy and its database are thrown away")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.root.appendingPathComponent("orders.sqlite").path), "the project itself was never written to")
+    }
+
+    func testTheCheckoutContractPassesInARealBrowserAndCatchesABrokenShop() async throws {
+        guard BrowserCheck.findBrowser() != nil, VerificationApp.python() != nil else { throw XCTSkip("Needs a Chromium-family browser and python3.") }
+        let workspace = try checkout()
+        let passed = try await Acceptance.run(workspace, try Acceptance.read(workspace))
+        XCTAssertTrue(passed.allSatisfy(\.passed), Acceptance.receipt(passed))
+        // An order that is shown but never saved must fail the scenario that reloads the order page.
+        let store = workspace.root.appendingPathComponent("store.py")
+        try String(contentsOf: store, encoding: .utf8).replacingOccurrences(of: "SAVE_ORDER = True", with: "SAVE_ORDER = False").write(to: store, atomically: true, encoding: .utf8)
+        let broken = try await Acceptance.run(workspace, try Acceptance.read(workspace))
+        XCTAssertFalse(broken.allSatisfy(\.passed), Acceptance.receipt(broken))
     }
 
     func testAReviewKeepsOnlyFindingsThatQuoteTheLineTheyName() async throws {
@@ -1400,6 +1463,119 @@ final class SessionTransferTests: XCTestCase {
         XCTAssertTrue(imported.title.hasSuffix(" · imported") && imported.detail.hasPrefix("Imported a sanitized session."))
         XCTAssertThrowsError(try SessionTransfer.importSession(Data("{}".utf8), store: store, workspace: workspace.root.path))
         XCTAssertEqual(try SessionStore(home: base.appendingPathComponent("home")).sessions.count, 4, "the original, two forks and the import")
+    }
+}
+
+final class NavigationTests: XCTestCase {
+    func testNamesAreFoundAsLabelledTextCandidatesAndThroughALanguageService() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-nav-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("tests"), withIntermediateDirectories: true)
+        try "def total(items):\n    return sum(items)\n\n# total is used below\nprint(total([1, 2]))\nsubtotal = 3\n".write(to: folder.appendingPathComponent("cart.py"), atomically: true, encoding: .utf8)
+        try "from cart import total\n\ndef test_total():\n    assert total([1]) == 1\n".write(to: folder.appendingPathComponent("tests/test_cart.py"), atomically: true, encoding: .utf8)
+        try "int total(int a, int b) {\n    return a + b;\n}\n".write(to: folder.appendingPathComponent("sum.c"), atomically: true, encoding: .utf8)
+        try "total total total".write(to: folder.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+
+        let definitions = try CodeNavigation.query(workspace, directory: ".", symbol: "total", mode: "definitions")
+        XCTAssertEqual(definitions.hits.map { "\($0.path):\($0.line)" }, ["cart.py:1", "sum.c:1"], "a def and a C function, not the import or the call")
+        let references = try CodeNavigation.query(workspace, directory: ".", symbol: "total", mode: "references")
+        XCTAssertEqual(references.hits.map { "\($0.path):\($0.line)" }, ["cart.py:5", "tests/test_cart.py:1", "tests/test_cart.py:4"], "whole words only, and not the comment")
+        XCTAssertEqual(try CodeNavigation.query(workspace, directory: ".", symbol: "total", mode: "tests").hits.map(\.path), ["tests/test_cart.py", "tests/test_cart.py"])
+        XCTAssertEqual(definitions.files, 3, "only source files are read")
+        XCTAssertThrowsError(try CodeNavigation.query(workspace, directory: ".", symbol: "a b", mode: "definitions"))
+        XCTAssertThrowsError(try CodeNavigation.query(workspace, directory: ".", symbol: "total", mode: "diagnostics"))
+        XCTAssertTrue(CodeNavigation.report(definitions, symbol: "total", mode: "definitions").contains("cart.py:1  [definition candidate]  def total(items):"))
+
+        // A stand-in for the helper: it answers with the position it was asked about and how many files it was given.
+        let tools = base.appendingPathComponent("tools")
+        try FileManager.default.createDirectory(at: tools.appendingPathComponent("python/jedi"), withIntermediateDirectories: true)
+        try "import json, sys\nr = json.load(sys.stdin)\nprint(json.dumps({'engine': 'stand-in', 'asked': [r['path'], r['line'], r['column'], r['mode']], 'files': sorted(r['files'])}))\n"
+            .write(to: tools.appendingPathComponent("python-symbols.py"), atomically: true, encoding: .utf8)
+        setenv("MASON_LANGUAGE_TOOLS", tools.path, 1)
+        defer { unsetenv("MASON_LANGUAGE_TOOLS") }
+        guard TransformersRuntime.python() != nil else { throw XCTSkip("No python3 on this computer.") }
+        XCTAssertTrue(SymbolService.available)
+        let answer = try await SymbolService.query(workspace, path: "cart.py", line: 5, column: 7, mode: "definitions")
+        XCTAssertEqual(answer, #"{"engine": "stand-in", "asked": ["cart.py", 5, 7, "definitions"], "files": ["cart.py", "tests/test_cart.py"]}"#)
+        await XCTAssertThrowsErrorAsync(try await SymbolService.query(workspace, path: "sum.c", line: 1, column: 1, mode: "definitions"), "only Python and JavaScript or TypeScript")
+        await XCTAssertThrowsErrorAsync(try await SymbolService.query(workspace, path: "cart.py", line: 0, column: 1, mode: "definitions"))
+
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .readOnly)
+        XCTAssertTrue(Agent.extraTools(session: session, workspace: workspace).map(\.name).contains("inspect_symbol"))
+        let model = ScriptedModel([call("navigate_code", ["path": ".", "symbol": "total", "mode": "definitions"]), call("inspect_symbol", ["path": "cart.py", "line": "5", "column": "7", "mode": "references"]), ModelReply(text: "Found.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Where is total?")
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed])
+        XCTAssertTrue(session.activities[1].result.contains(#""references""#))
+    }
+}
+
+final class DesktopVisionTests: XCTestCase {
+    func testAWindowIsOperatedBySightOnlyWithApprovalAndWhileItLooksTheSame() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-sight-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base.appendingPathComponent("project"), withIntermediateDirectories: true)
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: try Workspace(path: base.appendingPathComponent("project").path).root.path, permission: .auto)
+        let desktop = FakeDesktop()
+        session.desktop = desktop.window
+        let frame = DesktopFrame(width: 200, height: 100, png: Data("x".utf8))
+
+        // The model's reply is read strictly: a point outside the picture is refused.
+        XCTAssertEqual(try Vision.parse(#"Sure: {"observation": "A red circle", "action": "click", "x": 40.4, "y": 20}"#, frame: frame), PixelDecision(action: "click", x: 40, y: 20, observation: "A red circle"))
+        XCTAssertThrowsError(try Vision.parse(#"{"action": "click", "x": 400, "y": 20, "observation": ""}"#, frame: frame))
+        XCTAssertThrowsError(try Vision.parse(#"{"action": "drag", "x": 4, "y": 2, "endX": 4, "endY": 200, "observation": ""}"#, frame: frame))
+        XCTAssertThrowsError(try Vision.parse(#"{"action": "type", "observation": ""}"#, frame: frame))
+        XCTAssertThrowsError(try Vision.parse("I cannot see images.", frame: frame))
+        XCTAssertTrue(Vision.prompt("Find the circle", frame: frame).contains("200 by 100 pixels"))
+
+        func look(_ task: String) -> ModelReply { call("desktop_visual", ["task": task]) }
+        let vision = ScriptedVision([#"{"observation": "A chart with three bars", "action": "none"}"#,
+                                     #"{"observation": "A canvas with a red circle at the left", "action": "click", "x": 40, "y": 20}"#,
+                                     #"{"observation": "The circle", "action": "drag", "x": 40, "y": 20, "endX": 150, "endY": 60}"#,
+                                     #"{"observation": "A Clear button", "action": "click", "x": 10, "y": 10}"#,
+                                     #"{"observation": "The canvas", "action": "click", "x": 5, "y": 5}"#])
+        let model = ScriptedModel([look("What does the chart show?"), look("Click the red circle"), look("Drag the circle to the right"), look("Click Clear"), look("Click the corner"), ModelReply(text: "Done.")])
+        var asked: [String] = [], answers = [true, true, false, true]
+        let agent = Agent(store: store, model: model, approve: { asked.append($0.title + " | " + $0.detail.split(separator: "\n")[0]); return answers.removeFirst() }, emit: { _ in })
+        agent.desktop = desktop
+        agent.vision = vision
+        await agent.run(&session, request: "Use the drawing app")
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .completed, .denied, .completed])
+        XCTAssertEqual(session.activities[0].result, "Seen in Notes — Shopping: A chart with three bars", "looking needs no approval")
+        XCTAssertEqual(asked, ["Click at (40, 20) in Notes — Shopping | The vision model saw: A canvas with a red circle at the left",
+                               "Drag from (40, 20) to (150, 60) in Notes — Shopping | The vision model saw: The circle",
+                               "Click at (10, 10) in Notes — Shopping | The vision model saw: A Clear button",
+                               "Click at (5, 5) in Notes — Shopping | The vision model saw: The canvas"], "every click and drag asks, even in Auto")
+        XCTAssertEqual(desktop.acted, ["click 40,20", "drag 40,20 to 150,60", "click 5,5"], "the declined click was not made")
+        XCTAssertTrue(session.activities[1].result.hasPrefix("Click at (40, 20) was made.") && session.activities[1].result.contains("c2 · button · Save"), "an action returns the controls as they are afterwards")
+
+        // A window that changed between the look and the approval is left alone.
+        final class Shifting: DesktopVision {
+            let desktop: FakeDesktop
+            init(_ desktop: FakeDesktop) { self.desktop = desktop }
+            func see(task: String, frame: DesktopFrame) async throws -> PixelDecision { desktop.strokes += 1; return PixelDecision(action: "click", x: 1, y: 1, observation: "A button") }
+        }
+        let before = desktop.acted
+        let second = Agent(store: store, model: ScriptedModel([look("Click the button"), ModelReply(text: "It changed.")]), approve: { _ in true }, emit: { _ in })
+        second.desktop = desktop
+        second.vision = Shifting(desktop)
+        await second.run(&session, request: "Again")
+        XCTAssertEqual(session.activities.last?.state, .failed)
+        XCTAssertTrue(session.activities.last?.result.contains("The window changed before the click could be made") ?? false)
+        XCTAssertEqual(desktop.acted, before, "nothing was clicked")
+
+        // A read-only session may look, and is told what was seen, but may not click.
+        session.permission = .readOnly; session.askOnly = true
+        let third = Agent(store: store, model: ScriptedModel([look("Click it"), ModelReply(text: "Read-only.")]), approve: { _ in true }, emit: { _ in })
+        third.desktop = desktop
+        third.vision = ScriptedVision([#"{"observation": "A big button", "action": "click", "x": 3, "y": 3}"#])
+        await third.run(&session, request: "Look")
+        XCTAssertEqual(session.activities.last?.state, .failed)
+        XCTAssertTrue(session.activities.last?.result.contains("The model saw: A big button") ?? false)
+        XCTAssertEqual(desktop.acted, before)
     }
 }
 
