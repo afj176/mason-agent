@@ -102,7 +102,7 @@ public static class ModelMemory
         int capacity=contextDeclared?(int)Math.Clamp(Convert.ToDouble(declared),64,int.MaxValue):4096;
         // The weights are still known when the context cost is not, so a lower bound can be compared with free memory.
         ModelMemoryProfile Unavailable(string why)=>Unknown(why) with {MaxContext=capacity,ContextDeclared=contextDeclared,WeightBytes=SplitBytes(file,input.Length)};
-        if(architecture is not ("qwen35" or "llama" or "qwen2" or "qwen3" or "gemma" or "gemma2" or "gemma3" or "phi2" or "phi3" or "mistral" or "gptneox" or "gpt2"))return Unavailable("This GGUF architecture needs a runtime-specific memory estimate.");
+        if(architecture is not ("qwen35" or "llama" or "qwen2" or "qwen3" or "gemma" or "gemma2" or "gemma3" or "phi2" or "phi3" or "mistral" or "gptneox" or "gpt2" or "qwen2moe" or "qwen3moe"))return Unavailable("This GGUF architecture needs a runtime-specific memory estimate.");
         double N(string key,double fallback=0){var v=values.GetValueOrDefault(architecture+"."+key);if(v==null || v is string or bool)return fallback;var n=Convert.ToDouble(v);return double.IsFinite(n)&&n>0?n:fallback;}
         var layers=N("block_count");var heads=N("attention.head_count");var kvHeads=N("attention.head_count_kv",heads);var hidden=N("embedding_length");
         var keyLength=N("attention.key_length",heads>0?hidden/heads:0);var valueLength=N("attention.value_length",keyLength);
