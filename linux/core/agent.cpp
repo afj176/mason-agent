@@ -357,6 +357,63 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
     return std::nullopt;
 }
 
+std::optional<std::string> Agent::verify_command(const Workspace& workspace) const {
+    try {
+        const std::map<std::string, ProjectWorkflow> known = workflows::load(workspace);
+        const auto found = known.find(kVerifyWorkflow);
+        if (found != known.end()) return workflows::command_line(found->second);
+    } catch (const std::exception&) {
+        // A manifest that cannot be read verifies nothing.
+    }
+    return std::nullopt;
+}
+
+bool Agent::may_verify(const Session& session) const {
+    if (session.ask_only || session.permission == Permission::ReadOnly) return false;
+    return session.permission == Permission::Auto || ApprovalRules(store_.home(), session.workspace).allows("run_workflow", std::string("workflow ") + kVerifyWorkflow);
+}
+
+std::optional<CommandResult> Agent::verify_run(const Workspace& workspace, const Session& session, const CancelToken& cancel) {
+    const std::optional<std::string> command = verify_command(workspace);
+    if (!command || !may_verify(session)) return std::nullopt;
+    emit_({AgentEvent::Kind::Status, "Verifying", {}});
+    std::optional<CommandResult> result;
+    try {
+        result = shell::run(*command, workspace, session.permission == Permission::Auto, 120, cancel);
+    } catch (const Cancelled&) {
+        throw;
+    } catch (const std::exception&) {
+        // It could not be started: there is no result.
+    }
+    // Whatever the run left behind is not part of the request's changes.
+    snapshot_ = snapshot::capture(workspace, snapshot_);
+    return result;
+}
+
+std::optional<Verification> Agent::verify(const Workspace& workspace, const Session& session, const std::optional<CommandResult>& baseline, int repairs, const CancelToken& cancel) {
+    const std::optional<std::string> command = verify_command(workspace);
+    if (session.turns.back().changes.empty() || !command) return std::nullopt;
+    Verification receipt;
+    receipt.workflow = kVerifyWorkflow;
+    receipt.command = *command;
+    receipt.repairs = repairs;
+    if (!may_verify(session)) {
+        receipt.verdict = "notRun";
+        receipt.output = "Mason runs it by itself in Auto, or when you have chosen Always Allow for the verify workflow.";
+        return receipt;
+    }
+    check_cancel(cancel);
+    const std::optional<CommandResult> after = verify_run(workspace, session, cancel);
+    if (!after) return std::nullopt;
+    const bool passed = after->exit_code == 0 && !after->timed_out;
+    const std::optional<bool> before = baseline ? std::optional<bool>(baseline->exit_code == 0 && !baseline->timed_out) : std::nullopt;
+    receipt.verdict = passed ? (before && !*before ? "fixed" : "passed") : (!before ? "failed" : *before ? "regression" : "failingBefore");
+    receipt.exit_code = after->exit_code;
+    if (baseline) receipt.baseline_exit_code = baseline->exit_code;
+    receipt.output = utf8_suffix(after->output, 4000);
+    return receipt;
+}
+
 void Agent::send_while_running(const std::string& text, bool steer) {
     const std::string trimmed = trim(text);
     if (trimmed.empty() || utf8_length(trimmed) > 16000) throw Error("Write a message of 1–16,000 characters.");
@@ -496,7 +553,10 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     store_.save(session);
 
     try {
-        bool finished = false, asked = false;
+        bool finished = false, asked = false, baseline_taken = false;
+        std::optional<CommandResult> baseline;
+        int repairs = 0;
+        static const std::set<std::string> changing = {"edit_file", "write_file", "apply_edits", "run_shell", "run_workflow", "start_job"};
         pending_question_.reset();
         const int window = model_.context_window();
         for (int step = 0; step < kActionLimit; step++) {
@@ -515,11 +575,27 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
             session.messages.push_back({"assistant", reply.text, reply.tool_calls, ""});
             if (reply.tool_calls.empty()) {
                 session.turns.back().answer = reply.text;
+                // The model says it is done. If the project can be verified and files changed, Mason checks for itself.
+                if (auto receipt = verify(*workspace, session, baseline, repairs, cancel)) {
+                    session.turns.back().verification = receipt;
+                    if (receipt->verdict == "regression" && repairs < kRepairLimit) {
+                        repairs++;
+                        session.messages.push_back({"user", "Mason ran the project's verify workflow (" + receipt->command + "). It passed before your changes and fails now:\n" + receipt->output +
+                                                                "\nFix what your changes broke, then answer again.", {}, ""});
+                        store_.save(session);
+                        continue;
+                    }
+                }
                 finished = true;
                 break;
             }
             for (const ToolCall& call : reply.tool_calls) {
                 check_cancel(cancel);
+                // Before the first step that can change the project, note whether it verifies as it stands.
+                if (!baseline_taken && changing.count(call.name)) {
+                    baseline_taken = true;
+                    baseline = verify_run(*workspace, session, cancel);
+                }
                 const std::string result = perform(call, *workspace, session, cancel);
                 session.messages.push_back({"tool", result, {}, call.id});
                 store_.save(session);

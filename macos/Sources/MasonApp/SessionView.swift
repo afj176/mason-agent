@@ -101,6 +101,16 @@ struct TurnView: View {
                     } else if !turn.answer.isEmpty {
                         MarkdownText(text: turn.answer)
                     }
+                    if !live, let receipt = turn.verification {
+                        // What Mason found when it ran the project's verify workflow itself.
+                        let good = receipt.verdict == .passed || receipt.verdict == .fixed
+                        let quiet = receipt.verdict == .notRun || receipt.verdict == .failingBefore
+                        Label("Verified by Mason: \(receipt.summary)" + (receipt.repairs > 0 ? " · after \(receipt.repairs) repair\(receipt.repairs == 1 ? "" : "s")" : ""),
+                              systemImage: good ? "checkmark.seal.fill" : quiet ? "minus.circle" : "xmark.seal.fill")
+                            .font(.callout)
+                            .foregroundStyle(good ? Color.green : quiet ? Color.orange : Color.red)
+                            .help(receipt.command + (receipt.output.isEmpty ? "" : "\n\n" + String(receipt.output.suffix(600))))
+                    }
                     if !live, !activities.isEmpty || !turn.changes.isEmpty {
                         // What the request amounted to, in one line, and the way to its changes.
                         HStack(spacing: 10) {

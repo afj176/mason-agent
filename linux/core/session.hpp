@@ -58,12 +58,27 @@ struct FollowUp {
     bool steer = false;
 };
 
+/// What Mason itself found when it ran the project's `verify` workflow around a request that changed files.
+/// The model does not write this; it is the result of the command.
+struct Verification {
+    std::string workflow, command;
+    /// passed, fixed (failed before, passes now), regression (passed before, fails now), failingBefore (failed before
+    /// and still fails), failed (fails, with nothing from before to compare), or notRun (Mason was not allowed to run it).
+    std::string verdict;
+    std::optional<int> exit_code, baseline_exit_code;
+    std::string output;  ///< The end of the output of the run after the changes, or why it was not run.
+    int repairs = 0;     ///< How many times the model was handed a regression to repair.
+    std::string summary() const;
+};
+
 struct Turn {
     std::string id = new_id();
     std::string request, answer;
     std::vector<FileChange> changes;
     bool undone = false;
     size_t first_activity = 0;
+    /// Set when the project has a `verify` workflow and the request changed files.
+    std::optional<Verification> verification;
 };
 
 struct Session {

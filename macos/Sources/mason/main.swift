@@ -287,6 +287,17 @@ final class CLI {
             }
             Term.line(Term.paint(Term.dim, "  /diff shows the changes · /undo puts the files back"))
         }
+        if let receipt = turn?.verification {
+            // What Mason found when it ran the project's verify workflow itself.
+            let good = receipt.verdict == .passed || receipt.verdict == .fixed
+            let quiet = receipt.verdict == .notRun || receipt.verdict == .failingBefore
+            Term.line()
+            Term.line("  " + Term.paint(good ? Term.green : quiet ? Term.yellow : Term.red, (good ? "✓ " : quiet ? "· " : "✗ ") + "Verified by Mason: " + receipt.summary)
+                      + (receipt.repairs > 0 ? Term.paint(Term.dim, "  ·  after \(receipt.repairs) repair\(receipt.repairs == 1 ? "" : "s")") : ""))
+            if !good {
+                for line in receipt.output.split(separator: "\n").suffix(receipt.verdict == .notRun ? 2 : 6) { Term.line(Term.paint(Term.dim, "    │ " + Term.clip(String(line), Term.width - 8))) }
+            }
+        }
         Term.line()
         let state: String
         switch session.state {

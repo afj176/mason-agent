@@ -344,6 +344,20 @@ private:
         char elapsed[32];
         if (seconds < 90) std::snprintf(elapsed, sizeof elapsed, "%ds", static_cast<int>(seconds));
         else std::snprintf(elapsed, sizeof elapsed, "%.1f min", seconds / 60);
+        if (turn && turn->verification) {
+            // What Mason found when it ran the project's verify workflow itself.
+            const Verification& receipt = *turn->verification;
+            const bool good = receipt.verdict == "passed" || receipt.verdict == "fixed";
+            const bool quiet = receipt.verdict == "notRun" || receipt.verdict == "failingBefore";
+            term::line("  " + paint(good ? term::green : quiet ? term::yellow : term::red, std::string(good ? "✓ " : quiet ? "· " : "✗ ") + "Verified by Mason: " + receipt.summary()) +
+                       (receipt.repairs > 0 ? paint(term::dim, "  ·  after " + std::to_string(receipt.repairs) + (receipt.repairs == 1 ? " repair" : " repairs")) : ""));
+            if (!good) {
+                const std::vector<std::string> lines = split(receipt.output, '\n', false);
+                const size_t shown = receipt.verdict == "notRun" ? 2 : 6;
+                for (size_t i = lines.size() > shown ? lines.size() - shown : 0; i < lines.size(); i++) term::line(paint(term::dim, "    │ " + term::clip(lines[i], term::width() - 8)));
+            }
+            term::line();
+        }
         std::string facts = std::to_string(steps) + " tool call" + (steps == 1 ? "" : "s") + "  ·  " + elapsed;
         if (session_.prompt_tokens > 0) facts += "  ·  " + std::to_string(session_.prompt_tokens) + " tokens of context";
         if (!session_.pending_input.empty()) facts += "  ·  " + std::to_string(session_.pending_input.size()) + " queued, /queue runs them";

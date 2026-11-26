@@ -73,6 +73,39 @@ public struct FollowUp: Codable, Equatable, Identifiable {
     public init(text: String, steer: Bool) { self.text = text; self.steer = steer }
 }
 
+/// What Mason itself found when it ran the project's `verify` workflow around a request that changed files.
+/// The model does not write this; it is the result of the command.
+public struct Verification: Codable, Equatable {
+    public enum Verdict: String, Codable {
+        case passed            ///< It passes after the changes (and passed, or could not be run, before).
+        case fixed             ///< It failed before the request and passes after it.
+        case regression        ///< It passed before the request and fails after it.
+        case failingBefore     ///< It failed before the request and still fails.
+        case failed            ///< It fails after the changes; there is no result from before to compare with.
+        case notRun            ///< The workflow exists but Mason was not allowed to run it.
+    }
+    public var workflow: String
+    public var command: String
+    public var verdict: Verdict
+    public var exitCode: Int32?
+    public var baselineExitCode: Int32?
+    /// The end of the output of the run after the changes, or why it was not run.
+    public var output: String
+    /// How many times the model was handed a regression to repair.
+    public var repairs: Int
+
+    public var summary: String {
+        switch verdict {
+        case .passed: return "\(workflow) passed"
+        case .fixed: return "\(workflow) passes now; it failed before this request"
+        case .regression: return "\(workflow) fails now; it passed before this request"
+        case .failingBefore: return "\(workflow) fails, as it did before this request"
+        case .failed: return "\(workflow) failed"
+        case .notRun: return "\(workflow) was not run"
+        }
+    }
+}
+
 public struct Turn: Codable, Equatable, Identifiable {
     public var id = UUID()
     public var request: String
@@ -80,6 +113,8 @@ public struct Turn: Codable, Equatable, Identifiable {
     public var changes: [FileChange] = []
     public var undone = false
     public var firstActivity = 0
+    /// Set when the project has a `verify` workflow and the request changed files.
+    public var verification: Verification?
 
     public init(request: String, firstActivity: Int = 0) { self.request = request; self.firstActivity = firstActivity }
 }
