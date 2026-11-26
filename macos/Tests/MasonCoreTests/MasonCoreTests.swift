@@ -568,6 +568,90 @@ final class RecoveryTests: XCTestCase {
     }
 }
 
+final class ScheduleTests: XCTestCase {
+    var base: URL!, home: URL!, project: URL!
+    var calendar: Calendar = { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "UTC")!; return c }()
+    let endpoint = ModelEndpoint(url: "http://127.0.0.1:1/", model: "scripted")
+    override func setUpWithError() throws {
+        base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-schedule-" + UUID().uuidString)
+        home = base.appendingPathComponent("home"); project = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try "x = 1\n".write(to: project.appendingPathComponent("a.py"), atomically: true, encoding: .utf8)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: base) }
+
+    func date(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
+
+    func testNextRunFollowsTheCadence() {
+        func schedule(_ cadence: Schedule.Cadence, _ hour: Int, _ minute: Int, weekday: Int = 1) -> Schedule {
+            Schedule(name: "s", workspace: project.path, prompt: "p", endpoint: endpoint, auto: false, cadence: cadence, hour: hour, minute: minute, weekday: weekday)
+        }
+        // 2026-11-27 is a Friday.
+        let friday = date("2026-11-27T10:30:00Z")
+        XCTAssertEqual(schedule(.hourly, 0, 45).next(after: friday, calendar: calendar), date("2026-11-27T10:45:00Z"))
+        XCTAssertEqual(schedule(.hourly, 0, 15).next(after: friday, calendar: calendar), date("2026-11-27T11:15:00Z"))
+        XCTAssertEqual(schedule(.daily, 9, 0).next(after: friday, calendar: calendar), date("2026-11-28T09:00:00Z"))
+        XCTAssertEqual(schedule(.daily, 18, 0).next(after: friday, calendar: calendar), date("2026-11-27T18:00:00Z"))
+        XCTAssertEqual(schedule(.weekdays, 9, 0).next(after: friday, calendar: calendar), date("2026-11-30T09:00:00Z"), "the weekend is skipped")
+        XCTAssertEqual(schedule(.weekly, 9, 0, weekday: 3).next(after: friday, calendar: calendar), date("2026-12-02T09:00:00Z"), "the next Wednesday")
+        XCTAssertEqual(schedule(.weekly, 9, 0, weekday: 3).summary, "Every Wednesday at 09:00")
+        XCTAssertEqual(schedule(.hourly, 0, 5).summary, "Every hour at :05")
+    }
+
+    func testTheScheduleCommandAddsListsSwitchesAndRemoves() throws {
+        let now = date("2026-11-27T10:30:00Z")
+        XCTAssertTrue(try Schedules.command("", home: home, workspace: project.path, endpoint: endpoint).hasPrefix("No schedules."))
+        let added = try Schedules.command("add tidy weekly wed 09:00 auto -- Run the linter -- and fix what it finds", home: home, workspace: project.path, endpoint: endpoint, now: now)
+        XCTAssertTrue(added.contains("every wednesday at 09:00") && added.contains("Auto"))
+        _ = try Schedules.command("add report hourly :15 -- Summarise the open TODOs", home: home, workspace: project.path, endpoint: endpoint, now: now)
+        let saved = Schedules.load(home: home)
+        XCTAssertEqual(saved.map(\.name), ["tidy", "report"])
+        XCTAssertEqual(saved[0].prompt, "Run the linter -- and fix what it finds")
+        XCTAssertTrue(saved[0].auto && !saved[1].auto)
+        XCTAssertEqual(saved[1].cadence, .hourly)
+        XCTAssertTrue(try Schedules.command("list", home: home, workspace: project.path, endpoint: endpoint, now: now).contains("report  ·  Every hour at :15  ·  read-only"))
+
+        for bad in ["add tidy daily 09:00 -- again", "add x daily 25:00 -- p", "add x weekly 09:00 -- p", "add x daily 09:00", "add two words daily 09:00 -- p", "remove nothing", "nonsense"] {
+            XCTAssertThrowsError(try Schedules.command(bad, home: home, workspace: project.path, endpoint: endpoint, now: now), bad)
+        }
+        XCTAssertThrowsError(try Schedules.command("add x daily 09:00 -- p", home: home, workspace: project.path, endpoint: nil), "a schedule needs a model")
+        XCTAssertEqual(try Schedules.command("off tidy", home: home, workspace: project.path, endpoint: endpoint), "tidy is off.")
+        XCTAssertFalse(Schedules.load(home: home)[0].enabled)
+        XCTAssertEqual(try Schedules.command("remove report", home: home, workspace: project.path, endpoint: endpoint), "Removed report.")
+        XCTAssertEqual(Schedules.load(home: home).map(\.name), ["tidy"])
+    }
+
+    func testADueScheduleRunsOnceUnattendedAndRecordsItsOutcome() async throws {
+        let created = date("2026-11-27T10:30:00Z")
+        _ = try Schedules.command("add report hourly :45 -- Read a.py and report", home: home, workspace: project.path, endpoint: endpoint, now: created)
+        XCTAssertTrue(Schedules.due(Schedules.load(home: home), now: date("2026-11-27T10:40:00Z"), calendar: calendar).isEmpty)
+        // Three hours pass with nothing checking: the schedule is due once.
+        let later = date("2026-11-27T13:50:00Z")
+        let due = Schedules.due(Schedules.load(home: home), now: later, calendar: calendar)
+        XCTAssertEqual(due.map(\.name), ["report"])
+
+        let store = try SessionStore(home: home)
+        let model = ScriptedModel([call("read_file", ["path": "a.py"]), call("write_file", ["path": "a.py", "content": "x = 2\n"]), ModelReply(text: "a.py sets x to 1.")])
+        let ran = await Schedules.run(due[0], home: home, store: store, model: model)
+        let session = try XCTUnwrap(ran)
+        XCTAssertEqual(session.title, "Scheduled: report")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .failed], "a read-only scheduled run cannot edit")
+        XCTAssertEqual(try String(contentsOf: project.appendingPathComponent("a.py"), encoding: .utf8), "x = 1\n")
+
+        let after = Schedules.load(home: home)[0]
+        XCTAssertEqual(after.lastOutcome, "Completed")
+        XCTAssertEqual(after.lastSession, session.id)
+        XCTAssertNotNil(after.lastRun)
+        XCTAssertGreaterThan(after.next(after: after.lastRun!, calendar: calendar), after.lastRun!, "the missed hours are not made up: the next run is in the future")
+
+        // A model that is not answering is recorded as skipped, and no session is made.
+        let skipped = await Schedules.run(after, home: home, store: store)
+        XCTAssertNil(skipped)
+        XCTAssertTrue(Schedules.load(home: home)[0].lastOutcome.hasPrefix("Skipped:"))
+    }
+}
+
 final class ChatTests: XCTestCase {
     var home: URL!
     override func setUpWithError() throws { home = FileManager.default.temporaryDirectory.appendingPathComponent("mason-chat-" + UUID().uuidString) }

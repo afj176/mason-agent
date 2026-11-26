@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "agent.hpp"
+#include "schedules.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
 
@@ -482,6 +483,26 @@ private:
             else send("/queue");
             return true;
         }
+        if (name == "/schedule" || name == "/schedules") {
+            if (starts_with(to_lower(rest), "run ")) {
+                const std::string wanted = to_lower(trim(rest.substr(4)));
+                std::optional<Schedule> found;
+                for (const Schedule& item : schedules::load(store_.home())) {
+                    if (to_lower(item.name) == wanted) found = item;
+                }
+                if (!found) throw Error("No schedule named " + wanted + ". /schedule lists them.");
+                term::line(paint(term::dim, "  Running " + found->name + " now, unattended: approvals are declined…"));
+                schedules::run(*found, store_.home(), store_);
+                std::string outcome = "finished";
+                for (const Schedule& item : schedules::load(store_.home())) {
+                    if (item.id == found->id) outcome = item.last_outcome;
+                }
+                term::line("  " + outcome + paint(term::dim, "  ·  /resume shows its session"));
+            } else {
+                for (const std::string& line : split(schedules::command(rest, store_.home(), workspace_.root(), endpoint), '\n')) term::line("  " + line);
+            }
+            return true;
+        }
         if (name == "/mcp") { mcp_command(rest); return true; }
         if (name == "/model") { choose_model(rest); return true; }
         if (name == "/models") { models(rest); return true; }
@@ -503,6 +524,7 @@ private:
             {"/queue", "Run the messages you queued, after a stop or a failure"},
             {"/agent [name|none]", "List your custom agents, or use one for this session"},
             {"/commands", "List your custom slash commands"},
+            {"/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"},
             {"/mcp", "List your MCP servers and the tools Mason may call"},
             {"/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"},
             {"/mcp allow NAME TOOL…|all", "Choose which of a server's tools Mason may call"},
@@ -1023,7 +1045,9 @@ const char* const kUsage =
     "mason [--workspace PATH] [--resume] [--endpoint URL --model ID] [--read-only | --review | --edits | --auto]\n"
     "  Opens an interactive session in the current folder. No options are needed: mason uses a model that is\n"
     "  already running, restarts the one you used last, or helps you choose or download one.\n"
-    "  New sessions ask before each edit and command (--review).\n";
+    "  New sessions ask before each edit and command (--review).\n"
+    "mason --run-due\n"
+    "  Runs the scheduled requests that are due, unattended, and exits. For cron or a systemd timer; the app does this itself while open.\n";
 
 }  // namespace
 
@@ -1033,6 +1057,7 @@ int main(int argc, char** argv) {
     std::string workspace_path, endpoint_url, model_id;
     std::optional<Permission> permission;
     bool resume = false;
+    bool run_due = false;
     for (size_t i = 0; i < arguments.size(); i++) {
         const std::string& name = arguments[i];
         if (name == "--help" || name == "-h") { std::cout << kUsage; return 0; }
@@ -1042,6 +1067,7 @@ int main(int argc, char** argv) {
         else if (name == "--review") permission = Permission::ReviewEdits;
         else if (name == "--read-only") permission = Permission::ReadOnly;
         else if (name == "--resume") resume = true;
+        else if (name == "--run-due") run_due = true;
         else if ((name == "--workspace" || name == "--endpoint" || name == "--model") && i + 1 < arguments.size()) {
             (name == "--workspace" ? workspace_path : name == "--endpoint" ? endpoint_url : model_id) = arguments[++i];
         } else {
@@ -1050,6 +1076,20 @@ int main(int argc, char** argv) {
         }
     }
     try {
+        if (run_due) {
+            // For a system timer (cron, systemd): run whatever is due, say what happened, and leave.
+            SessionStore store;
+            const std::vector<Schedule> due = schedules::due(schedules::load(store.home()));
+            if (due.empty()) std::cout << "No schedule is due.\n";
+            for (const Schedule& schedule : due) {
+                std::cout << "Running " << schedule.name << " in " << schedule.workspace << "…" << std::endl;
+                schedules::run(schedule, store.home(), store);
+                for (const Schedule& item : schedules::load(store.home())) {
+                    if (item.id == schedule.id) std::cout << "  " << item.last_outcome << std::endl;
+                }
+            }
+            return 0;
+        }
         if (endpoint_url.empty() != model_id.empty()) throw Error("Use --endpoint and --model together.");
         Workspace workspace(workspace_path.empty() ? fs::current_path().string() : workspace_path);
         SessionStore store;

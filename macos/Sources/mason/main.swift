@@ -70,6 +70,8 @@ final class CLI {
           Opens an interactive session in the current folder. No options are needed: mason uses a model that is
           already running, restarts the one you used last, or helps you choose or download one.
           New sessions ask before each edit and command (--review).
+        mason --run-due
+          Runs the scheduled requests that are due, unattended, and exits. For launchd or cron; the app does this itself while open.
         """
 
     static func main() async -> Int32 {
@@ -81,7 +83,7 @@ final class CLI {
         while index < arguments.count {
             let name = arguments[index]; index += 1
             switch name {
-            case "--auto", "--edits", "--review", "--read-only", "--resume": flags.insert(String(name.dropFirst(2)))
+            case "--auto", "--edits", "--review", "--read-only", "--resume", "--run-due": flags.insert(String(name.dropFirst(2)))
             case "--workspace", "--endpoint", "--model":
                 guard index < arguments.count else { FileHandle.standardError.write(Data("\(name) needs a value.\n".utf8)); return 1 }
                 values[String(name.dropFirst(2))] = arguments[index]; index += 1
@@ -89,6 +91,18 @@ final class CLI {
             }
         }
         do {
+            if flags.contains("run-due") {
+                // For a system timer (launchd, cron): run whatever is due, say what happened, and leave.
+                let home = DataHome.url, store = try SessionStore()
+                let due = Schedules.due(Schedules.load(home: home))
+                if due.isEmpty { print("No schedule is due.") }
+                for schedule in due {
+                    print("Running \(schedule.name) in \(schedule.workspace)…")
+                    await Schedules.run(schedule, home: home, store: store)
+                    print("  " + (Schedules.load(home: home).first { $0.id == schedule.id }?.lastOutcome ?? "finished"))
+                }
+                return 0
+            }
             guard (values["endpoint"] == nil) == (values["model"] == nil) else { throw MasonError("Use --endpoint and --model together.") }
             let workspace = try Workspace(path: values["workspace"] ?? FileManager.default.currentDirectoryPath)
             let store = try SessionStore()
@@ -453,6 +467,16 @@ final class CLI {
             let waiting = session.pendingInput ?? []
             if waiting.isEmpty { Term.line(Term.paint(Term.dim, "  Nothing is queued. While Mason works, type a message and press Enter to queue it, or start it with ! to steer.")) }
             else { await send("/queue") }
+        case "/schedule", "/schedules":
+            if rest.lowercased().hasPrefix("run ") {
+                let name = rest.dropFirst(4).trimmingCharacters(in: .whitespaces)
+                guard let found = Schedules.load(home: home).first(where: { $0.name.lowercased() == name.lowercased() }) else { throw MasonError("No schedule named \(name). /schedule lists them.") }
+                Term.line(Term.paint(Term.dim, "  Running \(found.name) now, unattended: approvals are declined…"))
+                await Schedules.run(found, home: home, store: store)
+                Term.line("  " + (Schedules.load(home: home).first { $0.id == found.id }?.lastOutcome ?? "finished") + Term.paint(Term.dim, "  ·  /resume shows its session"))
+            } else {
+                for line in try Schedules.command(rest, home: home, workspace: workspace.root.path, endpoint: endpoint).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            }
         case "/mcp": try await mcp(rest)
         case "/model": try await chooseModel(rest)
         case "/models": try await models(rest)
@@ -476,6 +500,7 @@ final class CLI {
             ("/queue", "Run the messages you queued, after a stop or a failure"),
             ("/agent [name|none]", "List your custom agents, or use one for this session"),
             ("/commands", "List your custom slash commands"),
+            ("/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"),
             ("/mcp", "List your MCP servers and the tools Mason may call"),
             ("/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"),
             ("/mcp allow NAME TOOL…|all", "Choose which of a server's tools Mason may call"),

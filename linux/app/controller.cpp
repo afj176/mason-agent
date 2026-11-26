@@ -24,6 +24,9 @@ Controller::Controller() {
     }
     runtime_path = llama::find();
     refresh_models(true);
+    // Scheduled requests are checked shortly after launch and then every minute while the app is open.
+    Glib::signal_timeout().connect_seconds_once([this] { run_due_schedules(); }, 8);
+    schedule_timer_ = Glib::signal_timeout().connect_seconds([this] { run_due_schedules(); return true; }, 60);
 }
 
 Controller::~Controller() {
@@ -31,6 +34,8 @@ Controller::~Controller() {
     if (run_cancel_) run_cancel_->store(true);
     if (model_cancel_) model_cancel_->store(true);
     if (chat_cancel_) chat_cancel_->store(true);
+    if (schedule_cancel_) schedule_cancel_->store(true);
+    schedule_timer_.disconnect();
     {
         // A request waiting for an approval must not wait forever.
         std::lock_guard<std::mutex> guard(approval_lock_);
@@ -40,6 +45,7 @@ Controller::~Controller() {
     if (run_thread_.joinable()) run_thread_.join();
     if (model_thread_.joinable()) model_thread_.join();
     if (chat_thread_.joinable()) chat_thread_.join();
+    if (schedule_thread_.joinable()) schedule_thread_.join();
     server_.reset();
 }
 
@@ -154,6 +160,11 @@ void Controller::send(const std::string& text) {
     const std::string lowered = to_lower(input);
     if (lowered == "/compact") { compact(); return; }
     if (lowered == "/mcp") { show_mcp_servers(); return; }
+    if (lowered == "/schedule" || lowered == "/schedules" || starts_with(lowered, "/schedule ")) {
+        const size_t space = input.find(' ');
+        schedule_command(space == std::string::npos ? "" : trim(input.substr(space)));
+        return;
+    }
     if (lowered == "/agent" || starts_with(lowered, "/agent ")) { choose_agent(trim(input.substr(6))); return; }
     if (!endpoint) {
         notice.emit("No model is running. Open Models to start one, or start your own local server.");
@@ -189,7 +200,7 @@ void Controller::send(const std::string& text) {
             Agent agent(
                 *store_, model,
                 [&](const ApprovalRequest& request) {
-                    post([this, request] { approval = request; });
+                    post([this, request] { approval = request; notification.emit("Mason needs your approval", request.title); });
                     std::unique_lock<std::mutex> guard(approval_lock_);
                     approval_answered_.wait(guard, [&] { return approval_answer_.has_value(); });
                     const bool allow = *approval_answer_;
@@ -241,6 +252,7 @@ void Controller::send(const std::string& text) {
         post([this, working] {
             approval.reset();
             replace(working);
+            notification.emit(working.title, working.state + (working.detail.empty() ? "" : ": " + working.detail));
             running = false;
             waiting_follow_ups = 0;
             live_text.clear();
@@ -463,6 +475,63 @@ void Controller::choose_agent(const std::string& name) {
     } catch (const std::exception& error) {
         notice.emit(error.what());
     }
+}
+
+void Controller::schedule_command(const std::string& arguments) {
+    if (!store_) return;
+    if (starts_with(to_lower(arguments), "run ")) {
+        const std::string name = trim(arguments.substr(4));
+        bool known = false;
+        for (const Schedule& item : schedules::load(store_->home())) known = known || to_lower(item.name) == to_lower(name);
+        if (!known) { notice.emit("No schedule named " + name + "."); return; }
+        notice.emit("Running " + name + " now, unattended. Its session appears in the sidebar when it finishes.");
+        run_due_schedules(name);
+        return;
+    }
+    try {
+        const Session* current = session();
+        notice.emit(schedules::command(arguments, store_->home(), current ? current->workspace : home_dir(), endpoint));
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+}
+
+void Controller::run_due_schedules(const std::string& only) {
+    if (!store_ || schedules_running_) return;
+    std::vector<Schedule> chosen;
+    const std::vector<Schedule> all = schedules::load(store_->home());
+    if (only.empty()) {
+        chosen = schedules::due(all);
+    } else {
+        for (const Schedule& item : all) {
+            if (to_lower(item.name) == to_lower(only)) chosen.push_back(item);
+        }
+    }
+    if (chosen.empty()) return;
+    if (schedule_thread_.joinable()) schedule_thread_.join();
+    schedules_running_ = true;
+    schedule_cancel_ = make_cancel();
+    const CancelToken cancel = schedule_cancel_;
+    const std::shared_ptr<bool> alive = alive_;
+    schedule_thread_ = std::thread([this, chosen, cancel, alive] {
+        for (const Schedule& schedule : chosen) {
+            if (is_cancelled(cancel)) break;
+            schedules::run(schedule, store_->home(), *store_, nullptr, cancel);
+            std::string outcome = "finished";
+            for (const Schedule& item : schedules::load(store_->home())) {
+                if (item.id == schedule.id) outcome = item.last_outcome;
+            }
+            if (!*alive) return;
+            const std::string name = schedule.name;
+            post([this, name, outcome] {
+                sessions_ = store_->sessions();
+                changed.emit();
+                notification.emit("Scheduled: " + name, outcome);
+            });
+        }
+        if (!*alive) return;
+        post([this] { schedules_running_ = false; });
+    });
 }
 
 void Controller::show_mcp_servers() {

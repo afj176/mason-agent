@@ -2,6 +2,7 @@
 // State is only read and changed on the GTK main thread. Work runs on other threads and comes back through `post`.
 #pragma once
 #include "chat.hpp"
+#include "schedules.hpp"
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -62,6 +63,12 @@ public:
     void choose_agent(const std::string& name);
     /// Tells the user which MCP servers are registered and what each may call.
     void show_mcp_servers();
+    /// "/schedule ..." typed in the request box: list, add, switch or remove a schedule, or run one now.
+    void schedule_command(const std::string& arguments);
+    /// Runs every schedule that is due (or the one named), one after another, each as its own unattended session.
+    void run_due_schedules(const std::string& only = "");
+    /// A system notification for something that happened while the window was in the background.
+    sigc::signal<void(const std::string& title, const std::string& body)> notification;
 
     // ---- chat ----
     const std::vector<ChatConversation>& chats() const { return chats_; }
@@ -114,7 +121,10 @@ private:
     std::unique_ptr<SessionStore> store_;
     std::unique_ptr<ChatStore> chat_store_;
     std::vector<ChatConversation> chats_;
-    std::thread chat_thread_;
+    std::thread chat_thread_, schedule_thread_;
+    bool schedules_running_ = false;
+    CancelToken schedule_cancel_;
+    sigc::connection schedule_timer_;
     /// The engine working on the current request, set and cleared by the run thread under the lock.
     std::mutex agent_lock_;
     Agent* active_agent_ = nullptr;
