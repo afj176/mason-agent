@@ -215,7 +215,7 @@ std::shared_ptr<SemanticModels> Agent::semantic_models() const {
     return nullptr;
 }
 
-std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace, bool semantic) {
+std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace, bool semantic, bool presents) {
     auto schema = [](json properties, std::vector<std::string> required) {
         return json{{"type", "object"}, {"properties", std::move(properties)}, {"required", std::move(required)}, {"additionalProperties", false}};
     };
@@ -238,6 +238,11 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
         list.push_back({"inspect_symbol", "Ask a language service about one position in a source file: where the name there is defined, where it is used, or the file's diagnostics. It answers for Python, JavaScript and TypeScript, and for C#, Swift, C, C++, Go and Rust when that language's server is installed. line and column are 1-based.",
                         schema({{"path", text}, {"line", {{"type", "integer"}, {"minimum", 1}}}, {"column", {{"type", "integer"}, {"minimum", 1}}}, {"mode", {{"type", "string"}, {"enum", {"definitions", "references", "diagnostics"}}}}},
                                {"path", "line", "column", "mode"})});
+    }
+    if (presents) {
+        list.push_back({"open_file", "Show the user one of the project's files in the app's file viewer, at a line. Use it to point at the code you are talking about. It does not read the file for you.",
+                        schema({{"path", text}, {"line", {{"type", "integer"}, {"minimum", 1}}}}, {"path", "line"})});
+        list.push_back({"open_preview", "Show the user one of the project's HTML pages in the app's Website tab, so they can look at it and pick elements to tell you about.", schema({{"path", text}}, {"path"})});
     }
     const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
     if (!read_only) {
@@ -283,7 +288,7 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
 
 std::vector<ToolSpec> Agent::offered_tools(const Session& session, const Workspace& workspace) const {
     std::vector<ToolSpec> offered = tools();
-    const std::vector<ToolSpec> extra = extra_tools(session, workspace, semantic_models() != nullptr);
+    const std::vector<ToolSpec> extra = extra_tools(session, workspace, semantic_models() != nullptr, static_cast<bool>(present_));
     offered.insert(offered.end(), extra.begin(), extra.end());
     const std::vector<ToolSpec> window = desktop_tools(session, desktop_automation() != nullptr);
     offered.insert(offered.end(), window.begin(), window.end());
@@ -336,6 +341,20 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         const std::string query = trim(text("query").value_or(""));
         if (!query.empty()) return Outcome{"completed", repository_map::report(repository_map::query(workspace, query, text("path").value_or("."), 32, cancel), query)};
         return Outcome{"completed", repository_map::outline(workspace, text("path").value_or("."))};
+    }
+    if (call.name == "open_file" || call.name == "open_preview") {
+        if (!present_) throw Error("Nothing here can show that to the user.");
+        const std::string path = text("path").value_or("");
+        if (path.empty() || !workspace.exists(path)) throw Error((path.empty() ? std::string("That") : path) + " is not a file in the project.");
+        if (call.name == "open_preview") {
+            const std::string kind = to_lower(fs::path(path).extension().string());
+            if (kind != ".html" && kind != ".htm") throw Error("open_preview shows an HTML page of the project.");
+            present_("page", path, 1);
+            return Outcome{"completed", "Showing " + path + " to the user in the Website tab."};
+        }
+        const int line = std::max(1, number("line").value_or(1));
+        present_("file", path, line);
+        return Outcome{"completed", "Showing " + path + " at line " + std::to_string(line) + " to the user."};
     }
     if (call.name == "ask_user") {
         const std::string question = trim(text("question").value_or(""));

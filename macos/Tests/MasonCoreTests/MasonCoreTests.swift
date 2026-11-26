@@ -566,6 +566,39 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertNil(ProjectTests.outcome(of: "missing", in: tap))
     }
 
+    func testTheWebsiteTabsPiecesAndTheToolsThatShowThingsToTheUser() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try "<!doctype html><title>Shop</title><h1>Shop</h1><button id=\"add\">Add</button>".write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let preview = try PagePreview(workspace: workspace)
+        XCTAssertTrue(Preview.listening(preview.port), "the project's pages are served on this computer")
+        XCTAssertEqual(preview.address(of: "sub dir/index.html"), "http://127.0.0.1:\(preview.port)/sub%20dir/index.html")
+        let served = try String(contentsOf: try XCTUnwrap(URL(string: preview.address(of: "index.html"))), encoding: .utf8)
+        XCTAssertTrue(served.contains("<h1>Shop</h1>"), served)
+        preview.stop()
+
+        let message = ##"{"selector":"#add","kind":"button","label":"Add","html":"<button id=\"add\">Add</button>","console":["error: boom (app.js:3)"]}"##
+        let pick = try XCTUnwrap(Preview.pick(from: message, page: "index.html"))
+        XCTAssertEqual(pick.selector, "#add")
+        let note = Preview.evidence(pick)
+        XCTAssertTrue(note.contains("selector: `#add`") && note.contains("label: “Add”") && note.contains("error: boom (app.js:3)"), note)
+        XCTAssertNil(Preview.pick(from: "{\"kind\":\"button\"}", page: "index.html"), "a message without a selector is not a pick")
+        XCTAssertTrue(Preview.script.contains("messageHandlers.mason.postMessage") && Preview.script.hasPrefix("(function () {"))
+
+        try #"{"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "echo starting; exit 3"]}}}"#.write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        do { _ = try await Preview.DevServer(workspace: workspace, workflow: "dev", port: 18473); XCTFail("a workflow that ends is not a server") }
+        catch { XCTAssertTrue("\(error)".contains("ended before anything listened"), "\(error)") }
+        do { _ = try await Preview.DevServer(workspace: workspace, workflow: "none", port: 18473); XCTFail("an unknown workflow is refused") } catch {}
+
+        var (store, session) = try session(.workspaceEdits)
+        var shown: [String] = []
+        let script = [call("open_file", ["path": "calc.py", "line": "2"]), call("open_preview", ["path": "index.html"]), call("open_preview", ["path": "calc.py"]), ModelReply(text: "Look there.")]
+        let agent = Agent(store: store, model: ScriptedModel(script), approve: { _ in true }, emit: { _ in })
+        agent.present = { kind, path, line in shown.append("\(kind) \(path) \(line)") }
+        await agent.run(&session, request: "Show me")
+        XCTAssertEqual(shown, ["file calc.py 2", "page index.html 1"], "a file and a page are shown; a page must be HTML")
+        XCTAssertFalse(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "open_file" }, "without an app that can show things, the tools are not offered")
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

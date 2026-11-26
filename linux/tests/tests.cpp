@@ -24,6 +24,7 @@
 #include "background.hpp"
 #include "roles.hpp"
 #include "project_tests.hpp"
+#include "preview.hpp"
 #include "shell.hpp"
 #include "models.hpp"
 
@@ -1181,6 +1182,48 @@ static void test_extra_tools() {
         CHECK(tap == (Outcomes{{"inner", "passed"}, {"suite discount", "passed"}, {"tax", "failed"}, {"later", "skipped"}}));
         CHECK(project_tests::outcome_of("discount", tap) == std::optional<std::string>("passed"));  // a name is found at the end of a longer one
         CHECK(!project_tests::outcome_of("missing", tap));
+    }
+
+    // The Website tab's pieces, and the tools that show things to the user.
+    {
+        Sandbox box;
+        box.write("index.html", "<!doctype html><title>Shop</title><h1>Shop</h1><button id=\"add\">Add</button>");
+        const Workspace workspace(box.project.string());
+        {
+            const browser::PageServer pages(workspace);
+            CHECK(preview::listening(pages.port()));  // the project's pages are served on this computer
+            CHECK(pages.address_of("sub dir/index.html") == "http://127.0.0.1:" + std::to_string(pages.port()) + "/sub%20dir/index.html");
+        }
+        const auto pick = preview::pick(R"J({"selector":"#add","kind":"button","label":"Add","html":"<button id=\"add\">Add</button>","console":["error: boom (app.js:3)"]})J", "index.html");
+        CHECK(pick && pick->selector == "#add");
+        if (pick) {
+            const std::string note = preview::evidence(*pick);
+            CHECK(note.find("selector: `#add`") != std::string::npos && note.find("label: “Add”") != std::string::npos && note.find("error: boom (app.js:3)") != std::string::npos);
+        }
+        CHECK(!preview::pick(R"({"kind":"button"})", "index.html"));  // a message without a selector is not a pick
+        const std::string script = preview::kScript;
+        CHECK(script.find("messageHandlers.mason.postMessage") != std::string::npos && script.rfind("(function () {", 0) == 0);
+
+        box.write("mason.workflows.json", R"J({"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "echo starting; exit 3"]}}})J");
+        std::string problem;
+        try { preview::DevServer server(workspace, "dev", 18473); } catch (const Error& error) { problem = error.what(); }
+        CHECK(problem.find("ended before anything listened") != std::string::npos);  // a workflow that ends is not a server
+        problem.clear();
+        try { preview::DevServer server(workspace, "none", 18473); } catch (const Error& error) { problem = error.what(); }
+        CHECK(!problem.empty());  // an unknown workflow is refused
+
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+        std::vector<std::string> shown;
+        ScriptedModel model;
+        model.replies = {call("open_file", {{"path", "calc.py"}, {"line", 2}}), call("open_preview", {{"path", "index.html"}}), call("open_preview", {{"path", "calc.py"}}), say("Look there.")};
+        Agent agent(store, model, [](const ApprovalRequest&) { return true; }, quiet);
+        agent.set_presenter([&](const std::string& kind, const std::string& path, int line) { shown.push_back(kind + " " + path + " " + std::to_string(line)); });
+        agent.run(session, "Show me");
+        CHECK(shown == (std::vector<std::string>{"file calc.py 2", "page index.html 1"}));  // a file and a page are shown; a page must be HTML
+        bool offered = false;
+        for (const ToolSpec& tool : Agent::extra_tools(session, workspace)) offered = offered || tool.name == "open_file";
+        CHECK(!offered);  // without an app that can show things, the tools are not offered
     }
 
     // A job runs in the background and stops when the request ends.

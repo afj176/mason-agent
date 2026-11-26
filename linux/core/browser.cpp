@@ -440,4 +440,15 @@ std::string report(const Result& result, const std::string& page) {
     return text;
 }
 
+struct PageServer::Impl {
+    Workspace workspace;
+    Server server;
+    explicit Impl(const Workspace& project) : workspace(project), server(workspace) {}
+};
+
+PageServer::PageServer(const Workspace& workspace) : impl_(std::make_unique<Impl>(workspace)) {}
+PageServer::~PageServer() = default;
+int PageServer::port() const { return impl_->server.port(); }
+std::string PageServer::address_of(const std::string& page) const { return "http://127.0.0.1:" + std::to_string(port()) + "/" + percent_encode(page); }
+
 }  // namespace mason::browser

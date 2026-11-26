@@ -218,7 +218,7 @@ final class Jobs: @unchecked Sendable {
 
 extension Agent {
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
-    static func extraTools(session: Session, workspace: Workspace, semantic: Bool = false) -> [ToolSpec] {
+    static func extraTools(session: Session, workspace: Workspace, semantic: Bool = false, presents: Bool = false) -> [ToolSpec] {
         func schema(_ properties: [String: Any], required: [String]) -> [String: Any] {
             ["type": "object", "properties": properties, "required": required, "additionalProperties": false]
         }
@@ -239,6 +239,12 @@ extension Agent {
         if SymbolService.available || LanguageServers.available {
             tools.append(ToolSpec(name: "inspect_symbol", description: "Ask a language service about one position in a source file: where the name there is defined, where it is used, or the file's diagnostics. It answers for Python, JavaScript and TypeScript, and for C#, Swift, C, C++, Go and Rust when that language's server is installed. line and column are 1-based.",
                                   parameters: schema(["path": text, "line": ["type": "integer", "minimum": 1], "column": ["type": "integer", "minimum": 1], "mode": ["type": "string", "enum": ["definitions", "references", "diagnostics"]]], required: ["path", "line", "column", "mode"])))
+        }
+        if presents {
+            tools.append(ToolSpec(name: "open_file", description: "Show the user one of the project's files in the app's file viewer, at a line. Use it to point at the code you are talking about. It does not read the file for you.",
+                                  parameters: schema(["path": text, "line": ["type": "integer", "minimum": 1]], required: ["path", "line"])))
+            tools.append(ToolSpec(name: "open_preview", description: "Show the user one of the project's HTML pages in the app's Website tab, so they can look at it and pick elements to tell you about.",
+                                  parameters: schema(["path": text], required: ["path"])))
         }
         let readOnly = session.askOnly || session.permission == .readOnly
         if !readOnly {
@@ -303,6 +309,18 @@ extension Agent {
                 return (.completed, RepositoryMap.report(try RepositoryMap.query(workspace, query, under: text("path") ?? "."), query: query))
             }
             return (.completed, try RepositoryMap.outline(workspace, under: text("path") ?? "."))
+
+        case "open_file", "open_preview":
+            guard let present else { throw MasonError("Nothing here can show that to the user.") }
+            guard let path = text("path"), workspace.exists(path) else { throw MasonError("\(text("path") ?? "That") is not a file in the project.") }
+            if call.name == "open_preview" {
+                guard ["html", "htm"].contains((path as NSString).pathExtension.lowercased()) else { throw MasonError("open_preview shows an HTML page of the project.") }
+                present("page", path, 1)
+                return (.completed, "Showing \(path) to the user in the Website tab.")
+            }
+            let line = max(1, number("line") ?? 1)
+            present("file", path, line)
+            return (.completed, "Showing \(path) at line \(line) to the user.")
 
         case "ask_user":
             guard let question = text("question")?.trimmingCharacters(in: .whitespacesAndNewlines), !question.isEmpty, question.count <= 2000 else { throw MasonError("ask_user needs a question of up to 2,000 characters.") }

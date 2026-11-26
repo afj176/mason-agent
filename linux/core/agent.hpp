@@ -57,7 +57,9 @@ public:
     /// Offered only when the user has registered an MCP server, so sessions without one keep a short tool list.
     static const std::vector<ToolSpec>& mcp_tools();
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
-    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false);
+    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false, bool presents = false);
+    /// Set by an app that can show things to the user: a file at a line ("file") or a project page ("page").
+    void set_presenter(std::function<void(const std::string& kind, const std::string& path, int line)> present) { present_ = std::move(present); }
     /// In Auto, Mason works out checks from the request and runs them itself when the model says it is done.
     bool derives_checks = true;
     /// What reads and operates the attached window. Left unset, it is this computer's accessibility interface.
@@ -124,6 +126,7 @@ private:
     std::vector<std::string> offered_names_;
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     std::optional<std::string> pending_question_;
+    std::function<void(const std::string&, const std::string&, int)> present_;
     std::optional<std::string> last_search_;  // this request's latest search_files text, which search_next continues
     std::shared_ptr<SemanticModels> semantic_;
     std::shared_ptr<DesktopAutomation> desktop_;

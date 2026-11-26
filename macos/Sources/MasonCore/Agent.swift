@@ -85,6 +85,8 @@ public final class Agent {
     var offeredNames: [String] = []
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     var pendingQuestion: String?
+    /// Set by an app that can show things to the user: a file at a line ("file") or a project page ("page").
+    public var present: ((_ kind: String, _ path: String, _ line: Int) -> Void)?
     /// The text of this request's latest search_files call, which search_next continues.
     var lastSearch: String?
 
@@ -270,7 +272,7 @@ public final class Agent {
         session.comments = nil
         if session.title == "New session" { session.title = input.count > 55 ? String(input.prefix(55)) + "…" : input }
         let servers = Mcp.enabled(home: home)
-        let offered = Agent.tools + Agent.extraTools(session: session, workspace: workspace, semantic: semanticModels != nil)
+        let offered = Agent.tools + Agent.extraTools(session: session, workspace: workspace, semantic: semanticModels != nil, presents: present != nil)
             + Agent.desktopTools(for: session, available: (desktop ?? Desktop.system) != nil) + (servers.isEmpty ? [] : Agent.mcpTools)
         lastObservation = []
         offeredNames = offered.map(\.name)
