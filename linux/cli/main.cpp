@@ -17,6 +17,7 @@
 #include "planning.hpp"
 #include "schedules.hpp"
 #include "script.hpp"
+#include "experiments.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
 
@@ -532,6 +533,10 @@ private:
             }
             return true;
         }
+        if (name == "/experiment" || name == "/experiments") {
+            for (const std::string& line : split(experiments::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
         if (name == "/comment" || name == "/comments") {
             if (to_lower(rest) == "send") {
                 if (session_.comments.empty()) term::line(paint(term::dim, "  No comments are waiting."));
@@ -631,6 +636,7 @@ private:
             {"/commands", "List your custom slash commands"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"},
             {"/review", "Have the model read what this session changed and pin what it finds as comments"},
             {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},
             {"/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"},

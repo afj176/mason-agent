@@ -59,13 +59,14 @@ extension RepositoryMap {
 /// one `{"type": ..., "data": ...}` object per line, and returns the exit code: 0 completed, 2 ran and did not
 /// complete, 1 error.
 public enum ScriptOperations {
-    public static let names: Set<String> = ["exec", "map", "symbol", "git-status"]
+    public static let names: Set<String> = ["exec", "map", "symbol", "git-status", "worktree"]
 
     public static let usage = """
         mason exec --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto] [--profile PATH] [--resume SESSION_ID]
         mason map --workspace PATH --query NAME
         mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics
         mason git-status --workspace PATH
+        mason worktree --workspace PATH --destination NEW_PATH --branch NEW_BRANCH
           For scripts: one operation, printed as JSON Lines, then exit. 0 means it completed, 2 that it ran and did not, 1 an error.
           exec only reads unless you pass --auto, which lets it edit files and run commands in the sandbox. Nothing is ever asked:
           an approval it would need is reported and declined. --prompt-file PATH reads the request from a file.
@@ -98,6 +99,10 @@ public enum ScriptOperations {
                 let result = try RepositoryMap.query(workspace, query)
                 event("map.result", ["query": query, "files": result.files, "partial": result.partial,
                                      "matches": result.matches.map { ["path": $0.path, "line": $0.line, "kind": $0.kind, "name": $0.name, "text": $0.text] as [String: Any] }])
+                return 0
+
+            case "worktree":
+                event("worktree.created", ["path": try await Experiments.createWorktree(workspace, destination: try get("destination"), branch: try get("branch"))])
                 return 0
 
             case "git-status":

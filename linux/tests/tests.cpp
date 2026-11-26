@@ -19,6 +19,8 @@
 #include "chat.hpp"
 #include "schedules.hpp"
 #include "script.hpp"
+#include "experiments.hpp"
+#include "shell.hpp"
 #include "models.hpp"
 
 using namespace mason;
@@ -939,6 +941,48 @@ static void test_extra_tools() {
         CHECK(box.read("calc.py") == "def add(a, b):\n    return a - b\n");  // without --auto the run only reads
         events.clear();
         CHECK(script::run({"exec", "--workspace", root, "--prompt", "x", "--profile", (box.project / "journal").string()}, collect, &model) == 1);  // the journal may not be inside the project
+    }
+
+    // An experiment starts from the project as it stands, and a hunk comes back.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        const CommandResult made = shell::run("git init -q . && git add . && git -c user.name=t -c user.email=t@t.invalid commit -qm start", workspace, false);
+        CHECK(made.exit_code == 0);
+        if (made.exit_code == 0) {
+            // An uncommitted edit and an untracked file: the experiment starts with both.
+            box.write("calc.py", "def add(a, b):\n    return a - b\n\n\ndef twice(a):\n    return a * 2\n");
+            box.write("notes.txt", "draft\n");
+            const std::string said = experiments::command("new try", workspace, box.home);
+            const std::vector<Experiment> mine = experiments::list(workspace, box.home);
+            CHECK(mine.size() == 1);
+            if (mine.size() == 1) {
+                const Experiment experiment = mine[0];
+                CHECK(said.find(experiment.path) != std::string::npos && experiment.branch == "mason/try");
+                CHECK(read_file(fs::path(experiment.path) / "notes.txt") == "draft\n" && read_file(fs::path(experiment.path) / "calc.py").find("twice") != std::string::npos);
+                CHECK(experiments::changed(experiment).empty());  // a new experiment has changed nothing
+                const std::string index = shell::run("git status --porcelain", workspace, false).output;
+                CHECK(index.find(" M calc.py") != std::string::npos && index.find("?? notes.txt") != std::string::npos);  // the project's own index is untouched
+
+                write_file_atomic(fs::path(experiment.path) / "calc.py", "def add(a, b):\n    return a + b\n\n\ndef twice(a):\n    return a * 2\n");
+                CHECK(experiments::changed(experiment) == std::vector<std::string>{"calc.py"});
+                const std::vector<ExperimentHunk> hunks = experiments::hunks(experiment, "calc.py");
+                CHECK(hunks.size() == 1);
+                if (hunks.size() == 1) {
+                    experiments::command("apply try calc.py " + hunks[0].id, workspace, box.home);
+                    CHECK(box.read("calc.py").rfind("def add(a, b):\n    return a + b\n", 0) == 0);  // the hunk is in the project
+                    bool refused = false;
+                    try { experiments::apply(experiment, "calc.py", hunks[0].id); } catch (const Error&) { refused = true; }
+                    CHECK(refused);  // a hunk that no longer fits is refused
+                }
+                bool refused = false;
+                try { experiments::apply(experiment, "calc.py", "00000000"); } catch (const Error&) { refused = true; }
+                CHECK(refused);  // an unknown hunk is refused
+                refused = false;
+                try { experiments::create_worktree(workspace, (box.project / "inside").string(), "x"); } catch (const Error&) { refused = true; }
+                CHECK(refused);  // a worktree inside the project is refused
+            }
+        }
     }
 
     // A job runs in the background and stops when the request ends.

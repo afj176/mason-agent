@@ -1,6 +1,7 @@
 #include "script.hpp"
 
 #include "agent.hpp"
+#include "experiments.hpp"
 #include "navigation.hpp"
 #include "shell.hpp"
 
@@ -10,7 +11,7 @@
 namespace mason::script {
 
 const std::set<std::string>& names() {
-    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status"};
+    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree"};
     return all;
 }
 
@@ -19,6 +20,7 @@ const char* const kUsage =
     "mason map --workspace PATH --query NAME\n"
     "mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics\n"
     "mason git-status --workspace PATH\n"
+    "mason worktree --workspace PATH --destination NEW_PATH --branch NEW_BRANCH\n"
     "  For scripts: one operation, printed as JSON Lines, then exit. 0 means it completed, 2 that it ran and did not, 1 an error.\n"
     "  exec only reads unless you pass --auto, which lets it edit files and run commands in the sandbox. Nothing is ever asked:\n"
     "  an approval it would need is reported and declined. --prompt-file PATH reads the request from a file.\n"
@@ -57,6 +59,10 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
             json matches = json::array();
             for (const MapMatch& match : result.matches) matches.push_back({{"path", match.path}, {"line", match.line}, {"kind", match.kind}, {"name", match.name}, {"text", match.text}});
             event("map.result", {{"query", query}, {"files", result.files}, {"partial", result.partial}, {"matches", matches}});
+            return 0;
+        }
+        if (operation == "worktree") {
+            event("worktree.created", {{"path", experiments::create_worktree(workspace, get("destination"), get("branch"))}});
             return 0;
         }
         if (operation == "git-status") {

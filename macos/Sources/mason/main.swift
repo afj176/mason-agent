@@ -499,6 +499,8 @@ final class CLI {
             } else {
                 for line in try Schedules.command(rest, home: home, workspace: workspace.root.path, endpoint: endpoint).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             }
+        case "/experiment", "/experiments":
+            for line in try await Experiments.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/comment", "/comments":
             if rest.lowercased() == "send" {
                 if (session.comments ?? []).isEmpty { Term.line(Term.paint(Term.dim, "  No comments are waiting.")) } else { await send(" ") }
@@ -590,6 +592,7 @@ final class CLI {
             ("/commands", "List your custom slash commands"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"),
             ("/review", "Have the model read what this session changed and pin what it finds as comments"),
             ("/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"),
             ("/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"),

@@ -378,6 +378,36 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(code, 1, "the journal may not be inside the project")
     }
 
+    func testAnExperimentStartsFromTheProjectAsItStandsAndAHunkComesBack() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let made = try await Shell.run("git init -q . && git add . && git -c user.name=t -c user.email=t@t.invalid commit -qm start", in: workspace, sandboxed: false)
+        try XCTSkipIf(made.exitCode != 0, "git is not available: " + made.output)
+        // An uncommitted edit and an untracked file: the experiment starts with both.
+        try "def add(a, b):\n    return a - b\n\n\ndef twice(a):\n    return a * 2\n".write(to: folder.appendingPathComponent("calc.py"), atomically: true, encoding: .utf8)
+        try "draft\n".write(to: folder.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let said = try await Experiments.command("new try", workspace: workspace, home: home)
+        let experiment = try XCTUnwrap(Experiments.list(workspace, home: home).first)
+        defer { try? FileManager.default.removeItem(atPath: experiment.path) }
+        XCTAssertTrue(said.contains(experiment.path) && experiment.branch == "mason/try", said)
+        XCTAssertEqual(try String(contentsOfFile: experiment.path + "/notes.txt", encoding: .utf8), "draft\n")
+        XCTAssertTrue(try String(contentsOfFile: experiment.path + "/calc.py", encoding: .utf8).contains("twice"))
+        let nothing = try await Experiments.changed(experiment)
+        XCTAssertEqual(nothing, [], "a new experiment has changed nothing")
+        let index = try await Shell.run("git status --porcelain", in: workspace, sandboxed: false).output
+        XCTAssertTrue(index.contains(" M calc.py") && index.contains("?? notes.txt"), "the project's own index is untouched: " + index)
+
+        try "def add(a, b):\n    return a + b\n\n\ndef twice(a):\n    return a * 2\n".write(toFile: experiment.path + "/calc.py", atomically: true, encoding: .utf8)
+        let changed = try await Experiments.changed(experiment)
+        XCTAssertEqual(changed, ["calc.py"])
+        let hunks = try await Experiments.hunks(experiment, path: "calc.py")
+        XCTAssertEqual(hunks.count, 1)
+        _ = try await Experiments.command("apply try calc.py \(hunks[0].id)", workspace: workspace, home: home)
+        XCTAssertTrue(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8).hasPrefix("def add(a, b):\n    return a + b\n"), "the hunk is in the project")
+        do { try await Experiments.apply(experiment, path: "calc.py", hunk: hunks[0].id); XCTFail("a hunk that no longer fits is refused") } catch {}
+        do { try await Experiments.apply(experiment, path: "calc.py", hunk: "00000000"); XCTFail("an unknown hunk is refused") } catch {}
+        do { _ = try await Experiments.createWorktree(workspace, destination: folder.appendingPathComponent("inside").path, branch: "x"); XCTFail("a worktree inside the project is refused") } catch {}
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []
