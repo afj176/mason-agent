@@ -26,7 +26,9 @@ std::vector<std::string> sandbox_arguments(const std::string& workspace);
 
 /// Runs one shell command in the project folder and returns its combined output. The command gets no terminal input.
 /// It runs in its own session, so a deadline or a stop ends it together with every program it started.
-CommandResult run(const std::string& command, const Workspace& workspace, bool sandboxed, double timeout_seconds = 120, const CancelToken& cancel = nullptr);
+/// `on_output` receives the command's output as it arrives, for a caller that wants to show it before the command ends.
+CommandResult run(const std::string& command, const Workspace& workspace, bool sandboxed, double timeout_seconds = 120, const CancelToken& cancel = nullptr,
+                  const std::function<void(const char*, size_t)>& on_output = nullptr);
 
 /// Starts a long-running program with its output in a log file. It is killed when the calling process exits.
 /// Returns its process id.

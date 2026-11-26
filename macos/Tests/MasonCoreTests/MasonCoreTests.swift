@@ -278,6 +278,93 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(session.turns.last?.request, "/review calc.py bugs", "the session shows what was typed")
     }
 
+    // MARK: the extra tools
+
+    func testLineRangesSeveralEditsAtOnceAndADelegatedQuestion() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        try (1...500).map { "line \($0)" }.joined(separator: "\n").write(to: folder.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
+        let model = ScriptedModel([
+            call("read_lines", ["path": "big.txt", "start": "250", "count": "3"]),
+            ModelReply(toolCalls: [ToolCall(id: "e1", name: "apply_edits", arguments: #"{"path":"calc.py","edits":[{"old_text":"a - b","new_text":"a + b"},{"old_text":"def add","new_text":"def plus"}]}"#)]),
+            ModelReply(toolCalls: [ToolCall(id: "e2", name: "apply_edits", arguments: #"{"path":"calc.py","edits":[{"old_text":"plus","new_text":"sum"},{"old_text":"not there","new_text":"x"}]}"#)]),
+            ModelReply(toolCalls: [ToolCall(id: "d1", name: "delegate_readonly", arguments: #"{"question":"What does it return?","paths":["calc.py"]}"#)]),
+            ModelReply(text: "calc.py:2 returns a + b."),
+            call("git_status", [:]),
+            ModelReply(text: "Done."),
+        ])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Work on it")
+        XCTAssertEqual(session.state, "Completed")
+        let results = session.activities.map(\.result)
+        XCTAssertTrue(results[0].hasPrefix("250\tline 250\n251\tline 251\n252\tline 252") && results[0].hasSuffix("[lines 250–252 of 500]"))
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .failed, .completed, .completed])
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def plus(a, b):\n    return a + b\n", "the second batch changed nothing because one of its edits did not apply")
+        XCTAssertTrue(results[2].contains("Edit 2") && results[2].contains("Nothing was changed"))
+        XCTAssertEqual(results[3], "calc.py:2 returns a + b.")
+        XCTAssertTrue(model.seen[4][1].content.contains("2\t    return a + b") && model.seen[4].count == 2, "the separate context sees only the files and the question")
+        XCTAssertEqual(results[4], "This project is not a Git repository.")
+        XCTAssertEqual(session.turns[0].changes.count, 1)
+        _ = try Agent.undoLatest(&session, store: store)
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a - b\n")
+    }
+
+    func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        var asked: [String] = []
+        let agent = Agent(store: store, model: ScriptedModel([]), approve: { asked.append($0.tool); return true }, emit: { _ in })
+        let model = ScriptedModel([
+            call("start_job", ["command": "for i in 1 2 3; do echo tick $i; sleep 0.1; done"]),
+            call("start_job", ["command": "sleep 60"]),
+            ModelReply(text: "Started."),
+        ])
+        let running = Agent(store: store, model: model, approve: { asked.append($0.tool); return true }, emit: { _ in })
+        // The first job is polled between the model's steps by a tool call made from the script.
+        model.replies.insert(call("poll_job", ["id": "PLACEHOLDER", "wait_ms": "3000"]), at: 1)
+        model.onRequest = { number in
+            // Fill in the id the first start_job returned.
+            if number == 2, let started = model.seen.last?.last?.content, let id = started.split(separator: " ").dropFirst(2).first {
+                model.replies[0] = call("poll_job", ["id": String(id.dropLast()), "wait_ms": "3000"])
+            }
+        }
+        let began = Date()
+        await running.run(&session, request: "Start them")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(asked, ["start_job", "start_job"], "starting a job asks, like any command outside Auto")
+        let polled = session.activities[1].result
+        XCTAssertTrue(polled.contains("exited 0") && polled.contains("tick 1") && polled.contains("tick 3"), polled)
+        XCTAssertTrue(running.jobs.isEmpty, "every job is stopped when the request ends")
+        XCTAssertLessThan(Date().timeIntervalSince(began), 20, "the 60 second job did not hold the request open")
+        _ = agent
+    }
+
+    func testProjectWorkflowsAndSkillsAreOfferedOnlyWhenTheProjectHasThem() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        let workspace = try Workspace(path: folder.path)
+        XCTAssertFalse(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "run_workflow" || $0.name == "read_skill" })
+        try #"{"version": 1, "workflows": {"stamp": {"executable": "sh", "arguments": ["-c", "printf done > stamp.txt; echo \"it's stamped\""]}}}"#
+            .write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent(".mason/skills/release"), withIntermediateDirectories: true)
+        try "---\ndescription: How we cut a release\n---\nTag, then publish.".write(to: folder.appendingPathComponent(".mason/skills/release/SKILL.md"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(Agent.extraTools(session: session, workspace: workspace).map(\.name).filter { $0 == "run_workflow" || $0 == "read_skill" }, ["run_workflow", "read_skill"])
+        XCTAssertEqual(ProjectWorkflows.commandLine(.init(executable: "sh", arguments: ["-c", "echo it's"], directory: "src")), #"cd 'src' && 'sh' '-c' 'echo it'\''s'"#)
+
+        var asked: [String] = []
+        let model = ScriptedModel([call("read_skill", ["name": "release"]), call("run_workflow", ["name": "stamp"]), call("run_workflow", ["name": "missing"]), ModelReply(text: "Done.")])
+        await Agent(store: store, model: model, approve: { asked.append($0.subject); return true }, emit: { _ in }).run(&session, request: "Release it")
+        XCTAssertTrue(model.seen[0][0].content.contains("release (How we cut a release)"), "the model is told which skills exist")
+        XCTAssertTrue(session.activities[0].result.contains("Tag, then publish."))
+        XCTAssertEqual(asked, ["workflow stamp"])
+        XCTAssertTrue(session.activities[1].result.contains("it's stamped") && session.activities[1].result.contains("stamp.txt"), session.activities[1].result)
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .failed])
+        XCTAssertEqual(session.turns[0].changes.map(\.path), ["stamp.txt"], "what a workflow changes can be undone")
+
+        var reading = try store.create(workspace: session.workspace, permission: .readOnly)
+        reading.askOnly = true
+        let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name)
+        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "read_skill"], "a read-only session gets no editing, job or workflow tools")
+        try "{\"version\": 2}".write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try ProjectWorkflows.load(workspace))
+    }
+
     // MARK: queue and steer
 
     func testAQueuedMessageRunsAfterTheRequestCompletes() async throws {

@@ -125,10 +125,225 @@ const std::vector<ToolSpec>& Agent::mcp_tools() {
     return list;
 }
 
-std::vector<ToolSpec> Agent::offered_tools() const {
+std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace) {
+    auto schema = [](json properties, std::vector<std::string> required) {
+        return json{{"type", "object"}, {"properties", std::move(properties)}, {"required", std::move(required)}, {"additionalProperties", false}};
+    };
+    const json text = {{"type", "string"}};
+    std::vector<ToolSpec> list = {
+        {"read_lines", "Read up to 200 numbered lines of a text file from a starting line. Use it for large files instead of read_file.",
+         schema({{"path", text}, {"start", {{"type", "integer"}, {"minimum", 1}}}, {"count", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}}, {"path", "start", "count"})},
+        {"git_status", "Show the Git branch and which files are changed, staged or untracked.", schema(json::object(), {})},
+        {"delegate_readonly", "Ask one question about 1 to 8 named files in a separate context that can only read them. Returns findings with line numbers. Use it to keep long files out of this conversation.",
+         schema({{"question", text}, {"paths", {{"type", "array"}, {"items", text}, {"minItems", 1}, {"maxItems", 8}}}}, {"question", "paths"})},
+    };
+    const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
+    if (!read_only) {
+        list.push_back({"apply_edits", "Make several exact replacements in one existing file at once. Each old_text must match exactly once. Nothing is written unless every edit applies.",
+                        schema({{"path", text}, {"edits", {{"type", "array"}, {"minItems", 1}, {"maxItems", 32}, {"items", schema({{"old_text", text}, {"new_text", text}}, {"old_text", "new_text"})}}}}, {"path", "edits"})});
+        list.push_back({"start_job", "Start a long-running shell command (a server, a watcher, a long test run) and return at once with a job id. Read it with poll_job. Jobs stop when the request ends.",
+                        schema({{"command", text}}, {"command"})});
+        list.push_back({"poll_job", "Read a job's state and recent output, waiting up to wait_ms for it to finish.",
+                        schema({{"id", text}, {"wait_ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", 10000}}}}, {"id", "wait_ms"})});
+        list.push_back({"stop_job", "Stop a job and return its output.", schema({{"id", text}}, {"id"})});
+        try {
+            std::vector<std::string> names;
+            for (const auto& [name, workflow] : workflows::load(workspace)) names.push_back(name);
+            if (!names.empty()) list.push_back({"run_workflow", "Run one of the project's named workflows: " + join(names, ", ") + ".", schema({{"name", text}}, {"name"})});
+        } catch (const std::exception&) {
+            // A manifest that cannot be read offers no workflows.
+        }
+    }
+    if (!skills::list(workspace).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
+    return list;
+}
+
+std::vector<ToolSpec> Agent::offered_tools(const Session& session, const Workspace& workspace) const {
     std::vector<ToolSpec> offered = tools();
+    const std::vector<ToolSpec> extra = extra_tools(session, workspace);
+    offered.insert(offered.end(), extra.begin(), extra.end());
     if (!mcp::enabled(store_.home()).empty()) offered.insert(offered.end(), mcp_tools().begin(), mcp_tools().end());
     return offered;
+}
+
+std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const ToolCall& call, const json& arguments, const Workspace& workspace, Session& session, const CancelToken& cancel) {
+    auto text = [&](const char* key) -> std::optional<std::string> {
+        if (arguments.contains(key) && arguments[key].is_string()) return arguments[key].get<std::string>();
+        return std::nullopt;
+    };
+    auto number = [&](const char* key) -> std::optional<int> {
+        if (!arguments.contains(key)) return std::nullopt;
+        const json& value = arguments[key];
+        if (value.is_number()) return static_cast<int>(value.get<double>());
+        if (value.is_string()) {
+            const std::string digits = value.get<std::string>();
+            if (!digits.empty() && digits.size() <= 9 && digits.find_first_not_of("0123456789") == std::string::npos) return std::stoi(digits);
+        }
+        return std::nullopt;
+    };
+    using Outcome = std::pair<std::string, std::string>;
+    const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
+    const bool sandboxed = session.permission == Permission::Auto;
+
+    if (call.name == "read_lines") {
+        const auto path = text("path");
+        const auto start = number("start"), count = number("count");
+        if (!path || !start || !count || *start < 1 || *count < 1 || *count > 200) throw Error("read_lines needs a path, a start line of 1 or more, and a count of 1 to 200.");
+        const std::optional<std::string> data = workspace.data(*path);
+        if (!data) throw Error(*path + " does not exist.");
+        if (data->size() > 64 * 1024 * 1024) throw Error(*path + " is larger than 64 MiB.");
+        const std::vector<std::string> lines = split(*data, '\n');
+        if (static_cast<size_t>(*start) > lines.size()) throw Error(*path + " has " + std::to_string(lines.size()) + " lines.");
+        const size_t end = std::min(lines.size(), static_cast<size_t>(*start + *count - 1));
+        std::string shown;
+        for (size_t line = static_cast<size_t>(*start); line <= end; line++) {
+            std::string content = lines[line - 1].size() > 2000 ? lines[line - 1].substr(0, 2000) : lines[line - 1];
+            if (!is_valid_utf8(content)) {
+                for (char& c : content) {
+                    if (static_cast<unsigned char>(c) >= 0x80) c = '?';
+                }
+            }
+            shown += std::to_string(line) + "\t" + content + "\n";
+        }
+        return Outcome{"completed", shown + "[lines " + std::to_string(*start) + "–" + std::to_string(end) + " of " + std::to_string(lines.size()) + "]"};
+    }
+    if (call.name == "git_status") {
+        std::error_code failure;
+        if (!fs::exists(fs::path(workspace.root()) / ".git", failure)) return Outcome{"completed", "This project is not a Git repository."};
+        // Nothing in the repository's own settings is allowed to start a program for this.
+        const CommandResult result = shell::run("git -c core.fsmonitor= -c core.hooksPath=/dev/null --no-optional-locks status --porcelain=v1 --branch", workspace, shell::sandbox_available(), 20, cancel);
+        return Outcome{result.exit_code == 0 ? "completed" : "failed", result.output.empty() ? "Nothing to report." : result.output};
+    }
+    if (call.name == "delegate_readonly") {
+        const auto question = text("question");
+        std::vector<std::string> paths;
+        if (arguments.contains("paths") && arguments["paths"].is_array()) {
+            for (const json& item : arguments["paths"]) {
+                if (item.is_string()) paths.push_back(item.get<std::string>());
+            }
+        }
+        if (!question || trim(*question).empty() || paths.empty() || paths.size() > 8) throw Error("delegate_readonly needs a question and 1 to 8 paths.");
+        std::string files;
+        for (const std::string& path : paths) {
+            const std::vector<std::string> lines = split(workspace.read(path), '\n');
+            std::string numbered;
+            for (size_t i = 0; i < lines.size(); i++) numbered += std::to_string(i + 1) + "\t" + lines[i] + (i + 1 < lines.size() ? "\n" : "");
+            files += "File " + path + ":\n" + (numbered.size() > 60000 ? utf8_prefix(numbered, 60000) + "\n[File clipped.]" : numbered) + "\n\n";
+        }
+        emit_({AgentEvent::Kind::Status, "Asking about " + std::to_string(paths.size()) + (paths.size() == 1 ? " file" : " files"), {}});
+        const std::vector<ChatMessage> ask = {
+            {"system", "You answer one question about the files you are given. You cannot edit, run or read anything else. Cite findings as path:line. Say so when the files do not answer the question.", {}, ""},
+            {"user", files + "Question: " + *question, {}, ""},
+        };
+        const std::string answer = trim(model_.complete(ask, {}, [](const std::string&) {}, cancel).text);
+        return answer.empty() ? Outcome{"failed", "The separate context returned nothing."} : Outcome{"completed", answer};
+    }
+    if (call.name == "apply_edits") {
+        if (read_only) throw Error("This session is read-only. Tell the user what you would change instead.");
+        const auto path = text("path");
+        if (!path || !arguments.contains("edits") || !arguments["edits"].is_array() || arguments["edits"].empty() || arguments["edits"].size() > 32) throw Error("apply_edits needs a path and 1 to 32 edits.");
+        if (!workspace.exists(*path)) throw Error(*path + " does not exist. Use write_file to create it.");
+        const std::string before = workspace.read(*path);
+        std::string after = before;
+        size_t index = 0;
+        for (const json& edit : arguments["edits"]) {
+            index++;
+            if (!edit.is_object() || !edit.contains("old_text") || !edit["old_text"].is_string() || !edit.contains("new_text") || !edit["new_text"].is_string() || edit["old_text"].get<std::string>().empty()) {
+                throw Error("Edit " + std::to_string(index) + " needs old_text and new_text.");
+            }
+            const std::string old_text = edit["old_text"].get<std::string>(), new_text = edit["new_text"].get<std::string>();
+            const size_t occurrences = count_occurrences(after, old_text);
+            if (occurrences != 1) {
+                throw Error("Edit " + std::to_string(index) + ": old_text " + (occurrences == 0 ? std::string("was not found") : "matches " + std::to_string(occurrences) + " places") + " in " + *path +
+                            ". Nothing was changed. Read the file again and make each old_text match exactly once.");
+            }
+            after.replace(after.find(old_text), old_text.size(), new_text);
+        }
+        const size_t edits = arguments["edits"].size();
+        if (session.permission == Permission::ReviewEdits) {
+            std::string rows;
+            int shown = 0;
+            for (const DiffLine& row : diff_lines(before, after)) {
+                if (row.kind == ' ' || shown >= 60) continue;
+                rows += std::string(1, row.kind) + " " + row.text + "\n";
+                shown++;
+            }
+            if (!allowed({call.name, "Edit " + *path + " (" + std::to_string(edits) + " changes)", rows, *path}, session)) {
+                return Outcome{"denied", "The user declined these edits. Do not retry them; ask what they want instead."};
+            }
+        }
+        workspace.write(*path, after);
+        Turn& turn = session.turns.back();
+        auto existing = std::find_if(turn.changes.begin(), turn.changes.end(), [&](const FileChange& change) { return change.path == *path; });
+        if (existing != turn.changes.end()) {
+            existing->after = after;
+            existing->after_blob.clear();
+            existing->after_missing = false;
+        } else {
+            turn.changes.push_back({*path, before, after});
+        }
+        const DiffCounts counts = diff_counts(before, after);
+        return Outcome{"completed", "Edited " + *path + " with " + std::to_string(edits) + (edits == 1 ? " change" : " changes") + " (+" + std::to_string(counts.added) + " −" + std::to_string(counts.removed) + ")."};
+    }
+    if (call.name == "start_job" || call.name == "run_workflow") {
+        if (read_only) throw Error("This session is read-only. Commands are not available.");
+        std::string command, title, subject;
+        if (call.name == "run_workflow") {
+            const std::string name = text("name").value_or("");
+            const std::map<std::string, ProjectWorkflow> known = workflows::load(workspace);
+            const auto found = known.find(name);
+            if (found == known.end()) throw Error("No workflow named " + name + " in mason.workflows.json.");
+            command = workflows::command_line(found->second);
+            title = "Run the workflow " + name + ": " + command;
+            subject = "workflow " + name;
+        } else {
+            command = text("command").value_or("");
+            if (command.empty()) throw Error("start_job needs a command.");
+            title = "Start in the background: " + command;
+            subject = command;
+        }
+        if (!sandboxed) {
+            const std::string detail = "Runs in " + workspace.root() + " with your account and environment. It is not sandboxed." +
+                                       (call.name == "start_job" ? " It keeps running until this request ends, for at most 30 minutes." : " Limit: 120 seconds.");
+            if (!allowed({call.name, title, detail, subject}, session)) return Outcome{"denied", "The user declined. Do not retry it; ask what they want instead."};
+        }
+        if (call.name == "start_job") {
+            const std::string id = jobs_.start(command, workspace, sandboxed);
+            return Outcome{"completed", "Started job " + id + ". Read it with poll_job; it stops when this request ends."};
+        }
+        emit_({AgentEvent::Kind::Status, "Running the workflow", {}});
+        const snapshot::Map before = snapshot::capture(workspace, snapshot_);
+        CommandResult result;
+        try {
+            result = shell::run(command, workspace, sandboxed, 120, cancel);
+        } catch (...) {
+            record_command_changes(before, workspace, session);
+            throw;
+        }
+        const std::vector<std::string> changed = record_command_changes(before, workspace, session);
+        std::string output = "exit " + std::to_string(result.exit_code) + "\n" + result.output;
+        if (!changed.empty()) {
+            const std::vector<std::string> shown(changed.begin(), changed.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(12, changed.size())));
+            output += "\n[Files changed by this workflow: " + join(shown, ", ") + "]";
+        }
+        return Outcome{result.exit_code == 0 && !result.timed_out ? "completed" : "failed", output};
+    }
+    if (call.name == "poll_job" || call.name == "stop_job") {
+        const auto id = text("id");
+        if (!id) throw Error(call.name + " needs the job id.");
+        return Outcome{"completed", jobs_.observe(*id, call.name == "stop_job", call.name == "poll_job" ? number("wait_ms").value_or(0) : 0, cancel)};
+    }
+    if (call.name == "read_skill") {
+        const std::vector<Definition> known = skills::list(workspace);
+        const std::string wanted = to_lower(text("name").value_or(""));
+        for (const Definition& skill : known) {
+            if (to_lower(skill.name) == wanted) return Outcome{"completed", "Skill " + skill.name + " (" + skill.source + "):\n" + skill.body};
+        }
+        std::vector<std::string> names;
+        for (const Definition& skill : known) names.push_back(skill.name);
+        throw Error("No skill named " + wanted + ". Skills: " + join(names, ", "));
+    }
+    return std::nullopt;
 }
 
 void Agent::send_while_running(const std::string& text, bool steer) {
@@ -214,7 +429,11 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
             }
         }
         if (!arrived.empty() || continuing) store_.save(session);
-        if (!continuing) return;
+        if (!continuing) {
+            // Whatever the request left running in the background ends with it.
+            jobs_.stop_all();
+            return;
+        }
         emit_({AgentEvent::Kind::FollowUp, input, {}, std::make_shared<const Session>(session)});
         emit_({AgentEvent::Kind::Status, steering ? "Steering" : "Starting the queued message", {}});
     }
@@ -236,8 +455,15 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         return;
     }
     if (session.title == "New session") session.title = utf8_length(input) > 55 ? utf8_prefix(input, 55) + "…" : input;
-    const std::vector<ToolSpec> offered = offered_tools();
+    const std::vector<ToolSpec> offered = offered_tools(session, *workspace);
+    offered_names_.clear();
+    for (const ToolSpec& tool : offered) offered_names_.push_back(tool.name);
     std::string prompt = system_prompt(session);
+    {
+        std::vector<std::string> listed;
+        for (const Definition& skill : skills::list(*workspace)) listed.push_back(skill.name + " (" + skill.description + ")");
+        if (!listed.empty()) prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + join(listed, "; ") + ".";
+    }
     {
         std::vector<std::string> names;
         for (const McpServer& server : mcp::enabled(store_.home())) names.push_back(server.name);
@@ -337,6 +563,7 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
     Activity activity;
     activity.tool = call.name;
     activity.subject = text("command").value_or(text("path").value_or(text("query").value_or("")));
+    if (activity.subject.empty()) activity.subject = text("name").value_or(text("id").value_or(text("question").value_or("")));
     if (activity.subject.empty() && text("server")) activity.subject = *text("server") + (text("tool") ? "/" + *text("tool") : text("uri") ? "/" + *text("uri") : "");
     session.activities.push_back(activity);
     const size_t slot = session.activities.size() - 1;
@@ -477,9 +704,8 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             const mcp::Operation operation = call.name == "mcp_read" ? mcp::Operation::Read : call.name == "mcp_resources" ? mcp::Operation::Resources : mcp::Operation::Tools;
             return finish("completed", mcp::request(*server, operation, uri.value_or(""), json::object(), cancel));
         }
-        std::vector<std::string> names;
-        for (const ToolSpec& tool : offered_tools()) names.push_back(tool.name);
-        throw Error("Unknown tool " + call.name + ". Use one of: " + join(names, ", "));
+        if (const auto extra = perform_extra(call, arguments, workspace, session, cancel)) return finish(extra->first, extra->second);
+        throw Error("Unknown tool " + call.name + ". Use one of: " + join(offered_names_, ", "));
     } catch (const Cancelled&) {
         finish("failed", "Stopped by the user.");
         throw;

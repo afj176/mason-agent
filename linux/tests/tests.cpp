@@ -774,11 +774,115 @@ static void test_schedules() {
     CHECK(starts_with(schedules::load(box.home)[0].last_outcome, "Skipped:"));
 }
 
+static ModelReply raw_call(const std::string& name, const std::string& arguments) {
+    ModelReply reply;
+    reply.tool_calls.push_back({new_id(), name, arguments});
+    return reply;
+}
+
+static void test_extra_tools() {
+    const auto approve = [](const ApprovalRequest&) { return true; };
+    const auto quiet = [](const AgentEvent&) {};
+
+    // Line ranges, several edits at once, a delegated question, and Git status outside a repository.
+    {
+        Sandbox box;
+        std::string big;
+        for (int line = 1; line <= 500; line++) big += "line " + std::to_string(line) + (line < 500 ? "\n" : "");
+        box.write("big.txt", big);
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        model.replies = {
+            call("read_lines", {{"path", "big.txt"}, {"start", "250"}, {"count", 3}}),
+            raw_call("apply_edits", R"({"path":"calc.py","edits":[{"old_text":"a - b","new_text":"a + b"},{"old_text":"def add","new_text":"def plus"}]})"),
+            raw_call("apply_edits", R"({"path":"calc.py","edits":[{"old_text":"plus","new_text":"sum"},{"old_text":"not there","new_text":"x"}]})"),
+            raw_call("delegate_readonly", R"({"question":"What does it return?","paths":["calc.py"]})"),
+            say("calc.py:2 returns a + b."),
+            call("git_status", json::object()),
+            say("Done."),
+        };
+        Agent(store, model, approve, quiet).run(session, "Work on it");
+        CHECK(session.state == "Completed" && session.activities.size() == 5);
+        CHECK(starts_with(session.activities[0].result, "250\tline 250\n251\tline 251\n252\tline 252\n") && ends_with(session.activities[0].result, "[lines 250–252 of 500]"));
+        CHECK(session.activities[1].state == "completed" && session.activities[2].state == "failed");
+        CHECK(box.read("calc.py") == "def plus(a, b):\n    return a + b\n");  // the second batch changed nothing because one edit did not apply
+        CHECK(session.activities[2].result.find("Edit 2") != std::string::npos && session.activities[2].result.find("Nothing was changed") != std::string::npos);
+        CHECK(session.activities[3].result == "calc.py:2 returns a + b.");
+        CHECK(model.seen[4].size() == 2 && model.seen[4][1].content.find("2\t    return a + b") != std::string::npos);  // the separate context sees only the files and the question
+        CHECK(session.activities[4].result == "This project is not a Git repository.");
+        CHECK(session.turns[0].changes.size() == 1);
+        Agent::undo_latest(session, store);
+        CHECK(box.read("calc.py") == "def add(a, b):\n    return a - b\n");
+    }
+
+    // A job runs in the background and stops when the request ends.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::WorkspaceEdits);
+        std::vector<std::string> asked;
+        ScriptedModel model;
+        model.replies = {call("start_job", {{"command", "for i in 1 2 3; do echo tick $i; sleep 0.1; done"}}), say("placeholder"), call("start_job", {{"command", "sleep 60"}}), say("Started.")};
+        // The second step polls the job the first step started, using the id it returned.
+        model.on_request = [&](size_t number) {
+            if (number != 2) return;
+            const std::string started = model.seen.back().back().content;  // "Started job ID. Read it ..."
+            const std::string id = started.substr(12, 8);
+            model.replies[0] = call("poll_job", {{"id", id}, {"wait_ms", 3000}});
+        };
+        Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.tool); return true; }, quiet);
+        const auto began = std::chrono::steady_clock::now();
+        agent.run(session, "Start them");
+        CHECK(session.state == "Completed" && asked == (std::vector<std::string>{"start_job", "start_job"}));  // starting a job asks, like any command outside Auto
+        const std::string polled = session.activities.size() > 1 ? session.activities[1].result : "";
+        CHECK(polled.find("exited 0") != std::string::npos && polled.find("tick 1") != std::string::npos && polled.find("tick 3") != std::string::npos);
+        CHECK(agent.jobs_empty());  // every job is stopped when the request ends
+        CHECK(std::chrono::steady_clock::now() - began < std::chrono::seconds(20));  // the 60 second job did not hold the request open
+    }
+
+    // Project workflows and skills are offered only when the project has them.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        const Workspace workspace(box.project.string());
+        Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+        auto names = [&](const Session& item) {
+            std::vector<std::string> found;
+            for (const ToolSpec& tool : Agent::extra_tools(item, workspace)) found.push_back(tool.name);
+            return found;
+        };
+        auto has = [](const std::vector<std::string>& list, const char* name) { return std::find(list.begin(), list.end(), name) != list.end(); };
+        CHECK(!has(names(session), "run_workflow") && !has(names(session), "read_skill"));
+        box.write("mason.workflows.json", R"({"version": 1, "workflows": {"stamp": {"executable": "sh", "arguments": ["-c", "printf done > stamp.txt; echo \"it's stamped\""]}}})");
+        box.write(".mason/skills/release/SKILL.md", "---\ndescription: How we cut a release\n---\nTag, then publish.");
+        CHECK(has(names(session), "run_workflow") && has(names(session), "read_skill"));
+        CHECK(workflows::command_line({"sh", {"-c", "echo it's"}, "src"}) == R"(cd 'src' && 'sh' '-c' 'echo it'\''s')");
+
+        std::vector<std::string> asked;
+        ScriptedModel model;
+        model.replies = {call("read_skill", {{"name", "release"}}), call("run_workflow", {{"name", "stamp"}}), call("run_workflow", {{"name", "missing"}}), say("Done.")};
+        Agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); return true; }, quiet).run(session, "Release it");
+        CHECK(model.seen[0][0].content.find("release (How we cut a release)") != std::string::npos);  // the model is told which skills exist
+        CHECK(session.activities.size() == 3 && session.activities[0].result.find("Tag, then publish.") != std::string::npos);
+        CHECK(asked == std::vector<std::string>{"workflow stamp"});
+        CHECK(session.activities[1].state == "completed" && session.activities[1].result.find("it's stamped") != std::string::npos && session.activities[1].result.find("stamp.txt") != std::string::npos);
+        CHECK(session.activities[2].state == "failed");
+        CHECK(session.turns[0].changes.size() == 1 && session.turns[0].changes[0].path == "stamp.txt");  // what a workflow changes can be undone
+
+        Session reading = store.create(workspace.root(), Permission::ReadOnly);
+        reading.ask_only = true;
+        CHECK(names(reading) == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "read_skill"}));  // no editing, job or workflow tools
+        box.write("mason.workflows.json", "{\"version\": 2}");
+        CHECK_THROWS(workflows::load(workspace));
+    }
+}
+
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

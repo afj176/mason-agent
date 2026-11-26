@@ -2,6 +2,7 @@
 #pragma once
 #include "harness.hpp"
 #include "mcp.hpp"
+#include "tools.hpp"
 #include "model.hpp"
 #include "shell.hpp"
 
@@ -53,6 +54,10 @@ public:
     static const std::vector<ToolSpec>& tools();
     /// Offered only when the user has registered an MCP server, so sessions without one keep a short tool list.
     static const std::vector<ToolSpec>& mcp_tools();
+    /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
+    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace);
+    /// True when no background job from the last request is still held.
+    bool jobs_empty() { return jobs_.empty(); }
     static constexpr size_t kFollowUpLimit = 16;
     /// Runs a request, then any follow-ups sent while it ran. "/queue" resumes follow-ups left from an earlier stop.
     /// A queued follow-up runs only after a request that completed; a steering one runs whatever happened.
@@ -71,8 +76,11 @@ public:
 private:
     void run_turn(Session& session, const std::string& request, const CancelToken& cancel);
     std::string perform(const ToolCall& call, const Workspace& workspace, Session& session, const CancelToken& cancel);
-    /// The tools for this request: the built-in ones, plus the MCP tools when a server is registered.
-    std::vector<ToolSpec> offered_tools() const;
+    /// The tools for this request: the built-in ones, the extra ones that fit the session and the project, and the
+    /// MCP tools when a server is registered.
+    std::vector<ToolSpec> offered_tools(const Session& session, const Workspace& workspace) const;
+    /// Carries out one of the extra tools. Returns nothing when the tool is not one of them; otherwise the state and the result.
+    std::optional<std::pair<std::string, std::string>> perform_extra(const ToolCall& call, const json& arguments, const Workspace& workspace, Session& session, const CancelToken& cancel);
     bool allowed(const ApprovalRequest& request, Session& session);
     /// Records what a command created, changed or deleted, and returns the paths.
     std::vector<std::string> record_command_changes(const snapshot::Map& before, const Workspace& workspace, Session& session);
@@ -83,6 +91,10 @@ private:
     Emit emit_;
     /// The project as last read, so each command only re-reads the files that changed.
     snapshot::Map snapshot_;
+    /// Background programs started during the current request.
+    Jobs jobs_;
+    /// The tools offered for the request in progress, for the message about an unknown tool.
+    std::vector<std::string> offered_names_;
     /// Follow-ups that arrive while a request runs. Everything here is read and changed under the lock.
     std::mutex inbox_lock_;
     std::vector<FollowUp> inbox_;
