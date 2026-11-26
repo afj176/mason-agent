@@ -2431,10 +2431,13 @@ final class LanguageServerTests: XCTestCase {
         XCTAssertEqual(server.languageId, "c")
         XCTAssertNil(LanguageServers.server(for: "txt"))
 
-        // What the server is sent is a well-formed conversation, and what it sends back is read frame by frame.
-        let sent = LanguageServers.messages(in: LanguageServers.conversation(root: workspace.root, file: workspace.root.appendingPathComponent("sum.c"), text: "x", languageId: "c", line: 4, column: 21, mode: "references"))
-        XCTAssertEqual(sent.map { $0["method"] as? String ?? "" }, ["initialize", "initialized", "textDocument/didOpen", "textDocument/references", "shutdown", "exit"])
-        XCTAssertEqual(((sent[3]["params"] as? [String: Any])?["position"] as? [String: Int]), ["line": 3, "character": 20])
+        // What a server writes is read message by message, and one still arriving is left for later.
+        let two = LanguageServers.frame(["id": 1, "result": "a"]) + LanguageServers.frame(["method": "note"])
+        let part = LanguageServers.frames(in: two.prefix(two.count - 5))
+        XCTAssertEqual(part.messages.count, 1)
+        XCTAssertEqual(part.used, LanguageServers.frame(["id": 1, "result": "a"]).count)
+        XCTAssertEqual(LanguageServers.frames(in: two).messages.map { $0["method"] as? String ?? "" }, ["", "note"])
+        XCTAssertEqual(LanguageServers.frames(in: two).used, two.count)
 
         let definition = try await LanguageServers.query(workspace, server: server, path: "sum.c", line: 4, column: 21, mode: "definitions", sandboxed: false)
         XCTAssertEqual(definition, "\(server.name): 1 definitions in the project.\nsum.c:1:5  int total(int a, int b) {")
@@ -2442,23 +2445,196 @@ final class LanguageServerTests: XCTestCase {
         XCTAssertTrue(references.hasPrefix("\(server.name): 2 references in the project, and 1 outside it (libraries).\nsum.c:1:5"), references)
         XCTAssertTrue(references.contains("sum.c:4:21  int main() { return total(1, count); }"))
         let diagnostics = try await LanguageServers.query(workspace, server: server, path: "sum.c", line: 1, column: 1, mode: "diagnostics", sandboxed: false)
-        XCTAssertEqual(diagnostics, "\(server.name): 1 diagnostic for sum.c.\nsum.c:3:12  error  use of undeclared identifier 'count'")
+        XCTAssertEqual(diagnostics, "\(server.name): 2 diagnostics for sum.c.\nsum.c:3:12  error  use of undeclared identifier 'count'\nsum.c:1:1  warning  unused function")
 
         // Through the agent it asks first, like a command, and a read-only session may not start it.
         let store = try SessionStore(home: base.appendingPathComponent("home"))
         var session = try store.create(workspace: workspace.root.path, permission: .reviewEdits)
         XCTAssertTrue(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "inspect_symbol" })
         let ask = call("inspect_symbol", ["path": "sum.c", "line": "4", "column": "21", "mode": "definitions"])
+        // The server stays running for the request, so a second question in it does not ask again. The next request does.
         var asked: [String] = [], answers = [true, false]
-        let agent = Agent(store: store, model: ScriptedModel([ask, ask, ModelReply(text: "Found.")]), approve: { asked.append($0.subject); return answers.removeFirst() }, emit: { _ in })
+        let agent = Agent(store: store, model: ScriptedModel([ask, ask, ModelReply(text: "Found."), ask, ModelReply(text: "No.")]), approve: { asked.append($0.subject); return answers.removeFirst() }, emit: { _ in })
         await agent.run(&session, request: "Where is total defined?")
-        XCTAssertEqual(asked, ["language server \(server.name)", "language server \(server.name)"])
-        XCTAssertEqual(session.activities.map(\.state), [.completed, .denied])
+        XCTAssertEqual(asked, ["language server \(server.name)"])
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed])
         XCTAssertTrue(session.activities[0].result.contains("sum.c:1:5"))
+        await agent.run(&session, request: "And again?")
+        XCTAssertEqual(asked.count, 2)
+        XCTAssertEqual(session.activities.last?.state, .denied)
         session.permission = .readOnly; session.askOnly = true
         await Agent(store: store, model: ScriptedModel([ask, ModelReply(text: "No.")]), approve: { _ in XCTFail("a read-only session must not ask"); return false }, emit: { _ in }).run(&session, request: "Again")
         XCTAssertEqual(session.activities.last?.state, .failed)
         XCTAssertTrue(session.activities.last?.result.contains("read-only") ?? false)
+    }
+}
+
+final class LanguageCheckTests: XCTestCase {
+    /// A project, a data folder, and the stand-in server named for .c files.
+    func project(_ arguments: String = "") throws -> (base: URL, workspace: Workspace, store: SessionStore) {
+        guard let python = TransformersRuntime.python() else { throw XCTSkip("No python3 on this computer.") }
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-check-" + UUID().uuidString)
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "int total(int a, int b) {\n    return a + b;\n}\n".write(to: folder.appendingPathComponent("sum.c"), atomically: true, encoding: .utf8)
+        let fake = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fake-language-server.py").path
+        setenv("MASON_LANGUAGE_SERVERS", "{\"c\": [\"\(python)\", \"\(fake)\"\(arguments)]}", 1)
+        return (base, try Workspace(path: folder.path), try SessionStore(home: base.appendingPathComponent("home")))
+    }
+
+    func testTheErrorsAServerFindsInAnEditGoBackWithItsResult() async throws {
+        let (base, workspace, store) = try project()
+        defer { try? FileManager.default.removeItem(at: base); unsetenv("MASON_LANGUAGE_SERVERS") }
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        let broken = call("edit_file", ["path": "sum.c", "old_text": "return a + b;", "new_text": "return a + count;"])
+        let mended = call("edit_file", ["path": "sum.c", "old_text": "return a + count;", "new_text": "return a + b + 1;"])
+        var asked: [String] = []
+        let agent = Agent(store: store, model: ScriptedModel([broken, mended, ModelReply(text: "Done.")]), approve: { asked.append($0.title); return true }, emit: { _ in })
+        await agent.run(&session, request: "Add one.")
+        // Outside Auto the server is not sandboxed, so starting it is asked about once for the request.
+        XCTAssertEqual(asked, ["Start python3 to check this request's edits"].map { $0.replacingOccurrences(of: "python3", with: LanguageServers.server(for: "c")!.name) })
+        let first = session.activities[0].result, second = session.activities[1].result
+        XCTAssertTrue(first.hasPrefix("Edited sum.c (+1 −1)."), first)
+        // Errors go back; the warning the server also gave does not.
+        XCTAssertTrue(first.contains("reports 1 error in sum.c after this edit"), first)
+        XCTAssertTrue(first.contains("sum.c:3:12  error  use of undeclared identifier 'count'"), first)
+        XCTAssertFalse(first.contains("unused function"))
+        // The same server is told of the second edit, and a clean file adds nothing to the result.
+        XCTAssertEqual(second, "Edited sum.c (+1 −1).")
+    }
+
+    func testADeclinedServerIsNotStartedAndNotAskedAboutAgain() async throws {
+        let (base, workspace, store) = try project()
+        defer { try? FileManager.default.removeItem(at: base); unsetenv("MASON_LANGUAGE_SERVERS") }
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        let broken = call("edit_file", ["path": "sum.c", "old_text": "return a + b;", "new_text": "return a + count;"])
+        let again = call("edit_file", ["path": "sum.c", "old_text": "return a + count;", "new_text": "return count;"])
+        var asked = 0
+        await Agent(store: store, model: ScriptedModel([broken, again, ModelReply(text: "Done.")]), approve: { _ in asked += 1; return false }, emit: { _ in }).run(&session, request: "Break it.")
+        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(session.activities.map(\.result), ["Edited sum.c (+1 −1).", "Edited sum.c (+1 −1)."])
+    }
+
+    func testAServerThatOnlyAnswersWhenAskedIsAskedForTheFilesDiagnostics() async throws {
+        let (base, workspace, _) = try project(", \"--pull\"")
+        defer { try? FileManager.default.removeItem(at: base); unsetenv("MASON_LANGUAGE_SERVERS") }
+        let server = try XCTUnwrap(LanguageServers.server(for: "c"))
+        let sessions = LanguageSessions()
+        let found = try await LanguageServers.errors(workspace, server: server, path: "sum.c", text: "int total() {\n\n    return count;\n}\n", sandboxed: false, sessions: sessions)
+        XCTAssertTrue(found?.contains("sum.c:3:12  error  use of undeclared identifier 'count'") ?? false, found ?? "nothing")
+        let clean = try await LanguageServers.errors(workspace, server: server, path: "sum.c", text: "int total() { return 1; }\n", sandboxed: false, sessions: sessions)
+        XCTAssertNil(clean)
+        await sessions.stopAll()
+    }
+
+    /// With real servers on this computer: the ones that come with Swift.
+    func testARealLanguageServerReportsATypeErrorInAnEditedFile() async throws {
+        unsetenv("MASON_LANGUAGE_SERVERS")
+        guard let server = LanguageServers.server(for: "swift") else { throw XCTSkip("No sourcekit-lsp on this computer.") }
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-real-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base.appendingPathComponent("Sources/demo"), withIntermediateDirectories: true)
+        let manifest = "// swift-tools-version:5.9\nimport PackageDescription\nlet package = Package(name: \"demo\", targets: [.executableTarget(name: \"demo\")])\n"
+        try manifest.write(to: base.appendingPathComponent("Package.swift"), atomically: true, encoding: .utf8)
+        let wrong = "let total: Int = \"seven\"\nprint(total)\n"
+        let right = "let total: Int = 7\nprint(total)\n"
+        let file = base.appendingPathComponent("Sources/demo/main.swift")
+        try wrong.write(to: file, atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: base.path)
+        let sessions = LanguageSessions()
+        let found = try await LanguageServers.errors(workspace, server: server, path: "Sources/demo/main.swift", text: wrong, sandboxed: false, sessions: sessions)
+        XCTAssertTrue(found?.contains("Sources/demo/main.swift:1:") ?? false, found ?? "nothing")
+        XCTAssertTrue(found?.contains("error") ?? false)
+        try right.write(to: file, atomically: true, encoding: .utf8)
+        let clean = try await LanguageServers.errors(workspace, server: server, path: "Sources/demo/main.swift", text: right, sandboxed: false, sessions: sessions)
+        XCTAssertNil(clean, clean ?? "")
+        await sessions.stopAll()
+    }
+
+    func testARealClangdFindsADefinitionAndAnErrorInOneRun() async throws {
+        unsetenv("MASON_LANGUAGE_SERVERS")
+        guard let server = LanguageServers.server(for: "c"), server.name == "clangd" else { throw XCTSkip("No clangd on this computer.") }
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-clangd-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let source = "int total(int a, int b) {\n    return a + b;\n}\nint main() { return total(1, count); }\n"
+        try source.write(to: base.appendingPathComponent("sum.c"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: base.path)
+        let sessions = LanguageSessions()
+        let found = try await LanguageServers.errors(workspace, server: server, path: "sum.c", text: source, sandboxed: false, sessions: sessions)
+        XCTAssertTrue(found?.contains("sum.c:4:30  error") ?? false, found ?? "nothing")
+        // The same running server answers a question about a position.
+        let definition = try await LanguageServers.query(workspace, server: server, path: "sum.c", line: 4, column: 21, mode: "definitions", sandboxed: false, sessions: sessions)
+        XCTAssertTrue(definition.contains("sum.c:1:5  int total(int a, int b) {"), definition)
+        await sessions.stopAll()
+    }
+
+    /// Downloads from the npm registry, so it runs only when asked for: MASON_TEST_INSTALL=1.
+    func testInstallingAServerWithNpmMakesItCheckEdits() async throws {
+        guard ProcessInfo.processInfo.environment["MASON_TEST_INSTALL"] == "1" else { throw XCTSkip("Set MASON_TEST_INSTALL=1 to install a real server from the npm registry.") }
+        unsetenv("MASON_LANGUAGE_SERVERS")
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-install-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let home = base.appendingPathComponent("home"), folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let wrong = "name: demo\nitems: [one, two\n"
+        try wrong.write(to: folder.appendingPathComponent("config.yaml"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+        let before = try await LanguageServers.command("", workspace: workspace, home: home)
+        XCTAssertTrue(before.contains("YAML [yaml]  ·  not installed: /languages install yaml (uses npm)"), before)
+        let said = try await LanguageServers.command("install yaml", workspace: workspace, home: home)
+        XCTAssertEqual(said, "Installed yaml-language-server for YAML.")
+        let server = try XCTUnwrap(LanguageServers.server(for: "yaml", home: home))
+        XCTAssertTrue(server.command[0].hasPrefix(home.path), server.command[0])
+        let sessions = LanguageSessions()
+        let found = try await LanguageServers.errors(workspace, server: server, path: "config.yaml", text: wrong, sandboxed: false, sessions: sessions)
+        XCTAssertTrue(found?.contains("config.yaml:") ?? false, found ?? "nothing")
+        await sessions.stopAll()
+    }
+
+    func testAMissingServerIsSaidOnceAndTheLanguagesCommandSaysHowToGetOne() async throws {
+        let (base, workspace, store) = try project()
+        defer { try? FileManager.default.removeItem(at: base) }
+        unsetenv("MASON_LANGUAGE_SERVERS")
+        let home = base.appendingPathComponent("home")
+        try "module Main where\n".write(to: workspace.root.appendingPathComponent("Main.hs"), atomically: true, encoding: .utf8)
+        try "FROM scratch\n".write(to: workspace.root.appendingPathComponent("Dockerfile"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(LanguageServers.kind(of: "deploy/Dockerfile"), "dockerfile")
+        XCTAssertEqual(LanguageServers.kind(of: "src/App.SCSS"), "scss")
+        XCTAssertEqual(LanguageServers.language(for: "scss")?.key, "css")
+        // Every extension belongs to one language, and every language can be named.
+        var seen: Set<String> = []
+        for language in LanguageServers.known {
+            for kind in language.extensions { XCTAssertTrue(seen.insert(kind).inserted, kind) }
+            XCTAssertFalse(language.candidates.isEmpty)
+        }
+        XCTAssertEqual(Set(LanguageServers.known.map(\.key)).count, LanguageServers.known.count)
+
+        let listed = try await LanguageServers.command("", workspace: workspace, home: home)
+        XCTAssertTrue(listed.contains("Haskell [haskell]"), listed)
+        XCTAssertTrue(listed.contains("Dockerfiles [docker]"), listed)
+        XCTAssertFalse(listed.contains("Zig"), listed)
+        let all = try await LanguageServers.command("all", workspace: workspace, home: home)
+        XCTAssertTrue(all.contains("Zig [zig]"))
+        await XCTAssertThrowsErrorAsync(try await LanguageServers.command("install haskell", workspace: workspace, home: home), "ghcup")
+        await XCTAssertThrowsErrorAsync(try await LanguageServers.command("install klingon", workspace: workspace, home: home), "/languages all")
+
+        // A server the user names in their own file is used for that extension, known to Mason or not.
+        if let python = TransformersRuntime.python() {
+            let fake = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fake-language-server.py").path
+            try JSONSerialization.data(withJSONObject: ["klingon": [python, fake]]).write(to: home.appendingPathComponent("language-servers.json"))
+            XCTAssertEqual(LanguageServers.server(for: "klingon", home: home)?.languageId, "klingon")
+            let named = try await LanguageServers.command("", workspace: workspace, home: home)
+            XCTAssertTrue(named.contains(".klingon files"), named)
+        }
+
+        guard LanguageServers.server(for: "hs") == nil else { return }
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        let one = call("write_file", ["path": "Main.hs", "content": "module Main where\nmain = pure ()\n"])
+        let two = call("write_file", ["path": "Other.hs", "content": "module Other where\n"])
+        await Agent(store: store, model: ScriptedModel([one, two, ModelReply(text: "Done.")]), approve: { _ in XCTFail("nothing to ask"); return false }, emit: { _ in }).run(&session, request: "Write them.")
+        XCTAssertTrue(session.activities[0].result.contains("No language server for Haskell is installed"), session.activities[0].result)
+        XCTAssertFalse(session.activities[1].result.contains("No language server"))
     }
 }
 

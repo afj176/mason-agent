@@ -378,19 +378,18 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         };
         if (!path || !mode) throw Error("inspect_symbol needs a path, a line, a column and a mode.");
         if (!symbols::handles(*path)) {
-            const std::string extension = to_lower(fs::path(*path).extension().string());
-            const std::optional<LanguageServer> server = language_servers::server_for(extension.empty() ? "" : extension.substr(1));
-            if (!server) throw Error("No language server for " + (extension.empty() ? std::string("such") : extension) + " files was found on this computer. Use navigate_code for text matches.");
+            const std::string kind = language_servers::kind_of(*path);
+            const std::optional<LanguageServer> server = language_servers::server_for(kind);
+            if (!server) throw Error("No language server for " + (kind.empty() ? std::string("such") : "." + kind) + " files was found on this computer. Use navigate_code for text matches.");
             // A language server reads the project and may run its build, so it is started the way a command is.
             if (read_only) throw Error("This session is read-only, and starting " + server->name + " is like running a command. Use navigate_code for text matches.");
-            if (!sandboxed) {
-                const std::string detail = "Starts " + join(server->command, " ") + " on this project with your account and environment, to answer one question. It is not sandboxed, and some language servers run the project's build.";
-                if (!allowed({call.name, "Start " + server->name + " to look up " + *path + ":" + std::to_string(whole("line")), detail, "language server " + server->name}, session)) {
-                    return Outcome{"denied", "The user declined. Do not retry it; use navigate_code instead."};
-                }
+            if (!sandboxed && !(language_answers_.count(server->name) && language_answers_[server->name])) {
+                const std::string detail = "Starts " + join(server->command, " ") + " on this project with your account and environment, until this request ends. It is not sandboxed, and some language servers run the project's build.";
+                language_answers_[server->name] = allowed({call.name, "Start " + server->name + " to look up " + *path + ":" + std::to_string(whole("line")), detail, "language server " + server->name}, session);
+                if (!language_answers_[server->name]) return Outcome{"denied", "The user declined. Do not retry it; use navigate_code instead."};
             }
             emit_({AgentEvent::Kind::Status, "Asking " + server->name, {}});
-            return Outcome{"completed", language_servers::query(workspace, *server, *path, whole("line"), whole("column"), *mode, sandboxed, cancel)};
+            return Outcome{"completed", language_servers::query(workspace, *server, *path, whole("line"), whole("column"), *mode, sandboxed, languages_, cancel)};
         }
         emit_({AgentEvent::Kind::Status, "Asking the language service", {}});
         return Outcome{"completed", symbols::query(workspace, *path, whole("line"), whole("column"), *mode, cancel)};
@@ -746,6 +745,9 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
         if (!continuing) {
             // Whatever the request left running in the background ends with it.
             jobs_.stop_all();
+            languages_.stop_all();
+            language_answers_.clear();
+            language_told_.clear();
             network_.reset();
             return;
         }
@@ -980,6 +982,17 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                 }
                 std::string result = perform(call, *workspace, session, cancel);
                 // After an edit, the project's afterEdit hooks say at once whether it broke something.
+                if ((call.name == "edit_file" || call.name == "write_file" || call.name == "apply_edits") && result.rfind("Error:", 0) != 0 && session.activities.back().state == "completed") {
+                    // The file's language server reads it again, and its errors go back with the result.
+                    const json given = json::parse(call.arguments, nullptr, false);
+                    if (given.is_object() && given.contains("path") && given["path"].is_string()) {
+                        const std::string said = language_note(given["path"].get<std::string>(), *workspace, session, cancel);
+                        if (!said.empty()) {
+                            result += said;
+                            session.activities.back().result += said;
+                        }
+                    }
+                }
                 if ((call.name == "edit_file" || call.name == "write_file" || call.name == "apply_edits") && result.rfind("Error:", 0) != 0) {
                     const std::string failure = run_hooks("afterEdit", *workspace, session, cancel);
                     if (!failure.empty()) result += "\n[" + failure + "]";
@@ -1350,6 +1363,46 @@ std::optional<UndoResult> Agent::undo_latest(Session& session, SessionStore& sto
                            " Read affected files again before relying on what you saw earlier.";
     store.save(session);
     return result;
+}
+
+}  // namespace mason
+
+namespace mason {
+
+std::string Agent::language_note(const std::string& path, const Workspace& workspace, Session& session, const CancelToken& cancel) {
+    const std::string kind = language_servers::kind_of(path);
+    static const std::set<std::string> script = {"ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"};
+    if (script.count(kind)) return language_servers::built_in_errors(workspace, path, cancel);
+    const std::optional<LanguageServer> server = language_servers::server_for(kind, store_.home());
+    if (!server) {
+        if (kind == "py" || kind == "pyi") return language_servers::built_in_errors(workspace, path, cancel);
+        const Language* language = language_servers::language_for(kind);
+        // Data and markup are left out: a note about them with every request would be noise.
+        static const std::set<std::string> quiet = {"json", "yaml", "toml", "html", "css", "docker", "latex", "typst"};
+        if (!language || quiet.count(language->key) || language_told_.count(language->key)) return "";
+        language_told_.insert(language->key);
+        emit_({AgentEvent::Kind::Status, "No " + language->name + " language server is installed", {}});
+        return "\n[No language server for " + language->name + " is installed on this computer, so this edit was not checked for errors. The user can see how to get one with /languages.]";
+    }
+    const bool sandboxed = session.permission == Permission::Auto;
+    if (!sandboxed) {
+        if (!language_answers_.count(server->name)) {
+            const std::string detail = "Starts " + join(server->command, " ") + " on this project with your account and environment, until this request ends, so the errors it finds in each edit go back to the model. "
+                                       "It is not sandboxed, and some language servers run the project's build.";
+            language_answers_[server->name] = allowed({"inspect_symbol", "Start " + server->name + " to check this request's edits", detail, "language server " + server->name}, session);
+        }
+        if (!language_answers_[server->name]) return "";
+    }
+    emit_({AgentEvent::Kind::Status, "Checking with " + server->name, {}});
+    try {
+        return language_servers::errors(workspace, *server, path, workspace.read(path), sandboxed, languages_, cancel);
+    } catch (const Cancelled&) {
+        throw;
+    } catch (const std::exception& error) {
+        if (language_told_.count(server->name)) return "";
+        language_told_.insert(server->name);
+        return "\n[" + server->name + " could not check this edit: " + error.what() + "]";
+    }
 }
 
 }  // namespace mason

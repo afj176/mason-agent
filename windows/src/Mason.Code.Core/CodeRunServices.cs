@@ -35,6 +35,8 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
         public string Key {get;}=key;
     }
     readonly Dictionary<string,Job> jobs=[];
+    /// <summary>The language servers this request has started.</summary>
+    public CodeLanguageSessions Languages {get;}=new();
     readonly Lazy<ProjectWorkflows> manifest=new(()=>ProjectWorkflows.Load(scope));
     public ProjectWorkflows Workflows=>manifest.Value;
     public string Start(string executable,string[] arguments,string directory)
@@ -100,6 +102,7 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
     public async ValueTask DisposeAsync()
     {
         Search.Dispose();
+        await Languages.DisposeAsync();
         foreach(var job in jobs.Values)job.Stop.Cancel();
         foreach(var job in jobs.Values){try{await job.Task;}catch(Exception){/* The foreground task records explicit failures. */}finally{job.Stop.Dispose();}}
     }

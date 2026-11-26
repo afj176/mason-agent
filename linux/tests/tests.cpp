@@ -2544,13 +2544,19 @@ static void test_language_servers() {
     const Workspace workspace(box.project.string());
     using Names = std::vector<std::string>;
 
-    // What the server is sent is a well-formed conversation, and what it sends back is read frame by frame.
-    Names methods;
-    const std::vector<json> sent = language_servers::messages_in(language_servers::conversation(workspace.root(), workspace.root() + "/sum.c", "x", "c", 4, 21, "references"));
-    for (const json& message : sent) methods.push_back(message.value("method", ""));
-    CHECK(methods == (Names{"initialize", "initialized", "textDocument/didOpen", "textDocument/references", "shutdown", "exit"}));
-    CHECK(sent.size() == 6 && sent[3]["params"]["position"] == json({{"line", 3}, {"character", 20}}));
-    CHECK(!language_servers::server_for("txt"));
+    // What a server writes is read message by message, and one still arriving is left for later.
+    const std::string one = language_servers::frame({{"id", 1}, {"result", "a"}}), two = one + language_servers::frame({{"method", "note"}});
+    CHECK(language_servers::frames(two.substr(0, two.size() - 5)).first.size() == 1 && language_servers::frames(two.substr(0, two.size() - 5)).second == one.size());
+    CHECK(language_servers::frames(two).first.size() == 2 && language_servers::frames(two).second == two.size());
+    CHECK(!language_servers::server_for("txt", box.home));
+    CHECK(language_servers::kind_of("deploy/Dockerfile") == "dockerfile" && language_servers::kind_of("src/App.SCSS") == "scss");
+    CHECK(language_servers::language_for("scss") && language_servers::language_for("scss")->key == "css");
+    // Every extension belongs to one language.
+    std::set<std::string> seen_kinds, seen_keys;
+    for (const Language& language : language_servers::known()) {
+        CHECK(seen_keys.insert(language.key).second && !language.candidates.empty());
+        for (const std::string& kind : language.extensions) CHECK(seen_kinds.insert(kind).second);
+    }
 
     const std::string python = transformers::python();
     const fs::path fake = fs::absolute(fs::path(__FILE__).parent_path().parent_path().parent_path() / "macos" / "Tests" / "fake-language-server.py").lexically_normal();
@@ -2564,40 +2570,139 @@ static void test_language_servers() {
             CHECK(language_servers::query(workspace, *server, "sum.c", 4, 21, "definitions", false) == server->name + ": 1 definitions in the project.\nsum.c:1:5  int total(int a, int b) {");
             const std::string references = language_servers::query(workspace, *server, "sum.c", 4, 21, "references", false);
             CHECK(starts_with(references, server->name + ": 2 references in the project, and 1 outside it (libraries).\nsum.c:1:5") && references.find("sum.c:4:21  int main() { return total(1, count); }") != std::string::npos);
-            CHECK(language_servers::query(workspace, *server, "sum.c", 1, 1, "diagnostics", false) == server->name + ": 1 diagnostic for sum.c.\nsum.c:3:12  error  use of undeclared identifier 'count'");
+            CHECK(language_servers::query(workspace, *server, "sum.c", 1, 1, "diagnostics", false) == server->name + ": 2 diagnostics for sum.c.\nsum.c:3:12  error  use of undeclared identifier 'count'\nsum.c:1:1  warning  unused function");
 
             // Through the agent it asks first, like a command, and a read-only session may not start it.
             SessionStore store(box.home);
             Session session = store.create(workspace.root(), Permission::ReviewEdits);
             const ModelReply ask = call("inspect_symbol", {{"path", "sum.c"}, {"line", 4}, {"column", 21}, {"mode", "definitions"}});
             ScriptedModel model;
-            model.replies = {ask, ask, say("Found.")};
+            // The server stays running for the request, so a second question in it does not ask again. The next request does.
+            model.replies = {ask, ask, say("Found."), ask, say("No.")};
             Names asked;
             std::deque<bool> answers = {true, false};
-            Agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); const bool answer = answers.front(); answers.pop_front(); return answer; }, [](const AgentEvent&) {}).run(session, "Where is total defined?");
-            CHECK(asked == (Names{"language server " + server->name, "language server " + server->name}));
-            CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && session.activities[1].state == "denied" && session.activities[0].result.find("sum.c:1:5") != std::string::npos);
+            Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); const bool answer = answers.front(); answers.pop_front(); return answer; }, [](const AgentEvent&) {});
+            agent.run(session, "Where is total defined?");
+            CHECK(asked == (Names{"language server " + server->name}));
+            CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && session.activities[1].state == "completed" && session.activities[0].result.find("sum.c:1:5") != std::string::npos);
+            agent.run(session, "And again?");
+            CHECK(asked.size() == 2 && session.activities.back().state == "denied");
             session.permission = Permission::ReadOnly;
             session.ask_only = true;
             ScriptedModel again;
             again.replies = {ask, say("No.")};
             Agent(store, again, [](const ApprovalRequest&) { return false; }, [](const AgentEvent&) {}).run(session, "Again");
             CHECK(session.activities.back().state == "failed" && session.activities.back().result.find("read-only") != std::string::npos);
+
+            // The errors a server finds in an edit go back with the edit's result; a warning does not. Outside Auto
+            // the server is not sandboxed, so starting it is asked about once for the request.
+            box.write("sum.c", "int total(int a, int b) {\n    return a + b;\n}\n");
+            Session editing = store.create(workspace.root(), Permission::WorkspaceEdits);
+            ScriptedModel edits;
+            edits.replies = {call("edit_file", {{"path", "sum.c"}, {"old_text", "return a + b;"}, {"new_text", "return a + count;"}}),
+                             call("edit_file", {{"path", "sum.c"}, {"old_text", "return a + count;"}, {"new_text", "return a + b + 1;"}}), say("Done.")};
+            Names titles;
+            Agent(store, edits, [&](const ApprovalRequest& request) { titles.push_back(request.title); return true; }, [](const AgentEvent&) {}).run(editing, "Add one.");
+            CHECK(titles == (Names{"Start " + server->name + " to check this request's edits"}));
+            CHECK(editing.activities.size() == 2);
+            if (editing.activities.size() == 2) {
+                const std::string first = editing.activities[0].result;
+                CHECK(starts_with(first, "Edited sum.c (+1 −1).") && first.find("reports 1 error in sum.c after this edit") != std::string::npos);
+                CHECK(first.find("sum.c:3:12  error  use of undeclared identifier 'count'") != std::string::npos && first.find("unused function") == std::string::npos);
+                CHECK(editing.activities[1].result == "Edited sum.c (+1 −1).");
+                // The model is given the same text the activity shows.
+                bool told = false;
+                for (const auto& message : editing.messages) told = told || (message.role == "tool" && message.content == first);
+                CHECK(told);
+                if (failures) std::cerr << first << "\n---\n" << editing.activities[1].result << "\n";
+            }
+
+            // A declined server is not started and not asked about again in the request.
+            box.write("sum.c", "int total(int a, int b) {\n    return a + b;\n}\n");
+            Session declined = store.create(workspace.root(), Permission::WorkspaceEdits);
+            ScriptedModel twice;
+            twice.replies = {call("edit_file", {{"path", "sum.c"}, {"old_text", "return a + b;"}, {"new_text", "return a + count;"}}),
+                             call("edit_file", {{"path", "sum.c"}, {"old_text", "return a + count;"}, {"new_text", "return count;"}}), say("Done.")};
+            int questions = 0;
+            Agent(store, twice, [&](const ApprovalRequest&) { questions++; return false; }, [](const AgentEvent&) {}).run(declined, "Break it.");
+            CHECK(questions == 1 && declined.activities.size() == 2 && declined.activities[0].result == "Edited sum.c (+1 −1).");
+
+            // A server that only answers when asked is asked for the file's diagnostics.
+            setenv("MASON_LANGUAGE_SERVERS", json{{"c", {python, fake.string(), "--pull"}}}.dump().c_str(), 1);
+            const std::optional<LanguageServer> pulling = language_servers::server_for("c");
+            CHECK(pulling.has_value());
+            if (pulling) {
+                LanguageSessions sessions;
+                const std::string found = language_servers::errors(workspace, *pulling, "sum.c", "int total() {\n\n    return count;\n}\n", false, sessions);
+                CHECK(found.find("sum.c:3:12  error  use of undeclared identifier 'count'") != std::string::npos);
+                CHECK(language_servers::errors(workspace, *pulling, "sum.c", "int total() { return 1; }\n", false, sessions).empty());
+                // In Auto the server runs inside the sandbox, and is talked to the same way.
+                if (shell::sandbox_available()) {
+                    LanguageSessions boxed;
+                    CHECK(language_servers::errors(workspace, *pulling, "sum.c", "int total() {\n\n    return count;\n}\n", true, boxed).find("use of undeclared identifier 'count'") != std::string::npos);
+                } else {
+                    std::cout << "  (no sandbox on this computer: a sandboxed language server was not run)\n";
+                }
+            }
         }
         unsetenv("MASON_LANGUAGE_SERVERS");
+
+        // A server the user names in their own file is used for that extension, known to Mason or not.
+        fs::create_directories(box.home);
+        write_file_atomic(box.home / "language-servers.json", json{{"klingon", {python, fake.string()}}}.dump());
+        const std::optional<LanguageServer> own = language_servers::server_for("klingon", box.home);
+        CHECK(own && own->language_id == "klingon");
+        CHECK(language_servers::command("", &workspace, box.home).find(".klingon files") != std::string::npos);
+        fs::remove(box.home / "language-servers.json");
     }
 
+    // /languages lists the project's languages and says how to get a missing server.
+    box.write("Main.hs", "module Main where\n");
+    box.write("Dockerfile", "FROM scratch\n");
+    const std::string listed = language_servers::command("", &workspace, box.home);
+    CHECK(listed.find("Haskell [haskell]") != std::string::npos && listed.find("Dockerfiles [docker]") != std::string::npos && listed.find("Zig") == std::string::npos);
+    CHECK(language_servers::command("all", &workspace, box.home).find("Zig [zig]") != std::string::npos);
+    bool refused = false;
+    try { language_servers::command("install haskell", &workspace, box.home); } catch (const Error& error) { refused = std::string(error.what()).find("ghcup") != std::string::npos; }
+    CHECK(refused);
+    refused = false;
+    try { language_servers::command("install klingon", &workspace, box.home); } catch (const Error& error) { refused = std::string(error.what()).find("/languages all") != std::string::npos; }
+    CHECK(refused);
+
+    // A language with no server installed is said once in a request, with the edit's result.
+    if (!language_servers::server_for("hs", box.home)) {
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        model.replies = {call("write_file", {{"path", "Main.hs"}, {"content", "module Main where\nmain = pure ()\n"}}), call("write_file", {{"path", "Other.hs"}, {"content", "module Other where\n"}}), say("Done.")};
+        Agent(store, model, [](const ApprovalRequest&) { return false; }, [](const AgentEvent&) {}).run(session, "Write them.");
+        CHECK(session.activities.size() == 2 && session.activities[0].result.find("No language server for Haskell is installed") != std::string::npos);
+        CHECK(session.activities.size() == 2 && session.activities[1].result.find("No language server") == std::string::npos);
+    }
+    fs::remove(box.project / "Main.hs");
+    fs::remove(box.project / "Other.hs");
+    fs::remove(box.project / "Dockerfile");
+
     // A real clangd, where there is one: the definition of total from its use, and the undeclared name.
-    const std::optional<LanguageServer> clangd = language_servers::server_for("c");
+    const std::optional<LanguageServer> clangd = language_servers::server_for("c", box.home);
     if (!clangd || clangd->name != "clangd") {
         std::cout << "  (no clangd on this computer: a real language server was not run)\n";
         return;
     }
-    const std::string definition = language_servers::query(workspace, *clangd, "sum.c", 4, 21, "definitions", false);
+    // One running clangd answers all three: an edit's errors, a definition, and the file's diagnostics.
+    LanguageSessions real;
+    const std::string source = "int total(int a, int b) {\n    return a + b;\n}\nint main() { return total(1, count); }\n";
+    box.write("sum.c", source);
+    const std::string found = language_servers::errors(workspace, *clangd, "sum.c", source, false, real);
+    CHECK(found.find("sum.c:4:30  error") != std::string::npos);
+    const std::string definition = language_servers::query(workspace, *clangd, "sum.c", 4, 21, "definitions", false, real);
     CHECK(definition.find("sum.c:1:5  int total(int a, int b) {") != std::string::npos);
-    const std::string diagnostics = language_servers::query(workspace, *clangd, "sum.c", 1, 1, "diagnostics", false);
+    const std::string diagnostics = language_servers::query(workspace, *clangd, "sum.c", 1, 1, "diagnostics", false, real);
     CHECK(diagnostics.find("sum.c:4:") != std::string::npos && diagnostics.find("count") != std::string::npos);
-    if (failures) std::cerr << definition << "\n" << diagnostics << "\n";
+    const std::string mended = replace_all(source, "count", "2");
+    box.write("sum.c", mended);
+    CHECK(language_servers::errors(workspace, *clangd, "sum.c", mended, false, real).empty());
+    if (failures) std::cerr << found << "\n" << definition << "\n" << diagnostics << "\n";
 }
 
 static void test_verification() {

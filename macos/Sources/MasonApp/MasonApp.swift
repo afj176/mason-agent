@@ -193,6 +193,7 @@ struct SettingsView: View {
             ProjectPane().tabItem { Label("Project", systemImage: "folder.badge.gearshape") }
             RolesPane().tabItem { Label("Roles & Network", systemImage: "person.2") }
             BundlesPane().tabItem { Label("Bundles", systemImage: "shippingbox") }
+            LanguagesPane().tabItem { Label("Languages", systemImage: "chevron.left.forwardslash.chevron.right") }
         }
         .frame(width: 760, height: 520)
     }

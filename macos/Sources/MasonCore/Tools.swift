@@ -347,21 +347,20 @@ extension Agent {
 
         case "inspect_symbol":
             guard let path = text("path"), let line = number("line"), let column = number("column"), let mode = text("mode") else { throw MasonError("inspect_symbol needs a path, a line, a column and a mode.") }
-            let kind = (path as NSString).pathExtension.lowercased()
+            let kind = LanguageServers.kind(of: path)
             if !SymbolService.python.contains(kind), !SymbolService.script.contains(kind) {
                 guard let server = LanguageServers.server(for: kind) else {
                     throw MasonError("No language server for .\(kind) files was found on this computer. Use navigate_code for text matches.")
                 }
                 // A language server reads the project and may run its build, so it is started the way a command is.
                 if readOnly { throw MasonError("This session is read-only, and starting \(server.name) is like running a command. Use navigate_code for text matches.") }
-                if !sandboxed {
-                    let detail = "Starts \(server.command.joined(separator: " ")) on this project with your account and environment, to answer one question. It is not sandboxed, and some language servers run the project's build."
-                    if !(await allowed(ApprovalRequest(tool: call.name, title: "Start \(server.name) to look up \(path):\(line)", detail: detail, subject: "language server " + server.name), session: &session)) {
-                        return (.denied, "The user declined. Do not retry it; use navigate_code instead.")
-                    }
+                if !sandboxed, languageAnswers[server.name] != true {
+                    let detail = "Starts \(server.command.joined(separator: " ")) on this project with your account and environment, until this request ends. It is not sandboxed, and some language servers run the project's build."
+                    languageAnswers[server.name] = await allowed(ApprovalRequest(tool: call.name, title: "Start \(server.name) to look up \(path):\(line)", detail: detail, subject: "language server " + server.name), session: &session)
+                    if languageAnswers[server.name] != true { return (.denied, "The user declined. Do not retry it; use navigate_code instead.") }
                 }
                 emit(.status("Asking \(server.name)"))
-                return (.completed, try await LanguageServers.query(workspace, server: server, path: path, line: line, column: column, mode: mode, sandboxed: sandboxed))
+                return (.completed, try await LanguageServers.query(workspace, server: server, path: path, line: line, column: column, mode: mode, sandboxed: sandboxed, sessions: languages))
             }
             emit(.status("Asking the language service"))
             return (.completed, try await SymbolService.query(workspace, path: path, line: line, column: column, mode: mode))
@@ -446,7 +445,8 @@ extension Agent {
             try workspace.write(path, after)
             record(path: path, before: before, after: after, session: &session)
             let counts = Diff.counts(before: before, after: after)
-            return (.completed, "Edited \(path) with \(edits.count) change\(edits.count == 1 ? "" : "s") (+\(counts.added) −\(counts.removed)).")
+            let said = await languageNote(path: path, text: after, workspace: workspace, session: &session)
+            return (.completed, "Edited \(path) with \(edits.count) change\(edits.count == 1 ? "" : "s") (+\(counts.added) −\(counts.removed))." + said)
 
         case "start_job", "run_workflow", "run_command", "start_terminal":
             if readOnly { throw MasonError("This session is read-only. Commands are not available.") }

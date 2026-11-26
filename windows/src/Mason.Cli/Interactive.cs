@@ -490,6 +490,14 @@ internal sealed partial class Interactive
             case "/diff" or "/changes": Diff(rest); return true;
             case "/undo" or "/redo": Rewind(name == "/undo"); return true;
             case "/rules": Rules(rest); return true;
+            case "/languages" or "/language":
+                try
+                {
+                    if (rest.StartsWith("install", StringComparison.OrdinalIgnoreCase)) Term.Line(Term.Paint(Term.Dim, "  Installing. This can take a few minutes."));
+                    foreach (var line in (await CodeLanguageServers.Command(rest, scope, host, CancellationToken.None)).Split('\n')) Term.Line("  " + line.TrimEnd('\r'));
+                }
+                catch (Exception e) when (e is ArgumentException or InvalidOperationException or IOException) { foreach (var line in e.Message.Split('\n')) Term.Line("  " + line.TrimEnd('\r')); }
+                return true;
             case "/agent": Agent(rest); return true;
             case "/commands":
                 var commands = CodeCustomization.Commands(host, scope.Root);
@@ -539,6 +547,7 @@ internal sealed partial class Interactive
             ("/undo · /redo", "Put back, or reapply, everything the latest request changed"),
             ("/compact", "Summarize a long conversation to free context"),
             ("/rules [revoke NUMBER]", "Saved always-allow rules for this project"),
+            ("/languages [all|install NAME]", "The language server that checks each language's edits; install one"),
             ("/agent [name|none]", "Use a custom agent from .mason/agents"),
             ("/commands", "Custom commands from .mason/commands (run as /name arguments)"),
             ("/queue", "Resume input queued before a stop"),

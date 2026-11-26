@@ -3,6 +3,7 @@
 
 #include "background.hpp"
 #include "bundles.hpp"
+#include "language.hpp"
 #include "delivery.hpp"
 #include "experiments.hpp"
 #include "network.hpp"
@@ -340,6 +341,30 @@ void SettingsPage::refresh() {
             }
         });
     });
+
+    // ---- language servers ----
+    AdwPreferencesGroup* language_group = group(content_, "Language servers", "After each edit Mason hands the file to its language's server, and the errors the server reports go back to the model. "
+                                                                               "A server runs in the sandbox in Auto, and asks first otherwise. Mason installs one only when you choose Install, using that language's own tool.");
+    std::vector<const Language*> languages;
+    if (!workspace.empty()) {
+        try {
+            languages = language_servers::present(Workspace(workspace));
+        } catch (const std::exception&) {
+        }
+    }
+    const bool every_language = languages.empty();
+    if (every_language) {
+        for (const Language& entry : language_servers::known()) languages.push_back(&entry);
+    }
+    for (const Language* language : languages) {
+        const LanguageState found = language_servers::state(*language, home);
+        const auto [said, can_install] = language_servers::described(*language, home);
+        // With no project open every language is listed, so only the ones that can be acted on are shown.
+        if (every_language && !found.installed && !can_install) continue;
+        AdwActionRow* line = row(language_group, language->name, said);
+        const std::string key = language->key;
+        if (can_install) button(line, "Install", [run, key] { run("/languages", "install " + key); });
+    }
 
     if (!session) return;
 

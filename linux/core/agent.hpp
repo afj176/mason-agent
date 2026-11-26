@@ -1,5 +1,7 @@
 // The agent loop: ask the model, run the tool it calls, hand the result back, until it answers in text.
 #pragma once
+#include <set>
+#include "language.hpp"
 #include "desktop.hpp"
 #include "harness.hpp"
 #include "mcp.hpp"
@@ -130,6 +132,12 @@ private:
     snapshot::Map snapshot_;
     /// Background programs started during the current request.
     Jobs jobs_;
+    /// The language servers this request has started, and what the user said about starting each.
+    LanguageSessions languages_;
+    std::map<std::string, bool> language_answers_;
+    std::set<std::string> language_told_;
+    /// What the language's server says about a file this request just wrote, to go back with the edit's result.
+    std::string language_note(const std::string& path, const Workspace& workspace, Session& session, const CancelToken& cancel);
     /// The tools offered for the request in progress, for the message about an unknown tool.
     std::vector<std::string> offered_names_;
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.

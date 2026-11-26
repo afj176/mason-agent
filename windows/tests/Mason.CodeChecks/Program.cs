@@ -53,6 +53,9 @@ if(args.Length==2 && args[0]=="--extension-checks"){
 }
 if(args.Length==1 && args[0]=="--native-window-check"){await DesktopIntegration.Run();return;}
 if(args.Length==2 && args[0]=="--quick-setup-probe"){using var hub=new HubClient(()=>"");var found=await hub.Search("coder","","GGUF",CancellationToken.None);var picks=new List<QuickSetup.Choice>();foreach(var m in found.Where(m=>m.Role==AgentRole.Implementer&&QuickSetup.Suggestible(m.Id)).OrderByDescending(m=>QuickSetup.Trusted(m.Id)).Take(10)){try{var repo=await hub.Inspect(m.Id,CancellationToken.None);if(!repo.Gated&&QuickSetup.Fit(repo,double.Parse(args[1],System.Globalization.CultureInfo.InvariantCulture)) is {} fit)picks.Add(fit);}catch(Exception e){Console.WriteLine("skip "+m.Id+": "+e.Message);}if(picks.Count>=4)break;}foreach(var p in QuickSetup.Rank(picks))Console.WriteLine(p.Repository.Id+" · "+p.Variant.Name+" · "+p.Reason);return;}
+if(args.Length==2 && args[0]=="--language-checks"){
+    await LanguageChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
+}
 if(args.Length==2 && args[0]=="--gap-feature-checks"){GapFeatureChecks.Run(Path.GetFullPath(args[1]));return;}
 if(args.Length==3 && args[0]=="--embedded-llama-check"){await EmbeddedLlamaChecks.Run(Path.GetFullPath(args[1]),Path.GetFullPath(args[2]));return;}
 if (args.Length == 4 && args[0] == "--evaluate-acceptance")

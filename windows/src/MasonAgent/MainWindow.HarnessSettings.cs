@@ -252,6 +252,33 @@ public sealed partial class MainWindow
         }));
         Refresh();
 
+        // Language servers: which are installed for this project's languages, and installing the ones a language's own tool can fetch.
+        var languagesHost = new StackPanel { Spacing = 4 };
+        void RenderLanguages()
+        {
+            languagesHost.Children.Clear();
+            var listed = CodeLanguageServers.Present(scope);
+            if (listed.Length == 0) { languagesHost.Children.Add(SettingsCard("\uE943", "No language servers apply", "No file in this project is in a language Mason knows a server for. Type /languages all in the Mason command line for the full list.")); return; }
+            foreach (var language in listed)
+            {
+                var (described, canInstall) = CodeLanguageServers.Described(language, Store.Root);
+                Button? install = null;
+                if (canInstall)
+                {
+                    install = Button("Install", async (sender, _) =>
+                    {
+                        var pressed = (Button)sender; pressed.IsEnabled = false;
+                        try { Say("Installing the " + language.Name + " server. This can take a few minutes.", InfoBarSeverity.Informational); Say(await Task.Run(() => CodeLanguageServers.Install(language, Store.Root, entry.Cancellation.Token))); }
+                        catch (Exception e) when (e is InvalidOperationException or IOException or OperationCanceledException) { Fail(e); }
+                        RenderLanguages();
+                    });
+                }
+                languagesHost.Children.Add(SettingsCard("\uE943", language.Name, described, install));
+            }
+        }
+        RenderLanguages();
+        var languagesNote = CodeNote("After each edit Mason hands the file to its language's server, and the errors the server reports go back to the model. A server runs with your Windows account, so Mason asks before starting one. Mason installs one only when you choose Install, using that language's own tool.");
+
         var page = SettingsPage(
             PageHeader("Harness settings", "Approvals, agents, MCP servers and schedules for " + Path.GetFileName(scope.Root)),
             status,
@@ -260,6 +287,7 @@ public sealed partial class MainWindow
             SettingsGroup("MCP servers"), Row(IconButton("\uE710", "Add server", async (_, _) => await EditMcp(null), true)), mcpHost,
             SettingsGroup("Scheduled runs"), Row(IconButton("\uE710", "Schedule a run", async (_, _) => await AddSchedule(), true)), schedulesHost,
             SettingsGroup("Project policy"), policyForm,
+            SettingsGroup("Language servers"), languagesNote, languagesHost,
             SettingsGroup("Extensions"), new Border { Style = Token("MasonCard"), Child = Stack(bundles, bundleInfo, Row(install, toggleBundle, uninstall)) }, editor);
         page.Padding = new Thickness(24, 16, 24, 0);
         return page;

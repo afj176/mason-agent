@@ -878,6 +878,18 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 return new(services.Skill(skill));
             case "inspect_symbol":
                 CodeProtocol.Exact(a,"path","line","column","mode");
+                if(!CodeLanguageServers.BuiltIn(CodeLanguageServers.Kind(S(a,"path"))) && CodeLanguageServers.Server(CodeLanguageServers.Kind(S(a,"path")),store.SettingsRoot,scope.Root) is {} asked)
+                {
+                    // A language server reads the project and may run its build, so it is started the way a command is.
+                    if(session.Mode=="ask"||session.Permission==CodePermission.ReadOnly)throw new UnauthorizedAccessException("Ask/read-only mode does not start language servers. Use navigate_code for text matches.");
+                    if(!services.Languages.Answers.GetValueOrDefault(asked.Name))
+                    {
+                        services.Languages.Answers[asked.Name]=false;
+                        await Review(new(tool,"Start "+asked.Name+" to look up "+S(a,"path")+"?","Starts "+string.Join(" ",asked.Command)+" on this project with your Windows account and environment, until this request ends. It is not sandboxed, and some language servers run the project's build."){Subject="language server "+asked.Name});
+                        services.Languages.Answers[asked.Name]=true;
+                    }
+                    return new(await CodeLanguageServers.Query(scope,asked,S(a,"path"),a.GetProperty("line").GetInt32(),a.GetProperty("column").GetInt32(),S(a,"mode"),services.Languages,ct));
+                }
                 return new(await CodeSemantic.Query(scope,S(a,"path"),a.GetProperty("line").GetInt32(),a.GetProperty("column").GetInt32(),S(a,"mode"),ct));
             case "computer_use": case "start_job": case "poll_job": case "stop_job": case "run_workflow": case "mcp_tools": case "mcp_call": case "mcp_resources": case "mcp_read":
                 if(session.Mode!="build"||session.Permission!=CodePermission.Auto||!services.Enabled.Contains(tool))throw new UnauthorizedAccessException("Enable the tool in an Auto build session.");
@@ -999,7 +1011,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     }
                     var edited = editing ? scope.ApplyEdits(path,S(a,"expected_sha256"),replacements,(_,_)=>{},Journal) : scope.Create(path,S(a,"content"),()=>Journal(null,S(a,"content")));
                     change.After = edited.Content; change.AfterHash = edited.Sha256;
-                    return new(JsonSerializer.Serialize(new { edited.Path, edited.Sha256, state = "Written" }), "changes", "") { ChangedFile = edited.Path };
+                    // The file's language server reads it again, and its errors go back with the result.
+                    var said = await LanguageNote(edited.Path, edited.Content);
+                    var written = said == null ? JsonSerializer.Serialize(new { edited.Path, edited.Sha256, state = "Written" }) : JsonSerializer.Serialize(new { edited.Path, edited.Sha256, state = "Written", language_server = said });
+                    return new(written, "changes", "") { ChangedFile = edited.Path };
                 }
                 catch { if (created && change.AfterHash.Length == 0) session.Changes.Remove(change); throw; }
             case "run_shell":
@@ -1037,6 +1052,35 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 if(networking!=null)activity.Authorization="Auto · workspace sandbox · "+string.Join("; ",networking.Receipts);
                 return new(JsonSerializer.Serialize(command), Failed: command.ExitCode != 0 || command.Truncated,RuntimeFailure:command.Failure);
             default: throw new ArgumentException("Unsupported coding tool: " + tool);
+        }
+        // What the language's server says about a file this request just wrote. A server is not sandboxed here, so
+        // starting one is asked about once in a request, unless a saved rule answers.
+        async Task<string?> LanguageNote(string path,string text)
+        {
+            var kind=CodeLanguageServers.Kind(path);var languages=services.Languages;
+            if(CodeLanguageServers.Script(kind))return await CodeLanguageServers.BuiltInErrors(scope,path,ct);
+            var server=CodeLanguageServers.Server(kind,store.SettingsRoot,scope.Root);
+            if(server==null)
+            {
+                if(kind is "py" or "pyi")return await CodeLanguageServers.BuiltInErrors(scope,path,ct);
+                if(CodeLanguageServers.Language(kind) is not {} language || CodeLanguageServers.Quiet.Contains(language.Key) || !languages.Told.Add(language.Key))return null;
+                return "No language server for "+language.Name+" is installed on this computer, so this edit was not checked for errors. The user can see how to get one with /languages.";
+            }
+            if(!languages.Answers.TryGetValue(server.Name,out bool allowed))
+            {
+                var request=new CodeApproval("inspect_symbol","Start "+server.Name+" to check this request's edits?","Starts "+string.Join(" ",server.Command)+" on this project with your Windows account and environment, until this request ends, so the errors it finds in each edit go back to the model. It is not sandboxed, and some language servers run the project's build."){Subject="language server "+server.Name};
+                if(CodeApprovalRules.Match(CodeApprovalRules.Load(store.SettingsRoot,scope.Root),request.Tool,request.RuleSubject) is {} rule)allowed=rule.Allow;
+                else
+                {
+                    session.State="Awaiting review";session.Detail="Review required · language server";store.Save(session);changed();
+                    allowed=await approve(request,ct);ct.ThrowIfCancellationRequested();session.State="Running";
+                }
+                languages.Answers[server.Name]=allowed;
+            }
+            if(!allowed)return null;
+            try{return await CodeLanguageServers.Errors(scope,server,path,text,languages,ct);}
+            catch(OperationCanceledException){throw;}
+            catch(Exception e) when(e is InvalidOperationException or IOException or ArgumentException){return languages.Told.Add(server.Name)?server.Name+" could not check this edit: "+e.Message:null;}
         }
         async Task Review(CodeApproval request,bool allowRule=true)
         {

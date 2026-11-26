@@ -123,6 +123,11 @@
           <p>Write agents and slash commands as Markdown files in your project. Mason Agent also reads the ones you keep for Claude Code and OpenCode. Add MCP servers on this computer and choose which of their tools the agent may use; every call asks first.</p>
         </li>
         <li class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/></svg></span>
+          <h3>Errors caught as it edits</h3>
+          <p>Mason Agent talks to the language servers on your computer the way an editor does. After each edit, the errors the server finds go straight back to the model, so it fixes them before moving on. It knows the servers for about 35 languages and installs a missing one when you choose to.</p>
+        </li>
+        <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></svg></span>
           <h3>Schedules and notifications</h3>
           <p>Schedule a request to run hourly, daily, on weekdays or weekly, unattended and with nothing approved on your behalf. While you work in another app, your system notifies you when a session finishes or needs your approval.</p>
@@ -166,7 +171,7 @@
         </li>
       </ul>
       <p class="section-lede">All three apps do the same things: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. They work out checks from a request and run them, and build a simple offline store with a built-in component. They have experiments in worktrees, pull request drafting, background tasks that outlive the app, separate reviewer and vision models, pinned project tests, a file viewer and a Website panel, network access you allow per host, project policy with hooks, installable bundles, pictures and documents in chat, and charts for tables in answers.</p>
-      <p class="section-lede"><strong>Where they differ today.</strong> For C#, Windows uses a compiler built into the app, while macOS and Linux ask the C# language server you have installed. Experiments, pull request drafting, background tasks, model roles, project policy, network mode and bundles are in Settings on macOS and Linux, and in the project menu on Windows. Windows only for now: editor evidence from VS Code, project notes and the Ctrl+K palette, GPU telemetry and per-connection generation settings.</p>
+      <p class="section-lede"><strong>Where they differ today.</strong> A language server runs inside the sandbox in Auto on macOS and Linux; on Windows it runs with your account, and Mason asks before starting it. Experiments, pull request drafting, background tasks, model roles, project policy, network mode and bundles are in Settings on macOS and Linux, and in the project menu on Windows. Windows only for now: editor evidence from VS Code, project notes and the Ctrl+K palette, GPU telemetry and per-connection generation settings.</p>
       <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, Mason starts a local model, reads a file, asks before editing it, and reports the change">
         <pre><code><span class="t-dim">~/src/shop $</span> mason
   <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
