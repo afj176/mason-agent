@@ -188,7 +188,7 @@ MemoryProfile read_gguf_profile(const fs::path& file) {
             profile.unknown = why;
             return profile;
         };
-        static const std::set<std::string> supported = {"qwen35", "llama", "qwen2", "qwen3", "gemma", "gemma2", "gemma3", "phi2", "phi3", "mistral", "gptneox", "gpt2"};
+        static const std::set<std::string> supported = {"qwen35", "llama", "qwen2", "qwen3", "gemma", "gemma2", "gemma3", "phi2", "phi3", "mistral", "gptneox", "gpt2", "qwen2moe", "qwen3moe"};
         if (!supported.count(architecture)) return unavailable("This GGUF architecture needs a runtime-specific memory estimate.");
         auto number = [&](const std::string& key, double fallback = 0) {
             const auto found = values.find(architecture + "." + key);
