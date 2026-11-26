@@ -355,6 +355,7 @@ public final class Agent {
         if let window = session.desktop, (desktop ?? Desktop.system) != nil { prompt += "\nThe user attached a window of another app: \(window.label). Read it with desktop_observe; use desktop_visual for what its controls do not name. Acting on it asks the user each time." }
         if offeredNames.contains("verify_acceptance") { prompt += "\nThis project has acceptance scenarios in mason.acceptance.json. Run verify_acceptance after changing a page they cover, and do not edit that file unless asked." }
         if let plan = session.milestones, !plan.isEmpty { prompt += "\n" + Milestones.context(workspace, plan: plan) }
+        if let notes = ProjectNotes.context(home: home, workspace: workspace) { prompt += "\n" + notes }
         if session.messages.first?.role == "system" { session.messages[0].content = prompt }
         else { session.messages.insert(ChatMessage(role: "system", content: prompt), at: 0) }
         // A note from undo or redo travels with the next request, so the conversation keeps alternating user and assistant turns.

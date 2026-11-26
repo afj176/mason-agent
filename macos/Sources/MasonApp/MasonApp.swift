@@ -33,6 +33,7 @@ struct MasonAgentApp: App {
                 Button("Chat") { model.pane = .chat }.keyboardShortcut("2")
                 Button("Models") { model.pane = .models }.keyboardShortcut("3")
                 Divider()
+                Button("Search Mason…") { model.showPalette() }.keyboardShortcut("k")
             }
             CommandMenu("Agent") {
                 Button("Send") { model.sendCurrent() }.keyboardShortcut(.return, modifiers: .command).disabled(model.pane == .chat && model.chatRunning)
@@ -109,6 +110,7 @@ struct RootView: View {
         } message: {
             Text(model.notice ?? "")
         }
+        .sheet(isPresented: $model.paletteShown) { PaletteView().environmentObject(model) }
     }
 }
 

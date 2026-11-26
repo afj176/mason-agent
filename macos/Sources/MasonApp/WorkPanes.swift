@@ -25,6 +25,7 @@ extension AppModel {
         guard let session, let workspace = try? Workspace(path: session.workspace) else { throw MasonError("Open a project first.") }
         switch name {
         case "/policy": return (try Policies.command(rest, workspace: workspace, home: home), nil)
+        case "/notes": return (try ProjectNotes.command(rest, workspace: workspace, home: home), nil)
         case "/experiment": return (try await Experiments.command(rest, workspace: workspace, home: home), nil)
         case "/deliver": return try await Delivery.command(rest, workspace: workspace, receipt: session.passedReceipt, home: home)
         case "/task": return (try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: session.permission == .auto && !session.askOnly, program: masonProgram, home: home), nil)
@@ -81,6 +82,7 @@ struct ProjectPane: View {
 
     var body: some View {
         Form {
+            NotesSection()
             if model.session == nil {
                 Text("Open a project to see its policy, experiments, pull request and background tasks.").foregroundStyle(.secondary)
             } else {
@@ -370,4 +372,182 @@ struct GenerationSection: View {
 
     func load() { values = model.endpoint.map { Generation.values(for: $0, home: home) } ?? [:] }
     func run(_ rest: String) { model.runControl("/generation", rest, then: load) }
+}
+
+/// The notes kept for the project of the session in view.
+struct NotesSection: View {
+    @EnvironmentObject var model: AppModel
+    @State private var notes: [ProjectNote] = []
+
+    var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
+    var workspace: Workspace? { model.session.flatMap { try? Workspace(path: $0.workspace) } }
+
+    var body: some View {
+        if let workspace {
+            Section {
+                if notes.isEmpty { Text("No notes for this project").foregroundStyle(.secondary) }
+                ForEach(notes) { note in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(note.text)
+                            if let source = note.source {
+                                Text(ProjectNotes.current(note, in: workspace) ? "About \(source)" : "About \(source), which has changed, so this is no longer sent")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button("Remove") { remove(note) }
+                    }
+                }
+                CommandField(prompt: "Something worth telling the model every time", label: "Keep") { run("add " + $0) }
+                CommandField(prompt: "PATH  A note about that file", label: "Keep") { run("about " + $0) }
+            } header: {
+                Text("Project notes")
+            } footer: {
+                Text("Short facts about this project. The six newest are given to the model with each request, as background and not as instructions. A note about a file stops being sent once that file changes.")
+            }
+            .onAppear(perform: load)
+        }
+    }
+
+    func load() { notes = model.session.map { ProjectNotes.load(home: home, workspace: $0.workspace).sorted { $0.saved > $1.saved } } ?? [] }
+    func run(_ rest: String) { model.runControl("/notes", rest, then: load) }
+    func remove(_ note: ProjectNote) {
+        guard let session = model.session else { return }
+        do { try ProjectNotes.remove(note.id, workspace: session.workspace, home: home) } catch { model.notice = describe(error) }
+        load()
+    }
+}
+
+// MARK: the search box over everything
+
+extension AppModel {
+    /// Gathers what there is to search and shows the box.
+    func showPalette() {
+        let home = store?.folder.deletingLastPathComponent() ?? DataHome.url
+        var items: [PaletteItem] = []
+        for item in sessions {
+            items.append(PaletteItem(kind: .session, title: item.title, detail: "Session in " + (item.workspace as NSString).lastPathComponent, value: item.id.uuidString))
+        }
+        for folder in projects {
+            items.append(PaletteItem(kind: .project, title: (folder as NSString).lastPathComponent, detail: "Project at " + folder, value: folder))
+        }
+        for command in Palette.commands {
+            items.append(PaletteItem(kind: .command, title: command.name, detail: command.detail, value: command.name))
+        }
+        if let current = session {
+            for command in Customization.commands(home: home, workspace: current.workspace) {
+                items.append(PaletteItem(kind: .command, title: "/" + command.name, detail: command.description.isEmpty ? "Your command" : command.description, value: "/" + command.name))
+            }
+            if let workspace = try? Workspace(path: current.workspace), let listing = try? workspace.files(limit: 3000) {
+                for path in listing.paths {
+                    items.append(PaletteItem(kind: .file, title: (path as NSString).lastPathComponent, detail: path, value: path))
+                }
+            }
+        }
+        for chat in chats {
+            items.append(PaletteItem(kind: .chat, title: chat.title, detail: "Chat", value: chat.id.uuidString))
+        }
+        paletteItems = items
+        paletteShown = true
+    }
+
+    /// Goes to what was chosen.
+    func open(_ item: PaletteItem) {
+        paletteShown = false
+        switch item.kind {
+        case .session:
+            pane = .code
+            selection = UUID(uuidString: item.value)
+        case .project:
+            pane = .code
+            if let latest = sessions(in: item.value).first { selection = latest.id } else { newSession(in: item.value) }
+        case .file:
+            pane = .code
+            panel = "files"
+            fileLine = 1
+            fileShown = item.value
+            showChanges = true
+        case .command:
+            pane = .code
+            draft = item.value + " "
+        case .chat:
+            pane = .chat
+            chatSelection = UUID(uuidString: item.value)
+        }
+    }
+}
+
+struct PaletteView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var query = ""
+    @State private var chosen: String?
+    @FocusState private var typing: Bool
+
+    var found: [PaletteItem] { Palette.matches(model.paletteItems, query: query) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            TextField("Search sessions, projects, files, commands and chats", text: $query)
+                .textFieldStyle(.plain)
+                .font(.title3)
+                .padding(14)
+                .focused($typing)
+                .onSubmit { choose() }
+                .onKeyPress(.downArrow) { move(1); return .handled }
+                .onKeyPress(.upArrow) { move(-1); return .handled }
+                .onKeyPress(.escape) { model.paletteShown = false; return .handled }
+            Divider()
+            if found.isEmpty {
+                Text("Nothing matches").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    List(found, selection: $chosen) { item in
+                        HStack(spacing: 10) {
+                            Image(systemName: symbol(item.kind)).foregroundStyle(.secondary).frame(width: 18)
+                            VStack(alignment: .leading) {
+                                Text(item.title).lineLimit(1)
+                                Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.open(item) }
+                        .tag(item.id)
+                    }
+                    .onChange(of: chosen) { _, id in
+                        if let id { proxy.scrollTo(id) }
+                    }
+                }
+            }
+        }
+        .frame(width: 640, height: 440)
+        .onAppear {
+            typing = true
+            chosen = found.first?.id
+        }
+        .onChange(of: query) { _, _ in chosen = found.first?.id }
+    }
+
+    func symbol(_ kind: PaletteItem.Kind) -> String {
+        switch kind {
+        case .session: return "terminal"
+        case .project: return "folder"
+        case .file: return "doc.text"
+        case .command: return "command"
+        case .chat: return "bubble.left"
+        }
+    }
+
+    func move(_ by: Int) {
+        let list = found
+        guard !list.isEmpty else { return }
+        let at = list.firstIndex { $0.id == chosen } ?? -1
+        chosen = list[min(list.count - 1, max(0, at + by))].id
+    }
+
+    func choose() {
+        let list = found
+        if let item = list.first(where: { $0.id == chosen }) ?? list.first { model.open(item) }
+    }
 }

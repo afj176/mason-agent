@@ -1,3 +1,4 @@
+#include "harness.hpp"
 #include "window.hpp"
 
 #include <array>
@@ -372,6 +373,17 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         g_object_unref(notification);
     });
     controller_.draft_suggested.connect([this](const std::string& text) { draft_.get_buffer()->set_text(text); draft_.grab_focus(); });
+    // Ctrl+K opens the search box from anywhere in the window.
+    auto shortcuts = Gtk::EventControllerKey::create();
+    shortcuts->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    shortcuts->signal_key_pressed().connect([this](guint key, guint, Gdk::ModifierType state) {
+        if ((key == GDK_KEY_k || key == GDK_KEY_K) && (state & Gdk::ModifierType::CONTROL_MASK) == Gdk::ModifierType::CONTROL_MASK) {
+            show_palette();
+            return true;
+        }
+        return false;
+    }, false);
+    Glib::wrap(GTK_WINDOW(window_), true)->add_controller(shortcuts);
     controller_.notice.connect([this](const std::string& message) {
         // Several lines do not fit a toast: a command's answer is shown in a dialog, where it can be read and copied.
         const size_t first = message.find('\n');
@@ -1267,4 +1279,126 @@ void MainWindow::refresh_changes() {
     changes_.append(*note);
 }
 
-}  // namespace mason::app
+// ---- the search box over everything ----
+
+void MainWindow::show_palette() {
+    std::vector<PaletteItem> items;
+    for (const Session& item : controller_.sessions()) items.push_back({"session", item.title, "Session in " + fs::path(item.workspace).filename().string(), item.id});
+    for (const std::string& folder : controller_.projects()) items.push_back({"project", fs::path(folder).filename().string(), "Project at " + folder, folder});
+    for (const auto& [name, detail] : palette::commands()) items.push_back({"command", name, detail, name});
+    if (const Session* current = controller_.session()) {
+        for (const Definition& command : customization::commands(controller_.home(), current->workspace)) {
+            items.push_back({"command", "/" + command.name, command.description.empty() ? "Your command" : command.description, "/" + command.name});
+        }
+        try {
+            for (const std::string& path : Workspace(current->workspace).files(".", 3000).paths) items.push_back({"file", fs::path(path).filename().string(), path, path});
+        } catch (const std::exception&) {
+        }
+    }
+    for (const ChatConversation& chat : controller_.chats()) items.push_back({"chat", chat.title, "Chat", chat.id});
+
+    auto* dialog = new Gtk::Window();
+    dialog->set_transient_for(*Glib::wrap(GTK_WINDOW(window_), true));
+    dialog->set_modal(true);
+    dialog->set_title("Search Mason");
+    dialog->set_default_size(640, 440);
+    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    auto* entry = Gtk::make_managed<Gtk::SearchEntry>();
+    entry->set_margin(12);
+    gtk_search_entry_set_placeholder_text(entry->gobj(), "Search sessions, projects, files, commands and chats");
+    auto* scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scroll->set_vexpand(true);
+    scroll->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    auto* list = Gtk::make_managed<Gtk::ListBox>();
+    list->set_selection_mode(Gtk::SelectionMode::SINGLE);
+    list->add_css_class("navigation-sidebar");
+    scroll->set_child(*list);
+    box->append(*entry);
+    box->append(*scroll);
+    dialog->set_child(*box);
+
+    const auto shown = std::make_shared<std::vector<PaletteItem>>();
+    const auto fill = [items, shown, list, entry] {
+        while (Gtk::ListBoxRow* row = list->get_row_at_index(0)) list->remove(*row);
+        *shown = palette::matches(items, entry->get_text());
+        static const std::map<std::string, std::string> icons = {{"session", "utilities-terminal-symbolic"}, {"project", "folder-symbolic"}, {"file", "text-x-generic-symbolic"},
+                                                                 {"command", "system-run-symbolic"}, {"chat", "user-available-symbolic"}};
+        for (const PaletteItem& item : *shown) {
+            auto* line = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
+            line->set_margin(6);
+            auto* icon = Gtk::make_managed<Gtk::Image>();
+            icon->set_from_icon_name(icons.at(item.kind));
+            auto* words = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+            auto* title = Gtk::make_managed<Gtk::Label>(item.title);
+            title->set_xalign(0);
+            title->set_ellipsize(Pango::EllipsizeMode::END);
+            auto* detail = Gtk::make_managed<Gtk::Label>(item.detail);
+            detail->set_xalign(0);
+            detail->set_ellipsize(Pango::EllipsizeMode::MIDDLE);
+            detail->add_css_class("dim-label");
+            detail->add_css_class("caption");
+            words->append(*title);
+            words->append(*detail);
+            line->append(*icon);
+            line->append(*words);
+            list->append(*line);
+        }
+        if (Gtk::ListBoxRow* first = list->get_row_at_index(0)) list->select_row(*first);
+    };
+    const auto choose = [this, dialog, shown, list] {
+        const Gtk::ListBoxRow* row = list->get_selected_row();
+        if (!row || row->get_index() < 0 || static_cast<size_t>(row->get_index()) >= shown->size()) return;
+        const PaletteItem item = (*shown)[static_cast<size_t>(row->get_index())];
+        dialog->close();
+        open_palette_item(item);
+    };
+    entry->signal_search_changed().connect(fill);
+    entry->signal_activate().connect(choose);
+    entry->signal_stop_search().connect([dialog] { dialog->close(); });
+    list->signal_row_activated().connect([choose](Gtk::ListBoxRow*) { choose(); });
+    // The arrow keys move through the list while the typing stays in the box.
+    auto keys = Gtk::EventControllerKey::create();
+    keys->set_propagation_phase(Gtk::PropagationPhase::CAPTURE);
+    keys->signal_key_pressed().connect([list, dialog](guint key, guint, Gdk::ModifierType) {
+        if (key == GDK_KEY_Escape) { dialog->close(); return true; }
+        if (key != GDK_KEY_Down && key != GDK_KEY_Up) return false;
+        const Gtk::ListBoxRow* at = list->get_selected_row();
+        const int next = (at ? at->get_index() : -1) + (key == GDK_KEY_Down ? 1 : -1);
+        if (Gtk::ListBoxRow* row = list->get_row_at_index(std::max(0, next))) {
+            list->select_row(*row);
+            row->grab_focus();
+        }
+        return true;
+    }, false);
+    entry->add_controller(keys);
+    // The window is gone for good once it is closed.
+    dialog->signal_hide().connect([dialog] { Glib::signal_idle().connect_once([dialog] { delete dialog; }); });
+    fill();
+    dialog->present();
+    entry->grab_focus();
+}
+
+void MainWindow::open_palette_item(const PaletteItem& item) {
+    if (item.kind == "chat") {
+        controller_.select_chat(item.value);
+        adw_view_stack_set_visible_child_name(stack_, "chat");
+        return;
+    }
+    adw_view_stack_set_visible_child_name(stack_, "code");
+    if (item.kind == "session") controller_.select(item.value);
+    else if (item.kind == "project") {
+        // The project's latest session, or a new one when it has none.
+        std::string latest;
+        for (const Session& each : controller_.sessions()) {
+            if (each.workspace == item.value) { latest = each.id; break; }
+        }
+        if (latest.empty()) controller_.new_session(item.value);
+        else controller_.select(latest);
+    } else if (item.kind == "file") show_file(item.value, 1);
+    else if (item.kind == "command") {
+        draft_.get_buffer()->set_text(item.value + " ");
+        draft_.grab_focus();
+    }
+}
+
+}  // namespace mason

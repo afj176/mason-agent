@@ -6,6 +6,7 @@
 #include "planning.hpp"
 #include "roles.hpp"
 #include "bundles.hpp"
+#include "notes.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -857,6 +858,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         for (const McpServer& server : mcp::enabled(store_.home())) names.push_back(server.name);
         if (!names.empty()) prompt += "\nThe user registered these MCP servers: " + join(names, ", ") + ". Use mcp_tools to see what one offers before calling it.";
     }
+    if (const std::string notes = project_notes::context(store_.home(), *workspace); !notes.empty()) prompt += "\n" + notes;
     if (std::find(offered_names_.begin(), offered_names_.end(), "verify_acceptance") != offered_names_.end()) {
         prompt += "\nThis project has acceptance scenarios in mason.acceptance.json. Run verify_acceptance after changing a page they cover, and do not edit that file unless asked.";
     }

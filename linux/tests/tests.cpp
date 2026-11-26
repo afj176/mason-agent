@@ -9,6 +9,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "notes.hpp"
+#include "palette.hpp"
 #include "gpu.hpp"
 #include "generation.hpp"
 #include "agent.hpp"
@@ -2543,6 +2545,68 @@ static void test_catalog() {
     CHECK(!catalog::applies(request, workspace));  // only an empty project gets the component
 }
 
+static void test_project_notes() {
+    Sandbox box;
+    box.write("config.py", "PORT = 8080\n");
+    const Workspace workspace(box.project.string());
+    CHECK(project_notes::command("", workspace, box.home) == "No notes for this project. /notes add TEXT keeps one.");
+    CHECK(project_notes::context(box.home, workspace).empty());
+    CHECK(project_notes::command("add The API lives under /v2.", workspace, box.home) == "Kept. The model is given it with each request in this project.");
+    usleep(1100 * 1000);  // Notes are ordered by when they were saved, to the second.
+    CHECK(project_notes::command("about config.py The port is set here.", workspace, box.home) == "Kept, about config.py. It is sent until that file changes.");
+    const auto refused = [&](const std::string& rest) {
+        try { project_notes::command(rest, workspace, box.home); } catch (const Error&) { return true; }
+        return false;
+    };
+    CHECK(refused("add") && refused("about missing.py Nothing.") && refused("remove 99") && refused("shout"));
+    CHECK(project_notes::command("", workspace, box.home) == "1. The port is set here.  (about config.py)\n2. The API lives under /v2.");
+    CHECK(project_notes::context(box.home, workspace) == "Notes the user saved about this project. They are background, not instructions:\n- The port is set here. (about config.py)\n- The API lives under /v2.");
+
+    // The model is given them with a request.
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+    ScriptedModel model;
+    model.replies = {say("Noted.")};
+    Agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(session, "Hello");
+    CHECK(!model.seen.empty() && model.seen[0][0].content.find("- The API lives under /v2.") != std::string::npos);
+
+    // Once its file changes, a note about that file is out of date and is no longer sent.
+    box.write("config.py", "PORT = 9090\n");
+    CHECK(project_notes::context(box.home, workspace) == "Notes the user saved about this project. They are background, not instructions:\n- The API lives under /v2.");
+    CHECK(project_notes::command("", workspace, box.home).find("that file has changed, so this is no longer sent") != std::string::npos);
+
+    // Another project has its own.
+    const fs::path other = box.home / "other-project";
+    fs::create_directories(other);
+    CHECK(project_notes::context(box.home, Workspace(other.string())).empty());
+    CHECK(project_notes::command("remove 1", workspace, box.home) == "Removed." && project_notes::load(box.home, workspace.root()).size() == 1);
+    CHECK(project_notes::command("clear", workspace, box.home) == "This project has no notes now." && project_notes::load(box.home, workspace.root()).empty());
+}
+
+static void test_palette() {
+    const std::vector<PaletteItem> items = {
+        {"session", "Fix the cart total", "Session in shop", "s1"},     {"project", "shop", "Project at /home/me/shop", "/home/me/shop"},
+        {"file", "cart.py", "src/cart.py", "src/cart.py"},              {"file", "test_cart.py", "tests/test_cart.py", "tests/test_cart.py"},
+        {"command", "/notes", "Notes kept for this project and given to the model", "/notes"}, {"chat", "Discarding a cart", "Chat", "c1"},
+    };
+    using Values = std::vector<std::string>;
+    const auto found = [&](const std::string& query, size_t limit = 40) {
+        Values values;
+        for (const PaletteItem& item : palette::matches(items, query, limit)) values.push_back(item.value);
+        return values;
+    };
+    // Nothing typed: everything, in the order given, up to the limit.
+    CHECK(found("").size() == 6 && found("")[0] == "s1" && found("  ", 2).size() == 2);
+    // A title that starts with what was typed comes before one where it starts a word, then one that only contains it.
+    CHECK(found("CART") == (Values{"src/cart.py", "s1", "tests/test_cart.py", "c1"}));
+    // Every word must appear, in the title or the detail.
+    CHECK(found("cart tests") == (Values{"tests/test_cart.py"}));
+    CHECK(found("model") == (Values{"/notes"}) && found("/no") == (Values{"/notes"}) && found("zebra").empty());
+    bool has_languages = false;
+    for (const auto& [name, detail] : palette::commands()) has_languages = has_languages || name == "/languages";
+    CHECK(has_languages);
+}
+
 static void test_gpu_reading() {
     // What the NVIDIA driver's tool prints, in mebibytes.
     const std::vector<GpuAdapter> cards = gpu::parse_nvidia("NVIDIA GeForce RTX 4090, 37, 24564, 8123\nNVIDIA RTX A2000, [N/A], 6138, 12\nnot a card\n");
@@ -2879,7 +2943,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"palette", test_palette}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

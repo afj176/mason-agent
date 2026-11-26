@@ -4,6 +4,7 @@
 #include <gtkmm.h>
 
 #include "gpu.hpp"
+#include "palette.hpp"
 #include "controller.hpp"
 #include "browser.hpp"
 #include "chat.hpp"
@@ -105,6 +106,9 @@ private:
     void refresh_composer();
     void refresh_changes();
     void open_project();
+    /// The search box over sessions, projects, files, commands and chats (Ctrl+K), and going to what was chosen.
+    void show_palette();
+    void open_palette_item(const PaletteItem& item);
     Gtk::Widget* turn_widget(const Turn& turn, const std::vector<Activity>& activities, bool live);
     Gtk::Widget* activity_widget(const Activity& activity);
     Gtk::Widget* answer_widget(const std::string& text);
