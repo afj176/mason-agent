@@ -30,6 +30,11 @@ namespace skills {
 std::vector<Definition> list(const Workspace& workspace);
 }
 
+/// An outline of a project for the model: each source file with its size and the top-level things it defines.
+namespace repository_map {
+std::string outline(const Workspace& workspace, const std::string& under = ".");
+}
+
 /// Programs the agent starts and leaves running during one request: a dev server, a watcher, a long test run.
 /// Every job is stopped when the request ends.
 class Jobs {

@@ -95,6 +95,8 @@ private:
     Jobs jobs_;
     /// The tools offered for the request in progress, for the message about an unknown tool.
     std::vector<std::string> offered_names_;
+    /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
+    std::optional<std::string> pending_question_;
     /// Follow-ups that arrive while a request runs. Everything here is read and changed under the lock.
     std::mutex inbox_lock_;
     std::vector<FollowUp> inbox_;

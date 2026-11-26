@@ -72,6 +72,8 @@ public final class Agent {
     let jobs = Jobs()
     /// The tools offered for the request in progress, for the message about an unknown tool.
     var offeredNames: [String] = []
+    /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
+    var pendingQuestion: String?
 
     public init(store: SessionStore, model: ChatModel, approve: @escaping (ApprovalRequest) async -> Bool, emit: @escaping (AgentEvent) -> Void) {
         self.store = store; self.model = model; self.approve = approve; self.emit = emit
@@ -217,7 +219,8 @@ public final class Agent {
         session.state = "Running"; session.detail = ""
         try? store.save(session)
         do {
-            var finished = false
+            var finished = false, asked = false
+            pendingQuestion = nil
             let window = await model.contextWindow()
             for _ in 0..<Agent.actionLimit {
                 try Task.checkCancellation()
@@ -241,10 +244,18 @@ public final class Agent {
                     let result = await perform(call, in: workspace, session: &session)
                     session.messages.append(ChatMessage(role: "tool", content: result, toolCallId: call.id))
                     try? store.save(session)
+                    if pendingQuestion != nil { break }
+                }
+                if let question = pendingQuestion {
+                    // The model needs something only the user can say. Its question is the answer to this request.
+                    pendingQuestion = nil
+                    session.turns[session.turns.count - 1].answer = question
+                    asked = true
+                    break
                 }
             }
-            session.state = finished ? "Completed" : "Stopped"
-            session.detail = finished ? "" : "Stopped after \(Agent.actionLimit) steps. Send another message to continue."
+            session.state = asked ? "Needs your answer" : finished ? "Completed" : "Stopped"
+            session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : "Stopped after \(Agent.actionLimit) steps. Send another message to continue."
         } catch is CancellationError {
             session.state = "Stopped"; session.detail = "Stopped. Completed edits are kept."
         } catch {

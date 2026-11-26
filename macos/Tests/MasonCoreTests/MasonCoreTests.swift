@@ -360,9 +360,38 @@ final class MasonCoreTests: XCTestCase {
         var reading = try store.create(workspace: session.workspace, permission: .readOnly)
         reading.askOnly = true
         let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name)
-        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "read_skill"], "a read-only session gets no editing, job or workflow tools")
+        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"], "a read-only session gets no editing, job or workflow tools")
         try "{\"version\": 2}".write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try ProjectWorkflows.load(workspace))
+    }
+
+    func testAQuestionStopsTheRequestUntilTheUserAnswers() async throws {
+        var (store, session) = try session(.readOnly)
+        let model = ScriptedModel([call("ask_user", ["question": "Which currency should totals use?"]), ModelReply(text: "Never reached in the first request."), ModelReply(text: "Using EUR.")])
+        model.replies.remove(at: 1)
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Add totals")
+        XCTAssertEqual(session.state, "Needs your answer")
+        XCTAssertEqual(session.turns[0].answer, "Which currency should totals use?")
+        XCTAssertEqual(model.seen.count, 1, "the model is not asked again until the user replies")
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "EUR")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.turns[1].answer, "Using EUR.")
+        XCTAssertEqual(model.seen[1].last?.content, "EUR")
+        XCTAssertTrue(model.seen[1].contains { $0.role == "tool" && $0.content.hasPrefix("Asked the user") }, "the conversation stays valid for the model")
+    }
+
+    func testTheRepositoryMapListsWhatEachFileDefines() throws {
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try "export function total(items) {}\nclass Cart {}\nconst TAX = 0.2\n".write(to: folder.appendingPathComponent("src/cart.ts"), atomically: true, encoding: .utf8)
+        try "public struct Money {}\nfunc format(_ value: Money) -> String { \"\" }\n".write(to: folder.appendingPathComponent("src/Money.swift"), atomically: true, encoding: .utf8)
+        try "just words\n".write(to: folder.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+        let map = try RepositoryMap.outline(workspace)
+        XCTAssertTrue(map.contains("calc.py  (3 lines): add"), map)
+        XCTAssertTrue(map.contains("src/cart.ts  (4 lines): total, Cart, TAX"), map)
+        XCTAssertTrue(map.contains("src/Money.swift  (3 lines): Money, format"), map)
+        XCTAssertTrue(map.contains("notes.txt  (2 lines)") && !map.contains("notes.txt  (2 lines):"), "a file with nothing to outline is still listed")
+        XCTAssertFalse(try RepositoryMap.outline(workspace, under: "src").contains("calc.py"))
     }
 
     // MARK: queue and steer
