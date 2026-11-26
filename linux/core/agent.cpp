@@ -558,8 +558,11 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         emit_({AgentEvent::Kind::Status, call.name == "run_command" ? "Running the command" : "Running the workflow", {}});
         const snapshot::Map before = snapshot::capture(workspace, snapshot_);
         CommandResult result;
+        NetworkRelay* through = sandboxed ? relay(session) : nullptr;
+        const size_t heard = through ? through->receipts().size() : 0;
         try {
-            result = shell::run(command, workspace, sandboxed, 120, cancel);
+            result = shell::run(command, workspace, sandboxed, 120, cancel, nullptr, -1, through);
+            result.output += network_note(heard);
         } catch (...) {
             record_command_changes(before, workspace, session);
             throw;
@@ -740,6 +743,7 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
         if (!continuing) {
             // Whatever the request left running in the background ends with it.
             jobs_.stop_all();
+            network_.reset();
             return;
         }
         emit_({AgentEvent::Kind::FollowUp, input, {}, std::make_shared<const Session>(session)});
@@ -970,6 +974,28 @@ void Agent::close_open_calls(Session& session) {
     }
 }
 
+NetworkRelay* Agent::relay(const Session& session) {
+    if (session.permission != Permission::Auto || session.ask_only || !network_settings::asks(store_.home())) return nullptr;
+    if (!network_) {
+        try {
+            network_ = std::make_unique<NetworkRelay>([this](const std::string& host) {
+                return approve_ && approve_(ApprovalRequest{"network", "Let this request's commands reach " + host + " over HTTPS",
+                                                            "A sandboxed command is trying to connect to " + host + " on port 443. Allowing it lets commands in this request send and receive data there until the request ends. Everything else stays blocked: this computer, your local network and plain HTTP.",
+                                                            host});
+            });
+        } catch (const std::exception&) {
+        }
+    }
+    return network_.get();
+}
+
+std::string Agent::network_note(size_t since) {
+    if (!network_) return "";
+    const std::vector<std::string> all = network_->receipts();
+    if (all.size() <= since) return "";
+    return "\n[Network: " + join(std::vector<std::string>(all.begin() + static_cast<std::ptrdiff_t>(since), all.end()), "; ") + "]";
+}
+
 bool Agent::allowed(const ApprovalRequest& request, Session& session) {
     if (ApprovalRules(store_.home(), session.workspace).allows(request.tool, request.subject)) return true;
     session.state = "Awaiting review";
@@ -1097,8 +1123,11 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             // The project is read before and after, so whatever the command changed can be shown and undone.
             const snapshot::Map before = snapshot::capture(workspace, snapshot_);
             CommandResult result;
+            NetworkRelay* through = sandboxed ? relay(session) : nullptr;
+            const size_t heard = through ? through->receipts().size() : 0;
             try {
-                result = shell::run(*command, workspace, sandboxed, 120, cancel);
+                result = shell::run(*command, workspace, sandboxed, 120, cancel, nullptr, -1, through);
+                result.output += network_note(heard);
             } catch (...) {
                 record_command_changes(before, workspace, session);
                 throw;

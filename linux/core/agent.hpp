@@ -3,6 +3,7 @@
 #include "desktop.hpp"
 #include "harness.hpp"
 #include "mcp.hpp"
+#include "network.hpp"
 #include "tools.hpp"
 #include "model.hpp"
 #include "semantic.hpp"
@@ -126,6 +127,10 @@ private:
     std::vector<std::string> offered_names_;
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     std::optional<std::string> pending_question_;
+    /// The relay this request's sandboxed commands may reach hosts through, once one has been needed.
+    std::unique_ptr<NetworkRelay> network_;
+    NetworkRelay* relay(const Session& session);
+    std::string network_note(size_t since);
     std::function<void(const std::string&, const std::string&, int)> present_;
     std::optional<std::string> last_search_;  // this request's latest search_files text, which search_next continues
     std::shared_ptr<SemanticModels> semantic_;

@@ -85,6 +85,37 @@ public final class Agent {
     var offeredNames: [String] = []
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     var pendingQuestion: String?
+    /// The relay this request's sandboxed commands may reach hosts through, once one has been needed.
+    var network: NetworkRelay?
+
+    /// In Auto with "ask when needed" on, the relay for this request; otherwise commands have no network.
+    func relay(_ session: Session) -> NetworkRelay? {
+        guard session.permission == .auto, !session.askOnly, NetworkSettings.asks(home: home) else { return nil }
+        if network == nil {
+            let ask = approve
+            network = try? NetworkRelay(approve: { host in
+                // The relay's thread waits here while the user is asked on the agent's side.
+                let answered = DispatchSemaphore(value: 0)
+                let answer = Answer()
+                Task {
+                    answer.allowed = await ask(ApprovalRequest(tool: "network", title: "Let this request's commands reach \(host) over HTTPS",
+                                                               detail: "A sandboxed command is trying to connect to \(host) on port 443. Allowing it lets commands in this request send and receive data there until the request ends. Everything else stays blocked: this computer, your local network and plain HTTP.",
+                                                               subject: host))
+                    answered.signal()
+                }
+                answered.wait()
+                return answer.allowed
+            })
+        }
+        return network
+    }
+    final class Answer: @unchecked Sendable { var allowed = false }
+
+    /// What the relay let through or refused since `count` lines ago, as a note for a command's result.
+    func networkNote(since count: Int) -> String {
+        let fresh = Array((network?.receipts ?? []).dropFirst(count))
+        return fresh.isEmpty ? "" : "\n[Network: " + fresh.joined(separator: "; ") + "]"
+    }
     /// Set by an app that can show things to the user: a file at a line ("file") or a project page ("page").
     public var present: ((_ kind: String, _ path: String, _ line: Int) -> Void)?
     /// The text of this request's latest search_files call, which search_next continues.
@@ -243,6 +274,7 @@ public final class Agent {
             if !continuing {
                 // Whatever the request left running in the background ends with it.
                 await jobs.stopAll()
+                network?.stop(); network = nil
                 return
             }
             emit(.followUp(session, input))
@@ -513,10 +545,11 @@ public final class Agent {
                 // The project is read before and after, so whatever the command changed can be shown and undone.
                 let before = Snapshot.capture(workspace, previous: snapshot)
                 let result: CommandResult
-                do { result = try await Shell.run(command, in: workspace, sandboxed: sandboxed) }
+                let through = sandboxed ? relay(session) : nil, heard = through?.receipts.count ?? 0
+                do { result = try await Shell.run(command, in: workspace, sandboxed: sandboxed, network: through) }
                 catch { _ = recordCommandChanges(since: before.entries, in: workspace, session: &session); throw error }
                 let changed = recordCommandChanges(since: before.entries, in: workspace, session: &session)
-                var output = "exit \(result.exitCode)\n" + result.output
+                var output = "exit \(result.exitCode)\n" + result.output + networkNote(since: heard)
                 if !changed.isEmpty {
                     output += "\n[Files changed by this command: " + changed.prefix(12).joined(separator: ", ") + (changed.count > 12 ? " and \(changed.count - 12) more" : "") + "]"
                 }

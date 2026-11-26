@@ -6,6 +6,8 @@
 #include "window.hpp"
 
 int main(int argc, char** argv) {
+    // Inside the sandbox this program is started as the forwarder to Mason's network relay.
+    if (const auto forwarded = mason::network::maybe_forward(argc, argv)) return *forwarded;
     auto application = Gtk::Application::create("site.masonagent.MasonAgent");
     std::unique_ptr<mason::app::Controller> controller;
     std::unique_ptr<mason::app::MainWindow> window;

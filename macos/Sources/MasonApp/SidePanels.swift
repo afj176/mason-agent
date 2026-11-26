@@ -122,12 +122,12 @@ final class WebsiteState: NSObject, ObservableObject, WKScriptMessageHandler, WK
     var page = ""
     private var pages: PagePreview?
     private var root = ""
-    private var server: Preview.DevServer?
+    private var server: SitePreview.DevServer?
 
     override init() {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
-        configuration.userContentController.addUserScript(WKUserScript(source: Preview.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        configuration.userContentController.addUserScript(WKUserScript(source: SitePreview.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: configuration)
         super.init()
         configuration.userContentController.add(self, name: "mason")
@@ -172,7 +172,7 @@ final class WebsiteState: NSObject, ObservableObject, WKScriptMessageHandler, WK
 
     func togglePick() {
         picking.toggle()
-        view.evaluateJavaScript(picking ? Preview.arm : Preview.disarm, completionHandler: nil)
+        view.evaluateJavaScript(picking ? SitePreview.arm : SitePreview.disarm, completionHandler: nil)
         if picking { note = "Click an element in the page." }
     }
 
@@ -182,7 +182,7 @@ final class WebsiteState: NSObject, ObservableObject, WKScriptMessageHandler, WK
         note = "Clicking it in a fresh browser…"
         let shown = page
         Task {
-            do { note = try await Preview.verifyClick(folder, page: shown, selector: picked.selector) }
+            do { note = try await SitePreview.verifyClick(folder, page: shown, selector: picked.selector) }
             catch { note = (error as? MasonError)?.description ?? error.localizedDescription }
             busy = false
         }
@@ -195,7 +195,7 @@ final class WebsiteState: NSObject, ObservableObject, WKScriptMessageHandler, WK
         note = "Starting \(workflow) with your account, and waiting for port \(port)…"
         Task {
             do {
-                let started = try await Preview.DevServer(workspace: folder, workflow: workflow, port: number)
+                let started = try await SitePreview.DevServer(workspace: folder, workflow: workflow, port: number)
                 server = started
                 serving = true
                 open(started.address)
@@ -215,8 +215,8 @@ final class WebsiteState: NSObject, ObservableObject, WKScriptMessageHandler, WK
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let text = message.body as? String else { return }
         picking = false
-        picked = Preview.pick(from: text, page: page.isEmpty ? (view.url?.absoluteString ?? "the page") : page)
-        if let picked { note = Preview.evidence(picked) }
+        picked = SitePreview.pick(from: text, page: page.isEmpty ? (view.url?.absoluteString ?? "the page") : page)
+        if let picked { note = SitePreview.evidence(picked) }
     }
 
     /// A navigation to anywhere but this computer is refused: the panel is for the project, not for the web.

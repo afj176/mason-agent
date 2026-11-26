@@ -570,24 +570,24 @@ final class MasonCoreTests: XCTestCase {
         let workspace = try Workspace(path: folder.path)
         try "<!doctype html><title>Shop</title><h1>Shop</h1><button id=\"add\">Add</button>".write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         let preview = try PagePreview(workspace: workspace)
-        XCTAssertTrue(Preview.listening(preview.port), "the project's pages are served on this computer")
+        XCTAssertTrue(SitePreview.listening(preview.port), "the project's pages are served on this computer")
         XCTAssertEqual(preview.address(of: "sub dir/index.html"), "http://127.0.0.1:\(preview.port)/sub%20dir/index.html")
         let served = try String(contentsOf: try XCTUnwrap(URL(string: preview.address(of: "index.html"))), encoding: .utf8)
         XCTAssertTrue(served.contains("<h1>Shop</h1>"), served)
         preview.stop()
 
         let message = ##"{"selector":"#add","kind":"button","label":"Add","html":"<button id=\"add\">Add</button>","console":["error: boom (app.js:3)"]}"##
-        let pick = try XCTUnwrap(Preview.pick(from: message, page: "index.html"))
+        let pick = try XCTUnwrap(SitePreview.pick(from: message, page: "index.html"))
         XCTAssertEqual(pick.selector, "#add")
-        let note = Preview.evidence(pick)
+        let note = SitePreview.evidence(pick)
         XCTAssertTrue(note.contains("selector: `#add`") && note.contains("label: “Add”") && note.contains("error: boom (app.js:3)"), note)
-        XCTAssertNil(Preview.pick(from: "{\"kind\":\"button\"}", page: "index.html"), "a message without a selector is not a pick")
-        XCTAssertTrue(Preview.script.contains("messageHandlers.mason.postMessage") && Preview.script.hasPrefix("(function () {"))
+        XCTAssertNil(SitePreview.pick(from: "{\"kind\":\"button\"}", page: "index.html"), "a message without a selector is not a pick")
+        XCTAssertTrue(SitePreview.script.contains("messageHandlers.mason.postMessage") && SitePreview.script.hasPrefix("(function () {"))
 
         try #"{"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "echo starting; exit 3"]}}}"#.write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
-        do { _ = try await Preview.DevServer(workspace: workspace, workflow: "dev", port: 18473); XCTFail("a workflow that ends is not a server") }
+        do { _ = try await SitePreview.DevServer(workspace: workspace, workflow: "dev", port: 18473); XCTFail("a workflow that ends is not a server") }
         catch { XCTAssertTrue("\(error)".contains("ended before anything listened"), "\(error)") }
-        do { _ = try await Preview.DevServer(workspace: workspace, workflow: "none", port: 18473); XCTFail("an unknown workflow is refused") } catch {}
+        do { _ = try await SitePreview.DevServer(workspace: workspace, workflow: "none", port: 18473); XCTFail("an unknown workflow is refused") } catch {}
 
         var (store, session) = try session(.workspaceEdits)
         var shown: [String] = []
@@ -597,6 +597,70 @@ final class MasonCoreTests: XCTestCase {
         await agent.run(&session, request: "Show me")
         XCTAssertEqual(shown, ["file calc.py 2", "page index.html 1"], "a file and a page are shown; a page must be HTML")
         XCTAssertFalse(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "open_file" }, "without an app that can show things, the tools are not offered")
+    }
+
+    func testTheNetworkRelayTunnelsOnlyWhatTheUserAllowed() async throws {
+        XCTAssertEqual(try NetworkPolicy.host("Registry.NPMJS.org", port: 443), "registry.npmjs.org")
+        for (host, port) in [("registry.npmjs.org", 80), ("localhost", 443), ("printer.local", 443), ("10.0.0.5", 443), ("intranet", 443), ("a..b.com", 443), ("-bad.example.com", 443), ("db.internal", 443)] {
+            XCTAssertThrowsError(try NetworkPolicy.host(host, port: port), "\(host):\(port) is not relayed")
+        }
+        for address: [UInt8] in [[8, 8, 8, 8], [93, 184, 216, 34], [0x26, 0x06, 0x47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]] { XCTAssertTrue(NetworkPolicy.isPublic(address), "\(address)") }
+        let mapped: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]
+        for address: [UInt8] in [[127, 0, 0, 1], [10, 1, 2, 3], [192, 168, 1, 1], [172, 20, 0, 1], [169, 254, 169, 254], [100, 64, 0, 1], [224, 0, 0, 1], [0, 0, 0, 0], mapped,
+                                 [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]] {
+            XCTAssertFalse(NetworkPolicy.isPublic(address), "\(address) is not on the public internet")
+        }
+        XCTAssertTrue(try NetworkSettings.command("", home: home).contains("no network"))
+        XCTAssertTrue(try NetworkSettings.command("ask", home: home).contains("asks first"))
+        XCTAssertTrue(NetworkSettings.asks(home: home))
+        XCTAssertTrue(SandboxProfile.profile(workspace: "/w", scratch: "/s", relay: 4321).hasSuffix("(deny network*)\n(allow network-outbound (remote tcp \"localhost:4321\"))"))
+        XCTAssertTrue(SandboxProfile.profile(workspace: "/w", scratch: "/s").hasSuffix("(deny network*)"), "without the relay the sandbox has no network at all")
+
+        // A stand-in for a site: the project's page server on this computer. The test's resolver points names at it.
+        try "<h1>upstream</h1>".write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let site = try PagePreview(workspace: try Workspace(path: folder.path))
+        defer { site.stop() }
+        var asked: [String] = []
+        let lock = NSLock()
+        let relay = try NetworkRelay(approve: { host in lock.lock(); asked.append(host); lock.unlock(); return host != "denied.example.com" },
+                                     resolve: { _ in [([127, 0, 0, 1], site.port)] }, publicOnly: false)
+        defer { relay.stop() }
+        func exchange(_ request: String, then follow: String? = nil) -> String {
+            let descriptor = NetworkRelay.connected(to: ([127, 0, 0, 1], relay.port))!
+            defer { close(descriptor) }
+            NetworkRelay.send(descriptor, Array(request.utf8))
+            var received = [UInt8](), buffer = [UInt8](repeating: 0, count: 4096)
+            var timeout = timeval(tv_sec: 5, tv_usec: 0)
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            var sentFollow = follow == nil
+            while true {
+                let count = recv(descriptor, &buffer, buffer.count, 0)
+                if count <= 0 { break }
+                received.append(contentsOf: buffer[0..<count])
+                if !sentFollow, NetworkRelay.ends(received) { NetworkRelay.send(descriptor, Array(follow!.utf8)); sentFollow = true }
+                if String(decoding: received, as: UTF8.self).contains("</h1>") { break }
+            }
+            return String(decoding: received, as: UTF8.self)
+        }
+        let through = exchange("CONNECT files.example.com:443 HTTP/1.1\r\nHost: files.example.com:443\r\n\r\n", then: "GET /index.html HTTP/1.1\r\nHost: files.example.com\r\nConnection: close\r\n\r\n")
+        XCTAssertTrue(through.hasPrefix("HTTP/1.1 200 Connection established") && through.contains("<h1>upstream</h1>"), "an allowed host is tunnelled: " + through.prefix(200))
+        _ = exchange("CONNECT files.example.com:443 HTTP/1.1\r\n\r\n", then: "GET /index.html HTTP/1.1\r\nConnection: close\r\n\r\n")
+        XCTAssertTrue(exchange("CONNECT denied.example.com:443 HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 403"), "a host the user refused is not reached")
+        XCTAssertTrue(exchange("CONNECT localhost:443 HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 403"), "this computer is never a destination")
+        XCTAssertTrue(exchange("CONNECT files.example.com:22 HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 403"), "only port 443")
+        XCTAssertTrue(exchange("GET http://files.example.com/ HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 405"), "plain HTTP is not relayed")
+        XCTAssertEqual(asked, ["files.example.com", "denied.example.com"], "each host is asked about once, and a refused destination never")
+        XCTAssertTrue(relay.receipts.contains { $0.hasPrefix("allowed: files.example.com") } && relay.receipts.contains("denied by you: denied.example.com"), "\(relay.receipts)")
+
+        // The same relay with its real rule refuses a name that resolves to this computer.
+        let strict = try NetworkRelay(approve: { _ in true }, resolve: { _ in [([127, 0, 0, 1], site.port)] })
+        defer { strict.stop() }
+        let descriptor = try XCTUnwrap(NetworkRelay.connected(to: ([127, 0, 0, 1], strict.port)))
+        NetworkRelay.send(descriptor, Array("CONNECT rebind.example.com:443 HTTP/1.1\r\n\r\n".utf8))
+        var buffer = [UInt8](repeating: 0, count: 512)
+        let count = recv(descriptor, &buffer, buffer.count, 0)
+        close(descriptor)
+        XCTAssertTrue(String(decoding: buffer[0..<max(0, count)], as: UTF8.self).hasPrefix("HTTP/1.1 502"), "a public name that points at a private address is not connected to")
     }
 
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {

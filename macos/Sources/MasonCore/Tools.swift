@@ -467,10 +467,11 @@ extension Agent {
             emit(.status(call.name == "run_command" ? "Running the command" : "Running the workflow"))
             let before = Snapshot.capture(workspace, previous: snapshot)
             let result: CommandResult
-            do { result = try await Shell.run(command, in: workspace, sandboxed: sandboxed) }
+            let through = sandboxed ? relay(session) : nil, heard = through?.receipts.count ?? 0
+            do { result = try await Shell.run(command, in: workspace, sandboxed: sandboxed, network: through) }
             catch { _ = recordCommandChanges(since: before.entries, in: workspace, session: &session); throw error }
             let changed = recordCommandChanges(since: before.entries, in: workspace, session: &session)
-            let output = "exit \(result.exitCode)\n" + result.output + (changed.isEmpty ? "" : "\n[Files changed by this \(call.name == "run_command" ? "command" : "workflow"): " + changed.prefix(12).joined(separator: ", ") + "]")
+            let output = "exit \(result.exitCode)\n" + result.output + networkNote(since: heard) + (changed.isEmpty ? "" : "\n[Files changed by this \(call.name == "run_command" ? "command" : "workflow"): " + changed.prefix(12).joined(separator: ", ") + "]")
             return (result.exitCode == 0 && !result.timedOut ? .completed : .failed, output)
 
         case "poll_job", "stop_job", "terminal_status", "terminal_stop":

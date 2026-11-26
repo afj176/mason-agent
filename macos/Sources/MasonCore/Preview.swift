@@ -25,7 +25,7 @@ public struct PreviewPick: Equatable {
     public var console: [String]
 }
 
-public enum Preview {
+public enum SitePreview {
     /// Added to every page the Website tab shows, before the page's own scripts. It keeps the latest console errors
     /// and warnings, and waits to be armed; once armed, the next click picks an element instead of using it, and the
     /// pick is posted to the app as JSON through the message handler named "mason".
@@ -129,11 +129,11 @@ public enum Preview {
         public init(workspace: Workspace, workflow name: String, port: Int) async throws {
             guard (1024...65535).contains(port) else { throw MasonError("Use a port from 1024 to 65535.") }
             guard let workflow = try ProjectWorkflows.load(workspace).workflows[name] else { throw MasonError("No workflow named \(name) in mason.workflows.json.") }
-            guard !Preview.listening(port) else { throw MasonError("Something is already listening on port \(port). Stop it, or choose another port.") }
+            guard !SitePreview.listening(port) else { throw MasonError("Something is already listening on port \(port). Stop it, or choose another port.") }
             self.port = port
             id = try jobs.start(ProjectWorkflows.commandLine(workflow), workspace: workspace, sandboxed: false)
             let deadline = Date().addingTimeInterval(45)
-            while !Preview.listening(port) {
+            while !SitePreview.listening(port) {
                 let state = try await jobs.observe(id, stop: false, waitMs: 0)
                 if !state.hasPrefix("job \(id): running") {
                     await jobs.stopAll()

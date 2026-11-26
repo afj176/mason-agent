@@ -501,6 +501,8 @@ final class CLI {
             }
         case "/experiment", "/experiments":
             for line in try await Experiments.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/network":
+            for line in try NetworkSettings.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/roles", "/role":
             for line in try Roles.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/task", "/tasks":
@@ -600,6 +602,7 @@ final class CLI {
             ("/commands", "List your custom slash commands"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"),
             ("/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"),
             ("/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"),
             ("/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"),

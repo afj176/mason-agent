@@ -25,6 +25,7 @@
 #include "roles.hpp"
 #include "project_tests.hpp"
 #include "preview.hpp"
+#include "network.hpp"
 #include "shell.hpp"
 #include "models.hpp"
 
@@ -1226,6 +1227,69 @@ static void test_extra_tools() {
         CHECK(!offered);  // without an app that can show things, the tools are not offered
     }
 
+    // The network relay tunnels only what the user allowed.
+    {
+        Sandbox box;
+        CHECK(network_policy::host("Registry.NPMJS.org", 443) == "registry.npmjs.org");
+        for (const auto& [host, port] : std::vector<std::pair<std::string, int>>{{"registry.npmjs.org", 80}, {"localhost", 443}, {"printer.local", 443}, {"10.0.0.5", 443}, {"intranet", 443}, {"a..b.com", 443}, {"-bad.example.com", 443}, {"db.internal", 443}}) {
+            bool refused = false;
+            try { network_policy::host(host, port); } catch (const Error&) { refused = true; }
+            CHECK(refused);
+        }
+        CHECK(network_policy::is_public({8, 8, 8, 8}) && network_policy::is_public({93, 184, 216, 34}) && network_policy::is_public({0x26, 0x06, 0x47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}));
+        for (const std::vector<uint8_t>& address : std::vector<std::vector<uint8_t>>{{127, 0, 0, 1}, {10, 1, 2, 3}, {192, 168, 1, 1}, {172, 20, 0, 1}, {169, 254, 169, 254}, {100, 64, 0, 1}, {224, 0, 0, 1}, {0, 0, 0, 0},
+                                                                                     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1}, {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+                                                                                     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}) {
+            CHECK(!network_policy::is_public(address));  // not on the public internet
+        }
+        CHECK(network_settings::command("", box.home).find("no network") != std::string::npos);
+        CHECK(network_settings::command("ask", box.home).find("asks first") != std::string::npos && network_settings::asks(box.home));
+
+        // A stand-in for a site: the project's page server on this computer. The test's resolver points names at it.
+        box.write("index.html", "<h1>upstream</h1>");
+        const Workspace workspace(box.project.string());
+        const browser::PageServer site(workspace);
+        std::vector<std::string> asked;
+        std::mutex lock;
+        NetworkRelay relay([&](const std::string& host) { std::lock_guard<std::mutex> guard(lock); asked.push_back(host); return host != "denied.example.com"; },
+                           [&](const std::string&) { return std::vector<RelayAddress>{{{127, 0, 0, 1}, site.port()}}; }, false);
+        // A command outside any sandbox speaks to the relay's socket the way the forwarder does.
+        auto exchange = [&](NetworkRelay& through, const std::string& request) {
+            box.write("request.txt", request);
+            const std::string script = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.settimeout(5)\ns.connect(sys.argv[1])\ns.sendall(open('request.txt','rb').read())\nd=b''\ntry:\n  while True:\n    c=s.recv(4096)\n    if not c: break\n    d+=c\n    if b'</h1>' in d: break\nexcept Exception: pass\nsys.stdout.write(d.decode('latin-1'))\n";
+            box.write("exchange.py", script);
+            return shell::run("python3 exchange.py " + shell::quote(through.socket_path().string()), workspace, false, 30).output;
+        };
+        const bool python = shell::run("command -v python3", workspace, false, 10).exit_code == 0;
+        if (python) {
+            const std::string through = exchange(relay, "CONNECT files.example.com:443 HTTP/1.1\r\nHost: files.example.com:443\r\n\r\nGET /index.html HTTP/1.1\r\nHost: files.example.com\r\nConnection: close\r\n\r\n");
+            CHECK(through.rfind("HTTP/1.1 200 Connection established", 0) == 0 && through.find("<h1>upstream</h1>") != std::string::npos);  // an allowed host is tunnelled
+            exchange(relay, "CONNECT files.example.com:443 HTTP/1.1\r\n\r\nGET /index.html HTTP/1.1\r\nConnection: close\r\n\r\n");
+            CHECK(exchange(relay, "CONNECT denied.example.com:443 HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 403", 0) == 0);  // a host the user refused is not reached
+            CHECK(exchange(relay, "CONNECT localhost:443 HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 403", 0) == 0);  // this computer is never a destination
+            CHECK(exchange(relay, "CONNECT files.example.com:22 HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 403", 0) == 0);  // only port 443
+            CHECK(exchange(relay, "GET http://files.example.com/ HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 405", 0) == 0);  // plain HTTP is not relayed
+            CHECK(asked == (std::vector<std::string>{"files.example.com", "denied.example.com"}));  // each host is asked about once, and a refused destination never
+            const std::vector<std::string> receipts = relay.receipts();
+            CHECK(std::any_of(receipts.begin(), receipts.end(), [](const std::string& line) { return line.rfind("allowed: files.example.com", 0) == 0; }) &&
+                  std::find(receipts.begin(), receipts.end(), "denied by you: denied.example.com") != receipts.end());
+            // The same relay with its real rule refuses a name that resolves to this computer.
+            NetworkRelay strict([](const std::string&) { return true; }, [&](const std::string&) { return std::vector<RelayAddress>{{{127, 0, 0, 1}, site.port()}}; });
+            CHECK(exchange(strict, "CONNECT rebind.example.com:443 HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 502", 0) == 0);
+
+            // From inside the sandbox, the relay is the one thing a command can reach.
+            if (shell::sandbox_available()) {
+                box.write("inside.py", "import socket\ns=socket.create_connection(('127.0.0.1', 3128), timeout=5)\ns.sendall(b'CONNECT files.example.com:443 HTTP/1.1\\r\\n\\r\\nGET /index.html HTTP/1.1\\r\\nConnection: close\\r\\n\\r\\n')\nd=b''\ntry:\n  while b'</h1>' not in d:\n    c=s.recv(4096)\n    if not c: break\n    d+=c\nexcept Exception: pass\nprint(d.decode('latin-1'))\ntry:\n  socket.create_connection(('1.1.1.1', 443), timeout=3)\n  print('DIRECT REACHED')\nexcept Exception as e:\n  print('direct refused')\n");
+                const CommandResult inside = shell::run("python3 inside.py; echo proxy=$HTTPS_PROXY", workspace, true, 60, nullptr, nullptr, -1, &relay);
+                CHECK(inside.output.find("<h1>upstream</h1>") != std::string::npos);  // through the relay
+                CHECK(inside.output.find("direct refused") != std::string::npos && inside.output.find("DIRECT REACHED") == std::string::npos);  // and nothing else
+                CHECK(inside.output.find("proxy=http://127.0.0.1:3128") != std::string::npos);
+                const CommandResult offline = shell::run("python3 inside.py", workspace, true, 60);
+                CHECK(offline.output.find("<h1>upstream</h1>") == std::string::npos);  // without the relay the sandbox has no network at all
+            }
+        }
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;
@@ -2268,7 +2332,9 @@ static void test_verification() {
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    // Inside the sandbox this program is started as the forwarder to Mason's network relay.
+    if (const auto forwarded = mason::network::maybe_forward(argc, argv)) return *forwarded;
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},

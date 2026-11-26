@@ -542,6 +542,10 @@ private:
             for (const std::string& line : split(experiments::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
             return true;
         }
+        if (name == "/network") {
+            for (const std::string& line : split(network_settings::command(rest, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
         if (name == "/roles" || name == "/role") {
             for (const std::string& line : split(roles::command(rest, store_.home()), '\n')) term::line("  " + line);
             return true;
@@ -657,6 +661,7 @@ private:
             {"/commands", "List your custom slash commands"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"},
             {"/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"},
             {"/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"},
             {"/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"},
@@ -1221,6 +1226,8 @@ const char* const kUsage =
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Inside the sandbox this program is started as the forwarder to Mason's network relay.
+    if (const auto forwarded = network::maybe_forward(argc, argv)) return *forwarded;
     std::vector<std::string> arguments(argv + 1, argv + argc);
     if (!arguments.empty() && arguments[0] == "chat") arguments.erase(arguments.begin());
     // A script operation prints JSON Lines and exits; everything else opens the interactive session.
