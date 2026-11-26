@@ -29,7 +29,7 @@ The three apps do the same things. Each one is built natively for its system, so
 ### Where they differ today
 
 - **C#.** Windows binds names with a compiler built into the app. macOS and Linux ask the C# language server you have installed (csharp-ls or OmniSharp), and give labelled text matches without one.
-- **Commands or panels.** On macOS and Linux, experiments, pull request drafting, background tasks, model roles, project policy, network mode and bundles are used by typing a command in the request box (`/experiment`, `/deliver`, `/task`, `/roles`, `/policy`, `/network`, `/bundle`). Windows has menus and panels for them.
+- **Where the controls are.** Experiments, pull request drafting, background tasks, model roles, project policy, network mode and bundles are in Settings on macOS and Linux, and in the project menu and its panels on Windows. On all three they are also commands (`/experiment`, `/deliver`, `/task`, `/roles`, `/policy`, `/network`, `/bundle`).
 - **Windows only for now.** Editor evidence from VS Code; project notes and the Ctrl+K palette; GPU telemetry and per-connection generation settings.
 
 Each platform lives in its own folder and builds on its own, with nothing shared but the brand kit, the docs and this README:

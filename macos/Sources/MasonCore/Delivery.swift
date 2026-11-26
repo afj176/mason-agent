@@ -93,10 +93,13 @@ public enum Delivery {
         let remote = ((try? await Experiments.git(workspace, ["remote", "get-url", "origin"])) ?? "")
         let id = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
         let whole = patches.count == reviewed.patches.count
-        let body = "## Changes\n\n" + paths.map { "- " + $0 }.joined(separator: "\n") + "\n\n## Verification\n\n"
-            + (!whole ? "This is a selection of the checkout's changes, which was not verified on its own."
-               : receipt.map { "This is every change in the checkout against \(base). Mason's own checks on the latest request found:\n\n" + String($0.prefix(12_000)) }
-                 ?? "This is every change in the checkout against \(base). No verification receipt is attached.")
+        let listed: String = paths.map { "- " + $0 }.joined(separator: "\n")
+        var verification = "This is a selection of the checkout's changes, which was not verified on its own."
+        if whole {
+            verification = "This is every change in the checkout against \(base). No verification receipt is attached."
+            if let receipt { verification = "This is every change in the checkout against \(base). Mason's own checks on the latest request found:\n\n" + String(receipt.prefix(12_000)) }
+        }
+        let body: String = "## Changes\n\n" + listed + "\n\n## Verification\n\n" + verification
         let made = DeliveryDraft(id: id, workspace: realPath(workspace.root.path), base: base, baseCommit: pinned, commit: commit, title: title, body: body,
                                  repository: (try? repository(remote)) ?? "", branch: "mason/review-" + id.prefix(12), paths: paths, url: nil)
         try save(load(home: home).filter { $0.workspace != made.workspace } + [made], home: home)
