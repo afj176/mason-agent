@@ -73,7 +73,7 @@ struct ProjectPane: View {
     @State private var policy: ProjectPolicy?
     @State private var experiments: [Experiment] = []
     @State private var draft: DeliveryDraft?
-    @State private var tasks: [(task: BackgroundTask, status: TaskStatus)] = []
+    @State private var tasks: [(task: MasonCore.BackgroundTask, status: TaskStatus)] = []
 
     var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
 
