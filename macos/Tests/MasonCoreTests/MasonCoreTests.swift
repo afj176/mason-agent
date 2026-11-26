@@ -933,6 +933,43 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(model.seen.first?.last?.content.contains("The project's afterPlan hook failed before work began") ?? false)
     }
 
+    func testNetworkIsChosenPerSessionAndAHostCanBeAlwaysAllowed() async throws {
+        var (store, session) = try session(.auto)
+        XCTAssertFalse(NetworkSettings.asks(session, home: home))
+        XCTAssertTrue(try NetworkSettings.sessionCommand("ask", session: &session, home: home).contains("this session's own choice"))
+        XCTAssertTrue(NetworkSettings.asks(session, home: home) && !NetworkSettings.asks(home: home), "one session asking does not change the computer's setting")
+        _ = try NetworkSettings.sessionCommand("computer ask", session: &session, home: home)
+        _ = try NetworkSettings.sessionCommand("off", session: &session, home: home)
+        XCTAssertFalse(NetworkSettings.asks(session, home: home), "a session can stay offline while the computer's setting asks")
+        _ = try NetworkSettings.sessionCommand("default", session: &session, home: home)
+        XCTAssertTrue(NetworkSettings.asks(session, home: home))
+        try store.save(session)
+        XCTAssertNil(try SessionStore(home: home).sessions.first { $0.id == session.id }?.network)
+
+        var rules = ApprovalRules(home: home, workspace: session.workspace)
+        try rules.add(tool: "network", prefix: "registry.npmjs.org")
+        XCTAssertEqual(NetworkSettings.alwaysAllowed(home: home, workspace: session.workspace), ["registry.npmjs.org"])
+        var asked: [String] = []
+        let agent = Agent(store: store, model: ScriptedModel([]), approve: { asked.append($0.subject); return false }, emit: { _ in })
+        let relay = try XCTUnwrap(agent.relay(session))
+        defer { relay.stop() }
+        func status(_ host: String) -> String {
+            let descriptor = NetworkRelay.connected(to: ([127, 0, 0, 1], relay.port))!
+            defer { close(descriptor) }
+            NetworkRelay.send(descriptor, Array("CONNECT \(host):443 HTTP/1.1\r\n\r\n".utf8))
+            var timeout = timeval(tv_sec: 20, tv_usec: 0)
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            var buffer = [UInt8](repeating: 0, count: 256)
+            let count = recv(descriptor, &buffer, buffer.count, 0)
+            return String(decoding: buffer[0..<max(0, count)], as: UTF8.self)
+        }
+        XCTAssertTrue(status("registry.npmjs.org.evil.example").hasPrefix("HTTP/1.1 403"), "a longer name that starts the same is not the allowed host")
+        XCTAssertEqual(asked, ["registry.npmjs.org.evil.example"], "it was asked about, and refused")
+        _ = status("registry.npmjs.org")
+        XCTAssertEqual(asked, ["registry.npmjs.org.evil.example"], "the always-allowed host was not asked about")
+        XCTAssertTrue(SitePreview.loopbackOnly.contains("ignore-previous-rules") && (try? JSONSerialization.jsonObject(with: Data(SitePreview.loopbackOnly.utf8))) != nil)
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

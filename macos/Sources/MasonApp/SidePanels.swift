@@ -130,6 +130,10 @@ final class WebsiteState: NSObject, ObservableObject, WKScriptMessageHandler, WK
         configuration.userContentController.addUserScript(WKUserScript(source: SitePreview.script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         view = WKWebView(frame: .zero, configuration: configuration)
         super.init()
+        // A page here may load only from this computer: its own requests to other hosts are blocked too.
+        WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "mason-loopback-only", encodedContentRuleList: SitePreview.loopbackOnly) { [weak self] rules, _ in
+            if let rules { self?.view.configuration.userContentController.add(rules) }
+        }
         configuration.userContentController.add(self, name: "mason")
         view.navigationDelegate = self
     }
@@ -309,7 +313,7 @@ extension AppModel {
                 case "/roles", "/role": notice = try Roles.command(rest, home: home)
                 case "/policy": notice = try Policies.command(rest, workspace: workspace, home: home)
                 case "/bundle", "/bundles": notice = try Bundles.command(rest, home: home)
-                default: notice = try NetworkSettings.command(rest, home: home)
+                default: notice = try await commandText("/network", rest).text
                 }
             } catch {
                 notice = describe(error)

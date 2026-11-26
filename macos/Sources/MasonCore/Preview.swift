@@ -85,6 +85,11 @@ public enum SitePreview {
         })();
         """#
 
+    /// Content rules for the Website panel's web view: nothing is loaded from anywhere but this computer.
+    public static let loopbackOnly = #"""
+        [{"trigger":{"url-filter":".*"},"action":{"type":"block"}},{"trigger":{"url-filter":"^https?://(127\\.0\\.0\\.1|localhost|\\[::1\\])([:/]|$)"},"action":{"type":"ignore-previous-rules"}},{"trigger":{"url-filter":"^(about|data|blob):"},"action":{"type":"ignore-previous-rules"}}]
+        """#
+
     /// Run in the page when the user chooses to pick an element.
     public static let arm = "window.__masonPicker && window.__masonPicker.arm();"
     public static let disarm = "window.__masonPicker && window.__masonPicker.disarm();"

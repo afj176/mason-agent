@@ -552,7 +552,8 @@ private:
             return true;
         }
         if (name == "/network") {
-            for (const std::string& line : split(network_settings::command(rest, store_.home()), '\n')) term::line("  " + line);
+            for (const std::string& line : split(network_settings::session_command(rest, session_, store_.home()), '\n')) term::line("  " + line);
+            store_.save(session_);
             return true;
         }
         if (name == "/roles" || name == "/role") {

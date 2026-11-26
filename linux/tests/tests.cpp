@@ -1578,6 +1578,40 @@ static void test_extra_tools() {
         CHECK(!model.seen.empty() && model.seen[0].back().content.find("The project's afterPlan hook failed before work began") != std::string::npos);
     }
 
+    // Network is chosen per session, and a host can be always allowed.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+        CHECK(!network_settings::asks(session, box.home));
+        CHECK(network_settings::session_command("ask", session, box.home).find("this session's own choice") != std::string::npos);
+        CHECK(network_settings::asks(session, box.home) && !network_settings::asks(box.home));  // one session asking does not change the computer's setting
+        network_settings::session_command("computer ask", session, box.home);
+        network_settings::session_command("off", session, box.home);
+        CHECK(!network_settings::asks(session, box.home));  // a session can stay offline while the computer's setting asks
+        network_settings::session_command("default", session, box.home);
+        CHECK(network_settings::asks(session, box.home));
+        store.save(session);
+        ApprovalRules rules(box.home, session.workspace);
+        rules.add("network", "registry.npmjs.org");
+        CHECK(network_settings::always_allowed(box.home, session.workspace) == std::set<std::string>{"registry.npmjs.org"});
+        std::vector<std::string> asked;
+        ScriptedModel model;
+        Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); return false; }, quiet);
+        NetworkRelay* relay = agent.relay_for(session);
+        CHECK(relay != nullptr);
+        if (relay && shell::run("command -v python3", Workspace(box.project.string()), false, 10).exit_code == 0) {
+            box.write("ask.py", "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.settimeout(20)\ns.connect(sys.argv[1])\ns.sendall(('CONNECT '+sys.argv[2]+':443 HTTP/1.1\\r\\n\\r\\n').encode())\ntry:\n  print(s.recv(64).decode('latin-1'))\nexcept Exception:\n  print('no answer')\n");
+            const Workspace workspace(box.project.string());
+            const std::string longer = shell::run("python3 ask.py " + shell::quote(relay->socket_path().string()) + " registry.npmjs.org.evil.example", workspace, false, 40).output;
+            CHECK(longer.rfind("HTTP/1.1 403", 0) == 0);  // a longer name that starts the same is not the allowed host
+            CHECK(asked == std::vector<std::string>{"registry.npmjs.org.evil.example"});
+            shell::run("python3 ask.py " + shell::quote(relay->socket_path().string()) + " registry.npmjs.org", workspace, false, 40);
+            CHECK(asked == std::vector<std::string>{"registry.npmjs.org.evil.example"});  // the always-allowed host was not asked about
+        }
+        CHECK(json::parse(preview::kLoopbackOnly, nullptr, false).is_array());
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;

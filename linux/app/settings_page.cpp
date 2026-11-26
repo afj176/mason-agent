@@ -313,9 +313,9 @@ void SettingsPage::refresh() {
     entry_row(roles_group, "Reviewer calls in one review: " + std::to_string(chosen_roles.limit), "64", "Set", [run](const std::string& text) { run("/roles", "limit " + text); });
 
     // ---- network ----
-    AdwPreferencesGroup* network_group = group(content_, "Network in Auto", "Commands in the sandbox have no network unless you allow it here.");
+    AdwPreferencesGroup* network_group = group(content_, "Network in Auto", "The setting for this computer; a session can choose its own with /network. Commands in the sandbox have no network unless you allow it.");
     AdwActionRow* network_row = row(network_group, "Ask when a command needs a host", "A sandboxed command can then ask for one host over HTTPS. Your answer lasts for that request. This computer, your local network and plain HTTP stay out of reach.");
-    toggle(network_row, asks_network, "Ask when a command needs a host", [run](bool on) { run("/network", on ? "ask" : "off"); });
+    toggle(network_row, asks_network, "Ask when a command needs a host", [run](bool on) { run("/network", on ? "computer ask" : "computer off"); });
 
     // ---- bundles ----
     AdwPreferencesGroup* bundle_group = group(content_, "Bundles", "Folders of skills and documentation, installed once for every project. A bundle may also name MCP servers; they are added switched off.");

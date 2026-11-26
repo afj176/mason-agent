@@ -3,6 +3,7 @@
 #include "background.hpp"
 #include "bundles.hpp"
 #include "delivery.hpp"
+#include "derived.hpp"
 #include "experiments.hpp"
 #include "network.hpp"
 #include "policy.hpp"
@@ -397,6 +398,21 @@ void Controller::host_command(const std::string& name, const std::string& rest) 
     const bool automatic = current->permission == Permission::Auto && !current->ask_only;
     const std::shared_ptr<bool> alive = alive_;
     // Some of these run git, so they work off the main thread and report back.
+    if (name == "/network") {
+        // The choice is this session's, so it is made here, where the session is kept.
+        Session updated = *current;
+        std::string said;
+        try {
+            said = network_settings::session_command(rest, updated, home);
+            store_->save(updated);
+        } catch (const std::exception& error) {
+            said = error.what();
+        }
+        replace(updated);
+        notice.emit(said);
+        changed.emit();
+        return;
+    }
     const std::string receipt = derived::passed_receipt(*current);
     std::thread([this, alive, name, rest, folder, home, target, automatic, receipt] {
         std::string said, request;

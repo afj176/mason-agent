@@ -11,7 +11,12 @@ extension AppModel {
         let home = store?.folder.deletingLastPathComponent() ?? DataHome.url
         switch name {
         case "/roles": return (try Roles.command(rest, home: home), nil)
-        case "/network": return (try NetworkSettings.command(rest, home: home), nil)
+        case "/network":
+            // In a session the choice is the session's; without one it is the computer's.
+            guard var current = session else { return (try NetworkSettings.command(rest, home: home), nil) }
+            let said = try NetworkSettings.sessionCommand(rest, session: &current, home: home)
+            save(current)
+            return (said, nil)
         case "/bundle": return (try Bundles.command(rest, home: home), nil)
         default: break
         }
@@ -206,11 +211,11 @@ struct RolesPane: View {
                 Text("Other local models beside the one doing the work. A reviewer reads what a request changed before it may finish, and for the Review button. A visual model looks at pictures of a window.")
             }
             Section {
-                Toggle("Ask when a command needs a host", isOn: Binding(get: { asks }, set: { run("/network", $0 ? "ask" : "off") }))
+                Toggle("Ask when a command needs a host", isOn: Binding(get: { asks }, set: { run("/network", $0 ? "computer ask" : "computer off") }))
             } header: {
                 Text("Network in Auto")
             } footer: {
-                Text("Commands in the sandbox have no network unless this is on. A sandboxed command can then ask for one host over HTTPS, and your answer lasts for that request. This computer, your local network and plain HTTP stay out of reach.")
+                Text("The setting for this computer; a session can choose its own with /network. Commands in the sandbox have no network unless this is on. A sandboxed command can then ask for one host over HTTPS, and your answer lasts for that request. This computer, your local network and plain HTTP stay out of reach.")
             }
         }
         .formStyle(.grouped)

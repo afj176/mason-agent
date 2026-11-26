@@ -1059,10 +1059,13 @@ std::string Agent::run_hooks(const std::string& event, const Workspace& workspac
 }
 
 NetworkRelay* Agent::relay(const Session& session) {
-    if (session.permission != Permission::Auto || session.ask_only || !network_settings::asks(store_.home())) return nullptr;
+    if (session.permission != Permission::Auto || session.ask_only || !network_settings::asks(session, store_.home())) return nullptr;
     if (!network_) {
         try {
-            network_ = std::make_unique<NetworkRelay>([this](const std::string& host) {
+            // A host the user chose to always allow for this project is not asked about again. The rule names it exactly.
+            const std::set<std::string> always = network_settings::always_allowed(store_.home(), session.workspace);
+            network_ = std::make_unique<NetworkRelay>([this, always](const std::string& host) {
+                if (always.count(host)) return true;
                 return approve_ && approve_(ApprovalRequest{"network", "Let this request's commands reach " + host + " over HTTPS",
                                                             "A sandboxed command is trying to connect to " + host + " on port 443. Allowing it lets commands in this request send and receive data there until the request ends. Everything else stays blocked: this computer, your local network and plain HTTP.",
                                                             host});

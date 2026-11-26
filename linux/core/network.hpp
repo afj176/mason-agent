@@ -2,7 +2,10 @@
 // on this computer. The relay only tunnels HTTPS (CONNECT to port 443) to a public, named host, and only after the
 // user has allowed that host for the request. A command cannot use it to reach this computer or the local network.
 #pragma once
+#include "session.hpp"
 #include "workspace.hpp"
+
+#include <set>
 
 #include <cstdint>
 #include <map>
@@ -22,7 +25,14 @@ bool is_public(std::vector<uint8_t> address);
 /// Whether Auto asks before a command reaches the network, or commands simply have none. Saved for this computer.
 namespace network_settings {
 bool asks(const fs::path& home);
-/// The /network command, shared by the command line and the app.
+/// Whether this session asks: its own choice when it has made one, otherwise the computer's.
+bool asks(const Session& session, const fs::path& home);
+/// The hosts the user chose to always allow for this project. A rule names one host exactly.
+std::set<std::string> always_allowed(const fs::path& home, const std::string& workspace);
+/// /network in a session: ask and off choose for this session, default goes back to the computer's setting, and
+/// "computer ask" or "computer off" changes that setting.
+std::string session_command(const std::string& rest, Session& session, const fs::path& home);
+/// The /network command for the computer's setting.
 std::string command(const std::string& rest, const fs::path& home);
 }  // namespace network_settings
 

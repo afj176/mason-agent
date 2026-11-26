@@ -110,10 +110,13 @@ public final class Agent {
 
     /// In Auto with "ask when needed" on, the relay for this request; otherwise commands have no network.
     func relay(_ session: Session) -> NetworkRelay? {
-        guard session.permission == .auto, !session.askOnly, NetworkSettings.asks(home: home) else { return nil }
+        guard session.permission == .auto, !session.askOnly, NetworkSettings.asks(session, home: home) else { return nil }
         if network == nil {
             let ask = approve
+            let always = NetworkSettings.alwaysAllowed(home: home, workspace: session.workspace)
             network = try? NetworkRelay(approve: { host in
+                // A host the user chose to always allow for this project is not asked about again. The rule names it exactly.
+                if always.contains(host) { return true }
                 // The relay's thread waits here while the user is asked on the agent's side.
                 let answered = DispatchSemaphore(value: 0)
                 let answer = Answer()

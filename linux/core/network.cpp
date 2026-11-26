@@ -1,5 +1,6 @@
 #include "network.hpp"
 
+#include "agent.hpp"
 #include "shell.hpp"
 
 #include <algorithm>
@@ -149,6 +150,33 @@ bool asks(const fs::path& home) {
     if (!fs::exists(home / "network.json")) return false;
     const json value = json::parse(read_file(home / "network.json"), nullptr, false);
     return value.is_object() && value.value("mode", "") == "ask";
+}
+
+bool asks(const Session& session, const fs::path& home) { return session.network.empty() ? asks(home) : session.network == "ask"; }
+
+std::set<std::string> always_allowed(const fs::path& home, const std::string& workspace) {
+    std::set<std::string> hosts;
+    const ApprovalRules saved(home, workspace);
+    for (const ApprovalRules::Rule& rule : saved.rules()) {
+        if (rule.tool == "network") hosts.insert(to_lower(rule.prefix));
+    }
+    return hosts;
+}
+
+std::string session_command(const std::string& rest, Session& session, const fs::path& home) {
+    const std::vector<std::string> words = split(to_lower(trim(rest)), ' ', false);
+    if (!words.empty()) {
+        if (words[0] == "ask" || words[0] == "off") session.network = words[0];
+        else if (words[0] == "default") session.network.clear();
+        else if (words[0] == "computer") return command(words.size() > 1 ? words[1] : "", home);
+        else return "/network                 What Auto does about the network in this session\n/network ask             Ask before a sandboxed command reaches a host over HTTPS\n/network off             Commands in Auto have no network\n/network default         Follow the computer's setting\n/network computer ask    Change the computer's setting (or: computer off)";
+    }
+    const std::string source = session.network.empty() ? "the computer's setting" : "this session's own choice";
+    std::string said = asks(session, home) ? "In Auto, a sandboxed command in this session that needs a host over HTTPS asks first (" + source + "). An answer lasts for that request; Always Allow keeps a host for this project."
+                                           : "In Auto, sandboxed commands in this session have no network (" + source + ").";
+    const std::set<std::string> allowed = always_allowed(home, session.workspace);
+    if (!allowed.empty()) said += "\nAlways allowed in this project: " + join(std::vector<std::string>(allowed.begin(), allowed.end()), ", ");
+    return said;
 }
 
 std::string command(const std::string& rest, const fs::path& home) {

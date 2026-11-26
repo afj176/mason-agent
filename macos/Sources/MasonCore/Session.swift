@@ -129,6 +129,8 @@ public struct Session: Codable, Identifiable {
     public var workspace: String
     public var permission: Permission = .reviewEdits
     public var askOnly = false
+    /// What Auto does about the network in this session: "ask", "off", or nil to follow the computer's setting.
+    public var network: String?
     public var state = "Ready"
     public var detail = ""
     public var updated = Date()
