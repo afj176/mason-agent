@@ -33,6 +33,9 @@ const char* const kLight = R"css(
 @define-color dialog_fg_color #20263C;
 @define-color mason_muted #535B72;
 @define-color mason_seam #D9DBE1;
+@define-color mason_fit_good #1D7347;
+@define-color mason_fit_tight #8A5800;
+@define-color mason_fit_over #B42318;
 )css";
 
 const char* const kDark = R"css(
@@ -59,6 +62,9 @@ const char* const kDark = R"css(
 @define-color dialog_fg_color #F8F6F2;
 @define-color mason_muted #C3C9E0;
 @define-color mason_seam #3B4059;
+@define-color mason_fit_good #86D9AE;
+@define-color mason_fit_tight #F2C46D;
+@define-color mason_fit_over #F49A8C;
 )css";
 
 const char* const kWidgets = R"css(
@@ -104,6 +110,41 @@ const char* const kWidgets = R"css(
 .sidebar-pane { background: @sidebar_bg_color; }
 .sidebar-pane list { background: transparent; }
 .section-card { background: @card_bg_color; border: 1px solid @mason_seam; border-radius: 16px; padding: 16px; }
+/* A model's panel: fit tones are always paired with their words, never colour alone. */
+.fit-good { color: @mason_fit_good; }
+.fit-tight { color: @mason_fit_tight; }
+.fit-over { color: @mason_fit_over; }
+.fit-muted { color: @mason_muted; }
+.fit-dot { min-width: 8px; min-height: 8px; border-radius: 999px; background: @mason_muted; }
+.fit-dot.fit-good { background: @mason_fit_good; }
+.fit-dot.fit-tight { background: @mason_fit_tight; }
+.fit-dot.fit-over { background: @mason_fit_over; }
+.fit-bar trough { min-height: 6px; border-radius: 3px; background: alpha(@view_fg_color, 0.08); }
+.fit-bar progress { min-height: 6px; border-radius: 3px; background: @mason_muted; }
+.fit-bar.fit-good progress { background: @mason_fit_good; }
+.fit-bar.fit-tight progress { background: @mason_fit_tight; }
+.fit-bar.fit-over progress { background: @mason_fit_over; }
+.fit-card { background: @card_bg_color; border: 1px solid @mason_seam; border-radius: 12px; padding: 12px 14px; }
+.fit-title { font-weight: 600; }
+.fit-detail { font-size: 12px; color: @mason_muted; }
+.fit-status { font-size: 13px; color: @mason_muted; }
+.model-title { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+.model-chip { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid @mason_seam; color: @mason_muted; }
+.detail-heading { font-weight: 600; }
+.help-button > button { min-width: 20px; min-height: 20px; padding: 0; border-radius: 999px; font-size: 11px; border: 1px solid @mason_seam; color: @mason_muted; background: transparent; box-shadow: none; }
+.ladder-track { background: alpha(@view_fg_color, 0.04); border: 1px solid @mason_seam; border-radius: 12px; padding: 4px; }
+.ladder-step { border-radius: 9px; padding: 8px 0 7px 0; background: transparent; box-shadow: none; }
+.ladder-step:hover { background: alpha(@view_fg_color, 0.06); }
+.ladder-step:checked { background: alpha(@view_fg_color, 0.13); color: @window_fg_color; }
+.ladder-step .step-label { font-weight: 700; font-size: 15px; }
+.ladder-step .step-memory { font-size: 11px; font-feature-settings: "tnum"; }
+.suggest-button { font-size: 12px; font-weight: 600; padding: 3px 10px; min-height: 0; color: @accent_color; background: transparent; border: 1px solid @mason_seam; }
+.start-button { min-height: 44px; font-weight: 700; }
+.model-action { min-height: 40px; padding: 0 10px; border-radius: 8px; }
+.model-action label { font-weight: normal; }
+.model-actions { margin: -6px -10px 0 -10px; }
+.model-footer { border-top: 1px solid @mason_seam; padding-top: 14px; font-size: 12px; color: @mason_muted; }
+.footer-button > button { font-size: 12px; font-weight: normal; padding: 3px 10px; min-height: 0; background: transparent; border: 1px solid @mason_seam; }
 )css";
 
 Glib::RefPtr<Gtk::CssProvider> palette() {

@@ -43,6 +43,19 @@ inline std::string pad(const std::string& text, size_t columns) {
     return length >= columns ? text : text + std::string(columns - length, ' ');
 }
 inline std::string left_pad(const std::string& text, size_t columns) { return text.size() >= columns ? text : std::string(columns - text.size(), ' ') + text; }
+/// Right-aligns text to `columns` characters, counting multi-byte characters such as ● once.
+inline std::string right_align(const std::string& text, size_t columns) {
+    const size_t length = mason::utf8_length(text);
+    return length >= columns ? text : std::string(columns - length, ' ') + text;
+}
+inline int height() {
+    winsize size{};
+    if (ioctl(1, TIOCGWINSZ, &size) == 0 && size.ws_row > 0) return size.ws_row;
+    return 24;
+}
+/// The selected cell of a picker: accent background with dark text.
+inline const char* const selected = "\x1b[1;48;2;195;194;255;38;2;23;26;43m";
+inline const char* const inverse = "\x1b[7m";
 
 namespace detail {
 inline std::mutex lock;
@@ -113,6 +126,50 @@ inline bool was_escape_alone() {
     return false;
 }
 inline void drain_keys() { while (key() >= 0) {} }
+
+/// Keys beyond single bytes, as `read_key` returns them.
+enum Key : int { kNoKey = -1, kEnter = 10, kUp = 1001, kDown, kLeft, kRight, kEscape };
+/// One key in raw mode, with arrow keys and Esc told apart, or kNoKey after a tenth of a second with none.
+inline int read_key() {
+    const int first = key();
+    if (first == 13 || first == 10) return kEnter;
+    if (first != 27) return first;
+    const int second = key();
+    if (second < 0) return kEscape;
+    if (second != '[' && second != 'O') { drain_keys(); return kNoKey; }
+    int code = key();
+    // Modified arrows send parameters first, such as ESC [ 1 ; 5 C.
+    while (code >= '0' && code <= ';') code = key();
+    switch (code) {
+        case 'A': return kUp;
+        case 'B': return kDown;
+        case 'C': return kRight;
+        case 'D': return kLeft;
+        default: drain_keys(); return kNoKey;
+    }
+}
+
+/// Draws a block of lines in place: the block drawn before (`drawn` lines, ending where the cursor is) is replaced.
+inline void draw(const std::vector<std::string>& lines, int& drawn) {
+    std::lock_guard<std::mutex> guard(detail::lock);
+    std::string out = drawn > 0 ? "\x1b[" + std::to_string(drawn) + "A" : "";
+    for (const std::string& text : lines) out += "\r\x1b[2K" + text + "\r\n";
+    const int extra = drawn - static_cast<int>(lines.size());
+    for (int i = 0; i < extra; i++) out += "\r\x1b[2K\r\n";
+    if (extra > 0) out += "\x1b[" + std::to_string(extra) + "A";
+    drawn = static_cast<int>(lines.size());
+    detail::put(out);
+}
+/// Replaces the line `up` lines above the cursor and puts the cursor back.
+inline void rewrite_above(int up, const std::string& text) {
+    std::lock_guard<std::mutex> guard(detail::lock);
+    detail::put("\x1b[" + std::to_string(up) + "A\r\x1b[2K" + text + "\x1b[" + std::to_string(up) + "B\r");
+}
+/// Replaces the line the cursor is on, without a newline.
+inline void overwrite(const std::string& text) {
+    std::lock_guard<std::mutex> guard(detail::lock);
+    detail::put("\r\x1b[2K" + text);
+}
 
 inline std::string inline_markdown(const std::string& text) {
     if (!styled) return text;

@@ -34,6 +34,7 @@
 #include "browse.hpp"
 #include "shell.hpp"
 #include "models.hpp"
+#include "model_memory.hpp"
 
 using namespace mason;
 
@@ -380,6 +381,188 @@ static void test_sha_and_models() {
     CHECK(hub("a/coder", {"safetensors"}, "text-generation").verdict().find("look for a GGUF build") != std::string::npos);
     CHECK(starts_with(hub("nomic/embed-GGUF", {"gguf"}, "feature-extraction").verdict(), "Code search"));
     CHECK_THROWS(hub_inspect("../etc"));
+}
+
+/// A GGUF header with chosen metadata, as llama.cpp writes it (little-endian), and no tensor data.
+struct GgufHeader {
+    std::string body;
+    uint64_t count = 0;
+    template <typename T>
+    static void put(std::string& out, T value) { out.append(reinterpret_cast<const char*>(&value), sizeof value); }
+    static void put_text(std::string& out, const std::string& text) { put<uint64_t>(out, text.size()); out += text; }
+    GgufHeader& text(const std::string& key, const std::string& value) {
+        put_text(body, key); put<uint32_t>(body, 8); put_text(body, value); count++;
+        return *this;
+    }
+    GgufHeader& u32(const std::string& key, uint32_t value) {
+        put_text(body, key); put<uint32_t>(body, 4); put<uint32_t>(body, value); count++;
+        return *this;
+    }
+    /// A string array, like a tokenizer's vocabulary, which the reader must skip.
+    GgufHeader& words(const std::string& key, size_t length) {
+        put_text(body, key); put<uint32_t>(body, 9); put<uint32_t>(body, 8); put<uint64_t>(body, length);
+        for (size_t i = 0; i < length; i++) put_text(body, "w" + std::to_string(i));
+        count++;
+        return *this;
+    }
+    /// Writes the header and makes the file `size` bytes long (sparse), so the weights weigh that much.
+    void write(const fs::path& file, int64_t size, uint32_t magic = 0x46554747) const {
+        std::string out;
+        put<uint32_t>(out, magic); put<uint32_t>(out, 3); put<uint64_t>(out, 1); put<uint64_t>(out, count);
+        out += body;
+        fs::create_directories(file.parent_path());
+        std::ofstream(file, std::ios::binary) << out;
+        fs::resize_file(file, static_cast<uintmax_t>(std::max<int64_t>(size, static_cast<int64_t>(out.size()))));
+    }
+};
+
+static void test_model_memory() {
+    Sandbox box;
+    const fs::path root = box.base / "models";
+    const int64_t GiB = 1LL << 30;
+
+    // KV per token = layers × KV heads × (key + value length) × 2 bytes; the key length defaults to width ÷ heads.
+    GgufHeader().text("general.architecture", "qwen2").u32("qwen2.block_count", 28).u32("qwen2.attention.head_count", 28).u32("qwen2.attention.head_count_kv", 4)
+        .u32("qwen2.embedding_length", 3584).u32("qwen2.context_length", 32768).words("tokenizer.ggml.tokens", 2000).write(root / "coder/Coder-7B-Q4_K_M.gguf", 4 * GiB);
+    MemoryProfile qwen = read_gguf_profile(root / "coder/Coder-7B-Q4_K_M.gguf");
+    CHECK(qwen.estimated() && qwen.architecture == "qwen2");
+    CHECK(qwen.kv_bytes_per_token == 28.0 * 4 * (128 + 128) * 2);
+    CHECK(qwen.workspace_bytes == 0.75 * kGiB && qwen.weight_bytes == 4.0 * GiB);
+    CHECK(qwen.max_context == 32768 && qwen.context_declared);
+
+    GgufHeader().text("general.architecture", "llama").u32("llama.block_count", 32).u32("llama.attention.head_count", 32).u32("llama.attention.head_count_kv", 8)
+        .u32("llama.embedding_length", 4096).u32("llama.attention.key_length", 256).u32("llama.attention.value_length", 128).write(root / "llama/l.gguf", 100);
+    const MemoryProfile llama = read_gguf_profile(root / "llama/l.gguf");
+    CHECK(llama.kv_bytes_per_token == 32.0 * 8 * (256 + 128) * 2);
+    CHECK(!llama.context_declared && llama.max_context == 4096 && llama.context_cap() == 32768);
+
+    // Qwen 3.5 hybrid: only every fourth trunk layer keeps a KV cache; the recurrent layers add a fixed state.
+    GgufHeader().text("general.architecture", "qwen35").u32("qwen35.block_count", 40).u32("qwen35.attention.head_count", 16).u32("qwen35.attention.head_count_kv", 2)
+        .u32("qwen35.embedding_length", 4096).u32("qwen35.attention.key_length", 256).u32("qwen35.attention.value_length", 256).u32("qwen35.full_attention_interval", 4)
+        .u32("qwen35.ssm.state_size", 128).u32("qwen35.ssm.inner_size", 4096).u32("qwen35.ssm.group_count", 16).u32("qwen35.ssm.conv_kernel", 4).u32("qwen35.ssm.time_step_rank", 32)
+        .u32("qwen35.context_length", 262144).write(root / "hybrid/h.gguf", 100);
+    const MemoryProfile hybrid = read_gguf_profile(root / "hybrid/h.gguf");
+    CHECK(hybrid.estimated());
+    CHECK(hybrid.kv_bytes_per_token == 10.0 * 2 * 512 * 2);
+    CHECK(hybrid.workspace_bytes == 0.75 * kGiB + 30.0 * (128 * 4096 + 3 * (4096 + 2 * 16 * 128)) * 4 * 2);
+    CHECK(hybrid.basis.find("10 full-attention + 30 recurrent") != std::string::npos);
+
+    // An architecture without an estimate keeps its declared context and its weights.
+    GgufHeader().text("general.architecture", "nomic-bert").u32("nomic-bert.context_length", 8192).write(root / "embed/nomic-embed-text.gguf", 2 * GiB);
+    const MemoryProfile bert = read_gguf_profile(root / "embed/nomic-embed-text.gguf");
+    CHECK(bert.unknown == "This GGUF architecture needs a runtime-specific memory estimate.");
+    CHECK(bert.max_context == 8192 && bert.context_declared && bert.weight_bytes == 2.0 * GiB && bert.architecture == "nomic-bert");
+
+    // Not a GGUF: no claim, but the size on disk is still known.
+    GgufHeader().write(root / "bad/bad.gguf", 4096, 0x12345678);
+    const MemoryProfile bad = read_gguf_profile(root / "bad/bad.gguf");
+    CHECK(!bad.estimated() && bad.weight_bytes == 4096 && bad.unknown.find("could not be read safely") != std::string::npos);
+
+    // A split GGUF weighs all its parts.
+    GgufHeader().text("general.architecture", "llama").u32("llama.block_count", 2).u32("llama.attention.head_count", 2).u32("llama.embedding_length", 64)
+        .write(root / "split/Big-00001-of-00002.gguf", 3 * GiB);
+    std::ofstream(root / "split/Big-00002-of-00002.gguf", std::ios::binary) << "x";
+    fs::resize_file(root / "split/Big-00002-of-00002.gguf", static_cast<uintmax_t>(2 * GiB));
+    CHECK(gguf_parts(root / "split/Big-00001-of-00002.gguf").size() == 2);
+    CHECK(read_gguf_profile(root / "split/Big-00001-of-00002.gguf").weight_bytes == 5.0 * GiB);
+    CHECK(gguf_total_bytes(root / "coder/Coder-7B-Q4_K_M.gguf") == 4 * GiB);
+
+    // Transformers folders: FP16 serving weights from the safetensors headers, KV from config.json.
+    const fs::path folder = root / "hf/tiny";
+    fs::create_directories(folder);
+    write_file_atomic(folder / "config.json", R"({"model_type":"llama","num_hidden_layers":2,"num_attention_heads":4,"num_key_value_heads":2,"hidden_size":64,"max_position_embeddings":8192,"vocab_size":1000})");
+    {
+        const std::string header = R"({"w":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},"__metadata__":{"format":"pt"}})";
+        std::string file;
+        GgufHeader::put<uint64_t>(file, header.size());
+        file += header + std::string(24, '\0');
+        std::ofstream(folder / "model.safetensors", std::ios::binary) << file;
+    }
+    const MemoryProfile tiny = read_transformers_profile(folder);
+    CHECK(tiny.estimated() && tiny.weight_bytes == 12 && tiny.kv_bytes_per_token == 2.0 * 2 * 2 * 16 * 2 && tiny.workspace_per_token == 64.0 * 12 + 4000);
+    CHECK(tiny.max_context == 8192 && tiny.context_declared && tiny.architecture == "llama");
+
+    // Fit: 4 GiB of weights with 8.2 of 12 GiB free, 0.6 GiB kept spare.
+    MemoryReading gpu{"NVIDIA GeForce RTX 4070", 8.2 * kGiB, 12.0 * kGiB, true};
+    CHECK(gpu.label() == "RTX 4070 · 8.2 GiB free");
+    FitAssessment at16 = assess(qwen, gpu, 16384);
+    CHECK(at16.fit == Fit::Likely && at16.label() == "Likely fits");
+    CHECK(std::abs(at16.low_gib - 5.625) < 1e-9 && std::abs(at16.high_gib - (4 * 1.12 + 0.875 * 1.15 + 0.75 * 1.5)) < 1e-9 && std::abs(at16.spare_gib - 0.6) < 1e-9);
+    CHECK(fit_detail(at16, qwen, false) == "5.6–6.6 GiB at 16K · 0.6 GiB kept spare. An estimate, not a guarantee.");
+    CHECK(assess(qwen, gpu, 32768).fit == Fit::Tight);
+    CHECK(assess(qwen, gpu, 65536).tokens == 32768);  // never more than the model holds
+    MemoryProfile big = qwen;
+    big.weight_bytes = 7.9 * kGiB;
+    const FitAssessment over = assess(big, gpu, 2048);
+    CHECK(over.fit == Fit::TooLarge && !over.lower_bound && over.label() == "Too large for free memory");
+    CHECK(fit_detail(over, big, false).find("more than the 8.2 GiB free.") != std::string::npos);
+    CHECK(assess(qwen, MemoryReading{}, 2048).fit == Fit::Waiting && assess(qwen, MemoryReading{}, 2048).label() == "Waiting for a memory reading");
+    MemoryProfile unknown_big = bert;
+    unknown_big.weight_bytes = 16.4 * kGiB;
+    const FitAssessment bound = assess(unknown_big, gpu, 2048);
+    CHECK(bound.fit == Fit::TooLarge && bound.lower_bound);
+    CHECK(fit_detail(bound, unknown_big, false) == "The weights alone are 16.4 GiB and 8.2 GiB is free. Context memory for nomic-bert is not estimated yet.");
+    const FitAssessment unverified = assess(bert, gpu, 2048);
+    CHECK(unverified.fit == Fit::Unverified && unverified.label() == "Fit unverified");
+    CHECK(fit_detail(unverified, bert, false) == "The weights are 2.0 GiB. Context memory for nomic-bert is not estimated, so fit is checked when it starts.");
+    CHECK(fit_detail(unverified, bert, true) == "Runs from system RAM. Available RAM is not checked here, and CPU turns are much slower.");
+
+    // Ladder steps and labels.
+    CHECK(context_label(2048) == "2K" && context_label(40960) == "40K" && context_label(131072) == "128K" && context_label(128000) == "128K" && context_label(16384) == "16K" &&
+          context_label(32000) == "32K" && context_label(512) == "512");
+    CHECK(ladder_steps(qwen) == (std::vector<int>{2048, 4096, 8192, 16384, 32768}));
+    MemoryProfile odd = qwen;
+    odd.max_context = 40960;
+    CHECK(ladder_steps(odd) == (std::vector<int>{2048, 4096, 8192, 16384, 32768, 40960}));
+    odd.max_context = 131072;
+    CHECK(ladder_steps(odd) == (std::vector<int>{4096, 8192, 16384, 32768, 65536, 131072}));
+    odd.max_context = 262144;
+    CHECK(ladder_steps(odd) == (std::vector<int>{8192, 16384, 32768, 65536, 131072, 262144}));
+    odd.max_context = 128000;
+    CHECK(ladder_steps(odd) == (std::vector<int>{4096, 8192, 16384, 32768, 65536, 128000}) && context_label(ladder_steps(odd).back()) == "128K");
+    CHECK(ladder_steps(llama) == (std::vector<int>{2048, 4096, 8192, 16384, 32768}));  // undeclared: up to 32K
+    CHECK(parse_context_size("16384") == 16384 && parse_context_size("16k") == 16384 && parse_context_size("16K") == 16384 && parse_context_size(" 32k ") == 32768);
+    CHECK(!parse_context_size("cpu") && !parse_context_size("100") && !parse_context_size("k") && !parse_context_size("-16k"));
+    CHECK(group_digits(32768) == "32,768" && group_digits(262144) == "262,144" && group_digits(512) == "512");
+
+    // Recommendations.
+    const Recommendation fits = recommend(qwen, gpu);
+    CHECK(fits.gpu && fits.context == 16384 && fits.text == "Suggested: 16K on GPU · largest likely fit");
+    const Recommendation cpu = recommend(unknown_big, gpu);
+    CHECK(!cpu.gpu && cpu.context == 2048 && cpu.text == "Suggested: CPU · weights exceed free memory");
+    MemoryProfile tight = qwen;
+    tight.weight_bytes = 7.5 * kGiB;
+    const Recommendation headroom = recommend(tight, gpu);
+    CHECK(!headroom.gpu && headroom.text == "Suggested: CPU · GPU headroom is limited");
+    const Recommendation start = recommend(bert, gpu);
+    CHECK(start.gpu && start.context == 2048 && start.text == "Suggested starting point: GPU · 2K · fit unverified");
+    CHECK(recommend(qwen, MemoryReading{}).text == "Suggested starting point: GPU · 2K · fit unverified");
+
+    // Readings.
+    const auto nvidia = parse_nvidia_memory("NVIDIA GeForce RTX 4070, 8396, 12282\nNVIDIA RTX A2000, 9000, 12000\nnot a card\n");
+    CHECK(nvidia && nvidia->device == "NVIDIA RTX A2000" && nvidia->gpu && nvidia->free_bytes == 9000.0 * 1048576 && nvidia->total_bytes == 12000.0 * 1048576);
+    CHECK(!parse_nvidia_memory("") && !parse_nvidia_memory("No devices were found\n"));
+    const auto system = parse_meminfo("MemTotal:       16384000 kB\nMemFree:  100 kB\nMemAvailable:    8192000 kB\n");
+    CHECK(system && !system->gpu && system->device == "System memory" && system->total_bytes == 16384000.0 * 1024 && system->free_bytes == 8192000.0 * 1024);
+    CHECK(system && system->label() == "System memory · " + gib_text(8192000.0 * 1024 / kGiB) + " GiB free");
+    CHECK(!parse_meminfo("nothing"));
+
+    // List summaries.
+    LocalModel coder{"Coder-7B-Q4_K_M", (root / "coder/Coder-7B-Q4_K_M.gguf").string(), 4 * GiB, "Test"};
+    const FitSummary summary = summarize_fit(coder, qwen, gpu);
+    std::string marks;
+    for (const FitMark& mark : summary.marks) marks += mark.symbol;
+    CHECK(marks == "●●●●◐" && summary.note == "up to 16K" && summary.marks.back().tone == Tone::Tight);
+    const FitSummary none = summarize_fit(coder, big, gpu);
+    CHECK(none.marks.size() == 1 && none.marks[0].symbol == "✕" && starts_with(none.note, "needs ") && ends_with(none.note, "+ GiB · try CPU"));
+    CHECK(summarize_fit(coder, unknown_big, gpu).note == "weights alone exceed free memory");
+    CHECK(summarize_fit(coder, bert, gpu).note == "fit unverified");
+    LocalModel embed{"nomic-embed-text", (root / "embed/nomic-embed-text.gguf").string(), 2 * GiB, "Test"};
+    CHECK(summarize_fit(embed, bert, gpu).note == "fits");
+    CHECK(quant_in_name("Qwen2.5-Coder-7B-Instruct-Q4_K_M") == "Q4_K_M" && quant_in_name("model-IQ4_XS") == "IQ4_XS" && quant_in_name("plain").empty());
+    CHECK(LocalModel{"m", "/x/hub/models--Qwen--Qwen2.5-Coder-7B-Instruct-GGUF/snapshots/abc/m.gguf", 1, "Test"}.repository() == "Qwen/Qwen2.5-Coder-7B-Instruct-GGUF");
+    CHECK(coder.repository().empty() && coder.role_label() == "Coding agent");
+    CHECK(fit_explanation(qwen).rfind("Model capacity: 32,768 tokens. GGUF file size, FP16 KV cache and bounded prompt batching. Based on", 0) == 0);
 }
 
 static void test_undo_of_command_changes() {
@@ -2944,7 +3127,7 @@ int main(int argc, char** argv) {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
         {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"palette", test_palette}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
-        {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
+        {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };
     for (const auto& [name, function] : tests) {
         const int before = failures;

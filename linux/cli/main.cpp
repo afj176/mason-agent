@@ -6,6 +6,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <future>
+#include <map>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -26,6 +27,7 @@
 #include "roles.hpp"
 #include "bundles.hpp"
 #include "models.hpp"
+#include "model_memory.hpp"
 #include "terminal.hpp"
 
 using namespace mason;
@@ -135,6 +137,13 @@ private:
     std::vector<LocalModel> listed_;
     std::vector<HubModel> found_;
     std::chrono::steady_clock::time_point last_interrupt_{};
+    /// Memory needs read from each listed model's metadata, and the last memory reading.
+    std::map<std::string, MemoryProfile> profiles_;
+    MemoryReading memory_;
+    /// What was typed to leave the model list, kept as the start of the next request.
+    std::string pending_input_;
+    /// The high estimate for the running model, for the line above the prompt; 0 when not estimated.
+    double run_gib_ = 0;
 
     std::string mode_name() const { return session_.ask_only ? "ask · read-only" : "build · " + permission_label(session_.permission); }
     std::string prompt() const {
@@ -173,8 +182,16 @@ private:
         std::string text;
         while (true) {
             term::line();
-            term::write(text.empty() ? prompt() : paint(term::dim, "  … "));
-            const std::optional<std::string> line = read_line();
+            // While this session's model runs, its status sits above the prompt.
+            if (text.empty()) {
+                if (const std::string footer = running_footer(); !footer.empty()) term::line(footer);
+            }
+            // A key typed to leave the model list starts the next request.
+            const std::string typed = text.empty() ? pending_input_ : "";
+            pending_input_.clear();
+            term::write((text.empty() ? prompt() : paint(term::dim, "  … ")) + typed);
+            std::optional<std::string> line = read_line();
+            if (line) line = typed + *line;
             if (!line) return text.empty() ? std::nullopt : std::optional<std::string>(trim(text));
             if (!line->empty() && line->back() == '\\') { text += line->substr(0, line->size() - 1) + "\n"; continue; }
             return trim(text + *line);
@@ -711,7 +728,7 @@ private:
             {"/rules [revoke NUMBER]", "Saved always-allow rules for this project"},
             {"/model [number]", "List running model servers, or switch to one"},
             {"/models", "List the models on this computer and what each is for"},
-            {"/models start NUMBER|NAME", "Start a coding model here (add cpu, or a context size)"},
+            {"/models start NUMBER|NAME [16k] [cpu]", "Choose a context and start a coding model here; a size skips the picker"},
             {"/models stop", "Stop the model this session started"},
             {"/models start FOLDER", "Serve a folder of Transformers weights through Python (PyTorch)"},
             {"/models check NUMBER|FOLDER · python [PATH]", "Check a Transformers folder; choose the Python that serves them"},
@@ -1026,24 +1043,290 @@ private:
         } else term::line(paint(term::yellow, "  Use /models, /models start, stop, search, download, setup or runtime."));
     }
 
+    // ---- step 1: the list ----
+
+    static const char* tone_style(Tone tone) {
+        switch (tone) {
+            case Tone::Good: return term::green;
+            case Tone::Tight: return term::yellow;
+            case Tone::Over: return term::red;
+            case Tone::Muted: break;
+        }
+        return term::dim;
+    }
+
+    static std::string agent_use(const LocalModel& model) {
+        const std::string role = model.role();
+        if (role == "vision") return "coding · vision";
+        if (role == "projector") return "projector";
+        if (role == "embeddings" || role == "reranker") return "code search";
+        return "coding";
+    }
+
+    static std::string gib(double bytes) { return gib_text(bytes / kGiB) + " GiB"; }
+
+    const MemoryProfile& profile_of(const LocalModel& model) {
+        auto found = profiles_.find(model.path);
+        if (found == profiles_.end()) found = profiles_.emplace(model.path, read_profile(model)).first;
+        return found->second;
+    }
+
+    /// "llama.cpp b12716", "llama.cpp", or "llama.cpp not installed".
+    static std::string runtime_name(const std::string& runtime) {
+        if (runtime.empty()) return "llama.cpp not installed";
+        for (const fs::path& part : fs::path(runtime)) {
+            const std::string text = part.string();
+            if (text.size() > 1 && text[0] == 'b' && std::all_of(text.begin() + 1, text.end(), [](unsigned char c) { return std::isdigit(c); })) return "llama.cpp " + text;
+        }
+        return "llama.cpp";
+    }
+
+    /// One row of the list, highlighted when chosen with the arrow keys.
+    std::string model_row(size_t i, size_t name_width, bool highlighted) {
+        const LocalModel& model = listed_[i];
+        const FitSummary fit = summarize_fit(model, profile_of(model), memory_);
+        std::string marks, plain_marks;
+        for (const FitMark& mark : fit.marks) {
+            marks += paint(tone_style(mark.tone), mark.symbol);
+            plain_marks += mark.symbol;
+        }
+        const size_t mark_room = utf8_length(plain_marks) < 7 ? 7 - utf8_length(plain_marks) : 1;
+        const bool running = server_ && server_->running() && server_->model.path == model.path;
+        const std::string name = term::pad(term::clip(model.name, static_cast<int>(name_width)), name_width);
+        const std::string shown_name = highlighted && term::styled ? paint(term::inverse, name) : model.startable() ? paint(term::bold, name) : name;
+        return std::string(highlighted ? " ›" : "  ") + paint(term::dim, term::left_pad(std::to_string(i + 1), 2)) + "  " + shown_name + term::right_align(gib(static_cast<double>(model.bytes)), 9) + "  " +
+               term::pad(agent_use(model), 18) + marks + std::string(mark_room, ' ') + paint(term::dim, fit.note) + (running ? paint(term::green, "  ● running here") : "");
+    }
+
     void list_models() {
-        listed_ = busy<std::vector<LocalModel>>("Looking for models on this computer", [](const auto&, const CancelToken&) { return scan_models(); });
+        struct Found {
+            std::vector<LocalModel> models;
+            std::map<std::string, MemoryProfile> profiles;
+            MemoryReading memory;
+            std::string runtime;
+        };
+        Found found = busy<Found>("Looking for models on this computer", [](const auto&, const CancelToken& cancel) {
+            Found result;
+            result.models = scan_models();
+            for (const LocalModel& model : result.models) {
+                check_cancel(cancel);
+                result.profiles[model.path] = read_profile(model);
+            }
+            result.memory = read_memory();
+            result.runtime = llama::find();
+            return result;
+        });
+        listed_ = std::move(found.models);
+        profiles_ = std::move(found.profiles);
+        memory_ = found.memory;
         if (listed_.empty()) {
             term::line(paint(term::dim, "  No model files were found on this computer."));
             term::line(paint(term::dim, "  /models setup suggests one that fits and downloads it · /models search TEXT looks on Hugging Face."));
             return;
         }
+        const std::string device = !memory_.usable() ? "no memory reading" : memory_.gpu ? short_device_name(memory_.device) : memory_.device;
+        term::line("  " + paint(term::bold, "On this computer") + paint(term::dim, " · " + runtime_name(found.runtime) + " · " + device) +
+                   (memory_.usable() ? paint(term::dim, " · ") + gib_text(memory_.free_gib()) + paint(term::dim, " of " + gib_text(memory_.total_gib()) + " GiB free") : ""));
         term::line();
-        for (size_t i = 0; i < listed_.size() && i < 40; i++) {
-            const LocalModel& model = listed_[i];
-            const bool running = server_ && server_->running() && server_->model.path == model.path;
-            const std::string fit = model.startable() && !memory_fits(model.bytes) ? paint(term::yellow, "  larger than the memory available") : "";
-            term::line("  " + paint(term::dim, term::left_pad(std::to_string(i + 1), 2)) + "  " + (model.startable() ? paint(term::bold, term::clip(model.name, 52)) : term::clip(model.name, 52)) +
-                       paint(term::dim, "  " + byte_text(model.bytes) + " · " + model.source) + (running ? paint(term::green, "  ● running here") : fit));
-            term::line(paint(term::dim, "      " + model.verdict()));
+        const size_t shown = std::min<size_t>(listed_.size(), 40);
+        size_t name_width = 26;
+        for (size_t i = 0; i < shown; i++) name_width = std::max(name_width, std::min<size_t>(utf8_length(listed_[i].name) + 1, 40));
+        term::line(paint(term::dim, "   #  " + term::pad("Model", name_width) + term::right_align("Size", 9) + "  " + term::pad("Agent use", 18) + "GPU fit"));
+        for (size_t i = 0; i < shown; i++) term::line(model_row(i, name_width, false));
+        const int after = listed_.size() > shown ? 3 : 2;  // lines below the last row
+        if (listed_.size() > shown) term::line(paint(term::dim, "      … and " + std::to_string(listed_.size() - shown) + " more files"));
+        term::line();
+        const bool choose = term::interactive && static_cast<int>(shown) + after + 2 < term::height();
+        term::line(choose ? paint(term::dim, "  ↑↓ choose  ⏎ open  · or type ") + "/models start 1 16k" + paint(term::dim, " to skip the picker")
+                          : paint(term::dim, "  Start one with ") + "/models start NUMBER [16k] [cpu]" + paint(term::dim, "; without a size it suggests one."));
+        if (!choose) return;
+
+        // Arrow keys move a highlighted row; Enter opens the picker for it; anything else returns to the prompt.
+        size_t at = 0;
+        while (at + 1 < shown && !listed_[at].startable()) at++;
+        auto up_lines = [&](size_t row) { return static_cast<int>(shown - row) + after; };
+        term::raw(true);
+        term::rewrite_above(up_lines(at), model_row(at, name_width, true));
+        bool open = false;
+        while (!g_ending) {
+            const int pressed = term::read_key();
+            if (pressed == term::kNoKey) continue;
+            if (pressed == term::kUp || pressed == term::kDown) {
+                const size_t next = pressed == term::kUp ? (at == 0 ? 0 : at - 1) : std::min(shown - 1, at + 1);
+                if (next == at) continue;
+                term::rewrite_above(up_lines(at), model_row(at, name_width, false));
+                at = next;
+                term::rewrite_above(up_lines(at), model_row(at, name_width, true));
+                continue;
+            }
+            if (pressed == term::kEnter) open = true;
+            else if (pressed >= 32 && pressed < 127) pending_input_ = std::string(1, static_cast<char>(pressed));
+            break;
         }
-        if (listed_.size() > 40) term::line(paint(term::dim, "      … and " + std::to_string(listed_.size() - 40) + " more files"));
-        term::line(paint(term::dim, "  Start a coding model with /models start NUMBER (add cpu, or a context size such as 16384)."));
+        term::rewrite_above(up_lines(at), model_row(at, name_width, false));
+        term::raw(false);
+        if (!open) return;
+        const LocalModel model = listed_[at];
+        if (!model.startable()) {
+            term::line(paint(term::yellow, "  " + model.name + " cannot be started here: ") + model.verdict() + ".");
+            return;
+        }
+        picker(model, false);
+    }
+
+    // ---- step 2: the picker ----
+
+    std::vector<std::string> picker_lines(const LocalModel& model, const MemoryProfile& profile, const std::vector<int>& steps, size_t chosen, bool cpu, bool explain) {
+        std::vector<std::string> lines = {"", "  " + paint(term::bold, model.name)};
+        std::vector<std::string> facts;
+        if (const std::string quant = quant_in_name(fs::path(model.path).filename().string()); !quant.empty()) facts.push_back(quant);
+        facts.push_back(model.transformers ? "Transformers" : "GGUF");
+        if (!profile.architecture.empty()) facts.push_back(profile.architecture);
+        facts.push_back("max " + context_label(profile.context_cap()));
+        facts.push_back(gib(static_cast<double>(model.bytes)) + " on disk");
+        lines.push_back("  " + paint(term::dim, join(facts, " · ")));
+        lines.push_back("");
+        std::string labels = "  " + paint(term::dim, term::pad("Context", 9)), memory = "  " + paint(term::dim, term::pad("GiB", 9)), fits = "  " + paint(term::dim, term::pad("Fit", 9));
+        for (size_t i = 0; i < steps.size(); i++) {
+            const FitAssessment fit = assess(profile, memory_, steps[i]);
+            std::string gib_cell = "—", mark = "?";
+            if (memory_.usable() && fit.estimated) gib_cell = gib_text(fit.low_gib);
+            else if (memory_.usable() && fit.weight_gib > 0) gib_cell = gib_text(fit.weight_gib) + "+";
+            if (fit.fit == Fit::Likely) mark = "●";
+            else if (fit.fit == Fit::Tight) mark = "◐";
+            else if (fit.fit == Fit::TooLarge) mark = fit.lower_bound ? "✕" : "○";
+            const char* tone = cpu ? term::dim : tone_style(fit.fit == Fit::TooLarge && !fit.lower_bound ? Tone::Muted : tone_of(fit.fit));
+            auto cell = [&](const std::string& text, const char* style) {
+                if (i != chosen) return paint(style, term::right_align(text, 7) + " ");
+                return term::styled ? paint(term::selected, term::right_align(text, 7) + " ") : term::right_align("[" + text + "]", 8);
+            };
+            labels += cell(context_label(steps[i]), "");
+            memory += cell(gib_cell, tone);
+            fits += cell(mark, tone);
+        }
+        lines.insert(lines.end(), {labels, memory, fits, ""});
+        const FitAssessment fit = assess(profile, memory_, steps.empty() ? 2048 : steps[chosen]);
+        if (cpu) {
+            lines.push_back("  " + term::pad("CPU", 9) + paint(term::dim, "runs from system RAM · not checked here"));
+        } else if (!memory_.usable()) {
+            lines.push_back("  " + term::pad("GPU", 9) + paint(term::dim, "no memory reading yet · fit is checked when it starts"));
+        } else {
+            // 30 cells over all the memory: other apps, the model and its cache, the margin up to the high estimate, free, and the spare kept at the end.
+            const double total = memory_.total_gib(), model_gib = fit.estimated ? fit.low_gib : fit.weight_gib, margin = fit.estimated ? fit.high_gib - fit.low_gib : 0;
+            auto cells = [&](double gib_value) { return std::max(0, static_cast<int>(std::lround(gib_value / total * 30))); };
+            const int other = std::min(30, cells(total - memory_.free_gib()));
+            const int body = std::min(30 - other, cells(model_gib));
+            const int extra = std::min(30 - other - body, cells(margin));
+            auto repeat = [](const char* glyph, int count) { std::string out; for (int i = 0; i < count; i++) out += glyph; return out; };
+            const std::string bar = paint(term::dim, repeat(term::styled ? "█" : "▓", other)) + paint(term::accent, repeat("█", body)) + paint(term::yellow, repeat("▒", extra)) +
+                                    paint(term::dim, repeat("░", 30 - other - body - extra) + "│");
+            const std::string verdict = to_lower(fit.label());
+            const std::string numbers = fit.estimated ? " · " + gib_text(fit.low_gib) + "–" + gib_text(fit.high_gib) + " of " + gib_text(memory_.free_gib()) + " GiB"
+                                                      : " · weights " + gib_text(fit.weight_gib) + " GiB of " + gib_text(memory_.free_gib()) + " GiB free";
+            lines.push_back("  " + term::pad("GPU", 9) + bar + "  " + paint(std::string(term::bold) + tone_style(tone_of(fit.fit)), verdict) + paint(term::dim, numbers));
+            lines.push_back("  " + std::string(9, ' ') + paint(term::dim, "other apps  model + cache   margin  spare"));
+        }
+        lines.push_back("");
+        lines.push_back("  " + paint(term::accent, "←→") + paint(term::dim, " context   ") + paint(term::accent, "g") + paint(term::dim, " GPU  ") + paint(term::accent, "c") + paint(term::dim, " CPU   ") +
+                        paint(term::accent, "?") + paint(term::dim, " how this is estimated   ") + paint(term::accent, "⏎") + paint(term::dim, " start   ") + paint(term::accent, "esc") + paint(term::dim, " back"));
+        if (explain) {
+            lines.push_back("");
+            std::string current;
+            const size_t room = static_cast<size_t>(std::max(30, term::width() - 6));
+            for (const std::string& word : split(fit_explanation(profile), ' ', false)) {
+                if (!current.empty() && utf8_length(current) + 1 + utf8_length(word) > room) {
+                    lines.push_back("  " + paint(term::dim, current));
+                    current.clear();
+                }
+                current += (current.empty() ? "" : " ") + word;
+            }
+            if (!current.empty()) lines.push_back("  " + paint(term::dim, current));
+        }
+        return lines;
+    }
+
+    /// Chooses the context and GPU or CPU, redrawn in place, then starts. Without a terminal the suggestion is used.
+    void picker(const LocalModel& model, bool cpu_asked) {
+        const MemoryProfile profile = profile_of(model);
+        memory_ = read_memory();
+        const Recommendation suggestion = recommend(profile, memory_);
+        if (!term::interactive) {
+            term::line(paint(term::dim, "  " + suggestion.text));
+            start(model, suggestion.context, cpu_asked || !suggestion.gpu);
+            return;
+        }
+        const std::vector<int> steps = ladder_steps(profile);
+        size_t chosen = 0;
+        for (size_t i = 0; i < steps.size(); i++) {
+            if (std::abs(steps[i] - suggestion.context) < std::abs(steps[chosen] - suggestion.context)) chosen = i;
+        }
+        bool cpu = cpu_asked || !suggestion.gpu, explain = false;
+        int drawn = 0;
+        term::raw(true);
+        while (!g_ending) {
+            term::draw(picker_lines(model, profile, steps, chosen, cpu, explain), drawn);
+            int pressed = term::kNoKey;
+            while (pressed == term::kNoKey && !g_ending) pressed = term::read_key();
+            if (pressed == term::kLeft && chosen > 0) chosen--;
+            else if (pressed == term::kRight && chosen + 1 < steps.size()) chosen++;
+            else if (pressed == 'g' || pressed == 'G') cpu = false;
+            else if (pressed == 'c' || pressed == 'C') cpu = true;
+            else if (pressed == '?') explain = true;
+            else if (pressed == term::kEnter) {
+                term::raw(false);
+                start(model, steps.empty() ? suggestion.context : steps[chosen], cpu);
+                return;
+            } else if (pressed == term::kEscape || pressed == 3 || pressed == 'q') break;
+        }
+        term::raw(false);
+    }
+
+    // ---- step 4: a typed size that may not fit ----
+
+    /// Asks before starting at a size that is tight or too large on the GPU. Returns the context and device to use,
+    /// or nothing to cancel.
+    std::optional<std::pair<int, bool>> check_typed_size(const LocalModel& model, int context, bool cpu) {
+        if (cpu) return std::make_pair(context, cpu);
+        const MemoryProfile profile = profile_of(model);
+        memory_ = read_memory();
+        const FitAssessment fit = assess(profile, memory_, context);
+        if (fit.fit != Fit::Tight && fit.fit != Fit::TooLarge) return std::make_pair(context, cpu);
+        const std::string label = context_label(context);
+        const std::string mark = fit.fit == Fit::Tight ? paint(term::yellow, "◐ Tight fit at " + label) : paint(term::red, "✕ Too large at " + label);
+        const std::string spare = gib_text(fit.free_gib) + " GiB free, " + gib_text(fit.spare_gib) + " kept spare";
+        term::line("  " + mark + paint(term::dim, fit.estimated ? " · " + gib_text(fit.low_gib) + "–" + gib_text(fit.high_gib) + " GiB needed, " + spare
+                                                                : " · the weights alone are " + gib_text(fit.weight_gib) + " GiB, " + spare));
+        const Recommendation suggestion = recommend(profile, memory_);
+        const bool smaller = suggestion.gpu && suggestion.context != context && assess(profile, memory_, suggestion.context).fit == Fit::Likely;
+        if (!term::interactive) {
+            term::line(paint(term::dim, "    Starting anyway, as asked. There is no terminal to ask."));
+            return std::make_pair(context, cpu);
+        }
+        term::write("    " + paint(term::accent, "y") + " start anyway   " +
+                    (smaller ? paint(term::accent, "s") + " use " + context_label(suggestion.context) + " instead   " : paint(term::accent, "c") + " use CPU   ") +
+                    paint(term::accent, "n") + " cancel  " + paint(term::accent, "› "));
+        term::raw(true);
+        int pressed = term::kNoKey;
+        while (!g_ending) {
+            pressed = term::read_key();
+            if (pressed == 'y' || pressed == 'n' || pressed == term::kEscape || pressed == 3 || (smaller && pressed == 's') || (!smaller && pressed == 'c')) break;
+        }
+        term::raw(false);
+        if (pressed == 'y') { term::line("start anyway"); return std::make_pair(context, false); }
+        if (pressed == 's') { term::line("use " + context_label(suggestion.context)); return std::make_pair(suggestion.context, false); }
+        if (pressed == 'c') { term::line("use CPU"); return std::make_pair(context, true); }
+        term::line("cancel");
+        return std::nullopt;
+    }
+
+    /// The line above the prompt while this session's model runs.
+    std::string running_footer() const {
+        if (!server_ || !server_->running()) return "";
+        std::string facts = context_label(server_->context) + " · " + (server_->cpu_only ? "CPU" : "GPU") + (run_gib_ > 0 ? " · ~" + gib_text(run_gib_) + " GiB" : "");
+        std::string host = server_->endpoint.url;
+        if (starts_with(host, "http://")) host = host.substr(7);
+        if (!host.empty() && host.back() == '/') host.pop_back();
+        return "  " + paint(term::green, "●") + " " + server_->model.name + "  " + paint(term::dim, facts) + "  " + paint(term::dim, host) + "  " + paint(term::dim, "/models stop");
     }
 
     LocalModel named_folder_;
@@ -1053,9 +1336,9 @@ private:
         bool cpu = false;
         int context = 0;
         for (size_t i = words.size(); i-- > 1;) {
-            const int tokens = std::atoi(words[i].c_str());
+            const std::optional<int> tokens = parse_context_size(words[i]);  // 16384, 16k or 16K
             if (to_lower(words[i]) == "cpu") { cpu = true; words.erase(words.begin() + static_cast<std::ptrdiff_t>(i)); }
-            else if (tokens >= 512 && std::to_string(tokens) == words[i]) { context = tokens; words.erase(words.begin() + static_cast<std::ptrdiff_t>(i)); }
+            else if (tokens) { context = *tokens; words.erase(words.begin() + static_cast<std::ptrdiff_t>(i)); }
         }
         const std::string wanted = join(words, " ");
         if (wanted.empty()) throw Error("Use /models start NUMBER or NAME. /models lists them.");
@@ -1073,10 +1356,34 @@ private:
         }
         if (!model) throw Error("No model on this computer matches \"" + wanted + "\". /models lists them.");
         if (!model->startable()) throw Error(model->name + " cannot be started here: " + model->verdict() + ".");
-        start(*model, context, cpu);
+        const LocalModel chosen = *model;
+        // No size: the picker, or the suggestion without a terminal. A typed size that may not fit asks first.
+        if (context == 0) { picker(chosen, cpu); return; }
+        const auto settled = check_typed_size(chosen, context, cpu);
+        if (settled) start(chosen, settled->first, settled->second);
     }
 
-    /// Starts a model with llama.cpp and makes it this session's model.
+    /// The start steps on one line: done ones ticked, the current one spinning (or crossed when it failed).
+    static std::string stage_line(int current, bool done, bool failed, int frame, long seconds) {
+        std::string painted = "  ", plain = "  ";
+        for (int i = 0; i < 4; i++) {
+            const std::string name = kStartStages[i];
+            std::string piece;
+            const char* style = term::dim;
+            if (done || i < current) { piece = "✓ " + name; style = term::green; }
+            else if (i == current) { piece = (failed ? "✗ " : std::string(kSpinner[frame % 10]) + " ") + name; style = failed ? term::red : term::accent; }
+            else piece = "· " + name;
+            painted += (i ? "   " : "") + paint(style, piece);
+            plain += (i ? "   " : "") + piece;
+        }
+        if (done || failed) return painted;
+        char clock[32];
+        std::snprintf(clock, sizeof clock, "%ld:%02ld", seconds / 60, seconds % 60);
+        const size_t length = utf8_length(plain);
+        return painted + std::string(length < 58 ? 58 - length : 2, ' ') + paint(term::dim, std::string(clock) + " · esc cancels");
+    }
+
+    /// Starts a model and makes it this session's model, showing each start step in place.
     bool start(const LocalModel& chosen, int context = 0, bool cpu_only = false) {
         const LocalModel model = chosen;  // `listed_` may change while this runs
         // Transformers weights run through Python, not llama.cpp.
@@ -1087,20 +1394,60 @@ private:
         }
         if (runtime.empty()) return false;
         server_.reset();
+        const MemoryProfile profile = profile_of(model);
+        if (context <= 0) {
+            memory_ = read_memory();
+            const Recommendation suggestion = recommend(profile, memory_);
+            context = suggestion.context;
+            cpu_only = cpu_only || !suggestion.gpu;
+        }
+        term::line("  " + paint(term::bold, "Starting " + model.name) + paint(term::dim, " · " + context_label(context) + " · " + (cpu_only ? "CPU" : "GPU")));
+        const CancelToken cancel = make_cancel();
+        std::atomic<int> stage{0};
+        std::future<std::unique_ptr<ModelServer>> pending = std::async(std::launch::async, [&] {
+            return ModelServer::start(model, runtime, context, cpu_only, nullptr, cancel, [&](int step) { stage = step; });
+        });
+        g_running_cancel = cancel.get();
+        const bool live = term::interactive;
+        if (live) term::raw(true);
+        const auto began = std::chrono::steady_clock::now();
+        int frame = 0;
+        while (pending.wait_for(std::chrono::milliseconds(live ? 0 : 100)) != std::future_status::ready) {
+            if (!live) continue;
+            const int pressed = term::read_key();
+            if (pressed == 3 || pressed == term::kEscape) cancel->store(true);
+            const long seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - began).count();
+            term::overwrite(stage_line(stage, false, false, frame++, seconds));
+        }
+        g_running_cancel = nullptr;
+        auto finish = [&](const std::string& text) {
+            if (live) { term::overwrite(text); term::raw(false); term::line(); }
+            else term::line(text);
+        };
         try {
-            server_ = busy<std::unique_ptr<ModelServer>>("Starting " + model.name, [&](const auto& progress, const CancelToken& cancel) {
-                return ModelServer::start(model, runtime, context, cpu_only, progress, cancel);
-            });
+            server_ = pending.get();
+        } catch (const Cancelled&) {
+            finish(stage_line(stage, false, true, 0, 0));
+            throw;
         } catch (const Error& error) {
+            finish(stage_line(stage, false, true, 0, 0));
             term::line(paint(term::red, "  ✗ " + model.name + " did not start. ") + error.what());
             return false;
         }
+        finish(stage_line(4, true, false, 0, 0));
         use(server_->endpoint, model.name);
+        const FitAssessment fit = assess(profile, read_memory(), server_->context);
+        run_gib_ = fit.estimated ? fit.high_gib : 0;
         Preferences preferences = Preferences::load();
         preferences.last_model_path = model.path;
         preferences.last_context = server_->context;
+        preferences.last_cpu = server_->cpu_only;
         preferences.save();
-        term::line(paint(term::green, "  ✓ " + model.name + " is running") + paint(term::dim, "  ·  " + std::to_string(server_->context) + " context · stops when you leave mason"));
+        std::string host = server_->endpoint.url;
+        if (starts_with(host, "http://")) host = host.substr(7);
+        if (!host.empty() && host.back() == '/') host.pop_back();
+        term::line("  " + paint(term::green, "✓ Ready") + paint(term::dim, " · " + host + " · ") + "this session now codes with " + model.name +
+                   paint(term::dim, "  ·  stops when you leave mason"));
         return true;
     }
 
@@ -1216,7 +1563,7 @@ private:
                 const fs::path file = preferences.last_model_path;
                 const LocalModel model{file.stem().string(), file.string(), static_cast<int64_t>(fs::file_size(fs::canonical(file, failure), failure)), "Last used"};
                 term::line(paint(term::dim, "  Nothing is answering yet, so Mason is starting the model you used last."));
-                if (start(model, preferences.last_context)) return;
+                if (start(model, preferences.last_context, preferences.last_cpu)) return;
             }
             listed_ = busy<std::vector<LocalModel>>("Looking for models on this computer", [](const auto&, const CancelToken&) { return scan_models(); });
             std::vector<LocalModel> choices;

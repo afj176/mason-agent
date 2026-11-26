@@ -301,6 +301,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         refresh_changes();
     });
     model_button_.signal_clicked().connect([this] { adw_view_stack_set_visible_child_name(stack_, "models"); });
+    models_.open_chat.connect([this] { adw_view_stack_set_visible_child_name(stack_, "chat"); });
 
     // Appearance: follow the system, or always light or dark.
     auto appearance_menu = Gio::Menu::create();
