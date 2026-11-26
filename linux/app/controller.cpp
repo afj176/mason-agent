@@ -97,6 +97,51 @@ void Controller::replace(const Session& session) {
     else sessions_.insert(sessions_.begin(), session);
 }
 
+void Controller::fork_session(const std::string& turn_id, bool restore_files) {
+    const Session* current = session();
+    if (!current || !store_ || running) return;
+    try {
+        Session source = *current;
+        size_t index = source.turns.size();
+        for (size_t i = 0; i < source.turns.size(); i++) {
+            if (source.turns[i].id == turn_id) index = i;
+        }
+        const SessionFork made = transfer::fork(source, *store_, index, restore_files);
+        replace(source);
+        replace(made.session);
+        selection = made.session.id;
+        forked_request = made.request;
+        notice.emit(made.session.detail);
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
+}
+
+void Controller::export_session(const std::string& id, const std::string& path, bool sanitize) {
+    const auto found = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& item) { return item.id == id; });
+    if (found == sessions_.end()) return;
+    try {
+        write_file_atomic(path, transfer::export_session(*found, sanitize));
+        notice.emit(std::string("Saved ") + (sanitize ? "a sanitized copy of " : "") + "the session to " + path);
+    } catch (const std::exception& error) {
+        notice.emit(std::string("The session could not be saved: ") + error.what());
+    }
+}
+
+void Controller::import_session(const std::string& path, const std::string& workspace) {
+    if (!store_) return;
+    try {
+        const Session imported = transfer::import_session(read_file(path), *store_, workspace);
+        replace(imported);
+        selection = imported.id;
+        notice.emit(imported.detail);
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
+}
+
 std::vector<DesktopWindow> Controller::open_windows() {
     const std::shared_ptr<DesktopAutomation> automation = desktop::system();
     try {

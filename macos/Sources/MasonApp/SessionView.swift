@@ -80,6 +80,10 @@ struct TurnView: View {
         VStack(alignment: .leading, spacing: 10) {
             Speaker(mason: false)
             Text(turn.request).textSelection(.enabled).messageBody()
+                .contextMenu {
+                    Button("Fork From Before This Request") { model.forkSession(before: turn, restoreFiles: false) }
+                    Button("Fork and Put the Files Back as They Were") { model.forkSession(before: turn, restoreFiles: true) }
+                }
 
             if !activities.isEmpty || live || !turn.answer.isEmpty || !turn.changes.isEmpty {
                 Speaker(mason: true).padding(.top, 4)

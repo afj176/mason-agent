@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "agent.hpp"
+#include "transfer.hpp"
 #include "acceptance.hpp"
 #include "browser.hpp"
 #include "planning.hpp"
@@ -1372,6 +1373,52 @@ document.getElementById('checkout').onclick = function () { var id = 'ORD-' + (N
     CHECK(model.seen[0][0].content.find("acceptance scenarios in mason.acceptance.json") != std::string::npos);
 }
 
+static void test_transfer() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::Auto);
+    ScriptedModel model;
+    model.replies = {call("write_file", {{"path", "a.txt"}, {"content", "one\n"}}), say("Made a."),
+                     call("write_file", {{"path", "b.txt"}, {"content", "two\n"}}), say("Made b with api_key = hunter2secret."),
+                     call("write_file", {{"path", "a.txt"}, {"content", "changed\n"}}), say("Changed a.")};
+    Agent agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {});
+    agent.run(session, "Make a");
+    agent.run(session, "Make b in " + workspace.root());
+    agent.run(session, "Change a");
+    CHECK(session.turns.size() == 3);
+    using Names = std::vector<std::string>;
+
+    // A fork holds the conversation before the request, and can put the files back as they were then.
+    CHECK_THROWS(transfer::fork(session, store, 7, false));
+    const SessionFork plain = transfer::fork(session, store, 2, false);
+    CHECK(plain.session.turns.size() == 2 && plain.request == "Change a" && plain.session.messages.back().content == "Made b with api_key = hunter2secret.");
+    CHECK(plain.session.activities.size() == 2 && plain.session.permission == Permission::ReviewEdits && ends_with(plain.session.title, " · fork"));
+    CHECK(box.read("a.txt") == "changed\n");  // files are left alone unless asked
+    box.write("b.txt", "edited by hand\n");
+    const SessionFork restored = transfer::fork(session, store, 1, true);
+    CHECK(restored.session.turns.size() == 1 && box.read("a.txt") == "one\n");  // the later change to a.txt was undone
+    CHECK(restored.restored == Names{"a.txt"} && restored.skipped == Names{"b.txt"});  // a file changed since is left alone and reported
+    CHECK(restored.session.detail.find("changed since and left alone: b.txt") != std::string::npos);
+    CHECK(!session.turns[0].undone && session.turns[1].undone && session.turns[2].undone);
+
+    // An export can leave out the project's path, likely secrets and file contents.
+    const std::string full = transfer::export_session(session, false);
+    CHECK(full.find("hunter2secret") != std::string::npos && full.find(workspace.root()) != std::string::npos);
+    const std::string clean = transfer::export_session(session, true);
+    CHECK(clean.find("hunter2secret") == std::string::npos && clean.find(workspace.root()) == std::string::npos && clean.find("changed\\n") == std::string::npos);
+    CHECK(clean.find("<redacted>") != std::string::npos && clean.find("<workspace>") != std::string::npos);
+
+    const fs::path other = box.base / "elsewhere";
+    fs::create_directories(other);
+    const Session imported = transfer::import_session(clean, store, Workspace(other.string()).root());
+    CHECK(imported.id != session.id && imported.turns.size() == 3 && imported.turns[1].answer == "Made b with api_key = <redacted>");
+    for (const Turn& turn : imported.turns) CHECK(turn.changes.empty() && !turn.undone);
+    CHECK(ends_with(imported.title, " · imported") && starts_with(imported.detail, "Imported a sanitized session."));
+    CHECK_THROWS(transfer::import_session("{}", store, workspace.root()));
+    CHECK(SessionStore(box.home).sessions().size() == 4);  // the original, two forks and the import
+}
+
 static void test_verification() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
@@ -1462,7 +1509,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

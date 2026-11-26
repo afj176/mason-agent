@@ -1346,6 +1346,63 @@ final class AcceptanceTests: XCTestCase {
     }
 }
 
+final class SessionTransferTests: XCTestCase {
+    func testASessionIsForkedExportedAndImported() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-transfer-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = try Workspace(path: folder.path)
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .auto)
+        let model = ScriptedModel([call("write_file", ["path": "a.txt", "content": "one\n"]), ModelReply(text: "Made a."),
+                                   call("write_file", ["path": "b.txt", "content": "two\n"]), ModelReply(text: "Made b with api_key = hunter2secret."),
+                                   call("write_file", ["path": "a.txt", "content": "changed\n"]), ModelReply(text: "Changed a.")])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        await agent.run(&session, request: "Make a")
+        await agent.run(&session, request: "Make b in \(workspace.root.path)")
+        await agent.run(&session, request: "Change a")
+        XCTAssertEqual(session.turns.count, 3)
+
+        // A fork holds the conversation before the request, and can put the files back as they were then.
+        XCTAssertThrowsError(try SessionTransfer.fork(&session, store: store, turn: 7, restoreFiles: false))
+        let plain = try SessionTransfer.fork(&session, store: store, turn: 2, restoreFiles: false)
+        XCTAssertEqual(plain.session.turns.map(\.request), ["Make a", "Make b in \(workspace.root.path)"])
+        XCTAssertEqual(plain.request, "Change a")
+        XCTAssertEqual(plain.session.messages.last?.content, "Made b with api_key = hunter2secret.")
+        XCTAssertEqual(plain.session.activities.count, 2)
+        XCTAssertEqual(plain.session.permission, .reviewEdits, "a fork does not start in Auto")
+        XCTAssertTrue(plain.session.title.hasSuffix(" · fork"))
+        XCTAssertEqual(try workspace.read("a.txt"), "changed\n", "files are left alone unless asked")
+
+        try "edited by hand\n".write(to: folder.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let restored = try SessionTransfer.fork(&session, store: store, turn: 1, restoreFiles: true)
+        XCTAssertEqual(restored.session.turns.map(\.request), ["Make a"])
+        XCTAssertEqual(try workspace.read("a.txt"), "one\n", "the later change to a.txt was undone")
+        XCTAssertEqual(restored.restored, ["a.txt"])
+        XCTAssertEqual(restored.skipped, ["b.txt"], "a file changed since is left alone and reported")
+        XCTAssertTrue(restored.session.detail.contains("changed since and left alone: b.txt"), restored.session.detail)
+        XCTAssertEqual(session.turns.map(\.undone), [false, true, true])
+
+        // An export can leave out the project's path, likely secrets and file contents.
+        let full = String(decoding: try SessionTransfer.export(session, sanitize: false), as: UTF8.self)
+        XCTAssertTrue(full.contains("hunter2secret") && full.contains(workspace.root.path.replacingOccurrences(of: "/", with: "\\/")))
+        let clean = String(decoding: try SessionTransfer.export(session, sanitize: true), as: UTF8.self)
+        XCTAssertFalse(clean.contains("hunter2secret") || clean.contains(folder.lastPathComponent + "\\/") || clean.contains("changed\\n"), clean)
+        XCTAssertTrue(clean.contains("<redacted>") && clean.contains("<workspace>"))
+
+        let other = base.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let imported = try SessionTransfer.importSession(Data(clean.utf8), store: store, workspace: try Workspace(path: other.path).root.path)
+        XCTAssertNotEqual(imported.id, session.id)
+        XCTAssertEqual(imported.turns.map(\.answer), ["Made a.", "Made b with api_key = <redacted>", "Changed a."])
+        XCTAssertTrue(imported.turns.allSatisfy { $0.changes.isEmpty && !$0.undone })
+        XCTAssertTrue(imported.title.hasSuffix(" · imported") && imported.detail.hasPrefix("Imported a sanitized session."))
+        XCTAssertThrowsError(try SessionTransfer.importSession(Data("{}".utf8), store: store, workspace: workspace.root.path))
+        XCTAssertEqual(try SessionStore(home: base.appendingPathComponent("home")).sessions.count, 4, "the original, two forks and the import")
+    }
+}
+
 final class TransformersTests: XCTestCase {
     /// A stand-in for Python: it writes the status file the real server writes, then serves the stub model.
     func testAFolderOfTransformersWeightsIsListedCheckedAndServed() async throws {

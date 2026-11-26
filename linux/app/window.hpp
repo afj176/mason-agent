@@ -112,6 +112,9 @@ private:
     Gtk::Popover window_popover_;
     Gtk::Box window_list_{Gtk::Orientation::VERTICAL, 4};
     void fill_window_list();
+    /// Asks where to save a session, or which exported session to add to a project.
+    void choose_export(const std::string& id, const std::string& title, bool sanitize);
+    void choose_import(const std::string& workspace);
     std::string comments_shown_;
     /// The side panel shows the changes or the plan.
     bool plan_shown_ = false, adding_milestone_ = false;

@@ -468,10 +468,16 @@ void MainWindow::refresh_sidebar() {
             row->set_name(item.id);
             // Right-click or the keyboard menu key deletes a session.
             auto menu = Gio::Menu::create();
+            menu->append("Export Session…", "row.export");
+            menu->append("Export a Sanitized Copy…", "row.sanitized");
+            menu->append("Import a Session Into This Project…", "row.import");
             menu->append("Delete Session", "row.delete");
             auto actions = Gio::SimpleActionGroup::create();
-            const std::string id = item.id;
+            const std::string id = item.id, named = item.title, folder = item.workspace;
             actions->add_action("delete", [this, id] { controller_.remove_session(id); });
+            actions->add_action("export", [this, id, named] { choose_export(id, named, false); });
+            actions->add_action("sanitized", [this, id, named] { choose_export(id, named, true); });
+            actions->add_action("import", [this, folder] { choose_import(folder); });
             row->insert_action_group("row", actions);
             auto* popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
             popover->set_parent(*row);
@@ -573,7 +579,30 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
     auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
     box->add_css_class("turn");
     box->append(*speaker(false));
-    box->append(*message_body(*text_label(turn.request)));
+    auto* request = message_body(*text_label(turn.request));
+    box->append(*request);
+    if (!live) {
+        // Right-click a request to start again from before it.
+        auto menu = Gio::Menu::create();
+        menu->append("Fork From Before This Request", "turn.fork");
+        menu->append("Fork and Put the Files Back as They Were", "turn.restore");
+        auto actions = Gio::SimpleActionGroup::create();
+        const std::string id = turn.id;
+        actions->add_action("fork", [this, id] { Glib::signal_idle().connect_once([this, id] { controller_.fork_session(id, false); }); });
+        actions->add_action("restore", [this, id] { Glib::signal_idle().connect_once([this, id] { controller_.fork_session(id, true); }); });
+        request->insert_action_group("turn", actions);
+        auto* popover = Gtk::make_managed<Gtk::PopoverMenu>(menu);
+        popover->set_parent(*request);
+        popover->set_has_arrow(false);
+        auto click = Gtk::GestureClick::create();
+        click->set_button(GDK_BUTTON_SECONDARY);
+        click->signal_pressed().connect([popover](int, double x, double y) {
+            popover->set_pointing_to(Gdk::Rectangle(static_cast<int>(x), static_cast<int>(y), 1, 1));
+            popover->popup();
+        });
+        request->add_controller(click);
+        request->signal_destroy().connect([popover] { popover->unparent(); });
+    }
 
     auto* reply = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
     if (!activities.empty()) {
@@ -821,6 +850,11 @@ void MainWindow::refresh_composer() {
         }
     }
     const bool has_comments = session && !session->comments.empty();
+    // A fork leaves its request here to be edited and sent again.
+    if (!controller_.forked_request.empty()) {
+        draft_.get_buffer()->set_text(controller_.forked_request);
+        controller_.forked_request.clear();
+    }
     window_button_.set_label(session && session->desktop ? session->desktop->app : "Window");
     window_button_.set_sensitive(!controller_.running);
     stop_.set_visible(controller_.running);
@@ -857,6 +891,32 @@ Gtk::Widget* MainWindow::panel_switch() {
     box->append(*changes);
     box->append(*plan);
     return box;
+}
+
+void MainWindow::choose_export(const std::string& id, const std::string& title, bool sanitize) {
+    auto dialog = Gtk::FileDialog::create();
+    dialog->set_title(sanitize ? "Export a Sanitized Copy" : "Export Session");
+    dialog->set_initial_name(replace_all(utf8_prefix(title, 40), "/", "-") + (sanitize ? " (sanitized)" : "") + ".json");
+    dialog->save(*Glib::wrap(GTK_WINDOW(window_)), [this, dialog, id, sanitize](const Glib::RefPtr<Gio::AsyncResult>& result) {
+        try {
+            if (const auto file = dialog->save_finish(result)) controller_.export_session(id, file->get_path(), sanitize);
+        } catch (const Glib::Error&) {
+            // Cancelled.
+        }
+    });
+}
+
+void MainWindow::choose_import(const std::string& workspace) {
+    auto dialog = Gtk::FileDialog::create();
+    dialog->set_title("Import a Session");
+    dialog->set_accept_label("Import");
+    dialog->open(*Glib::wrap(GTK_WINDOW(window_)), [this, dialog, workspace](const Glib::RefPtr<Gio::AsyncResult>& result) {
+        try {
+            if (const auto file = dialog->open_finish(result)) controller_.import_session(file->get_path(), workspace);
+        } catch (const Glib::Error&) {
+            // Cancelled.
+        }
+    });
 }
 
 void MainWindow::fill_window_list() {

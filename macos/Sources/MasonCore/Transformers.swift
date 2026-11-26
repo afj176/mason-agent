@@ -11,7 +11,8 @@ public enum TransformersRuntime {
         if let named = ProcessInfo.processInfo.environment["MASON_TRANSFORMERS_DIR"], !named.isEmpty { candidates.append(URL(fileURLWithPath: named)) }
         if let resources = Bundle.main.resourceURL { candidates.append(resources.appendingPathComponent("transformers")) }
         // The command line tool: Mason Agent.app/Contents/Resources/bin/mason on a Mac, <prefix>/bin/mason elsewhere.
-        let program = URL(fileURLWithPath: CommandLine.arguments.first ?? "").resolvingSymlinksInPath().deletingLastPathComponent()
+        // The program's own location, not how it was typed: "mason" found on the PATH is a link into the app.
+        let program = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "")).resolvingSymlinksInPath().deletingLastPathComponent()
         candidates.append(program.deletingLastPathComponent().appendingPathComponent("transformers"))
         candidates.append(program.deletingLastPathComponent().appendingPathComponent("share/mason-agent/transformers"))
         return candidates.first { FileManager.default.fileExists(atPath: $0.appendingPathComponent("Serve-Transformers.py").path) }

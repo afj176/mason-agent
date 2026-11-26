@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "agent.hpp"
+#include "transfer.hpp"
 #include "acceptance.hpp"
 #include "planning.hpp"
 #include "schedules.hpp"
@@ -556,6 +557,36 @@ private:
             for (const std::string& line : split(review::summary(found), '\n')) term::line("  " + line);
             return true;
         }
+        if (name == "/fork") {
+            const std::vector<std::string> words = split(rest, ' ', false);
+            const int number = words.empty() ? 0 : std::atoi(words[0].c_str());
+            if (number < 1) {
+                for (size_t i = 0; i < session_.turns.size(); i++) term::line("  " + paint(term::dim, std::to_string(i + 1)) + "  " + term::clip(replace_all(session_.turns[i].request, "\n", " "), std::max(20, term::width() - 8)));
+                for (const std::string& line : split(transfer::kHelp, '\n')) term::line(paint(term::dim, "  " + line));
+                return true;
+            }
+            const SessionFork made = transfer::fork(session_, store_, static_cast<size_t>(number) - 1, words.size() > 1 && to_lower(words[1]) == "files");
+            session_ = made.session;
+            term::line("  " + session_.detail);
+            term::line(paint(term::dim, "  The request was: ") + made.request);
+            return true;
+        }
+        if (name == "/export") {
+            const std::vector<std::string> words = split(rest, ' ', false);
+            if (words.empty()) throw Error("Use /export FILE, or /export FILE sanitized.");
+            const bool sanitized = words.size() > 1 && to_lower(words[1]) == "sanitized";
+            const fs::path file = fs::absolute(starts_with(words[0], "~/") ? fs::path(home_dir()) / words[0].substr(2) : fs::path(words[0]));
+            write_file_atomic(file, transfer::export_session(session_, sanitized));
+            term::line(std::string("  Saved ") + (sanitized ? "a sanitized copy of " : "") + "this session to " + file.string());
+            return true;
+        }
+        if (name == "/import") {
+            if (rest.empty()) throw Error("Use /import FILE.");
+            const fs::path file = starts_with(rest, "~/") ? fs::path(home_dir()) / rest.substr(2) : fs::path(rest);
+            session_ = transfer::import_session(read_file(file), store_, workspace_.root());
+            term::line("  " + session_.detail + paint(term::dim, "  ·  " + std::to_string(session_.turns.size()) + " requests"));
+            return true;
+        }
         if (name == "/window" || name == "/windows") {
             for (const std::string& line : split(desktop::command(rest, session_), '\n')) term::line("  " + line);
             store_.save(session_);
@@ -590,6 +621,8 @@ private:
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
             {"/review", "Have the model read what this session changed and pin what it finds as comments"},
             {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},
+            {"/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"},
+            {"/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"},
             {"/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"},
             {"/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"},
             {"/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"},

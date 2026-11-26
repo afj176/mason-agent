@@ -14,6 +14,7 @@
 
 #include "acceptance.hpp"
 #include "agent.hpp"
+#include "transfer.hpp"
 #include "planning.hpp"
 #include "models.hpp"
 
@@ -93,6 +94,14 @@ public:
     /// Has the model read what this session changed. What it finds is pinned as comments, to go with the next request.
     void review_changes();
     bool reviewing = false;
+
+    // ---- fork, export and import ----
+    /// Opens a new session holding the conversation before this request. The request is left in `forked_request`
+    /// for the window to put back in the request box.
+    void fork_session(const std::string& turn_id, bool restore_files);
+    std::string forked_request;
+    void export_session(const std::string& id, const std::string& path, bool sanitize);
+    void import_session(const std::string& path, const std::string& workspace);
 
     // ---- an attached window ----
     /// The windows of other apps, or none when the accessibility service is not answering.

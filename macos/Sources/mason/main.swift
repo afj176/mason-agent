@@ -525,6 +525,30 @@ final class CLI {
             if session.comments?.isEmpty == true { session.comments = nil }
             try store.save(session)
             for line in Review.summary(found).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/fork":
+            let words = rest.split(separator: " ").map(String.init)
+            guard let number = words.first.flatMap({ Int($0) }) else {
+                for (index, turn) in session.turns.enumerated() { Term.line("  \(Term.paint(Term.dim, String(index + 1).leftPad(2)))  \(Term.clip(turn.request.replacingOccurrences(of: "\n", with: " "), max(20, Term.width - 8)))") }
+                for line in SessionTransfer.help.split(separator: "\n") { Term.line(Term.paint(Term.dim, "  " + line)) }
+                break
+            }
+            let made = try SessionTransfer.fork(&session, store: store, turn: number - 1, restoreFiles: words.dropFirst().first?.lowercased() == "files")
+            session = made.session
+            Term.line("  " + session.detail)
+            Term.line(Term.paint(Term.dim, "  The request was: ") + made.request)
+        case "/export":
+            let words = rest.split(separator: " ").map(String.init)
+            guard let name = words.first else { throw MasonError("Use /export FILE, or /export FILE sanitized.") }
+            let sanitized = words.dropFirst().first?.lowercased() == "sanitized"
+            let file = URL(fileURLWithPath: (name as NSString).expandingTildeInPath, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
+            try SessionTransfer.export(session, sanitize: sanitized).write(to: file, options: .atomic)
+            Term.line("  Saved \(sanitized ? "a sanitized copy of " : "")this session to \(file.path)")
+        case "/import":
+            guard !rest.isEmpty else { throw MasonError("Use /import FILE.") }
+            let file = URL(fileURLWithPath: (rest as NSString).expandingTildeInPath, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+            guard let data = try? Data(contentsOf: file) else { throw MasonError("\(file.path) could not be read.") }
+            session = try SessionTransfer.importSession(data, store: store, workspace: workspace.root.path)
+            Term.line("  " + session.detail + Term.paint(Term.dim, "  ·  \(session.turns.count) requests"))
         case "/window", "/windows":
             for line in try Desktop.command(rest, session: &session).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             try store.save(session)
@@ -557,6 +581,8 @@ final class CLI {
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
             ("/review", "Have the model read what this session changed and pin what it finds as comments"),
             ("/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"),
+            ("/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"),
+            ("/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"),
             ("/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"),
             ("/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"),
             ("/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"),
