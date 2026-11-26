@@ -16,6 +16,7 @@
 #include "acceptance.hpp"
 #include "planning.hpp"
 #include "schedules.hpp"
+#include "script.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
 
@@ -1192,13 +1193,17 @@ const char* const kUsage =
 int main(int argc, char** argv) {
     std::vector<std::string> arguments(argv + 1, argv + argc);
     if (!arguments.empty() && arguments[0] == "chat") arguments.erase(arguments.begin());
+    // A script operation prints JSON Lines and exits; everything else opens the interactive session.
+    if (!arguments.empty() && script::names().count(arguments[0])) {
+        return script::run(arguments, [](const std::string& line) { std::cout << line << std::endl; });
+    }
     std::string workspace_path, endpoint_url, model_id;
     std::optional<Permission> permission;
     bool resume = false;
     bool run_due = false;
     for (size_t i = 0; i < arguments.size(); i++) {
         const std::string& name = arguments[i];
-        if (name == "--help" || name == "-h") { std::cout << kUsage; return 0; }
+        if (name == "--help" || name == "-h") { std::cout << kUsage << script::kUsage; return 0; }
         if (name == "--version") { std::cout << "mason " MASON_VERSION "\n"; return 0; }
         if (name == "--auto") permission = Permission::Auto;
         else if (name == "--edits") permission = Permission::WorkspaceEdits;

@@ -224,8 +224,8 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
         {"delegate_readonly", "Ask one question about 1 to 8 named files in a separate context that can only read them. Returns findings with line numbers. Use it to keep long files out of this conversation.",
          schema({{"question", text}, {"paths", {{"type", "array"}, {"items", text}, {"minItems", 1}, {"maxItems", 8}}}}, {"question", "paths"})},
     };
-    list.push_back({"repository_map", "An outline of the project: its source files with their sizes and the functions, classes and types each defines. Use it to find where things live before reading files.",
-                    schema({{"path", {{"type", "string"}, {"description", "Folder to map, relative to the project. Use . for the whole project."}}}}, {"path"})});
+    list.push_back({"repository_map", "An outline of the project: its source files with their sizes and the functions, classes and types each defines. Use it to find where things live before reading files. Or give query, an identifier or a qualified name such as Cart.total, to get where that name is defined, imported, called and tested, ranked, as labelled text matches. Use an empty query for the outline.",
+                    schema({{"path", {{"type", "string"}, {"description", "Folder to map, relative to the project. Use . for the whole project."}}}, {"query", text}}, {"path", "query"})});
     list.push_back({"ask_user", "Ask the user one question when you cannot continue without their answer (a choice only they can make, or a missing fact). The request stops and their reply continues it. Do not use it for things you can find out yourself.",
                     schema({{"question", text}}, {"question"})});
     list.push_back({"navigate_code", "Find where a name is defined, used or tested in a project folder. Returns labelled text candidates with file and line; they are whole-word matches, not a compiler's answer.",
@@ -329,7 +329,11 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         }
         return Outcome{"completed", shown + "[lines " + std::to_string(*start) + "–" + std::to_string(end) + " of " + std::to_string(lines.size()) + "]"};
     }
-    if (call.name == "repository_map") return Outcome{"completed", repository_map::outline(workspace, text("path").value_or("."))};
+    if (call.name == "repository_map") {
+        const std::string query = trim(text("query").value_or(""));
+        if (!query.empty()) return Outcome{"completed", repository_map::report(repository_map::query(workspace, query, text("path").value_or("."), 32, cancel), query)};
+        return Outcome{"completed", repository_map::outline(workspace, text("path").value_or("."))};
+    }
     if (call.name == "ask_user") {
         const std::string question = trim(text("question").value_or(""));
         if (question.empty() || utf8_length(question) > 2000) throw Error("ask_user needs a question of up to 2,000 characters.");

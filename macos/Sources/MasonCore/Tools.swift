@@ -230,8 +230,8 @@ extension Agent {
             ToolSpec(name: "delegate_readonly", description: "Ask one question about 1 to 8 named files in a separate context that can only read them. Returns findings with line numbers. Use it to keep long files out of this conversation.",
                      parameters: schema(["question": text, "paths": ["type": "array", "items": text, "minItems": 1, "maxItems": 8]], required: ["question", "paths"])),
         ]
-        tools.append(ToolSpec(name: "repository_map", description: "An outline of the project: its source files with their sizes and the functions, classes and types each defines. Use it to find where things live before reading files.",
-                              parameters: schema(["path": ["type": "string", "description": "Folder to map, relative to the project. Use . for the whole project."]], required: ["path"])))
+        tools.append(ToolSpec(name: "repository_map", description: "An outline of the project: its source files with their sizes and the functions, classes and types each defines. Use it to find where things live before reading files. Or give query, an identifier or a qualified name such as Cart.total, to get where that name is defined, imported, called and tested, ranked, as labelled text matches. Use an empty query for the outline.",
+                              parameters: schema(["path": ["type": "string", "description": "Folder to map, relative to the project. Use . for the whole project."], "query": text], required: ["path", "query"])))
         tools.append(ToolSpec(name: "ask_user", description: "Ask the user one question when you cannot continue without their answer (a choice only they can make, or a missing fact). The request stops and their reply continues it. Do not use it for things you can find out yourself.",
                               parameters: schema(["question": text], required: ["question"])))
         tools.append(ToolSpec(name: "navigate_code", description: "Find where a name is defined, used or tested in a project folder. Returns labelled text candidates with file and line; they are whole-word matches, not a compiler's answer.",
@@ -299,6 +299,9 @@ extension Agent {
             return (.completed, shown + "\n[lines \(start)–\(end) of \(lines.count)]")
 
         case "repository_map":
+            if let query = text("query")?.trimmingCharacters(in: .whitespaces), !query.isEmpty {
+                return (.completed, RepositoryMap.report(try RepositoryMap.query(workspace, query, under: text("path") ?? "."), query: query))
+            }
             return (.completed, try RepositoryMap.outline(workspace, under: text("path") ?? "."))
 
         case "ask_user":
