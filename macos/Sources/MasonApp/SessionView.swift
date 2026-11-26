@@ -15,7 +15,7 @@ struct SessionView: View {
                     Composer(session: session)
                 }
                 .frame(minWidth: 420)
-                if showChanges { ChangesView(session: session).frame(minWidth: 320, idealWidth: 460) }
+                if showChanges { ChangesView(session: session).frame(minWidth: 380, idealWidth: 480) }
             }
             .navigationTitle(session.title)
             .navigationSubtitle(URL(fileURLWithPath: session.workspace).lastPathComponent)
@@ -363,7 +363,6 @@ struct Composer: View {
 struct ChangesView: View {
     @EnvironmentObject var model: AppModel
     let session: Session
-    @State private var showPlan = false
 
     var changes: [FileChange] {
         var merged: [String: FileChange] = [:], order: [String] = []
@@ -377,25 +376,31 @@ struct ChangesView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Picker("Show", selection: $showPlan) {
-                    Text("Changes").tag(false)
-                    Text("Plan").tag(true)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Show", selection: $model.panel) {
+                    Text("Changes").tag("changes")
+                    Text("Plan").tag("plan")
+                    Text("Files").tag("files")
+                    Text("Website").tag("website")
                 }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                Spacer()
-                if !showPlan {
+                .pickerStyle(.segmented).labelsHidden()
+                if model.panel == "changes" { HStack {
+                    Spacer()
                     if model.reviewing { ProgressView().controlSize(.small) }
                     Button("Review") { model.reviewChanges() }.disabled(model.running || model.reviewing || changes.isEmpty)
                         .help("Have the model read these changes and pin what it finds as comments")
                     Button("Undo") { model.undo() }.disabled(model.running).help("Put back everything the latest request changed")
                     Button("Redo") { model.undo(redo: true) }.disabled(model.running)
-                }
+                } }
             }
             .padding(12)
             Divider()
-            if showPlan {
+            if model.panel == "plan" {
                 MilestonesView(session: session)
+            } else if model.panel == "files" {
+                FilesPanel(session: session)
+            } else if model.panel == "website" {
+                WebsitePanel(state: model.website, session: session)
             } else if changes.isEmpty {
                 ContentUnavailableView("No changes", systemImage: "doc.text", description: Text("Files this session edits appear here."))
             } else {
