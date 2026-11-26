@@ -280,6 +280,13 @@ final class AppModel: ObservableObject {
         if text.lowercased() == "/schedule" || text.lowercased().hasPrefix("/schedule ") || text.lowercased() == "/schedules" {
             draft = ""; scheduleCommand(text.split(separator: " ", maxSplits: 1).dropFirst().first.map(String.init) ?? ""); return
         }
+        // Commands that act on the project or on Mason itself, shared with the command line. What they say is shown as a notice.
+        let word = text.split(separator: " ", maxSplits: 1).first.map { $0.lowercased() } ?? ""
+        if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network"].contains(word) {
+            draft = ""
+            hostCommand(word, String(text.dropFirst(word.count)).trimmingCharacters(in: .whitespaces), in: current)
+            return
+        }
         if text.lowercased() == "/agent" || text.lowercased().hasPrefix("/agent ") { draft = ""; chooseAgent(String(text.dropFirst(6)).trimmingCharacters(in: .whitespaces)); return }
         guard let endpoint, let model = try? OpenAIClient(endpoint) else {
             notice = "No model is running. Open Models to start one, or start your own local server."

@@ -286,3 +286,33 @@ struct WebsitePanel: View {
         }
     }
 }
+
+extension AppModel {
+    /// The mason command line tool inside the app, which is what runs a background task.
+    var masonProgram: String { Bundle.main.resourceURL?.appendingPathComponent("bin/mason").path ?? "/usr/local/bin/mason" }
+
+    /// Runs one of the commands the app shares with the command line, and shows what it says.
+    func hostCommand(_ name: String, _ rest: String, in session: Session) {
+        guard let workspace = try? Workspace(path: session.workspace) else { notice = "The project folder is no longer available."; return }
+        let home = store?.folder.deletingLastPathComponent() ?? DataHome.url
+        let automatic = session.permission == .auto && !session.askOnly
+        Task {
+            do {
+                switch name {
+                case "/experiment", "/experiments": notice = try await Experiments.command(rest, workspace: workspace, home: home)
+                case "/deliver":
+                    let said = try await Delivery.command(rest, workspace: workspace, home: home)
+                    notice = said.text
+                    // Feedback to act on is put in the request box for the user to send.
+                    if let request = said.request { draft = request }
+                case "/task", "/tasks": notice = try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: automatic, program: masonProgram, home: home)
+                case "/roles", "/role": notice = try Roles.command(rest, home: home)
+                case "/policy": notice = try Policies.command(rest, workspace: workspace, home: home)
+                default: notice = try NetworkSettings.command(rest, home: home)
+                }
+            } catch {
+                notice = describe(error)
+            }
+        }
+    }
+}

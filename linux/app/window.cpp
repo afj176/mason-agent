@@ -371,7 +371,17 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         g_application_send_notification(application, nullptr, notification);
         g_object_unref(notification);
     });
+    controller_.draft_suggested.connect([this](const std::string& text) { draft_.get_buffer()->set_text(text); draft_.grab_focus(); });
     controller_.notice.connect([this](const std::string& message) {
+        // Several lines do not fit a toast: a command's answer is shown in a dialog, where it can be read and copied.
+        const size_t first = message.find('\n');
+        if (first != std::string::npos) {
+            auto dialog = Gtk::AlertDialog::create(message.substr(0, first));
+            dialog->set_detail(message.substr(first + 1));
+            dialog->set_modal(true);
+            dialog->show(*Glib::wrap(GTK_WINDOW(window_), true));
+            return;
+        }
         AdwToast* toast = adw_toast_new(message.c_str());
         adw_toast_set_timeout(toast, 6);
         adw_toast_overlay_add_toast(toasts_, toast);
