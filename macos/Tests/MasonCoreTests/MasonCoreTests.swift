@@ -360,8 +360,8 @@ final class MasonCoreTests: XCTestCase {
         var reading = try store.create(workspace: session.workspace, permission: .readOnly)
         reading.askOnly = true
         // check_page is offered wherever a browser is installed, which depends on the computer.
-        let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name).filter { $0 != "check_page" }
-        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"], "a read-only session gets no editing, job or workflow tools")
+        let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name).filter { $0 != "check_page" && $0 != "inspect_symbol" }
+        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "navigate_code", "read_skill"], "a read-only session gets no editing, job or workflow tools")
         try "{\"version\": 2}".write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try ProjectWorkflows.load(workspace))
     }
@@ -1400,6 +1400,52 @@ final class SessionTransferTests: XCTestCase {
         XCTAssertTrue(imported.title.hasSuffix(" · imported") && imported.detail.hasPrefix("Imported a sanitized session."))
         XCTAssertThrowsError(try SessionTransfer.importSession(Data("{}".utf8), store: store, workspace: workspace.root.path))
         XCTAssertEqual(try SessionStore(home: base.appendingPathComponent("home")).sessions.count, 4, "the original, two forks and the import")
+    }
+}
+
+final class NavigationTests: XCTestCase {
+    func testNamesAreFoundAsLabelledTextCandidatesAndThroughALanguageService() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-nav-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("tests"), withIntermediateDirectories: true)
+        try "def total(items):\n    return sum(items)\n\n# total is used below\nprint(total([1, 2]))\nsubtotal = 3\n".write(to: folder.appendingPathComponent("cart.py"), atomically: true, encoding: .utf8)
+        try "from cart import total\n\ndef test_total():\n    assert total([1]) == 1\n".write(to: folder.appendingPathComponent("tests/test_cart.py"), atomically: true, encoding: .utf8)
+        try "int total(int a, int b) {\n    return a + b;\n}\n".write(to: folder.appendingPathComponent("sum.c"), atomically: true, encoding: .utf8)
+        try "total total total".write(to: folder.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+
+        let definitions = try CodeNavigation.query(workspace, directory: ".", symbol: "total", mode: "definitions")
+        XCTAssertEqual(definitions.hits.map { "\($0.path):\($0.line)" }, ["cart.py:1", "sum.c:1"], "a def and a C function, not the import or the call")
+        let references = try CodeNavigation.query(workspace, directory: ".", symbol: "total", mode: "references")
+        XCTAssertEqual(references.hits.map { "\($0.path):\($0.line)" }, ["cart.py:5", "tests/test_cart.py:1", "tests/test_cart.py:4"], "whole words only, and not the comment")
+        XCTAssertEqual(try CodeNavigation.query(workspace, directory: ".", symbol: "total", mode: "tests").hits.map(\.path), ["tests/test_cart.py", "tests/test_cart.py"])
+        XCTAssertEqual(definitions.files, 3, "only source files are read")
+        XCTAssertThrowsError(try CodeNavigation.query(workspace, directory: ".", symbol: "a b", mode: "definitions"))
+        XCTAssertThrowsError(try CodeNavigation.query(workspace, directory: ".", symbol: "total", mode: "diagnostics"))
+        XCTAssertTrue(CodeNavigation.report(definitions, symbol: "total", mode: "definitions").contains("cart.py:1  [definition candidate]  def total(items):"))
+
+        // A stand-in for the helper: it answers with the position it was asked about and how many files it was given.
+        let tools = base.appendingPathComponent("tools")
+        try FileManager.default.createDirectory(at: tools.appendingPathComponent("python/jedi"), withIntermediateDirectories: true)
+        try "import json, sys\nr = json.load(sys.stdin)\nprint(json.dumps({'engine': 'stand-in', 'asked': [r['path'], r['line'], r['column'], r['mode']], 'files': sorted(r['files'])}))\n"
+            .write(to: tools.appendingPathComponent("python-symbols.py"), atomically: true, encoding: .utf8)
+        setenv("MASON_LANGUAGE_TOOLS", tools.path, 1)
+        defer { unsetenv("MASON_LANGUAGE_TOOLS") }
+        guard TransformersRuntime.python() != nil else { throw XCTSkip("No python3 on this computer.") }
+        XCTAssertTrue(SymbolService.available)
+        let answer = try await SymbolService.query(workspace, path: "cart.py", line: 5, column: 7, mode: "definitions")
+        XCTAssertEqual(answer, #"{"engine": "stand-in", "asked": ["cart.py", 5, 7, "definitions"], "files": ["cart.py", "tests/test_cart.py"]}"#)
+        await XCTAssertThrowsErrorAsync(try await SymbolService.query(workspace, path: "sum.c", line: 1, column: 1, mode: "definitions"), "only Python and JavaScript or TypeScript")
+        await XCTAssertThrowsErrorAsync(try await SymbolService.query(workspace, path: "cart.py", line: 0, column: 1, mode: "definitions"))
+
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .readOnly)
+        XCTAssertTrue(Agent.extraTools(session: session, workspace: workspace).map(\.name).contains("inspect_symbol"))
+        let model = ScriptedModel([call("navigate_code", ["path": ".", "symbol": "total", "mode": "definitions"]), call("inspect_symbol", ["path": "cart.py", "line": "5", "column": "7", "mode": "references"]), ModelReply(text: "Found.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Where is total?")
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed])
+        XCTAssertTrue(session.activities[1].result.contains(#""references""#))
     }
 }
 

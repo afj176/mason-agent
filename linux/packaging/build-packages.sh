@@ -15,6 +15,16 @@ trap 'rm -rf "$WORK"' EXIT
 DIST="${DIST:-$SOURCE/dist}"
 rm -rf "$DIST" && mkdir -p "$DIST"
 
+# Jedi and the TypeScript compiler for inspect_symbol. A release build must have them; a local build without pip or
+# npm goes on without, and says so.
+if python3 -m pip --version >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  "$SOURCE/packaging/prepare-language-tools.sh" "$SOURCE/language-tools"
+elif [ -n "${CI:-}" ]; then
+  echo "pip and npm are needed to package the language tools."; exit 1
+else
+  echo "NOTE: pip or npm is missing, so this build has no language tools: inspect_symbol will not be offered."
+fi
+
 meson setup "$WORK/build" "$SOURCE" --prefix=/usr --buildtype=release -Db_lto=true >/dev/null
 meson compile -C "$WORK/build"
 meson test -C "$WORK/build" --print-errorlogs

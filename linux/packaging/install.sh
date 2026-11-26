@@ -24,6 +24,11 @@ install -m644 "$here/share/icons/hicolor/512x512/apps/site.masonagent.MasonAgent
 # The Python program that serves Transformers weights; mason looks for it beside its own bin folder.
 mkdir -p "$prefix/share/mason-agent/transformers"
 install -m644 "$here/share/mason-agent/transformers/Serve-Transformers.py" "$here/share/mason-agent/transformers/ModelAdapters.json" "$prefix/share/mason-agent/transformers/"
+# Jedi and the TypeScript compiler, for looking up definitions and references.
+if [ -d "$here/share/mason-agent/language-tools" ]; then
+    rm -rf "$prefix/share/mason-agent/language-tools"
+    cp -R "$here/share/mason-agent/language-tools" "$prefix/share/mason-agent/"
+fi
 # The menu entry starts the app by its full path, so it works even when ~/.local/bin is not on PATH for the desktop session.
 sed "s|^Exec=mason-agent|Exec=$prefix/bin/mason-agent|" "$here/share/applications/site.masonagent.MasonAgent.desktop" > "$desktop"
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$prefix/share/applications" >/dev/null 2>&1 || true

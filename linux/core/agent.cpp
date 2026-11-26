@@ -1,6 +1,7 @@
 #include "agent.hpp"
 #include "acceptance.hpp"
 #include "browser.hpp"
+#include "navigation.hpp"
 #include "planning.hpp"
 
 #include <algorithm>
@@ -192,6 +193,14 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
                     schema({{"path", {{"type", "string"}, {"description", "Folder to map, relative to the project. Use . for the whole project."}}}}, {"path"})});
     list.push_back({"ask_user", "Ask the user one question when you cannot continue without their answer (a choice only they can make, or a missing fact). The request stops and their reply continues it. Do not use it for things you can find out yourself.",
                     schema({{"question", text}}, {"question"})});
+    list.push_back({"navigate_code", "Find where a name is defined, used or tested in a project folder. Returns labelled text candidates with file and line; they are whole-word matches, not a compiler's answer.",
+                    schema({{"path", {{"type", "string"}, {"description", "Folder to look in, relative to the project. Use . for the whole project."}}}, {"symbol", text}, {"mode", {{"type", "string"}, {"enum", {"definitions", "references", "tests"}}}}},
+                           {"path", "symbol", "mode"})});
+    if (symbols::available()) {
+        list.push_back({"inspect_symbol", "Ask a language service about one position in a Python, JavaScript or TypeScript file: where the name there is defined, where it is used, or the file's diagnostics. line and column are 1-based.",
+                        schema({{"path", text}, {"line", {{"type", "integer"}, {"minimum", 1}}}, {"column", {{"type", "integer"}, {"minimum", 1}}}, {"mode", {{"type", "string"}, {"enum", {"definitions", "references", "diagnostics"}}}}},
+                               {"path", "line", "column", "mode"})});
+    }
     const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
     if (!read_only) {
         list.push_back({"apply_edits", "Make several exact replacements in one existing file at once. Each old_text must match exactly once. Nothing is written unless every edit applies.",
@@ -282,6 +291,22 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         if (question.empty() || utf8_length(question) > 2000) throw Error("ask_user needs a question of up to 2,000 characters.");
         pending_question_ = question;
         return Outcome{"completed", "Asked the user. The request stops here; their reply will come as the next message."};
+    }
+    if (call.name == "navigate_code") {
+        const auto symbol = text("symbol"), mode = text("mode");
+        if (!symbol || !mode) throw Error("navigate_code needs a symbol and a mode.");
+        return Outcome{"completed", navigation::report(navigation::query(workspace, text("path").value_or("."), *symbol, *mode, cancel), *symbol, *mode)};
+    }
+    if (call.name == "inspect_symbol") {
+        const auto path = text("path"), mode = text("mode");
+        const auto whole = [&](const char* key) -> int {
+            if (!arguments.contains(key)) return 0;
+            if (arguments[key].is_number_integer()) return arguments[key].get<int>();
+            return arguments[key].is_string() ? std::atoi(arguments[key].get<std::string>().c_str()) : 0;
+        };
+        if (!path || !mode) throw Error("inspect_symbol needs a path, a line, a column and a mode.");
+        emit_({AgentEvent::Kind::Status, "Asking the language service", {}});
+        return Outcome{"completed", symbols::query(workspace, *path, whole("line"), whole("column"), *mode, cancel)};
     }
     if (call.name == "semantic_search") {
         const std::shared_ptr<SemanticModels> models = semantic_models();

@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "agent.hpp"
+#include "navigation.hpp"
 #include "transfer.hpp"
 #include "acceptance.hpp"
 #include "browser.hpp"
@@ -908,7 +909,8 @@ static void test_extra_tools() {
         // check_page is offered wherever a browser is installed, which depends on the computer.
         std::vector<std::string> offered = names(reading);
         offered.erase(std::remove(offered.begin(), offered.end(), "check_page"), offered.end());
-        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"}));  // no editing, job or workflow tools
+        offered.erase(std::remove(offered.begin(), offered.end(), "inspect_symbol"), offered.end());
+        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "navigate_code", "read_skill"}));  // no editing, job or workflow tools
         box.write("mason.workflows.json", "{\"version\": 2}");
         CHECK_THROWS(workflows::load(workspace));
     }
@@ -1419,6 +1421,52 @@ static void test_transfer() {
     CHECK(SessionStore(box.home).sessions().size() == 4);  // the original, two forks and the import
 }
 
+static void test_navigation() {
+    Sandbox box;
+    box.write("cart.py", "def total(items):\n    return sum(items)\n\n# total is used below\nprint(total([1, 2]))\nsubtotal = 3\n");
+    box.write("tests/test_cart.py", "from cart import total\n\ndef test_total():\n    assert total([1]) == 1\n");
+    box.write("sum.c", "int total(int a, int b) {\n    return a + b;\n}\n");
+    box.write("notes.txt", "total total total");
+    fs::remove(box.project / "calc.py");
+    const Workspace workspace(box.project.string());
+    const auto places = [](const NavigationResult& result) {
+        std::vector<std::string> found;
+        for (const NavigationHit& hit : result.hits) found.push_back(hit.path + ":" + std::to_string(hit.line));
+        return found;
+    };
+    using Names = std::vector<std::string>;
+    const NavigationResult definitions = navigation::query(workspace, ".", "total", "definitions");
+    CHECK(places(definitions) == (Names{"cart.py:1", "sum.c:1"}));  // a def and a C function, not the import or the call
+    CHECK(places(navigation::query(workspace, ".", "total", "references")) == (Names{"cart.py:5", "tests/test_cart.py:1", "tests/test_cart.py:4"}));  // whole words only, not the comment
+    CHECK(places(navigation::query(workspace, ".", "total", "tests")) == (Names{"tests/test_cart.py:1", "tests/test_cart.py:4"}));
+    CHECK(definitions.files == 3);  // only source files are read
+    CHECK_THROWS(navigation::query(workspace, ".", "a b", "definitions"));
+    CHECK_THROWS(navigation::query(workspace, ".", "total", "diagnostics"));
+    CHECK(navigation::report(definitions, "total", "definitions").find("cart.py:1  [definition candidate]  def total(items):") != std::string::npos);
+
+    // A stand-in for the helper: it answers with the position it was asked about and the files it was given.
+    const fs::path tools = box.base / "tools";
+    fs::create_directories(tools / "python" / "jedi");
+    std::ofstream(tools / "python-symbols.py") << "import json, sys\nr = json.load(sys.stdin)\nprint(json.dumps({'engine': 'stand-in', 'asked': [r['path'], r['line'], r['column'], r['mode']], 'files': sorted(r['files'])}))\n";
+    setenv("MASON_LANGUAGE_TOOLS", tools.c_str(), 1);
+    if (transformers::python().empty()) {
+        std::cout << "  (no python3 on this computer: the language service part was not run)\n";
+    } else {
+        CHECK(symbols::available());
+        CHECK(symbols::query(workspace, "cart.py", 5, 7, "definitions") == R"({"engine": "stand-in", "asked": ["cart.py", 5, 7, "definitions"], "files": ["cart.py", "tests/test_cart.py"]})");
+        CHECK_THROWS(symbols::query(workspace, "sum.c", 1, 1, "definitions"));  // only Python and JavaScript or TypeScript
+        CHECK_THROWS(symbols::query(workspace, "cart.py", 0, 1, "definitions"));
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::ReadOnly);
+        ScriptedModel model;
+        model.replies = {call("navigate_code", {{"path", "."}, {"symbol", "total"}, {"mode", "definitions"}}), call("inspect_symbol", {{"path", "cart.py"}, {"line", 5}, {"column", 7}, {"mode", "references"}}), say("Found.")};
+        Agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(session, "Where is total?");
+        CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && session.activities[1].state == "completed");
+        CHECK(session.activities[1].result.find("\"references\"") != std::string::npos);
+    }
+    unsetenv("MASON_LANGUAGE_TOOLS");
+}
+
 static void test_verification() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
@@ -1509,7 +1557,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

@@ -191,6 +191,12 @@ extension Agent {
                               parameters: schema(["path": ["type": "string", "description": "Folder to map, relative to the project. Use . for the whole project."]], required: ["path"])))
         tools.append(ToolSpec(name: "ask_user", description: "Ask the user one question when you cannot continue without their answer (a choice only they can make, or a missing fact). The request stops and their reply continues it. Do not use it for things you can find out yourself.",
                               parameters: schema(["question": text], required: ["question"])))
+        tools.append(ToolSpec(name: "navigate_code", description: "Find where a name is defined, used or tested in a project folder. Returns labelled text candidates with file and line; they are whole-word matches, not a compiler's answer.",
+                              parameters: schema(["path": ["type": "string", "description": "Folder to look in, relative to the project. Use . for the whole project."], "symbol": text, "mode": ["type": "string", "enum": ["definitions", "references", "tests"]]], required: ["path", "symbol", "mode"])))
+        if SymbolService.available {
+            tools.append(ToolSpec(name: "inspect_symbol", description: "Ask a language service about one position in a Python, JavaScript or TypeScript file: where the name there is defined, where it is used, or the file's diagnostics. line and column are 1-based.",
+                                  parameters: schema(["path": text, "line": ["type": "integer", "minimum": 1], "column": ["type": "integer", "minimum": 1], "mode": ["type": "string", "enum": ["definitions", "references", "diagnostics"]]], required: ["path", "line", "column", "mode"])))
+        }
         let readOnly = session.askOnly || session.permission == .readOnly
         if !readOnly {
             tools.append(ToolSpec(name: "apply_edits", description: "Make several exact replacements in one existing file at once. Each old_text must match exactly once. Nothing is written unless every edit applies.",
@@ -247,6 +253,15 @@ extension Agent {
             guard let question = text("question")?.trimmingCharacters(in: .whitespacesAndNewlines), !question.isEmpty, question.count <= 2000 else { throw MasonError("ask_user needs a question of up to 2,000 characters.") }
             pendingQuestion = question
             return (.completed, "Asked the user. The request stops here; their reply will come as the next message.")
+
+        case "navigate_code":
+            guard let symbol = text("symbol"), let mode = text("mode") else { throw MasonError("navigate_code needs a symbol and a mode.") }
+            return (.completed, CodeNavigation.report(try CodeNavigation.query(workspace, directory: text("path") ?? ".", symbol: symbol, mode: mode), symbol: symbol, mode: mode))
+
+        case "inspect_symbol":
+            guard let path = text("path"), let line = number("line"), let column = number("column"), let mode = text("mode") else { throw MasonError("inspect_symbol needs a path, a line, a column and a mode.") }
+            emit(.status("Asking the language service"))
+            return (.completed, try await SymbolService.query(workspace, path: path, line: line, column: column, mode: mode))
 
         case "semantic_search":
             guard let models = semanticModels else { throw MasonError("No embeddings server is chosen for code search.") }
