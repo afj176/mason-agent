@@ -177,7 +177,21 @@ struct Sidebar: View {
     }
 }
 
+/// Settings: how Mason looks and where it keeps things, then what it may do and use.
 struct SettingsView: View {
+    var body: some View {
+        TabView {
+            GeneralPane().tabItem { Label("General", systemImage: "gearshape") }
+            ApprovalsPane().tabItem { Label("Approvals", systemImage: "hand.raised") }
+            AgentsPane().tabItem { Label("Agents", systemImage: "person.crop.rectangle") }
+            McpPane().tabItem { Label("MCP Servers", systemImage: "server.rack") }
+            SchedulesPane().tabItem { Label("Schedules", systemImage: "clock") }
+        }
+        .frame(width: 680, height: 460)
+    }
+}
+
+struct GeneralPane: View {
     @EnvironmentObject var model: AppModel
     @AppStorage("appearance") private var appearance = AppearanceChoice.system.rawValue
 
@@ -207,6 +221,5 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 360)
     }
 }
