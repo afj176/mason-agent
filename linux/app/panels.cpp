@@ -3,6 +3,8 @@
 
 #include "browser.hpp"
 
+#include <cmath>
+#include <cstdio>
 #include <thread>
 
 #ifdef MASON_HAVE_WEBKIT
@@ -413,6 +415,93 @@ void MainWindow::refresh_website() {
         }
     }
     changes_.append(website_);
+}
+
+Gtk::Widget* table_card(const TableData& table) {
+    auto* card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 12);
+    card->add_css_class("card");
+    card->set_margin_top(4);
+    auto* inside = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 12);
+    inside->set_margin(12);
+    auto* grid = Gtk::make_managed<Gtk::Grid>();
+    grid->set_column_spacing(18);
+    grid->set_row_spacing(6);
+    for (size_t column = 0; column < table.headers.size(); column++) {
+        auto* header = Gtk::make_managed<Gtk::Label>();
+        header->set_markup("<b>" + escape(table.headers[column]) + "</b>");
+        header->set_xalign(0);
+        grid->attach(*header, static_cast<int>(column), 0);
+        for (size_t row = 0; row < table.rows.size(); row++) {
+            auto* cell = Gtk::make_managed<Gtk::Label>(table.rows[row][column]);
+            cell->set_xalign(0);
+            cell->set_selectable(true);
+            grid->attach(*cell, static_cast<int>(column), static_cast<int>(row) + 1);
+        }
+    }
+    auto* scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scroll->set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::NEVER);
+    scroll->set_child(*grid);
+    inside->append(*scroll);
+    // Each numeric column has its own chart, so columns on different scales can both be read.
+    static const double colours[4][3] = {{0.29, 0.27, 0.72}, {0.91, 0.35, 0.05}, {0.10, 0.55, 0.45}, {0.75, 0.20, 0.45}};
+    for (size_t which = 0; which < table.series.size(); which++) {
+        const TableSeries series = table.series[which];
+        std::vector<std::string> labels;
+        for (const auto& row : table.rows) labels.push_back(row.empty() ? "" : row[0]);
+        auto* title = Gtk::make_managed<Gtk::Label>(series.name);
+        title->set_xalign(0);
+        title->add_css_class("caption-heading");
+        title->add_css_class("dim-label");
+        inside->append(*title);
+        auto* chart = Gtk::make_managed<Gtk::DrawingArea>();
+        chart->set_content_height(150);
+        chart->set_content_width(420);
+        chart->set_hexpand(true);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(chart->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, ("Chart of " + series.name).c_str(), -1);
+        chart->set_draw_func([chart, series, labels, which](const Cairo::RefPtr<Cairo::Context>& context, int width, int height) {
+            const Gdk::RGBA ink = chart->get_color();
+            double low = 0, high = 0;
+            for (double value : series.values) { low = std::min(low, value); high = std::max(high, value); }
+            if (high == low) high = low + 1;
+            const double left = 8, right = 8, top = 18, bottom = 22;
+            const double plot_width = width - left - right, plot_height = height - top - bottom;
+            const size_t groups = series.values.size();
+            const double group_width = plot_width / static_cast<double>(std::max<size_t>(1, groups));
+            const double bar_width = std::max(2.0, std::min(64.0, group_width * 0.6));
+            const double zero = top + plot_height * (high / (high - low));
+            context->select_font_face("sans-serif", Cairo::ToyFontFace::Slant::NORMAL, Cairo::ToyFontFace::Weight::NORMAL);
+            context->set_font_size(11);
+            for (size_t group = 0; group < groups; group++) {
+                const double value = series.values[group];
+                const double tall = plot_height * (std::abs(value) / (high - low));
+                const double middle = left + group_width * (static_cast<double>(group) + 0.5);
+                context->set_source_rgb(colours[which % 4][0], colours[which % 4][1], colours[which % 4][2]);
+                context->rectangle(middle - bar_width / 2, value >= 0 ? zero - tall : zero, bar_width, tall);
+                context->fill();
+                // The value above each bar, and the label under it, shortened to fit.
+                char number[32];
+                std::snprintf(number, sizeof number, value == std::floor(value) ? "%.0f" : "%.2f", value);
+                Cairo::TextExtents extents;
+                context->get_text_extents(number, extents);
+                context->set_source_rgba(ink.get_red(), ink.get_green(), ink.get_blue(), 0.8);
+                context->move_to(middle - extents.width / 2, (value >= 0 ? zero - tall : zero + tall + 12) - 4);
+                context->show_text(number);
+                std::string label = group < labels.size() ? labels[group] : "";
+                if (utf8_length(label) > 12) label = utf8_prefix(label, 11) + "…";
+                context->get_text_extents(label, extents);
+                context->move_to(middle - extents.width / 2, height - 6);
+                context->show_text(label);
+            }
+            context->set_source_rgba(ink.get_red(), ink.get_green(), ink.get_blue(), 0.35);
+            context->set_line_width(1);
+            context->move_to(left, zero + 0.5);
+            context->line_to(width - right, zero + 0.5);
+            context->stroke();
+        });
+        inside->append(*chart);
+    }
+    card->append(*inside);
+    return card;
 }
 
 }  // namespace mason::app

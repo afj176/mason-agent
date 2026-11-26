@@ -787,8 +787,8 @@ final class MasonCoreTests: XCTestCase {
             .write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         let workspace = try Workspace(path: folder.path)
         let model = ScriptedModel([
-            ModelReply(text: #"{"action": "click", "selector": "#missing"}"#),
-            ModelReply(text: #"{"action": "fill", "selector": "#name", "value": "Ada"}"#),
+            ModelReply(text: ##"{"action": "click", "selector": "#missing"}"##),
+            ModelReply(text: ##"{"action": "fill", "selector": "#name", "value": "Ada"}"##),
             ModelReply(text: "I will press it now: {\"action\": \"click\", \"selector\": \"#add\"}"),
             ModelReply(text: #"{"action": "done", "answer": "The cart shows 1 tea for Ada."}"#),
         ])
@@ -805,6 +805,43 @@ final class MasonCoreTests: XCTestCase {
         let code = await ScriptOperations.run(["browse", "--workspace", folder.path, "--prompt", "Is there a checkout?"], model: ScriptedModel([ModelReply(text: #"{"action": "fail", "answer": "There is no checkout on this page."}"#)])) { lines.append($0) }
         XCTAssertEqual(code, 2)
         XCTAssertTrue(lines.joined().contains("There is no checkout on this page."))
+    }
+
+    func testChatAttachesPicturesAndTheTextOfDocuments() async throws {
+        let png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])
+        try png.write(to: folder.appendingPathComponent("shot.png"))
+        let picture = try ChatAttachment(file: folder.appendingPathComponent("shot.png"))
+        XCTAssertEqual(picture.image, "data:image/png;base64," + png.base64EncodedString())
+        XCTAssertEqual(ChatAttachment.wordText(xml: #"<w:document><w:body><w:p><w:r><w:t>Terms &amp; conditions</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">Net </w:t><w:tab/><w:t>30 days</w:t></w:r></w:p></w:body></w:document>"#), "Terms & conditions\nNet \t30 days\n")
+        try Data([0, 1, 2, 3]).write(to: folder.appendingPathComponent("blob.bin"))
+        XCTAssertThrowsError(try ChatAttachment(file: folder.appendingPathComponent("blob.bin")), "a file that is neither text, a picture nor a document is refused")
+
+        let chats = try ChatStore(home: home)
+        var conversation = try chats.create()
+        let model = ScriptedModel([ModelReply(text: "A screenshot.")])
+        try await Chat.send(&conversation, text: "What is this?", attachments: [picture, ChatAttachment(name: "notes.txt", content: "hello")], model: model, store: chats) { _ in }
+        let sent = try XCTUnwrap(conversation.messages.first { $0.role == "user" })
+        XCTAssertEqual(sent.images?.count, 1)
+        XCTAssertTrue(sent.content.contains("Attached picture: shot.png") && sent.content.contains("Attached file notes.txt"), sent.content)
+        XCTAssertEqual(model.seen.first?.last?.images?.count, 1, "the picture goes to the model with the message")
+        let again = try ChatStore(home: home)
+        XCTAssertEqual(again.conversations.first?.messages.first { $0.role == "user" }?.images?.count, 1, "and is kept with the conversation")
+    }
+
+    func testATableInAnAnswerBecomesAGridAndAChart() {
+        let answer = "Here are the sales.\n\n| Month | Units | Revenue | Note |\n|:--|--:|--:|---|\n| Jan | 1,200 | $3,400.50 | slow |\n| Feb | 950 | $2,100 | |\n| Mar | 1,410 | $4,020 | best |\n\nAnd in code:\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n"
+        let tables = Tables.find(in: answer)
+        XCTAssertEqual(tables.count, 1, "a table inside a code block is left alone")
+        XCTAssertEqual(tables[0].headers, ["Month", "Units", "Revenue", "Note"])
+        XCTAssertEqual(tables[0].labels, ["Jan", "Feb", "Mar"])
+        XCTAssertEqual(tables[0].series.map(\.name), ["Units", "Revenue"], "only columns that are all numbers are charted")
+        XCTAssertEqual(tables[0].series[0].values, [1200, 950, 1410])
+        XCTAssertEqual(tables[0].series[1].values, [3400.5, 2100, 4020])
+        XCTAssertEqual(Tables.number("-12.5%"), -12.5)
+        XCTAssertNil(Tables.number("12 apples"))
+        XCTAssertTrue(Tables.find(in: "| just | one row |\nno rule").isEmpty)
+        let prose = Tables.prose(answer)
+        XCTAssertTrue(prose.contains("Here are the sales.") && !prose.contains("| Jan |") && prose.contains("| a | b |"), "the table's own lines are left out of the prose, and code is kept: " + prose)
     }
 
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {

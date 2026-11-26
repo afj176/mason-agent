@@ -34,6 +34,8 @@ public struct ChatMessage: Codable, Equatable {
     public var content: String
     public var toolCalls: [ToolCall]?
     public var toolCallId: String?
+    /// Pictures that go with a chat message, each as a data: address. The model receives them beside the text.
+    public var images: [String]? = nil
     public init(role: String, content: String, toolCalls: [ToolCall]? = nil, toolCallId: String? = nil) {
         self.role = role; self.content = content; self.toolCalls = toolCalls; self.toolCallId = toolCallId
     }

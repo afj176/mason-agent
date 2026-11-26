@@ -5,6 +5,7 @@
 
 #include "controller.hpp"
 #include "browser.hpp"
+#include "chat.hpp"
 #include "derived.hpp"
 #include "preview.hpp"
 #include "style.hpp"
@@ -21,6 +22,8 @@ void clear(Gtk::Box& box);
 Gtk::Label* dim_label(const std::string& text);
 /// A model's answer: prose with headings, bullets and inline code, and fenced code as scrollable blocks.
 Gtk::Widget* answer_view(const std::string& text);
+/// A table from an answer: its cells in a grid, and its numeric columns as bars against the first column.
+Gtk::Widget* table_card(const TableData& table);
 
 /// The Models page: running servers, the llama.cpp runtime, local model files and Hugging Face.
 class ModelsPage : public Gtk::ScrolledWindow {

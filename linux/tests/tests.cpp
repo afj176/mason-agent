@@ -1451,6 +1451,53 @@ static void test_extra_tools() {
         CHECK(events.size() == 1 && events[0]["data"]["answer"] == "There is no checkout on this page.");
     }
 
+    // Chat attaches pictures and the text of documents.
+    {
+        Sandbox box;
+        const std::string png("\x89PNG\r\n\x1a\n\0\0\0\0", 12);
+        write_file_atomic(box.project / "shot.png", png);
+        const ChatAttachment picture = ChatAttachment::from_file(box.project / "shot.png");
+        CHECK(picture.image == "data:image/png;base64,iVBORw0KGgoAAAAA");
+        CHECK(ChatAttachment::word_text(R"(<w:document><w:body><w:p><w:r><w:t>Terms &amp; conditions</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">Net </w:t><w:tab/><w:t>30 days</w:t></w:r></w:p></w:body></w:document>)") == "Terms & conditions\nNet \t30 days\n");
+        write_file_atomic(box.project / "blob.bin", std::string("\0\1\2\3", 4));
+        bool refused = false;
+        try { ChatAttachment::from_file(box.project / "blob.bin"); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // a file that is neither text, a picture nor a document is refused
+        ChatStore chats(box.home);
+        ChatConversation conversation = chats.create();
+        ScriptedModel model;
+        model.replies = {say("A screenshot.")};
+        chat::send(conversation, "What is this?", {picture, ChatAttachment{"notes.txt", "hello", ""}}, model, chats, [](const std::string&) {}, nullptr);
+        const ChatMessage* sent = nullptr;
+        for (const ChatMessage& message : conversation.messages) {
+            if (message.role == "user") sent = &message;
+        }
+        CHECK(sent && sent->images.size() == 1 && sent->content.find("Attached picture: shot.png") != std::string::npos && sent->content.find("Attached file notes.txt") != std::string::npos);
+        CHECK(!model.seen.empty() && model.seen[0].back().images.size() == 1);  // the picture goes to the model with the message
+        ChatStore again(box.home);
+        bool kept = false;
+        for (const ChatConversation& saved : again.conversations()) {
+            for (const ChatMessage& message : saved.messages) kept = kept || message.images.size() == 1;
+        }
+        CHECK(kept);  // and is kept with the conversation
+    }
+
+    // A table in an answer becomes a grid and a chart.
+    {
+        const std::string answer = "Here are the sales.\n\n| Month | Units | Revenue | Note |\n|:--|--:|--:|---|\n| Jan | 1,200 | $3,400.50 | slow |\n| Feb | 950 | $2,100 | |\n| Mar | 1,410 | $4,020 | best |\n\nAnd in code:\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n";
+        const std::vector<TableData> found = tables::find(answer);
+        CHECK(found.size() == 1);  // a table inside a code block is left alone
+        if (found.size() == 1) {
+            CHECK(found[0].headers == (std::vector<std::string>{"Month", "Units", "Revenue", "Note"}) && found[0].rows.size() == 3);
+            CHECK(found[0].series.size() == 2 && found[0].series[0].name == "Units" && found[0].series[1].name == "Revenue");  // only columns that are all numbers are charted
+            if (found[0].series.size() == 2) CHECK(found[0].series[0].values == (std::vector<double>{1200, 950, 1410}) && found[0].series[1].values == (std::vector<double>{3400.5, 2100, 4020}));
+        }
+        CHECK(tables::number("-12.5%") == std::optional<double>(-12.5) && !tables::number("12 apples"));
+        CHECK(tables::find("| just | one row |\nno rule").empty());
+        const std::string prose = tables::prose(answer);
+        CHECK(prose.find("Here are the sales.") != std::string::npos && prose.find("| Jan |") == std::string::npos && prose.find("| a | b |") != std::string::npos);  // the table's own lines are left out, and code is kept
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;
