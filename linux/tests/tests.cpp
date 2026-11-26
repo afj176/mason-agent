@@ -1346,6 +1346,33 @@ static void test_extra_tools() {
         CHECK(refused);
     }
 
+    // Scripts can review a file and serve a project.
+    {
+        Sandbox box;
+        const std::string root = box.project.string();
+        std::vector<json> events;
+        const auto collect = [&](const std::string& line) { events.push_back(json::parse(line)); };
+        ScriptedModel finding;
+        finding.replies = {say(R"J([{"path": "calc.py", "line": 2, "evidence": "return a - b", "problem": "It subtracts."}, {"path": "calc.py", "line": 1, "evidence": "not on that line", "problem": "Made up."}])J")};
+        CHECK(script::run({"review", "--workspace", root, "--prompt", "add returns the sum", "--path", "calc.py"}, collect, &finding) == 2);  // a finding is exit 2
+        CHECK(events.size() == 1 && events[0]["data"]["findings"].size() == 1 && events[0]["data"]["findings"][0]["line"] == 2 && events[0]["data"]["dropped"] == 1);
+        events.clear();
+        ScriptedModel nothing;
+        nothing.replies = {say("[]")};
+        CHECK(script::run({"review", "--workspace", root, "--prompt", "x", "--path", "calc.py"}, collect, &nothing) == 0);
+        box.write("mason.workflows.json", R"J({"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "exit 3"]}, "site": {"executable": "python3", "arguments": ["-m", "http.server", "18475", "--bind", "127.0.0.1"]}}})J");
+        events.clear();
+        CHECK(script::run({"serve", "--workspace", root, "--workflow", "dev", "--port", "18474"}, collect) == 1);
+        CHECK(events.size() == 1 && events[0]["data"]["message"].get<std::string>().find("ended before anything listened") != std::string::npos);
+        if (shell::run("command -v python3", Workspace(root), false, 10).exit_code == 0) {
+            box.write("index.html", "<!doctype html><title>Served Shop</title><h1>Shop</h1>");
+            events.clear();
+            CHECK(script::run({"serve", "--workspace", root, "--workflow", "site", "--port", "18475", "--page", "index.html"}, collect) == 0);
+            CHECK(events.size() == 3 && events[0]["type"] == "server.ready" && events[1]["data"]["title"] == "Served Shop");
+            CHECK(!preview::listening(18475));  // the server is stopped afterwards
+        }
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;

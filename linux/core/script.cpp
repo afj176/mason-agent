@@ -4,7 +4,9 @@
 #include "background.hpp"
 #include "experiments.hpp"
 #include "desktop.hpp"
+#include "acceptance.hpp"
 #include "navigation.hpp"
+#include "preview.hpp"
 #include "roles.hpp"
 #include "shell.hpp"
 
@@ -14,13 +16,15 @@
 namespace mason::script {
 
 const std::set<std::string>& names() {
-    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"};
+    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree", "review", "serve", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"};
     return all;
 }
 
 const char* const kUsage =
     "mason exec --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto] [--profile PATH] [--resume SESSION_ID]\n"
     "                   [--visual-model ID [--visual-endpoint URL]] [--trace-dir FOLDER]\n"
+    "mason review --workspace PATH --endpoint URL --model ID --prompt TEXT --path FILE\n"
+    "mason serve --workspace PATH --workflow NAME --port PORT [--page PATH]\n"
     "mason map --workspace PATH --query NAME\n"
     "mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics\n"
     "mason git-status --workspace PATH\n"
@@ -34,6 +38,8 @@ const char* const kUsage =
     "  exec only reads unless you pass --auto, which lets it edit files and run commands in the sandbox. Nothing is ever asked:\n"
     "  an approval it would need is reported and declined. --prompt-file PATH reads the request from a file.\n"
     "  Each exec keeps its own journal, or the one in --profile.\n"
+    "  review has the model read one file against what it was meant to do; it exits 2 when it finds something.\n"
+    "  serve starts the workflow with your account, waits for the port, fetches the page, and stops the server.\n"
     "  A task runs in the background and keeps going after this command returns. Without --auto it waits for\n"
     "  task-allow before each edit and command; task-show prints the approval it is waiting on.\n";
 
@@ -118,6 +124,57 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
             for (const MapMatch& match : result.matches) matches.push_back({{"path", match.path}, {"line", match.line}, {"kind", match.kind}, {"name", match.name}, {"text", match.text}});
             event("map.result", {{"query", query}, {"files", result.files}, {"partial", result.partial}, {"matches", matches}});
             return 0;
+        }
+        if (operation == "review") {
+            std::string prompt;
+            if (values.count("prompt-file")) {
+                std::ifstream file(values["prompt-file"], std::ios::binary);
+                if (!file) throw Error("The prompt file could not be read.");
+                std::ostringstream content;
+                content << file.rdbuf();
+                prompt = content.str();
+            } else {
+                prompt = get("prompt");
+            }
+            const std::string path = get("path");
+            if (!workspace.exists(path)) throw Error(path + " is not a file in the project.");
+            std::unique_ptr<OpenAIClient> owned;
+            if (!model) {
+                owned = std::make_unique<OpenAIClient>(ModelEndpoint{validated_endpoint(get("endpoint")), get("model"), ""});
+                model = owned.get();
+            }
+            // The review pass reads what a session changed; here that is the one file, against the stated intent.
+            Session reading;
+            reading.workspace = workspace.root();
+            Turn turn;
+            turn.request = prompt;
+            turn.changes.push_back(FileChange{path, std::nullopt, workspace.read(path)});
+            reading.turns.push_back(turn);
+            const std::unique_ptr<RoleModel> reviewer = roles::reviewer(*model, &workspace, data_home());
+            const ReviewFindings found = review::findings(reading, workspace, *reviewer, cancel);
+            json findings = json::array();
+            for (const ReviewComment& item : found.comments) findings.push_back({{"line", item.line}, {"quote", item.quote}, {"problem", item.note}});
+            event("review.result", {{"path", path}, {"dropped", found.dropped}, {"findings", findings}});
+            return found.comments.empty() ? 0 : 2;
+        }
+        if (operation == "serve") {
+            const std::string name = get("workflow");
+            const int port = whole("port");
+            preview::DevServer server(workspace, name, port, cancel);
+            event("server.ready", {{"workflow", name}, {"port", port}, {"address", server.address()}});
+            const std::string page = values.count("page") ? values["page"] : "";
+            json fetched = {{"address", server.address() + page}};
+            const std::optional<std::string> body = preview::fetch(port, "/" + page);
+            if (body) {
+                fetched["bytes"] = body->size();
+                const size_t open = to_lower(*body).find("<title"), start = open == std::string::npos ? open : body->find('>', open), end = start == std::string::npos ? start : body->find('<', start);
+                fetched["title"] = end == std::string::npos ? "" : trim(body->substr(start + 1, end - start - 1));
+            } else {
+                fetched["error"] = "The server listened, but the page could not be fetched.";
+            }
+            event("page.result", fetched);
+            event("server.output", {{"output", server.output()}});
+            return body ? 0 : 2;
         }
         if (operation == "worktree") {
             event("worktree.created", {{"path", experiments::create_worktree(workspace, get("destination"), get("branch"))}});

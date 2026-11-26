@@ -28,6 +28,8 @@ std::string evidence(const PreviewPick& pick);
 std::string verify_click(const Workspace& workspace, const std::string& page, const std::string& selector, const CancelToken& cancel = nullptr);
 /// True when something accepts connections on 127.0.0.1 at `port`.
 bool listening(int port);
+/// The body of a page fetched from a server on 127.0.0.1, or nothing when it did not answer with success.
+std::optional<std::string> fetch(int port, const std::string& path);
 
 /// A development server started from one of the project's workflows, for the Website tab to show. It runs with the
 /// user's account, as the workflow would from a terminal, and is stopped when this is destroyed.

@@ -125,6 +125,32 @@ bool listening(int port) {
     return answered;
 }
 
+std::optional<std::string> fetch(int port, const std::string& path) {
+    const int descriptor = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (descriptor < 0) return std::nullopt;
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<uint16_t>(port));
+    address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    timeval timeout{10, 0};
+    setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+    std::string reply;
+    const std::string request = "GET " + path + " HTTP/1.0\r\nHost: 127.0.0.1:" + std::to_string(port) + "\r\nConnection: close\r\n\r\n";
+    if (connect(descriptor, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0 && send(descriptor, request.data(), request.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(request.size())) {
+        char buffer[8192];
+        while (reply.size() < 4 * 1024 * 1024) {
+            const ssize_t count = recv(descriptor, buffer, sizeof buffer, 0);
+            if (count <= 0) break;
+            reply.append(buffer, static_cast<size_t>(count));
+        }
+    }
+    close(descriptor);
+    const size_t head = reply.find("\r\n\r\n");
+    // Only a success counts: "HTTP/1.x 2xx".
+    if (head == std::string::npos || reply.size() < 12 || reply.compare(0, 5, "HTTP/") != 0 || reply[9] != '2') return std::nullopt;
+    return reply.substr(head + 4);
+}
+
 DevServer::DevServer(const Workspace& workspace, const std::string& workflow, int port, const CancelToken& cancel) : port_(port) {
     if (port < 1024 || port > 65535) throw Error("Use a port from 1024 to 65535.");
     const auto known = workflows::load(workspace);

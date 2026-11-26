@@ -717,6 +717,27 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertThrowsError(try Policies.load(home: home, workspace: folder.path)?.check("read_file"))
     }
 
+    func testScriptsCanReviewAFileAndServeAProject() async throws {
+        var lines: [String] = []
+        func events() -> [[String: Any]] { lines.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } }
+        let finding = ModelReply(text: #"[{"path": "calc.py", "line": 2, "evidence": "return a - b", "problem": "It subtracts."}, {"path": "calc.py", "line": 1, "evidence": "not on that line", "problem": "Made up."}]"#)
+        var code = await ScriptOperations.run(["review", "--workspace", folder.path, "--prompt", "add returns the sum", "--path", "calc.py"], model: ScriptedModel([finding])) { lines.append($0) }
+        XCTAssertEqual(code, 2, "a finding is exit 2: " + lines.joined())
+        let result = events().first?["data"] as? [String: Any]
+        XCTAssertEqual((result?["findings"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(((result?["findings"] as? [[String: Any]])?.first)?["line"] as? Int, 2)
+        XCTAssertEqual(result?["dropped"] as? Int, 1, "a finding that does not quote its line is not reported as fact")
+        lines = []
+        code = await ScriptOperations.run(["review", "--workspace", folder.path, "--prompt", "x", "--path", "calc.py"], model: ScriptedModel([ModelReply(text: "[]")])) { lines.append($0) }
+        XCTAssertEqual(code, 0)
+
+        try #"{"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "exit 3"]}}}"#.write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        lines = []
+        code = await ScriptOperations.run(["serve", "--workspace", folder.path, "--workflow", "dev", "--port", "18474"]) { lines.append($0) }
+        XCTAssertEqual(code, 1)
+        XCTAssertTrue(((events().first?["data"] as? [String: Any])?["message"] as? String ?? "").contains("ended before anything listened"))
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []
