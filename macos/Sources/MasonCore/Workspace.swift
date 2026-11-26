@@ -139,15 +139,18 @@ public struct Workspace {
     }
 
     /// Case-insensitive text search over the project's UTF-8 files.
-    public func search(_ query: String, limit: Int = 100) throws -> [SearchMatch] {
+    public func search(_ query: String, limit: Int = 100, skip: Int = 0) throws -> [SearchMatch] {
         guard !query.isEmpty, query.count <= 400 else { throw MasonError("Search for 1–400 characters.") }
         var matches: [SearchMatch] = []
+        var seen = 0
         for path in try files(limit: 5000).paths {
             guard let text = try? read(path) else { continue }
             var number = 0
             for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
                 number += 1
                 if line.range(of: query, options: .caseInsensitive) != nil {
+                    seen += 1
+                    if seen <= skip { continue }
                     matches.append(SearchMatch(path: path, line: number, text: String(line.prefix(300))))
                     if matches.count >= limit { return matches }
                 }

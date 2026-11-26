@@ -146,9 +146,9 @@ struct TurnView: View {
         var reads = 0, edits = 0, commands = 0, other = 0
         for activity in activities where activity.state == .completed {
             switch activity.tool {
-            case "read_file", "read_lines", "list_files", "search_files": reads += 1
+            case "read_file", "read_lines", "list_files", "search_files", "search_next": reads += 1
             case "edit_file", "write_file", "apply_edits": edits += 1
-            case "run_shell", "run_workflow", "start_job": commands += 1
+            case "run_shell", "run_command", "run_workflow", "start_job", "start_terminal": commands += 1
             default: other += 1
             }
         }

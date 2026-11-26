@@ -135,10 +135,11 @@ FileListing Workspace::files(const std::string& under, size_t limit) const {
     return listing;
 }
 
-std::vector<SearchMatch> Workspace::search(const std::string& query, size_t limit) const {
+std::vector<SearchMatch> Workspace::search(const std::string& query, size_t limit, size_t skip) const {
     if (query.empty() || query.size() > 400) throw Error("Search for 1–400 characters.");
     const std::string needle = to_lower(query);
     std::vector<SearchMatch> matches;
+    size_t seen = 0;
     for (const std::string& path : files(".", 5000).paths) {
         std::string content;
         try {
@@ -150,6 +151,7 @@ std::vector<SearchMatch> Workspace::search(const std::string& query, size_t limi
         for (const std::string& line : split(content, '\n')) {
             number++;
             if (to_lower(line).find(needle) == std::string::npos) continue;
+            if (++seen <= skip) continue;
             matches.push_back({path, number, utf8_prefix(line, 300)});
             if (matches.size() >= limit) return matches;
         }

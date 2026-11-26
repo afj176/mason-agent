@@ -81,7 +81,8 @@ const std::vector<ToolSpec>& Agent::tools() {
             {"list_files", "List the project's files.",
              schema({{"path", {{"type", "string"}, {"description", "Folder to list, relative to the project. Use . for the whole project."}}}}, {"path"})},
             {"read_file", "Read a UTF-8 text file with line numbers.", schema({{"path", path}}, {"path"})},
-            {"search_files", "Search the project's files for text (case-insensitive).", schema({{"query", {{"type", "string"}}}}, {"query"})},
+            {"search_files", "Search the project's files for text (case-insensitive). Returns up to 100 matches and, when there may be more, a cursor for search_next.", schema({{"query", {{"type", "string"}}}}, {"query"})},
+            {"search_next", "Continue the latest search_files call from the cursor it returned, to see later files and matches.", schema({{"cursor", {{"type", "string"}}}}, {"cursor"})},
             {"edit_file", "Replace one exact passage in an existing file. old_text must match exactly once; include enough surrounding lines to make it unique.",
              schema({{"path", path}, {"old_text", {{"type", "string"}}}, {"new_text", {{"type", "string"}}}}, {"path", "old_text", "new_text"})},
             {"write_file", "Create a file, or replace its whole content.", schema({{"path", path}, {"content", {{"type", "string"}}}}, {"path", "content"})},
@@ -244,6 +245,15 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
         list.push_back({"poll_job", "Read a job's state and recent output, waiting up to wait_ms for it to finish.",
                         schema({{"id", text}, {"wait_ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", 10000}}}}, {"id", "wait_ms"})});
         list.push_back({"stop_job", "Stop a job and return its output.", schema({{"id", text}}, {"id"})});
+        list.push_back({"run_command", "Run one program with exact arguments and no shell: nothing in an argument is expanded, split or interpreted, and shell builtins are not available. Use it when an argument holds quotes, spaces, $ or other special characters. directory is relative to the project; use . for the project folder. 120 second limit.",
+                        schema({{"program", text}, {"arguments", {{"type", "array"}, {"items", text}, {"maxItems", 64}}}, {"directory", text}}, {"program", "arguments", "directory"})});
+        list.push_back({"start_terminal", "Start a program you need to answer line by line (a prompt, a REPL, an installer's questions) and return at once with an id. Send lines with terminal_input and read output with terminal_status. It is line-oriented, not a screen: full-screen programs do not work, and some programs hold their output back until they exit. It stops when the request ends.",
+                        schema({{"command", text}}, {"command"})});
+        list.push_back({"terminal_input", "Send one line to a terminal started with start_terminal. Set eof to true to close its input after the line (use an empty text to only close it).",
+                        schema({{"id", text}, {"text", text}, {"eof", {{"type", "boolean"}}}}, {"id", "text", "eof"})});
+        list.push_back({"terminal_status", "Read a terminal's state and recent output, waiting up to wait_ms for it to finish.",
+                        schema({{"id", text}, {"wait_ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", 10000}}}}, {"id", "wait_ms"})});
+        list.push_back({"terminal_stop", "Stop a terminal and return its output.", schema({{"id", text}}, {"id"})});
         try {
             std::vector<std::string> names;
             for (const auto& [name, workflow] : workflows::load(workspace)) names.push_back(name);
@@ -471,9 +481,10 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         const DiffCounts counts = diff_counts(before, after);
         return Outcome{"completed", "Edited " + *path + " with " + std::to_string(edits) + (edits == 1 ? " change" : " changes") + " (+" + std::to_string(counts.added) + " −" + std::to_string(counts.removed) + ")."};
     }
-    if (call.name == "start_job" || call.name == "run_workflow") {
+    if (call.name == "start_job" || call.name == "run_workflow" || call.name == "run_command" || call.name == "start_terminal") {
         if (read_only) throw Error("This session is read-only. Commands are not available.");
         std::string command, title, subject;
+        const bool background = call.name == "start_job" || call.name == "start_terminal";
         if (call.name == "run_workflow") {
             const std::string name = text("name").value_or("");
             const std::map<std::string, ProjectWorkflow> known = workflows::load(workspace);
@@ -482,22 +493,43 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
             command = workflows::command_line(found->second);
             title = "Run the workflow " + name + ": " + command;
             subject = "workflow " + name;
+        } else if (call.name == "run_command") {
+            const std::string program = text("program").value_or("");
+            if (program.empty() || program.find('\0') != std::string::npos) throw Error("run_command needs a program.");
+            std::vector<std::string> given;
+            if (arguments.contains("arguments")) {
+                if (!arguments["arguments"].is_array() || arguments["arguments"].size() > 64) throw Error("run_command takes up to 64 text arguments.");
+                for (const json& item : arguments["arguments"]) {
+                    if (!item.is_string() || item.get<std::string>().find('\0') != std::string::npos) throw Error("run_command takes up to 64 text arguments.");
+                    given.push_back(item.get<std::string>());
+                }
+            }
+            const std::string directory = text("directory").value_or(".");
+            bool outside = !directory.empty() && directory[0] == '/';
+            for (const std::string& part : split(directory, '/')) outside = outside || part == "..";
+            if (outside) throw Error("directory must be a folder inside the project, written relative to it.");
+            std::string exact = shell::quote(program);
+            for (const std::string& argument : given) exact += " " + shell::quote(argument);
+            command = (directory.empty() || directory == "." ? "" : "cd -- " + shell::quote(directory) + " && ") + "exec " + exact;
+            title = "Run " + program + " with " + std::to_string(given.size()) + (given.size() == 1 ? " exact argument" : " exact arguments");
+            subject = exact;
         } else {
             command = text("command").value_or("");
-            if (command.empty()) throw Error("start_job needs a command.");
-            title = "Start in the background: " + command;
+            if (command.empty()) throw Error(call.name + " needs a command.");
+            title = (call.name == "start_terminal" ? "Start a terminal for: " : "Start in the background: ") + command;
             subject = command;
         }
         if (!sandboxed) {
-            const std::string detail = "Runs in " + workspace.root() + " with your account and environment. It is not sandboxed." +
-                                       (call.name == "start_job" ? " It keeps running until this request ends, for at most 30 minutes." : " Limit: 120 seconds.");
+            const std::string detail = (call.name == "run_command" ? command + "\n" : std::string()) + "Runs in " + workspace.root() + " with your account and environment. It is not sandboxed." +
+                                       (background ? " It keeps running until this request ends, for at most 30 minutes." : " Limit: 120 seconds.");
             if (!allowed({call.name, title, detail, subject}, session)) return Outcome{"denied", "The user declined. Do not retry it; ask what they want instead."};
         }
-        if (call.name == "start_job") {
-            const std::string id = jobs_.start(command, workspace, sandboxed);
-            return Outcome{"completed", "Started job " + id + ". Read it with poll_job; it stops when this request ends."};
+        if (background) {
+            const std::string id = jobs_.start(command, workspace, sandboxed, call.name == "start_terminal");
+            return Outcome{"completed", call.name == "start_terminal" ? "Started terminal " + id + ". Send lines with terminal_input and read it with terminal_status; it stops when this request ends."
+                                                                      : "Started job " + id + ". Read it with poll_job; it stops when this request ends."};
         }
-        emit_({AgentEvent::Kind::Status, "Running the workflow", {}});
+        emit_({AgentEvent::Kind::Status, call.name == "run_command" ? "Running the command" : "Running the workflow", {}});
         const snapshot::Map before = snapshot::capture(workspace, snapshot_);
         CommandResult result;
         try {
@@ -510,14 +542,21 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         std::string output = "exit " + std::to_string(result.exit_code) + "\n" + result.output;
         if (!changed.empty()) {
             const std::vector<std::string> shown(changed.begin(), changed.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(12, changed.size())));
-            output += "\n[Files changed by this workflow: " + join(shown, ", ") + "]";
+            output += std::string("\n[Files changed by this ") + (call.name == "run_command" ? "command" : "workflow") + ": " + join(shown, ", ") + "]";
         }
         return Outcome{result.exit_code == 0 && !result.timed_out ? "completed" : "failed", output};
     }
-    if (call.name == "poll_job" || call.name == "stop_job") {
+    if (call.name == "poll_job" || call.name == "stop_job" || call.name == "terminal_status" || call.name == "terminal_stop") {
         const auto id = text("id");
-        if (!id) throw Error(call.name + " needs the job id.");
-        return Outcome{"completed", jobs_.observe(*id, call.name == "stop_job", call.name == "poll_job" ? number("wait_ms").value_or(0) : 0, cancel)};
+        if (!id) throw Error(call.name + " needs the id.");
+        const bool stop = call.name == "stop_job" || call.name == "terminal_stop";
+        return Outcome{"completed", jobs_.observe(*id, stop, stop ? 0 : number("wait_ms").value_or(0), cancel)};
+    }
+    if (call.name == "terminal_input") {
+        const auto id = text("id");
+        if (!id) throw Error("terminal_input needs the terminal's id.");
+        const bool eof = arguments.contains("eof") && ((arguments["eof"].is_boolean() && arguments["eof"].get<bool>()) || (arguments["eof"].is_string() && arguments["eof"].get<std::string>() == "true"));
+        return Outcome{"completed", jobs_.send(*id, text("text").value_or(""), eof)};
     }
     if (call.name == "read_skill") {
         const std::vector<Definition> known = skills::list(workspace);
@@ -790,7 +829,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         bool finished = false, asked = false, baseline_taken = false;
         std::optional<CommandResult> baseline;
         int repairs = 0;
-        static const std::set<std::string> changing = {"edit_file", "write_file", "apply_edits", "run_shell", "run_workflow", "start_job"};
+        static const std::set<std::string> changing = {"edit_file", "write_file", "apply_edits", "run_shell", "run_command", "run_workflow", "start_job", "start_terminal"};
         pending_question_.reset();
         // In Auto, Mason works out what it can check for itself before the work starts.
         std::optional<DerivedPlan> plan;
@@ -950,12 +989,26 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             for (size_t i = 0; i < lines.size(); i++) numbered += std::to_string(i + 1) + "\t" + lines[i] + (i + 1 < lines.size() ? "\n" : "");
             return finish("completed", numbered.size() > 60000 ? utf8_prefix(numbered, 60000) + "\n[File clipped.]" : numbered);
         }
-        if (call.name == "search_files") {
-            const auto query = text("query");
-            if (!query) throw Error("search_files needs a query.");
+        if (call.name == "search_files" || call.name == "search_next") {
+            std::string query;
+            size_t skip = 0;
+            if (call.name == "search_next") {
+                if (!last_search_) throw Error("search_next continues a search_files call, and this request has not made one.");
+                const std::string cursor = text("cursor").value_or(arguments.contains("cursor") && arguments["cursor"].is_number() ? std::to_string(arguments["cursor"].get<long>()) : "");
+                if (cursor.empty() || cursor.size() > 9 || cursor.find_first_not_of("0123456789") != std::string::npos || std::stoul(cursor) == 0) throw Error("search_next needs the cursor the search returned.");
+                query = *last_search_;
+                skip = std::stoul(cursor);
+            } else {
+                const auto given = text("query");
+                if (!given) throw Error("search_files needs a query.");
+                query = *given;
+                last_search_ = query;
+            }
+            const std::vector<SearchMatch> matches = workspace.search(query, 100, skip);
             std::string found;
-            for (const SearchMatch& match : workspace.search(*query)) found += match.path + ":" + std::to_string(match.line) + ": " + match.text + "\n";
-            return finish("completed", found.empty() ? "No matches." : found);
+            for (const SearchMatch& match : matches) found += match.path + ":" + std::to_string(match.line) + ": " + match.text + "\n";
+            if (matches.size() == 100) found += "[There may be more matches. Continue with search_next and cursor \"" + std::to_string(skip + 100) + "\".]";
+            return finish("completed", found.empty() ? (skip > 0 ? "No more matches." : "No matches.") : found);
         }
         if (call.name == "edit_file" || call.name == "write_file") {
             if (read_only) throw Error("This session is read-only. Tell the user what you would change instead.");
