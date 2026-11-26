@@ -363,7 +363,10 @@ public enum BrowserCheck {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
-        process.waitUntilExit()
+        // Not waitUntilExit: on macOS it can block without end here even after the browser has been killed, and the
+        // result does not depend on how the browser ended.
+        let gone = Date().addingTimeInterval(2)
+        while process.isRunning, Date() < gone { try? await Task.sleep(nanoseconds: 50_000_000) }
         try Task.checkCancellation()
         let dom = collected.snapshot().0
         guard let start = dom.range(of: "MASON:"), let end = dom.range(of: ":MASON", range: start.upperBound..<dom.endIndex),
