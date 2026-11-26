@@ -34,6 +34,18 @@ private:
     Gtk::ProgressBar* progress_ = nullptr;
 };
 
+/// The Settings page: saved approvals, agents and commands, MCP servers, and schedules.
+class SettingsPage : public Gtk::ScrolledWindow {
+public:
+    explicit SettingsPage(Controller& controller);
+    void refresh();
+
+private:
+    Controller& controller_;
+    Gtk::Box content_{Gtk::Orientation::VERTICAL, 24};
+    std::string shown_;  ///< A fingerprint of what is displayed, so unchanged state does not rebuild the page.
+};
+
 /// The Chat page: saved conversations, the selected one, and a message box. Chat has no tools.
 class ChatPage : public Gtk::Box {
 public:
@@ -97,6 +109,7 @@ private:
     Gtk::Stack session_stack_;
     ModelsPage models_;
     ChatPage chat_;
+    SettingsPage settings_;
     Gtk::Label* live_label_ = nullptr;  ///< Shows the model's streamed words; owned by the transcript and reset when it is rebuilt.
     bool updating_ = false;
     std::string sidebar_shown_, transcript_shown_, changes_shown_;

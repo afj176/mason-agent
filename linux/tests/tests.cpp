@@ -784,6 +784,34 @@ static void test_extra_tools() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto quiet = [](const AgentEvent&) {};
 
+    // A question stops the request until the user answers.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::ReadOnly);
+        ScriptedModel model;
+        model.replies = {call("ask_user", {{"question", "Which currency should totals use?"}}), say("Using EUR.")};
+        Agent(store, model, approve, quiet).run(session, "Add totals");
+        CHECK(session.state == "Needs your answer" && session.turns[0].answer == "Which currency should totals use?" && model.seen.size() == 1);
+        Agent(store, model, approve, quiet).run(session, "EUR");
+        CHECK(session.state == "Completed" && session.turns[1].answer == "Using EUR." && model.seen[1].back().content == "EUR");
+    }
+
+    // The repository map lists what each file defines.
+    {
+        Sandbox box;
+        box.write("src/cart.ts", "export function total(items) {}\nclass Cart {}\nconst TAX = 0.2\n");
+        box.write("src/money.rs", "pub struct Money {}\nfn format(value: Money) -> String { String::new() }\n");
+        box.write("notes.txt", "just words\n");
+        const Workspace workspace(box.project.string());
+        const std::string map = repository_map::outline(workspace);
+        CHECK(map.find("calc.py  (3 lines): add") != std::string::npos);
+        CHECK(map.find("src/cart.ts  (4 lines): total, Cart, TAX") != std::string::npos);
+        CHECK(map.find("src/money.rs  (3 lines): Money, format") != std::string::npos);
+        CHECK(map.find("notes.txt  (2 lines)") != std::string::npos && map.find("notes.txt  (2 lines):") == std::string::npos);
+        CHECK(repository_map::outline(workspace, "src").find("calc.py") == std::string::npos);
+    }
+
     // Line ranges, several edits at once, a delegated question, and Git status outside a repository.
     {
         Sandbox box;
@@ -872,7 +900,7 @@ static void test_extra_tools() {
 
         Session reading = store.create(workspace.root(), Permission::ReadOnly);
         reading.ask_only = true;
-        CHECK(names(reading) == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "read_skill"}));  // no editing, job or workflow tools
+        CHECK(names(reading) == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"}));  // no editing, job or workflow tools
         box.write("mason.workflows.json", "{\"version\": 2}");
         CHECK_THROWS(workflows::load(workspace));
     }

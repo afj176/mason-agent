@@ -80,7 +80,7 @@ std::vector<DiffLine> visible_rows(const std::vector<DiffLine>& rows) {
 
 }  // namespace
 
-MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : controller_(controller), models_(controller), chat_(controller) {
+MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : controller_(controller), models_(controller), chat_(controller), settings_(controller) {
     install_style();
 
     window_ = ADW_APPLICATION_WINDOW(adw_application_window_new(application.gobj()));
@@ -274,6 +274,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     adw_view_stack_add_titled_with_icon(stack_, GTK_WIDGET(session_stack_.gobj()), "code", "Code", "utilities-terminal-symbolic");
     adw_view_stack_add_titled_with_icon(stack_, GTK_WIDGET(chat_.gobj()), "chat", "Chat", "user-available-symbolic");
     adw_view_stack_add_titled_with_icon(stack_, GTK_WIDGET(models_.gobj()), "models", "Models", "applications-science-symbolic");
+    adw_view_stack_add_titled_with_icon(stack_, GTK_WIDGET(settings_.gobj()), "settings", "Settings", "emblem-system-symbolic");
     GtkWidget* switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher), stack_);
     adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(switcher), ADW_VIEW_SWITCHER_POLICY_WIDE);
@@ -385,6 +386,7 @@ void MainWindow::refresh() {
     refresh_changes();
     models_.refresh();
     chat_.refresh();
+    settings_.refresh();
     const Session* session = controller_.session();
     session_stack_.set_visible_child(session ? "session" : "empty");
     gtk_window_set_title(GTK_WINDOW(window_), session ? (session->title + " · Mason Agent").c_str() : "Mason Agent");

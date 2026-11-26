@@ -79,6 +79,69 @@ std::vector<Definition> list(const Workspace& workspace) {
 
 }  // namespace skills
 
+namespace repository_map {
+
+namespace {
+constexpr size_t kMaxFiles = 400, kMaxBytes = 48 * 1024;
+
+struct Family {
+    std::vector<std::string> extensions;
+    std::regex pattern;  ///< Captures the name being defined.
+};
+
+const std::vector<Family>& families() {
+    static const std::vector<Family> list = {
+        {{"py"}, std::regex(R"(^(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*))")},
+        {{"js", "jsx", "ts", "tsx", "mjs", "cjs"}, std::regex(R"(^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?|class|interface|type|enum|const)\s+([A-Za-z_$][A-Za-z0-9_$]*))")},
+        {{"swift"}, std::regex(R"(^(?:public\s+|private\s+|internal\s+|fileprivate\s+|open\s+|final\s+|static\s+)*(?:func|class|struct|enum|protocol|extension|actor)\s+([A-Za-z_][A-Za-z0-9_.]*))")},
+        {{"go"}, std::regex(R"(^(?:func\s+(?:\([^)]*\)\s*)?|type\s+)([A-Za-z_][A-Za-z0-9_]*))")},
+        {{"rs"}, std::regex(R"(^(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|impl|mod)\s+([A-Za-z_][A-Za-z0-9_]*))")},
+        {{"c", "h", "cc", "cpp", "cxx", "hpp", "hh"}, std::regex(R"(^(?:class|struct|enum(?:\s+class)?|namespace)\s+([A-Za-z_][A-Za-z0-9_]*))")},
+        {{"cs", "java", "kt"}, std::regex(R"(^\s{0,8}(?:public|internal|private|protected)\s+(?:static\s+|final\s+|sealed\s+|abstract\s+|partial\s+|data\s+)*(?:class|interface|enum|record|struct|object|fun)\s+([A-Za-z_][A-Za-z0-9_]*))")},
+        {{"rb"}, std::regex(R"(^\s{0,4}(?:def|class|module)\s+([A-Za-z_][A-Za-z0-9_.?!]*))")},
+        {{"php"}, std::regex(R"(^\s{0,4}(?:abstract\s+|final\s+)?(?:function|class|interface|trait)\s+([A-Za-z_][A-Za-z0-9_]*))")},
+    };
+    return list;
+}
+}  // namespace
+
+std::string outline(const Workspace& workspace, const std::string& under) {
+    const FileListing listing = workspace.files(under, kMaxFiles);
+    std::string text;
+    size_t shown = 0;
+    for (const std::string& path : listing.paths) {
+        std::string entry = path;
+        try {
+            const std::vector<std::string> rows = split(workspace.read(path), '\n');
+            entry += "  (" + std::to_string(rows.size()) + " lines)";
+            std::string kind = fs::path(path).extension().string();
+            if (!kind.empty()) kind = to_lower(kind.substr(1));
+            for (const Family& family : families()) {
+                if (std::find(family.extensions.begin(), family.extensions.end(), kind) == family.extensions.end()) continue;
+                std::vector<std::string> names;
+                for (const std::string& row : rows) {
+                    if (names.size() >= 40) break;
+                    const std::string line = row.size() > 300 ? row.substr(0, 300) : row;
+                    std::smatch match;
+                    if (std::regex_search(line, match, family.pattern) && match.size() > 1) names.push_back(match[1].str());
+                }
+                if (!names.empty()) entry += ": " + join(names, ", ");
+                break;
+            }
+        } catch (const std::exception&) {
+            // Not text, or too large: listed by name alone.
+        }
+        if (text.size() + entry.size() > kMaxBytes) break;
+        text += (text.empty() ? "" : "\n") + entry;
+        shown++;
+    }
+    if (text.empty()) return "No files.";
+    if (shown < listing.paths.size() || listing.truncated) text += "\n[" + std::to_string(shown) + " files shown. Map a subfolder to see more.]";
+    return text;
+}
+
+}  // namespace repository_map
+
 std::string Jobs::start(const std::string& command, const Workspace& workspace, bool sandboxed) {
     auto job = std::make_shared<Job>();
     job->command = command;

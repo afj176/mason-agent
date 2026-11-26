@@ -57,6 +57,54 @@ public enum Skills {
     }
 }
 
+/// An outline of a project for the model: each source file with its size and the top-level things it defines.
+public enum RepositoryMap {
+    static let maxFiles = 400, maxBytes = 48 * 1024
+
+    /// One pattern per family of languages; each captures the name being defined.
+    static let patterns: [(extensions: Set<String>, pattern: String)] = [
+        (["py"], #"^(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)"#),
+        (["js", "jsx", "ts", "tsx", "mjs", "cjs"], #"^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?|class|interface|type|enum|const)\s+([A-Za-z_$][A-Za-z0-9_$]*)"#),
+        (["swift"], #"^(?:public\s+|private\s+|internal\s+|fileprivate\s+|open\s+|final\s+|static\s+)*(?:func|class|struct|enum|protocol|extension|actor)\s+([A-Za-z_][A-Za-z0-9_.]*)"#),
+        (["go"], #"^(?:func\s+(?:\([^)]*\)\s*)?|type\s+)([A-Za-z_][A-Za-z0-9_]*)"#),
+        (["rs"], #"^(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?(?:fn|struct|enum|trait|impl|mod)\s+([A-Za-z_][A-Za-z0-9_]*)"#),
+        (["c", "h", "cc", "cpp", "cxx", "hpp", "hh"], #"^(?:class|struct|enum(?:\s+class)?|namespace)\s+([A-Za-z_][A-Za-z0-9_]*)"#),
+        (["cs", "java", "kt"], #"^\s{0,8}(?:public|internal|private|protected)\s+(?:static\s+|final\s+|sealed\s+|abstract\s+|partial\s+|data\s+)*(?:class|interface|enum|record|struct|object|fun)\s+([A-Za-z_][A-Za-z0-9_]*)"#),
+        (["rb"], #"^\s{0,4}(?:def|class|module)\s+([A-Za-z_][A-Za-z0-9_.?!]*)"#),
+        (["php"], #"^\s{0,4}(?:abstract\s+|final\s+)?(?:function|class|interface|trait)\s+([A-Za-z_][A-Za-z0-9_]*)"#),
+    ]
+
+    public static func outline(_ workspace: Workspace, under folder: String = ".") throws -> String {
+        let listing = try workspace.files(under: folder, limit: maxFiles)
+        var lines: [String] = []
+        var size = 0
+        var shown = 0
+        for path in listing.paths {
+            let kind = (path as NSString).pathExtension.lowercased()
+            var entry = path
+            if let text = try? workspace.read(path) {
+                let rows = text.split(separator: "\n", omittingEmptySubsequences: false)
+                entry += "  (\(rows.count) lines)"
+                if let pattern = patterns.first(where: { $0.extensions.contains(kind) })?.pattern, let expression = try? NSRegularExpression(pattern: pattern) {
+                    var names: [String] = []
+                    for row in rows where names.count < 40 {
+                        let line = String(row.prefix(300))
+                        guard let match = expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)), match.numberOfRanges > 1, let range = Range(match.range(at: 1), in: line) else { continue }
+                        names.append(String(line[range]))
+                    }
+                    if !names.isEmpty { entry += ": " + names.joined(separator: ", ") }
+                }
+            }
+            if size + entry.utf8.count > maxBytes { break }
+            lines.append(entry); size += entry.utf8.count + 1; shown += 1
+        }
+        if lines.isEmpty { return "No files." }
+        var footer = ""
+        if shown < listing.paths.count || listing.truncated { footer = "\n[\(shown) files shown. Map a subfolder to see more.]" }
+        return lines.joined(separator: "\n") + footer
+    }
+}
+
 /// Programs the agent starts and leaves running during one request: a dev server, a watcher, a long test run.
 /// Every job is stopped when the request ends.
 final class Jobs: @unchecked Sendable {
@@ -139,6 +187,10 @@ extension Agent {
             ToolSpec(name: "delegate_readonly", description: "Ask one question about 1 to 8 named files in a separate context that can only read them. Returns findings with line numbers. Use it to keep long files out of this conversation.",
                      parameters: schema(["question": text, "paths": ["type": "array", "items": text, "minItems": 1, "maxItems": 8]], required: ["question", "paths"])),
         ]
+        tools.append(ToolSpec(name: "repository_map", description: "An outline of the project: its source files with their sizes and the functions, classes and types each defines. Use it to find where things live before reading files.",
+                              parameters: schema(["path": ["type": "string", "description": "Folder to map, relative to the project. Use . for the whole project."]], required: ["path"])))
+        tools.append(ToolSpec(name: "ask_user", description: "Ask the user one question when you cannot continue without their answer (a choice only they can make, or a missing fact). The request stops and their reply continues it. Do not use it for things you can find out yourself.",
+                              parameters: schema(["question": text], required: ["question"])))
         let readOnly = session.askOnly || session.permission == .readOnly
         if !readOnly {
             tools.append(ToolSpec(name: "apply_edits", description: "Make several exact replacements in one existing file at once. Each old_text must match exactly once. Nothing is written unless every edit applies.",
@@ -175,6 +227,14 @@ extension Agent {
             let end = min(lines.count, start + count - 1)
             let shown = (start...end).map { "\($0)\t\(lines[$0 - 1].prefix(2000))" }.joined(separator: "\n")
             return (.completed, shown + "\n[lines \(start)–\(end) of \(lines.count)]")
+
+        case "repository_map":
+            return (.completed, try RepositoryMap.outline(workspace, under: text("path") ?? "."))
+
+        case "ask_user":
+            guard let question = text("question")?.trimmingCharacters(in: .whitespacesAndNewlines), !question.isEmpty, question.count <= 2000 else { throw MasonError("ask_user needs a question of up to 2,000 characters.") }
+            pendingQuestion = question
+            return (.completed, "Asked the user. The request stops here; their reply will come as the next message.")
 
         case "git_status":
             guard FileManager.default.fileExists(atPath: workspace.root.appendingPathComponent(".git").path) else { return (.completed, "This project is not a Git repository.") }

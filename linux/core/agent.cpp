@@ -137,6 +137,10 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
         {"delegate_readonly", "Ask one question about 1 to 8 named files in a separate context that can only read them. Returns findings with line numbers. Use it to keep long files out of this conversation.",
          schema({{"question", text}, {"paths", {{"type", "array"}, {"items", text}, {"minItems", 1}, {"maxItems", 8}}}}, {"question", "paths"})},
     };
+    list.push_back({"repository_map", "An outline of the project: its source files with their sizes and the functions, classes and types each defines. Use it to find where things live before reading files.",
+                    schema({{"path", {{"type", "string"}, {"description", "Folder to map, relative to the project. Use . for the whole project."}}}}, {"path"})});
+    list.push_back({"ask_user", "Ask the user one question when you cannot continue without their answer (a choice only they can make, or a missing fact). The request stops and their reply continues it. Do not use it for things you can find out yourself.",
+                    schema({{"question", text}}, {"question"})});
     const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
     if (!read_only) {
         list.push_back({"apply_edits", "Make several exact replacements in one existing file at once. Each old_text must match exactly once. Nothing is written unless every edit applies.",
@@ -206,6 +210,13 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
             shown += std::to_string(line) + "\t" + content + "\n";
         }
         return Outcome{"completed", shown + "[lines " + std::to_string(*start) + "–" + std::to_string(end) + " of " + std::to_string(lines.size()) + "]"};
+    }
+    if (call.name == "repository_map") return Outcome{"completed", repository_map::outline(workspace, text("path").value_or("."))};
+    if (call.name == "ask_user") {
+        const std::string question = trim(text("question").value_or(""));
+        if (question.empty() || utf8_length(question) > 2000) throw Error("ask_user needs a question of up to 2,000 characters.");
+        pending_question_ = question;
+        return Outcome{"completed", "Asked the user. The request stops here; their reply will come as the next message."};
     }
     if (call.name == "git_status") {
         std::error_code failure;
@@ -485,7 +496,8 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     store_.save(session);
 
     try {
-        bool finished = false;
+        bool finished = false, asked = false;
+        pending_question_.reset();
         const int window = model_.context_window();
         for (int step = 0; step < kActionLimit; step++) {
             check_cancel(cancel);
@@ -511,10 +523,18 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                 const std::string result = perform(call, *workspace, session, cancel);
                 session.messages.push_back({"tool", result, {}, call.id});
                 store_.save(session);
+                if (pending_question_) break;
+            }
+            if (pending_question_) {
+                // The model needs something only the user can say. Its question is the answer to this request.
+                session.turns.back().answer = *pending_question_;
+                pending_question_.reset();
+                asked = true;
+                break;
             }
         }
-        session.state = finished ? "Completed" : "Stopped";
-        session.detail = finished ? "" : "Stopped after " + std::to_string(kActionLimit) + " steps. Send another message to continue.";
+        session.state = asked ? "Needs your answer" : finished ? "Completed" : "Stopped";
+        session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : "Stopped after " + std::to_string(kActionLimit) + " steps. Send another message to continue.";
     } catch (const Cancelled&) {
         session.state = "Stopped";
         session.detail = "Stopped. Completed edits are kept.";

@@ -46,6 +46,7 @@ Controller::~Controller() {
     if (model_thread_.joinable()) model_thread_.join();
     if (chat_thread_.joinable()) chat_thread_.join();
     if (schedule_thread_.joinable()) schedule_thread_.join();
+    if (mcp_thread_.joinable()) mcp_thread_.join();
     server_.reset();
 }
 
@@ -531,6 +532,40 @@ void Controller::run_due_schedules(const std::string& only) {
         }
         if (!*alive) return;
         post([this] { schedules_running_ = false; });
+    });
+}
+
+void Controller::discover_mcp(const std::string& name) {
+    if (!store_ || !mcp_busy.empty()) return;
+    std::optional<McpServer> found;
+    try {
+        for (const McpServer& server : mcp::all(store_->home())) {
+            if (server.name == name) found = server;
+        }
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return;
+    }
+    if (!found) return;
+    if (mcp_thread_.joinable()) mcp_thread_.join();
+    mcp_busy = name;
+    changed.emit();
+    const std::shared_ptr<bool> alive = alive_;
+    mcp_thread_ = std::thread([this, server = *found, alive] {
+        std::vector<McpTool> offered;
+        std::string problem;
+        try {
+            offered = mcp::discover(server);
+        } catch (const std::exception& error) {
+            problem = error.what();
+        }
+        if (!*alive) return;
+        post([this, name = server.name, offered, problem] {
+            mcp_busy.clear();
+            if (problem.empty()) mcp_offered[name] = offered;
+            else notice.emit(name + " did not answer: " + problem);
+            changed.emit();
+        });
     });
 }
 

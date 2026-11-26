@@ -5,6 +5,7 @@
 #include "schedules.hpp"
 #include <condition_variable>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <thread>
 
@@ -63,6 +64,12 @@ public:
     void choose_agent(const std::string& name);
     /// Tells the user which MCP servers are registered and what each may call.
     void show_mcp_servers();
+    /// Mason's data folder, or an empty path when it could not be opened.
+    fs::path home() const { return store_ ? store_->home() : fs::path(); }
+    /// Asks a registered MCP server what tools it offers, for the Settings page. The answer lands in `mcp_offered`.
+    void discover_mcp(const std::string& name);
+    std::map<std::string, std::vector<McpTool>> mcp_offered;
+    std::string mcp_busy;  ///< The server being asked, or empty.
     /// "/schedule ..." typed in the request box: list, add, switch or remove a schedule, or run one now.
     void schedule_command(const std::string& arguments);
     /// Runs every schedule that is due (or the one named), one after another, each as its own unattended session.
@@ -121,7 +128,7 @@ private:
     std::unique_ptr<SessionStore> store_;
     std::unique_ptr<ChatStore> chat_store_;
     std::vector<ChatConversation> chats_;
-    std::thread chat_thread_, schedule_thread_;
+    std::thread chat_thread_, schedule_thread_, mcp_thread_;
     bool schedules_running_ = false;
     CancelToken schedule_cancel_;
     sigc::connection schedule_timer_;

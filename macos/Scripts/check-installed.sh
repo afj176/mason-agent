@@ -91,6 +91,10 @@ echo "--- app, a fuller session for the screenshot ---"
   osascript -e 'tell application "System Events" to set frontmost of (first process whose unix id is '"$DEMO_PID"') to true'
   sleep 2
   screencapture -x "$SHOTS/5-demo.png"
+  # The Settings window, on its MCP Servers pane.
+  osascript -e 'tell application "System Events" to keystroke "," using command down'
+  sleep 2
+  screencapture -x "$SHOTS/6-settings.png"
   kill $DEMO_PID
   grep -E "Completed|Failed" "$WORK/demo.txt" | tail -1
 ) || echo "The demo screenshot could not be made."
