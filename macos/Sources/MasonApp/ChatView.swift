@@ -114,7 +114,7 @@ struct ChatView: View {
             TextEditor(text: $model.chatDraft)
                 .font(.body)
                 .focused($focused)
-                .frame(minHeight: 44, maxHeight: 140)
+                .frame(height: 62)
                 .scrollContentBackground(.hidden)
                 .overlay(alignment: .topLeading) {
                     if model.chatDraft.isEmpty {

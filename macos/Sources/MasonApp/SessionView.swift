@@ -107,7 +107,7 @@ struct TurnView: View {
                             Text(summary).font(.callout).foregroundStyle(Brand.muted)
                             if !turn.changes.isEmpty {
                                 Button("\(turn.changes.count) changed file\(turn.changes.count == 1 ? "" : "s")") { model.showChanges = true }
-                                    .buttonStyle(.link).fontWeight(.semibold)
+                                    .buttonStyle(.plain).fontWeight(.semibold).foregroundStyle(Brand.accent)
                                     .help("Show what changed")
                             }
                             if turn.undone { Text("Undone").font(.caption).foregroundStyle(.orange) }
@@ -262,7 +262,7 @@ struct Composer: View {
             TextEditor(text: $model.draft)
                 .font(.body)
                 .focused($focused)
-                .frame(minHeight: 44, maxHeight: 140)
+                .frame(height: 62)
                 .scrollContentBackground(.hidden)
                 .overlay(alignment: .topLeading) {
                     if model.draft.isEmpty {
