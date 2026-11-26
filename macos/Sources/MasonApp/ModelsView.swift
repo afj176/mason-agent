@@ -6,8 +6,18 @@ struct ModelsView: View {
     @EnvironmentObject var model: AppModel
     @State private var graphics: [GpuAdapter] = []
     @State private var graphicsNote: String?
+    /// The model whose Ladder panel is open, in place of the page.
+    @State private var opened: LocalModel?
 
     var body: some View {
+        if let opened {
+            ModelPanel(item: opened, back: { self.opened = nil })
+        } else {
+            page
+        }
+    }
+
+    var page: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 if let busy = model.modelBusy {
@@ -116,13 +126,21 @@ struct ModelsView: View {
             }
             ForEach(model.localModels) { item in
                 HStack(alignment: .firstTextBaseline) {
+                    Button { opened = item } label: {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.name).fontWeight(item.startable ? .medium : .regular)
                         Text(item.verdict).font(.caption).foregroundStyle(.secondary)
                         Text("\(item.size) · \(item.source)" + (item.startable && !MemoryFit.fits(weights: item.bytes) ? " · larger than the memory available" : ""))
                             .font(.caption).foregroundStyle(item.startable && !MemoryFit.fits(weights: item.bytes) ? Color.orange : Color.secondary)
                     }
+                    .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Context sizes, memory fit and actions for this model")
                     Spacer()
+                    Button { opened = item } label: { Image(systemName: "chevron.right") }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .accessibilityLabel("Show details for \(item.name)")
                     if model.server?.model.path == item.path { Button("Stop") { model.stopServer() } }
                     else if item.startable { Button("Start") { model.start(item) }.disabled(model.modelBusy != nil) }
                 }

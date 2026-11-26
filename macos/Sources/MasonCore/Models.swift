@@ -41,6 +41,62 @@ public struct LocalModel: Equatable, Identifiable {
     }
     public var startable: Bool { role == .coding || role == .vision }
     public var size: String { ByteText.size(bytes) }
+
+    /// What the model is for, in a few words: the start of `verdict`.
+    public var roleLabel: String {
+        switch role {
+        case .coding: return "Coding agent"
+        case .vision: return "Coding agent · vision"
+        case .projector: return "Vision companion"
+        case .embeddings: return "Code search · embeddings"
+        case .reranker: return "Code search · reranker"
+        }
+    }
+    /// The Hugging Face repository the files came from, when that is known: a Mason download (Models/org--name) or
+    /// the Hugging Face cache (models--org--name).
+    public var repository: String? {
+        let parts = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        if let cache = parts.last(where: { $0.hasPrefix("models--") }) {
+            let id = cache.dropFirst(8).replacingOccurrences(of: "--", with: "/")
+            return id.split(separator: "/").count == 2 ? id : nil
+        }
+        let downloads = ModelLibrary.downloadFolder.standardizedFileURL.pathComponents
+        if parts.count > downloads.count + 1, Array(parts.prefix(downloads.count)) == downloads {
+            let folder = parts[downloads.count], id = folder.replacingOccurrences(of: "--", with: "/")
+            return folder.contains("--") && id.split(separator: "/").count == 2 ? id : nil
+        }
+        return nil
+    }
+    /// The quantisation in the file name, such as Q4_K_M; empty when the name says none.
+    public var quantization: String { transformers ? "" : ModelMemory.quantization(name) }
+    public var format: String { transformers ? "Transformers" : "GGUF" }
+
+    /// What goes to the Trash when the model is deleted: every part of a split GGUF, and the downloaded data behind
+    /// each link in the Hugging Face cache, so the space is really freed.
+    public var trashItems: [URL] {
+        var items: [URL] = []
+        func add(_ url: URL) { if !items.contains(where: { $0.path == url.path }) { items.append(url) } }
+        let root = URL(fileURLWithPath: path)
+        if transformers {
+            add(root)
+            for file in (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] {
+                let real = file.resolvingSymlinksInPath()
+                if real.path != file.path, !real.path.hasPrefix(root.path + "/") { add(real) }
+            }
+            return items
+        }
+        for part in ModelMemory.parts(of: root) {
+            add(part)
+            let real = part.resolvingSymlinksInPath()
+            if real.path != part.path { add(real) }
+        }
+        return items
+    }
+}
+
+/// The steps of starting a model, as the app and command line show them.
+public enum ModelStartStage: String, CaseIterable {
+    case inspect, load, check, ready
 }
 
 public enum ByteText {
@@ -79,9 +135,11 @@ public enum ModelLibrary {
                 // The Hugging Face cache stores files as links to blobs; follow them to the real size and identity.
                 let real = file.resolvingSymlinksInPath()
                 guard let size = (try? FileManager.default.attributesOfItem(atPath: real.path))?[.size] as? NSNumber, size.int64Value > 1_000_000 else { continue }
-                // Parts 2…n of a split model belong to part 1.
-                if file.lastPathComponent.range(of: #"-0000[2-9]-of-\d{5}\.gguf$"#, options: .regularExpression) != nil { continue }
-                found[real.path] = LocalModel(name: file.deletingPathExtension().lastPathComponent, path: file.path, bytes: size.int64Value, source: name)
+                // Parts 2…n of a split model belong to part 1, which is listed with the size of all its parts.
+                if file.lastPathComponent.range(of: #"-(?!00001)\d{5}-of-\d{5}\.gguf$"#, options: .regularExpression) != nil { continue }
+                let parts = ModelMemory.parts(of: file)
+                let bytes = parts.count > 1 ? parts.reduce(Int64(0)) { $0 + ModelMemory.size($1) } : size.int64Value
+                found[real.path] = LocalModel(name: file.deletingPathExtension().lastPathComponent, path: file.path, bytes: bytes, source: name)
                 if found.count >= limit { break }
             }
             // Folders of Transformers weights: a config, a tokenizer and safetensors files.
@@ -112,6 +170,23 @@ public enum MemoryFit {
 /// Finds or installs llama.cpp's server, which runs GGUF models.
 public enum LlamaRuntime {
     public static var managedFolder: URL { DataHome.url.appendingPathComponent("runtimes/llama.cpp") }
+
+    /// The llama.cpp build of a runtime, such as "b12716": the release folder Mason installed it in, else what it reports.
+    public static func build(at path: String) -> String? {
+        let managed = managedFolder.standardizedFileURL.pathComponents, parts = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        if parts.count > managed.count, Array(parts.prefix(managed.count)) == managed { return parts[managed.count] }
+        let process = Process(), pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = ["--version"]
+        process.standardOutput = pipe; process.standardError = pipe; process.standardInput = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline { usleep(50_000) }
+        if process.isRunning { process.terminate(); return nil }
+        let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        guard let range = text.range(of: #"version: \d+"#, options: .regularExpression) else { return nil }
+        return "b" + text[range].dropFirst(9)
+    }
 
     public static func find() -> String? {
         var candidates = ["/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server", "/usr/bin/llama-server"]
@@ -209,9 +284,17 @@ public final class ModelServer {
     }
 
     /// Starts the model and waits until the server lists it, up to five minutes. Progress carries the last log line while it loads.
-    public static func start(_ model: LocalModel, runtime: String, context: Int? = nil, cpuOnly: Bool = false, progress: @escaping (String) -> Void) async throws -> ModelServer {
+    /// `stage` reports inspect (choosing a port and files), load (the runtime is reading the weights), check (loaded,
+    /// waiting for the server to list the model) and ready.
+    public static func start(_ model: LocalModel, runtime: String, context: Int? = nil, cpuOnly: Bool = false, stage: @escaping (ModelStartStage) -> Void = { _ in },
+                             progress: @escaping (String) -> Void) async throws -> ModelServer {
         guard model.startable else { throw MasonError("\(model.name) is not a chat model: \(model.verdict).") }
-        if model.transformers { return try await startTransformers(model, context: context, cpuOnly: cpuOnly, progress: progress) }
+        stage(.inspect)
+        if model.transformers {
+            let server = try await startTransformers(model, context: context, cpuOnly: cpuOnly, stage: stage, progress: progress)
+            stage(.ready)
+            return server
+        }
         guard let port = await freePort() else { throw MasonError("Ports 18310–18329 on this computer are all in use.") }
         let tokens = context ?? MemoryFit.context(weights: model.bytes)
         let alias = "mason-" + UUID().uuidString.prefix(8).lowercased()
@@ -235,12 +318,16 @@ public final class ModelServer {
         let output = try FileHandle(forWritingTo: log)
         process.standardOutput = output; process.standardError = output; process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { throw MasonError("llama-server could not start: \(error.localizedDescription)") }
+        stage(.load)
         let server = ModelServer(model: model, endpoint: ModelEndpoint(url: "http://127.0.0.1:\(port)/", model: alias), context: tokens, log: log, runFile: runFile, process: process)
         let deadline = Date().addingTimeInterval(300)
+        var loaded = false
         while Date() < deadline {
             if Task.isCancelled { server.stop(); throw CancellationError() }
             guard process.isRunning else { throw MasonError("llama-server stopped while loading \(model.name). " + lastLines(of: log)) }
-            if let listed = await OpenAIClient.models(at: server.endpoint.url, timeout: 1), listed.contains(alias) { return server }
+            if let listed = await OpenAIClient.models(at: server.endpoint.url, timeout: 1), listed.contains(alias) { stage(.ready); return server }
+            // llama-server says "model loaded" once the weights are in memory; after that it only has to answer.
+            if !loaded, lastLines(of: log, count: 40).contains("model loaded") { loaded = true; stage(.check) }
             progress(lastLines(of: log, count: 1))
             try? await Task.sleep(nanoseconds: 700_000_000)
         }
@@ -250,7 +337,7 @@ public final class ModelServer {
 
     /// Serves a folder of Transformers weights with the Python program that ships with Mason. Loading large weights can
     /// take minutes, so this waits up to fifteen.
-    static func startTransformers(_ model: LocalModel, context: Int?, cpuOnly: Bool, progress: @escaping (String) -> Void) async throws -> ModelServer {
+    static func startTransformers(_ model: LocalModel, context: Int?, cpuOnly: Bool, stage: @escaping (ModelStartStage) -> Void, progress: @escaping (String) -> Void) async throws -> ModelServer {
         guard let script = TransformersRuntime.scriptFolder() else { throw MasonError("The Transformers server that ships with Mason was not found.") }
         guard let python = TransformersRuntime.python() else { throw MasonError("No python3 was found. Install Python with PyTorch and Transformers, or choose one with /models python PATH.") }
         guard let port = await freePort() else { throw MasonError("Ports 18310–18329 on this computer are all in use.") }
@@ -267,6 +354,7 @@ public final class ModelServer {
         let output = try FileHandle(forWritingTo: log)
         process.standardOutput = output; process.standardError = output; process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { throw MasonError("Python could not start: \(error.localizedDescription)") }
+        stage(.load)
         let endpoint = ModelEndpoint(url: "http://127.0.0.1:\(port)/", model: alias)
         let deadline = Date().addingTimeInterval(900)
         while Date() < deadline {
@@ -316,6 +404,8 @@ public struct Preferences: Codable {
     public var lastEndpoint: ModelEndpoint?
     public var lastModelPath: String?
     public var lastContext: Int?
+    /// True when the model used last ran on the CPU only.
+    public var lastCpuOnly: Bool?
     /// The Python that serves Transformers models, when the user chose one.
     public var python: String?
 
