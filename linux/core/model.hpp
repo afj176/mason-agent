@@ -1,5 +1,7 @@
 // Talking to a local model server, and the small HTTP layer under it.
 #pragma once
+#include <map>
+
 #include "session.hpp"
 
 namespace mason {
@@ -12,6 +14,10 @@ struct HttpResponse {
 };
 /// A small GET. Throws Error when nothing answers.
 HttpResponse http_get(const std::string& url, const std::vector<std::string>& headers = {}, double timeout_seconds = 30, const CancelToken& cancel = nullptr);
+/// One request with a body, reading the whole reply. Redirects are not followed. `reply_headers`, when given, receives
+/// the reply's header names in lower case. A reply larger than `max_bytes` is an error.
+HttpResponse http_send(const std::string& method, const std::string& url, const std::vector<std::string>& headers, const std::string& body,
+                       double timeout_seconds, size_t max_bytes, std::map<std::string, std::string>* reply_headers = nullptr, const CancelToken& cancel = nullptr);
 /// POSTs a body and hands each line of the reply to `on_line` as it arrives. Returns the status; a non-200 body goes to `error_body`.
 long http_post_lines(const std::string& url, const std::vector<std::string>& headers, const std::string& body,
                      const std::function<void(const std::string&)>& on_line, const CancelToken& cancel, std::string* error_body);

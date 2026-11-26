@@ -53,6 +53,8 @@ public:
     void compact();
     /// "" lists the project's custom agents, a name uses one, "none" goes back to the default.
     void choose_agent(const std::string& name);
+    /// Tells the user which MCP servers are registered and what each may call.
+    void show_mcp_servers();
 
     // ---- models ----
     std::optional<ModelEndpoint> endpoint;

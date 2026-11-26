@@ -433,6 +433,7 @@ private:
         if (name == "/compact") { compact(); return true; }
         if (name == "/agent" || name == "/agents") { agent(rest); return true; }
         if (name == "/commands") { commands(); return true; }
+        if (name == "/mcp") { mcp_command(rest); return true; }
         if (name == "/model") { choose_model(rest); return true; }
         if (name == "/models") { models(rest); return true; }
         // A custom command from the project or the data folder runs as a request.
@@ -452,6 +453,10 @@ private:
             {"/compact", "Replace the conversation so far with a summary to free context"},
             {"/agent [name|none]", "List your custom agents, or use one for this session"},
             {"/commands", "List your custom slash commands"},
+            {"/mcp", "List your MCP servers and the tools Mason may call"},
+            {"/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"},
+            {"/mcp allow NAME TOOL…|all", "Choose which of a server's tools Mason may call"},
+            {"/mcp tools NAME · on|off|remove NAME", "See what a server offers; switch it on or off; remove it"},
             {"/rules [revoke NUMBER]", "Saved always-allow rules for this project"},
             {"/model [number]", "List running model servers, or switch to one"},
             {"/models", "List the models on this computer and what each is for"},
@@ -519,6 +524,99 @@ private:
         term::line();
         for (const Definition& item : found) term::line("  " + paint(term::accent, term::pad("/" + item.name, 22)) + " " + paint(term::dim, term::clip(item.description, std::max(20, term::width() - 30))));
         term::line(paint(term::dim, "  Run one by typing it, with any arguments after the name."));
+    }
+
+    /// MCP servers are registered in Mason's data folder, for every project, and can only do what is allowed here.
+    void mcp_command(const std::string& rest) {
+        const std::vector<std::string> words = split(rest, ' ', false);
+        std::vector<McpServer> servers = mcp::all(store_.home());
+        auto index = [&](size_t word) -> size_t {
+            const std::string wanted = word < words.size() ? to_lower(words[word]) : "";
+            for (size_t i = 0; i < servers.size(); i++) {
+                if (to_lower(servers[i].name) == wanted) return i;
+            }
+            throw Error("No MCP server named " + wanted + ". /mcp lists them.");
+        };
+        auto show_offered = [&](const McpServer& server) {
+            try {
+                const std::vector<McpTool> offered = mcp::discover(server);
+                if (offered.empty()) { term::line(paint(term::dim, "  " + server.name + " offers no tools.")); return; }
+                for (const McpTool& tool : offered) {
+                    const bool allowed = server.allows_tool(tool.name);
+                    term::line("    " + (allowed ? paint(term::green, "✓") : paint(term::dim, "·")) + " " + (allowed ? paint(term::bold, term::pad(tool.name, 22)) : term::pad(tool.name, 22)) + " " +
+                               paint(term::dim, term::clip(tool.description, std::max(20, term::width() - 34))));
+                }
+                term::line(paint(term::dim, "  ✓ marks what Mason may call. Change it with /mcp allow " + server.name + " TOOL… or /mcp allow " + server.name + " all."));
+            } catch (const std::exception& error) {
+                term::line(paint(term::yellow, "  " + server.name + " did not answer: ") + error.what());
+            }
+        };
+        const std::string verb = words.empty() ? "list" : to_lower(words[0]);
+        if (verb == "list") {
+            if (servers.empty()) {
+                term::line(paint(term::dim, "  No MCP servers. Add one with /mcp add NAME http://127.0.0.1:PORT/mcp, or /mcp add NAME /full/path/to/program [arguments]."));
+                return;
+            }
+            term::line();
+            for (const McpServer& server : servers) {
+                term::line("  " + paint(server.enabled ? term::accent : term::dim, term::pad(server.name, 16)) + " " + term::clip(server.transport(), std::max(20, term::width() - 44)) + (server.enabled ? "" : paint(term::dim, "  off")));
+                term::line(paint(term::dim, "    " + (server.tools.empty() ? std::string("no tools allowed yet") : "may call: " + join(server.tools, ", "))));
+            }
+            term::line(paint(term::dim, "  Every call asks first unless a saved rule allows it. /mcp tools NAME shows what a server offers."));
+        } else if (verb == "add") {
+            if (words.size() < 3) throw Error("Use /mcp add NAME http://127.0.0.1:PORT/mcp, or /mcp add NAME /full/path/to/program [arguments].");
+            for (const McpServer& existing : servers) {
+                if (to_lower(existing.name) == to_lower(words[1])) throw Error("An MCP server named " + words[1] + " is already registered.");
+            }
+            McpServer server;
+            server.name = words[1];
+            if (words[2].front() == '/') {
+                server.executable = words[2];
+                server.arguments.assign(words.begin() + 3, words.end());
+            } else {
+                server.endpoint = words[2];
+            }
+            mcp::validate(server);
+            servers.push_back(server);
+            mcp::save(servers, store_.home());
+            term::line("  Registered " + paint(term::bold, server.name) + paint(term::dim, "  ·  " + server.transport() + "  ·  no tools allowed yet"));
+            show_offered(server);
+        } else if (verb == "tools") {
+            show_offered(servers[index(1)]);
+        } else if (verb == "allow") {
+            McpServer& server = servers[index(1)];
+            const std::vector<std::string> wanted(words.begin() + 2, words.end());
+            if (wanted.empty()) throw Error("Name the tools to allow, or use all (or none).");
+            if (wanted == std::vector<std::string>{"none"}) {
+                server.tools.clear();
+            } else {
+                std::vector<std::string> offered;
+                for (const McpTool& tool : mcp::discover(server)) offered.push_back(tool.name);
+                if (wanted == std::vector<std::string>{"all"}) {
+                    server.tools = offered;
+                } else {
+                    for (const std::string& tool : wanted) {
+                        if (std::find(offered.begin(), offered.end(), tool) == offered.end()) throw Error(server.name + " does not offer a tool named " + tool + ".");
+                    }
+                    server.tools = wanted;
+                }
+            }
+            mcp::save(servers, store_.home());
+            term::line("  " + server.name + " may call: " + (server.tools.empty() ? paint(term::dim, "nothing") : join(server.tools, ", ")));
+        } else if (verb == "on" || verb == "off") {
+            McpServer& server = servers[index(1)];
+            server.enabled = verb == "on";
+            mcp::save(servers, store_.home());
+            term::line(paint(term::dim, "  " + server.name + " is " + verb + "."));
+        } else if (verb == "remove") {
+            const size_t at = index(1);
+            const std::string removed = servers[at].name;
+            servers.erase(servers.begin() + static_cast<std::ptrdiff_t>(at));
+            mcp::save(servers, store_.home());
+            term::line(paint(term::dim, "  Removed " + removed + "."));
+        } else {
+            throw Error("Use /mcp, /mcp add, /mcp tools, /mcp allow, /mcp on, /mcp off or /mcp remove.");
+        }
     }
 
     void status() {

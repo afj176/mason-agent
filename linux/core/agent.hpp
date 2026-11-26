@@ -1,6 +1,7 @@
 // The agent loop: ask the model, run the tool it calls, hand the result back, until it answers in text.
 #pragma once
 #include "harness.hpp"
+#include "mcp.hpp"
 #include "model.hpp"
 #include "shell.hpp"
 
@@ -48,6 +49,8 @@ public:
     Agent(SessionStore& store, ChatModel& model, Approve approve, Emit emit);
 
     static const std::vector<ToolSpec>& tools();
+    /// Offered only when the user has registered an MCP server, so sessions without one keep a short tool list.
+    static const std::vector<ToolSpec>& mcp_tools();
     /// Runs one request to completion. The session is saved after every step, so an interruption loses nothing that already happened.
     void run(Session& session, const std::string& request, const CancelToken& cancel = nullptr);
 
@@ -59,6 +62,8 @@ public:
 
 private:
     std::string perform(const ToolCall& call, const Workspace& workspace, Session& session, const CancelToken& cancel);
+    /// The tools for this request: the built-in ones, plus the MCP tools when a server is registered.
+    std::vector<ToolSpec> offered_tools() const;
     bool allowed(const ApprovalRequest& request, Session& session);
     /// Records what a command created, changed or deleted, and returns the paths.
     std::vector<std::string> record_command_changes(const snapshot::Map& before, const Workspace& workspace, Session& session);

@@ -420,6 +420,7 @@ final class CLI {
             Term.line()
             for command in commands { Term.line("  \(Term.paint(Term.accent, ("/" + command.name).padding(toLength: 22, withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, Term.clip(command.description, max(20, Term.width - 30))))") }
             Term.line(Term.paint(Term.dim, "  Run one by typing it, with any arguments after the name."))
+        case "/mcp": try await mcp(rest)
         case "/model": try await chooseModel(rest)
         case "/models": try await models(rest)
         default:
@@ -441,6 +442,10 @@ final class CLI {
             ("/compact", "Replace the conversation so far with a summary to free context"),
             ("/agent [name|none]", "List your custom agents, or use one for this session"),
             ("/commands", "List your custom slash commands"),
+            ("/mcp", "List your MCP servers and the tools Mason may call"),
+            ("/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"),
+            ("/mcp allow NAME TOOL…|all", "Choose which of a server's tools Mason may call"),
+            ("/mcp tools NAME · on|off|remove NAME", "See what a server offers; switch it on or off; remove it"),
             ("/rules [revoke NUMBER]", "Saved always-allow rules for this project"),
             ("/model [number]", "List running model servers, or switch to one"),
             ("/models", "List the models on this computer and what each is for"),
@@ -457,6 +462,74 @@ final class CLI {
         for (command, text) in rows { Term.line("  \(Term.paint(Term.accent, command.padding(toLength: 36, withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, text))") }
         Term.line()
         Term.line(Term.paint(Term.dim, "  While Mason works: Esc or Ctrl+C stops the run. End a line with \\ to continue on the next line."))
+    }
+
+    /// MCP servers are registered in Mason's data folder, for every project, and can only do what is allowed here.
+    func mcp(_ rest: String) async throws {
+        let words = rest.split(separator: " ").map(String.init)
+        var servers = try Mcp.all(home: home)
+        func index(_ name: String?) throws -> Int {
+            guard let name, let found = servers.firstIndex(where: { $0.name.lowercased() == name.lowercased() }) else { throw MasonError("No MCP server named \(name ?? "").  /mcp lists them.") }
+            return found
+        }
+        func showOffered(_ server: McpServer) async {
+            do {
+                let offered = try await Mcp.discover(server)
+                if offered.isEmpty { Term.line(Term.paint(Term.dim, "  \(server.name) offers no tools.")); return }
+                for tool in offered {
+                    let allowed = server.tools.contains(tool.name)
+                    Term.line("    \(allowed ? Term.paint(Term.green, "✓") : Term.paint(Term.dim, "·")) \(Term.paint(allowed ? Term.bold : Term.reset, tool.name.padding(toLength: 22, withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, Term.clip(tool.description, max(20, Term.width - 34))))")
+                }
+                Term.line(Term.paint(Term.dim, "  ✓ marks what Mason may call. Change it with /mcp allow \(server.name) TOOL… or /mcp allow \(server.name) all."))
+            } catch { Term.line(Term.paint(Term.yellow, "  \(server.name) did not answer: ") + ((error as? MasonError)?.description ?? error.localizedDescription)) }
+        }
+        switch words.first?.lowercased() {
+        case nil, "list":
+            if servers.isEmpty {
+                Term.line(Term.paint(Term.dim, "  No MCP servers. Add one with /mcp add NAME http://127.0.0.1:PORT/mcp, or /mcp add NAME /full/path/to/program [arguments]."))
+                return
+            }
+            Term.line()
+            for server in servers {
+                Term.line("  \(Term.paint(server.enabled ? Term.accent : Term.dim, server.name.padding(toLength: 16, withPad: " ", startingAt: 0))) \(Term.clip(server.transport, max(20, Term.width - 44)))" + Term.paint(Term.dim, server.enabled ? "" : "  off"))
+                Term.line(Term.paint(Term.dim, "    " + (server.tools.isEmpty ? "no tools allowed yet" : "may call: " + server.tools.joined(separator: ", "))))
+            }
+            Term.line(Term.paint(Term.dim, "  Every call asks first unless a saved rule allows it. /mcp tools NAME shows what a server offers."))
+        case "add":
+            guard words.count >= 3 else { throw MasonError("Use /mcp add NAME http://127.0.0.1:PORT/mcp, or /mcp add NAME /full/path/to/program [arguments].") }
+            guard !servers.contains(where: { $0.name.lowercased() == words[1].lowercased() }) else { throw MasonError("An MCP server named \(words[1]) is already registered.") }
+            let server = words[2].hasPrefix("/") ? McpServer(name: words[1], executable: words[2], arguments: Array(words.dropFirst(3))) : McpServer(name: words[1], endpoint: words[2])
+            try Mcp.validate(server)
+            servers.append(server); try Mcp.save(servers, home: home)
+            Term.line("  Registered " + Term.paint(Term.bold, server.name) + Term.paint(Term.dim, "  ·  \(server.transport)  ·  no tools allowed yet"))
+            await showOffered(server)
+        case "tools":
+            await showOffered(servers[try index(words.dropFirst().first)])
+        case "allow":
+            let at = try index(words.dropFirst().first)
+            let wanted = Array(words.dropFirst(2))
+            guard !wanted.isEmpty else { throw MasonError("Name the tools to allow, or use all (or none).") }
+            if wanted == ["all"] { servers[at].tools = try await Mcp.discover(servers[at]).map(\.name) }
+            else if wanted == ["none"] { servers[at].tools = [] }
+            else {
+                let offered = Set(try await Mcp.discover(servers[at]).map(\.name))
+                if let unknown = wanted.first(where: { !offered.contains($0) }) { throw MasonError("\(servers[at].name) does not offer a tool named \(unknown).") }
+                servers[at].tools = wanted
+            }
+            try Mcp.save(servers, home: home)
+            Term.line("  \(servers[at].name) may call: " + (servers[at].tools.isEmpty ? Term.paint(Term.dim, "nothing") : servers[at].tools.joined(separator: ", ")))
+        case "on", "off":
+            let at = try index(words.dropFirst().first)
+            servers[at].enabled = words[0].lowercased() == "on"
+            try Mcp.save(servers, home: home)
+            Term.line(Term.paint(Term.dim, "  \(servers[at].name) is \(servers[at].enabled ? "on" : "off")."))
+        case "remove":
+            let removed = servers.remove(at: try index(words.dropFirst().first))
+            try Mcp.save(servers, home: home)
+            Term.line(Term.paint(Term.dim, "  Removed \(removed.name)."))
+        default:
+            throw MasonError("Use /mcp, /mcp add, /mcp tools, /mcp allow, /mcp on, /mcp off or /mcp remove.")
+        }
     }
 
     func status() {

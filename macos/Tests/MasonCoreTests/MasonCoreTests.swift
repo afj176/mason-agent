@@ -273,6 +273,84 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(session.turns.last?.request, "/review calc.py bugs", "the session shows what was typed")
     }
 
+    // MARK: MCP servers
+
+    static let python: String? = ["/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    static let testServer = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("mcp-test-server.py").path
+
+    func testMcpRegistrationsAreValidatedAndReadLikeTheWindowsFile() throws {
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try #"[{"Name":"docs","Endpoint":"http://127.0.0.1:8088/mcp","Tools":["search_docs"]},{"name":"off","endpoint":"http://127.0.0.1:9/mcp","tools":[],"enabled":false}]"#
+            .write(to: home.appendingPathComponent("mcp-servers.json"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(try Mcp.all(home: home).map(\.name), ["docs", "off"])
+        XCTAssertEqual(Mcp.enabled(home: home), [McpServer(name: "docs", endpoint: "http://127.0.0.1:8088/mcp", tools: ["search_docs"])])
+        for bad in ["http://example.com/mcp", "https://127.0.0.1/mcp", "http://127.0.0.1.evil.example/mcp", "http://user@127.0.0.1/mcp", "http://localhost:1/mcp"] {
+            XCTAssertThrowsError(try Mcp.validate(McpServer(name: "x", endpoint: bad)), bad)
+        }
+        XCTAssertThrowsError(try Mcp.validate(McpServer(name: "x", executable: "relative/program")))
+        XCTAssertThrowsError(try Mcp.validate(McpServer(name: "a/b", endpoint: "http://127.0.0.1:1/mcp")))
+        XCTAssertThrowsError(try Mcp.save([McpServer(name: "same", endpoint: "http://127.0.0.1:1/mcp"), McpServer(name: "same", endpoint: "http://127.0.0.1:2/mcp")], home: home))
+        try Mcp.save([McpServer(name: "docs", endpoint: "http://127.0.0.1:8088/mcp", tools: ["a"])], home: home)
+        XCTAssertTrue(try String(contentsOf: home.appendingPathComponent("mcp-servers.json"), encoding: .utf8).contains("\"Name\""), "written with the keys Windows uses")
+    }
+
+    func testAnMcpProgramIsListedCalledAndHeldToItsAllowlist() async throws {
+        let python = try XCTUnwrap(Self.python, "python3 is needed for the MCP test server")
+        var server = McpServer(name: "test", tools: ["echo", "fail"], executable: python, arguments: [Self.testServer, "stdio"], resources: ["note://hello"])
+        let offered = try await Mcp.discover(server)
+        XCTAssertEqual(offered.map(\.name), ["echo", "fail"])
+        let echoed = try await Mcp.request(server, .call(tool: "echo", arguments: ["text": "hi"]))
+        XCTAssertTrue(echoed.contains("echo: hi"))
+        let note = try await Mcp.request(server, .read(uri: "note://hello"))
+        XCTAssertTrue(note.contains("hello from the test server"))
+        do { _ = try await Mcp.request(server, .call(tool: "fail", arguments: [:])); XCTFail("a tool failure must be an error") } catch { XCTAssertTrue("\(error)".contains("it broke")) }
+        server.tools = ["fail"]
+        let visible = try await Mcp.request(server, .tools(all: false))
+        XCTAssertFalse(visible.contains("\"echo\""), "the agent only sees allowed tools")
+        do { _ = try await Mcp.request(server, .call(tool: "echo", arguments: ["text": "hi"])); XCTFail("a tool outside the allowlist must be refused") } catch {}
+        do { _ = try await Mcp.request(server, .read(uri: "note://other")); XCTFail("a resource outside the allowlist must be refused") } catch {}
+
+        // A program that exits without answering is an error straight away, not a wait.
+        let silent = McpServer(name: "silent", executable: python, arguments: ["-c", "pass"])
+        let started = Date()
+        do { _ = try await Mcp.discover(silent); XCTFail("a server that says nothing must be an error") } catch { XCTAssertTrue("\(error)".contains("stopped before answering"), "\(error)") }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 10)
+    }
+
+    func testAnMcpServerOverHttpAnswersInJsonAndAsAnEventStream() async throws {
+        let python = try XCTUnwrap(Self.python, "python3 is needed for the MCP test server")
+        let port = 18600 + Int.random(in: 0..<300)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: python); process.arguments = [Self.testServer, "http", String(port)]
+        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer { process.terminate() }
+        let server = McpServer(name: "web", endpoint: "http://127.0.0.1:\(port)/mcp", tools: ["echo"])
+        var offered: [McpTool] = []
+        for _ in 0..<40 { if let found = try? await Mcp.discover(server) { offered = found; break }; try await Task.sleep(nanoseconds: 150_000_000) }
+        XCTAssertEqual(offered.map(\.name), ["echo", "fail"], "the session id from initialize is sent with later requests")
+        let echoed = try await Mcp.request(server, .call(tool: "echo", arguments: ["text": "over http"]))
+        XCTAssertTrue(echoed.contains("echo: over http"), "a reply sent as an event stream is read")
+    }
+
+    func testTheAgentCallsAnMcpToolOnlyAfterTheUserAllowsIt() async throws {
+        let python = try XCTUnwrap(Self.python, "python3 is needed for the MCP test server")
+        var (store, session) = try session(.auto)
+        try Mcp.save([McpServer(name: "test", tools: ["echo"], executable: python, arguments: [Self.testServer, "stdio"])], home: home)
+        var asked: [ApprovalRequest] = []
+        let model = ScriptedModel([call("mcp_call", ["server": "test", "tool": "echo", "arguments_json": "{\"text\":\"from the agent\"}"]), ModelReply(text: "Called it.")])
+        await Agent(store: store, model: model, approve: { asked.append($0); return true }, emit: { _ in }).run(&session, request: "Use the test server")
+        XCTAssertEqual(asked.map(\.subject), ["test/echo"], "even in Auto an MCP call asks, because it is not sandboxed")
+        XCTAssertTrue(asked[0].detail.contains("from the agent"))
+        XCTAssertEqual(session.activities.last?.state, .completed)
+        XCTAssertTrue(session.activities.last!.result.contains("echo: from the agent"))
+        XCTAssertTrue(model.seen[0][0].content.contains("MCP servers: test"))
+
+        let declined = ScriptedModel([call("mcp_call", ["server": "test", "tool": "echo", "arguments_json": "{}"]), call("mcp_call", ["server": "test", "tool": "fail", "arguments_json": "{}"]), ModelReply(text: "Stopped.")])
+        await Agent(store: store, model: declined, approve: { _ in false }, emit: { _ in }).run(&session, request: "Again")
+        XCTAssertEqual(session.activities.suffix(2).map(\.state), [.denied, .failed], "a declined call is not made, and a tool outside the allowlist is refused without asking")
+    }
+
     // MARK: compaction
 
     func testCompactionReplacesOlderMessagesWithASummaryAndKeepsThem() async throws {

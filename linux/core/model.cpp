@@ -78,6 +78,63 @@ HttpResponse http_get(const std::string& url, const std::vector<std::string>& he
 }
 
 namespace {
+struct Capped {
+    std::string body;
+    size_t limit;
+    bool over = false;
+};
+size_t append_capped(char* data, size_t size, size_t count, void* user) {
+    Capped* sink = static_cast<Capped*>(user);
+    if (sink->body.size() + size * count > sink->limit) { sink->over = true; return 0; }
+    sink->body.append(data, size * count);
+    return size * count;
+}
+size_t collect_header(char* data, size_t size, size_t count, void* user) {
+    auto* found = static_cast<std::map<std::string, std::string>*>(user);
+    const std::string line(data, size * count);
+    const size_t colon = line.find(':');
+    if (colon != std::string::npos) (*found)[to_lower(trim(line.substr(0, colon)))] = trim(line.substr(colon + 1));
+    return size * count;
+}
+}  // namespace
+
+HttpResponse http_send(const std::string& method, const std::string& url, const std::vector<std::string>& headers, const std::string& body,
+                       double timeout_seconds, size_t max_bytes, std::map<std::string, std::string>* reply_headers, const CancelToken& cancel) {
+    ensure_curl();
+    Handle handle;
+    if (!handle.curl) throw Error("The network library could not start.");
+    Capped sink{"", max_bytes};
+    char error[CURL_ERROR_SIZE] = "";
+    handle.set_headers(headers);
+    curl_easy_setopt(handle.curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(handle.curl, CURLOPT_CUSTOMREQUEST, method.c_str());
+    if (method != "DELETE") {
+        curl_easy_setopt(handle.curl, CURLOPT_POSTFIELDS, body.c_str());
+        curl_easy_setopt(handle.curl, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size()));
+    }
+    curl_easy_setopt(handle.curl, CURLOPT_TIMEOUT_MS, static_cast<long>(timeout_seconds * 1000));
+    curl_easy_setopt(handle.curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(handle.curl, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(handle.curl, CURLOPT_PROXY, "");
+    curl_easy_setopt(handle.curl, CURLOPT_WRITEFUNCTION, append_capped);
+    curl_easy_setopt(handle.curl, CURLOPT_WRITEDATA, &sink);
+    if (reply_headers) {
+        curl_easy_setopt(handle.curl, CURLOPT_HEADERFUNCTION, collect_header);
+        curl_easy_setopt(handle.curl, CURLOPT_HEADERDATA, reply_headers);
+    }
+    curl_easy_setopt(handle.curl, CURLOPT_ERRORBUFFER, error);
+    watch_cancel(handle.curl, &cancel);
+    const CURLcode code = curl_easy_perform(handle.curl);
+    if (code == CURLE_ABORTED_BY_CALLBACK && is_cancelled(cancel)) throw Cancelled();
+    if (sink.over) throw Error("The reply from " + host_of(url) + " is larger than Mason reads.");
+    if (code != CURLE_OK) throw Error("No answer from " + host_of(url) + ": " + (error[0] ? error : curl_easy_strerror(code)));
+    HttpResponse response;
+    response.body = std::move(sink.body);
+    curl_easy_getinfo(handle.curl, CURLINFO_RESPONSE_CODE, &response.status);
+    return response;
+}
+
+namespace {
 struct LineSink {
     const std::function<void(const std::string&)>* on_line;
     std::string buffer, error_body;

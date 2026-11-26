@@ -144,6 +144,7 @@ void Controller::send(const std::string& text) {
     // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
     const std::string lowered = to_lower(input);
     if (lowered == "/compact") { compact(); return; }
+    if (lowered == "/mcp") { show_mcp_servers(); return; }
     if (lowered == "/agent" || starts_with(lowered, "/agent ")) { choose_agent(trim(input.substr(6))); return; }
     if (!endpoint) {
         notice.emit("No model is running. Open Models to start one, or start your own local server.");
@@ -313,6 +314,19 @@ void Controller::choose_agent(const std::string& name) {
     } catch (const std::exception& error) {
         notice.emit(error.what());
     }
+}
+
+void Controller::show_mcp_servers() {
+    if (!store_) return;
+    // Servers are registered for every project in Mason's data folder; the mason command manages them.
+    const std::vector<McpServer> servers = mcp::enabled(store_->home());
+    if (servers.empty()) {
+        notice.emit("No MCP servers are registered. In a terminal, run mason and type /mcp add NAME http://127.0.0.1:PORT/mcp (or the full path of a program).");
+        return;
+    }
+    std::string text;
+    for (const McpServer& server : servers) text += server.name + ": " + (server.tools.empty() ? std::string("no tools allowed yet") : join(server.tools, ", ")) + "\n";
+    notice.emit(text + "\nEvery call asks first. Manage servers with /mcp in the mason command.");
 }
 
 void Controller::undo(bool redo) {

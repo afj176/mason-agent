@@ -117,6 +117,7 @@ final class AppModel: ObservableObject {
         guard !text.isEmpty, !running, let current = session, let store else { return }
         // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
         if text.lowercased() == "/compact" { draft = ""; compact(); return }
+        if text.lowercased() == "/mcp" { draft = ""; showMcpServers(); return }
         if text.lowercased() == "/agent" || text.lowercased().hasPrefix("/agent ") { draft = ""; chooseAgent(String(text.dropFirst(6)).trimmingCharacters(in: .whitespaces)); return }
         guard let endpoint, let model = try? OpenAIClient(endpoint) else {
             notice = "No model is running. Open Models to start one, or start your own local server."
@@ -211,6 +212,15 @@ final class AppModel: ObservableObject {
         else { notice = "No agent named \(name)."; return }
         save(current)
         notice = current.agent.map { "Agent: \($0)." } ?? "Default agent."
+    }
+
+    /// MCP servers are registered for every project in Mason's data folder; the mason command manages them.
+    func showMcpServers() {
+        guard let store else { return }
+        let servers = Mcp.enabled(home: store.folder.deletingLastPathComponent())
+        notice = servers.isEmpty
+            ? "No MCP servers are registered. In a terminal, run mason and type /mcp add NAME http://127.0.0.1:PORT/mcp (or the full path of a program)."
+            : servers.map { "\($0.name): " + ($0.tools.isEmpty ? "no tools allowed yet" : $0.tools.joined(separator: ", ")) }.joined(separator: "\n") + "\n\nEvery call asks first. Manage servers with /mcp in the mason command."
     }
 
     func undo(redo: Bool = false) {
