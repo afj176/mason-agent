@@ -50,6 +50,14 @@ struct FileChange {
     bool deleted() const { return after_missing; }
 };
 
+/// A message sent while a request was running. A steering message interrupts the request and is handled next;
+/// a queued one waits until the request completes.
+struct FollowUp {
+    std::string id = new_id();
+    std::string text;
+    bool steer = false;
+};
+
 struct Turn {
     std::string id = new_id();
     std::string request, answer;
@@ -78,6 +86,8 @@ struct Session {
     /// Messages a compaction replaced with a summary, oldest first.
     std::vector<ChatMessage> archived;
     int compactions = 0;
+    /// Follow-ups waiting their turn, oldest first. "/queue" resumes them after a stop.
+    std::vector<FollowUp> pending_input;
 };
 
 json message_json(const ChatMessage& message);

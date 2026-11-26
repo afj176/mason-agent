@@ -212,11 +212,28 @@ void Controller::send(const std::string& text) {
                                 live_status = "Thinking";
                                 break;
                             case AgentEvent::Kind::Status: live_status = event.text; break;
+                            case AgentEvent::Kind::FollowUp: {
+                                // The previous request is finished: show it as it ended, and the follow-up as the request now running.
+                                Session shown = *event.session;
+                                Turn turn;
+                                turn.request = event.text;
+                                turn.first_activity = shown.activities.size();
+                                shown.turns.push_back(std::move(turn));
+                                shown.state = "Running";
+                                replace(shown);
+                                live_text.clear();
+                                live_activities.clear();
+                                waiting_follow_ups = std::max(0, waiting_follow_ups - 1);
+                                break;
+                            }
                         }
                     });
                 });
+            { std::lock_guard<std::mutex> guard(agent_lock_); active_agent_ = &agent; }
             agent.run(working, input, cancel);
+            { std::lock_guard<std::mutex> guard(agent_lock_); active_agent_ = nullptr; }
         } catch (const std::exception& error) {
+            { std::lock_guard<std::mutex> guard(agent_lock_); active_agent_ = nullptr; }
             working.state = "Failed";
             working.detail = error.what();
         }
@@ -225,12 +242,33 @@ void Controller::send(const std::string& text) {
             approval.reset();
             replace(working);
             running = false;
+            waiting_follow_ups = 0;
             live_text.clear();
             live_status.clear();
             live_activities.clear();
         });
     });
     changed.emit();
+}
+
+void Controller::follow_up(const std::string& text, bool steer) {
+    if (!running || trim(text).empty() || approval) return;
+    try {
+        std::lock_guard<std::mutex> guard(agent_lock_);
+        if (!active_agent_) throw Error("This request cannot take a follow-up. Wait for it to finish, or stop it.");
+        active_agent_->send_while_running(text, steer);
+        waiting_follow_ups++;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return;
+    }
+    changed.emit();
+}
+
+void Controller::run_queued() {
+    const Session* current = session();
+    if (running || !current || current->pending_input.empty()) return;
+    send("/queue");
 }
 
 void Controller::stop() {

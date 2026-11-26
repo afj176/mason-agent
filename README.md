@@ -92,7 +92,7 @@ Settings, sessions and downloaded models live in `~/.local/share/MasonAgent` (or
 
 ## The mason command line
 
-This section describes `mason` on Windows. On macOS (Swift) and Linux (C++) the same command has the session and model commands below; it has `/compact`, `/agent`, `/commands` and `/mcp` too, and does not have `/queue` or the script operations yet.
+This section describes `mason` on Windows. On macOS (Swift) and Linux (C++) the same command has the session and model commands below; it has `/compact`, `/agent`, `/commands`, `/mcp` and `/queue` too, and does not have the script operations yet. While Mason works there, type a message and press Enter to queue it, or start it with `!` to steer.
 
 `mason` is the same agent in your terminal. The macOS installer and both Linux packages put it on your PATH. On Windows it arrives with version 2.2.1: the installer can add it to your PATH, and with the portable ZIP you add its `bin` folder yourself.
 
@@ -241,6 +241,7 @@ A SwiftUI app with the engine written in Swift, in [`macos/`](macos), available 
 - **Your agents and commands.** Markdown files in `.mason/agents` and `.mason/commands` (also `.claude` and `.opencode`). Type a command's name with a slash, or `/agent NAME` to use an agent.
 - **MCP servers.** Register a server on this computer with `/mcp add` in the `mason` command, by its `http://127.0.0.1` address or the full path of a program, and choose which of its tools Mason may call. Servers live in `mcp-servers.json` in Mason's data folder, in the same form as on Windows, and never in a project. Every call shows its arguments and asks first, even in Auto, unless a saved rule allows it. The app uses the same servers; typing `/mcp` there lists them.
 - **Chat.** A separate pane for talking a problem through with the running model. Chat has no tools: it cannot read the project, edit files or run commands. Attach up to five text files to a message, stop an answer, and come back to saved chats later; a long chat is compacted like a long session. Chats are stored in `chats` in Mason's data folder on this Mac.
+- **Queue and steer.** While a request runs, the request box sends follow-ups. **Queue** handles the message after the request completes; **Steer** interrupts what Mason is doing and handles it next. Messages left waiting by a stop or a failure stay with the session, and **Run Queued** (or `/queue`) picks them up.
 - **Models.** Lists running local servers (Mason's own, llama.cpp, LM Studio, Ollama), every GGUF file on the Mac with what the agent can do with it, and Hugging Face search with a verdict on each result. It installs the official llama.cpp build, downloads a build you choose, verifies both against their published SHA-256, and starts the model. A model Mason starts stops when Mason quits.
 
 ## Linux app
@@ -257,6 +258,7 @@ A GTK 4 and libadwaita app with its engine in C++, in [`linux/`](linux), availab
 - **Your agents and commands.** Markdown files in `.mason/agents` and `.mason/commands` (also `.claude` and `.opencode`). Type a command's name with a slash, or `/agent NAME` to use an agent.
 - **MCP servers.** Register a server on this computer with `/mcp add` in the `mason` command, by its `http://127.0.0.1` address or the full path of a program, and choose which of its tools Mason may call. Servers live in `mcp-servers.json` in Mason's data folder, in the same form as on Windows, and never in a project. Every call shows its arguments and asks first, even in Auto, unless a saved rule allows it. The app uses the same servers; typing `/mcp` there lists them.
 - **Chat.** A separate pane for talking a problem through with the running model. Chat has no tools: it cannot read the project, edit files or run commands. Attach up to five text files to a message, stop an answer, and come back to saved chats later; a long chat is compacted like a long session. Chats are stored in `chats` in Mason's data folder on this computer.
+- **Queue and steer.** While a request runs, the request box sends follow-ups. **Queue** handles the message after the request completes; **Steer** interrupts what Mason is doing and handles it next. Messages left waiting by a stop or a failure stay with the session, and **Run Queued** (or `/queue`) picks them up.
 - **Models.** Running local servers, every GGUF file on the computer with what the agent can do with it, and Hugging Face search with a verdict on each result. It installs the official llama.cpp build (Vulkan when a GPU and the Vulkan loader are present, otherwise CPU), downloads a build you choose, verifies both against their published SHA-256, and starts the model. A model Mason starts stops when Mason quits.
 - **`mason` in the terminal.** The same session, approvals and `/models` commands as the other platforms.
 

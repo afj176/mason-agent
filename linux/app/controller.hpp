@@ -47,6 +47,12 @@ public:
     std::optional<ApprovalRequest> approval;
     void send(const std::string& text);
     void stop();
+    /// Hands a message to the running request: queued for after it completes, or steering it now.
+    void follow_up(const std::string& text, bool steer);
+    /// Follow-ups sent during the current request that have not started yet.
+    int waiting_follow_ups = 0;
+    /// Runs the follow-ups a stopped or failed request left waiting.
+    void run_queued();
     /// Answers the pending approval. A non-empty prefix also saves an always-allow rule for the project.
     void answer(bool allow, const std::string& always_prefix = "");
     void undo(bool redo = false);
@@ -109,6 +115,9 @@ private:
     std::unique_ptr<ChatStore> chat_store_;
     std::vector<ChatConversation> chats_;
     std::thread chat_thread_;
+    /// The engine working on the current request, set and cleared by the run thread under the lock.
+    std::mutex agent_lock_;
+    Agent* active_agent_ = nullptr;
     CancelToken chat_cancel_;
     std::vector<Session> sessions_;
     std::shared_ptr<ModelServer> server_;  // shared only so a finished start can be handed from its thread to the main thread

@@ -54,9 +54,17 @@ struct ScriptedModel : ChatModel {
     std::vector<std::vector<ChatMessage>> seen;
     int window = 0;
     int context_window() override { return window; }
+    /// Called at the start of each request, with its number, so a test can act while the "model" is busy.
+    std::function<void(size_t)> on_request;
+    int delay_ms = 0;
     std::string name() const override { return "scripted"; }
-    ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>&, const std::function<void(const std::string&)>& on_text, const CancelToken&) override {
+    ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>&, const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override {
         seen.push_back(messages);
+        if (on_request) on_request(seen.size());
+        for (int waited = 0; waited < delay_ms; waited += 10) {
+            check_cancel(cancel);
+            usleep(10 * 1000);
+        }
         if (replies.empty()) throw Error("The script ran out of replies.");
         ModelReply reply = replies.front();
         replies.pop_front();
@@ -627,11 +635,83 @@ static void test_chat() {
     CHECK(ChatStore(box.home).conversations().size() == 2);
 }
 
+static void test_queue_and_steer() {
+    Sandbox box;
+    SessionStore store(box.home);
+    const auto quiet = [](const AgentEvent&) {};
+
+    // A queued message runs after the request completes.
+    {
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::ReadOnly);
+        ScriptedModel model;
+        model.replies = {say("One."), say("Two.")};
+        Agent agent(store, model, nullptr, quiet);
+        model.on_request = [&](size_t number) { if (number == 1) agent.send_while_running("second question", false); };
+        agent.run(session, "first question");
+        CHECK(session.turns.size() == 2 && session.turns[1].request == "second question" && session.turns[1].answer == "Two.");
+        CHECK(session.pending_input.empty());
+        CHECK_THROWS(agent.send_while_running("too late", false));  // nothing is running any more
+    }
+
+    // A queued message waits after a failure, is saved, and /queue resumes it.
+    {
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::ReadOnly);
+        ScriptedModel failing;
+        Agent agent(store, failing, nullptr, quiet);
+        failing.on_request = [&](size_t) { agent.send_while_running("do this next", false); };
+        agent.run(session, "first question");
+        CHECK(session.state == "Failed" && session.pending_input.size() == 1 && session.pending_input[0].text == "do this next");
+        bool saved = false;
+        const SessionStore reloaded(box.home);
+        for (const Session& item : reloaded.sessions()) saved = saved || (item.id == session.id && item.pending_input.size() == 1);
+        CHECK(saved);
+        ScriptedModel next;
+        next.replies = {say("Done next.")};
+        Agent(store, next, nullptr, quiet).run(session, "/queue");
+        CHECK(session.turns.back().request == "do this next" && session.state == "Completed" && session.pending_input.empty());
+        ScriptedModel none;
+        Agent(store, none, nullptr, quiet).run(session, "/queue");
+        CHECK(session.detail == "No messages are queued.");
+    }
+
+    // Steering interrupts the request and is handled next.
+    {
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::ReadOnly);
+        ScriptedModel model;
+        model.delay_ms = 300;
+        // The first request is interrupted while the model is still working, so it never takes a reply from the script.
+        model.replies = {say("Steered answer.")};
+        Agent agent(store, model, nullptr, quiet);
+        model.on_request = [&](size_t number) { if (number == 1) agent.send_while_running("actually, do this instead", true); };
+        const auto started = std::chrono::steady_clock::now();
+        agent.run(session, "long task");
+        CHECK(session.turns.size() == 2 && session.turns[0].answer.empty() && session.turns[1].request == "actually, do this instead" && session.turns[1].answer == "Steered answer.");
+        CHECK(session.state == "Completed");
+        size_t user_messages = 0;
+        for (const ChatMessage& message : model.seen[1]) user_messages += message.role == "user" ? 1 : 0;
+        CHECK(user_messages == 2);  // the model sees both requests in order
+        CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(5));
+    }
+
+    // The caller's stop ends the run, and a message queued before it stays queued.
+    {
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::ReadOnly);
+        ScriptedModel model;
+        model.delay_ms = 2000;
+        model.replies = {say("Never.")};
+        Agent agent(store, model, nullptr, quiet);
+        const CancelToken cancel = make_cancel();
+        model.on_request = [&](size_t) { agent.send_while_running("later", false); cancel->store(true); };
+        agent.run(session, "long task", cancel);
+        CHECK(session.state == "Stopped" && session.turns.size() == 1 && session.pending_input.size() == 1);
+    }
+}
+
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

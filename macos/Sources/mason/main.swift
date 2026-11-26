@@ -34,8 +34,12 @@ final class RunFeed: @unchecked Sendable {
         case .activityStarted(let activity): running = (activity.tool.replacingOccurrences(of: "_", with: " ") + " " + activity.subject); live = ""
         case .activityFinished(let activity): finished.append(activity); running = ""
         case .status(let text): note = text
+        case .followUp(_, let text): started.append(text); live = ""
         }
     }
+    /// Follow-ups that have begun since the last look, so the terminal can say so.
+    var started: [String] = []
+    func takeStarted() -> [String] { lock.lock(); defer { started = []; lock.unlock() }; return started }
     func ask(_ request: ApprovalRequest, _ continuation: CheckedContinuation<Bool, Never>) { lock.lock(); asking = (request, continuation); lock.unlock() }
     func takeApproval() -> (ApprovalRequest, CheckedContinuation<Bool, Never>)? { lock.lock(); defer { asking = nil; lock.unlock() }; return asking }
     func takeFinished() -> [Activity] { lock.lock(); defer { finished = []; lock.unlock() }; return finished }
@@ -193,15 +197,39 @@ final class CLI {
         Term.line()
         Term.raw(true)
         var frame = 0, stopping = false
+        // What the user types while Mason works: Enter queues it for after this request; a leading ! steers instead.
+        var typed: [UInt8] = []
         while !feed.done {
             for activity in feed.takeFinished() { show(activity) }
+            for text in feed.takeStarted() { Term.setStatus(""); Term.line(); Term.line(Term.paint(Term.accent, "  ▸ ") + Term.clip(text.replacingOccurrences(of: "\n", with: " "), max(20, Term.width - 8))) }
             if let (request, answer) = feed.takeApproval() { Term.setStatus(""); answer.resume(returning: approve(request)); continue }
-            if let key = Term.key(), key == 3 || (key == 27 && Term.wasEscapeAlone()) { task.cancel() }
+            if let key = Term.key() {
+                if key == 3 || (key == 27 && Term.wasEscapeAlone()) { task.cancel() }
+                else if !Term.interactive {}
+                else if key == 13 || key == 10 {
+                    let line = String(decoding: typed, as: UTF8.self).trimmingCharacters(in: .whitespaces)
+                    typed = []
+                    if !line.isEmpty {
+                        let steer = line.hasPrefix("!")
+                        let text = steer ? String(line.dropFirst()) : line
+                        Term.setStatus("")
+                        do {
+                            try agent.sendWhileRunning(text, steer: steer)
+                            Term.line(Term.paint(Term.dim, steer ? "  ↪ steering: " : "  ＋ queued: ") + Term.clip(text.trimmingCharacters(in: .whitespaces), max(20, Term.width - 18)))
+                        } catch { Term.line(Term.paint(Term.yellow, "  " + ((error as? MasonError)?.description ?? error.localizedDescription))) }
+                    }
+                } else if key == 127 || key == 8 {
+                    // Remove one whole character, which may be several bytes.
+                    while let last = typed.popLast(), last & 0xC0 == 0x80 {}
+                } else if key >= 32 { typed.append(key) }
+            }
             if task.isCancelled, !stopping { stopping = true; Term.line(Term.paint(Term.dim, "  Stopping…")) }
             frame += 1
             let spinner = Array("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")[frame % 10]
             let room = max(20, Term.width - 36), doing = feed.doing
-            Term.setStatus("  \(spinner) \(doing.count > room ? "…" + doing.suffix(room - 1) : doing)  ·  \(Int(Date().timeIntervalSince(started)))s  ·  Esc to stop")
+            let draft = String(decoding: typed, as: UTF8.self)
+            if draft.isEmpty { Term.setStatus("  \(spinner) \(doing.count > room ? "…" + doing.suffix(room - 1) : doing)  ·  \(Int(Date().timeIntervalSince(started)))s  ·  Esc to stop · type to queue") }
+            else { Term.setStatus("  \(spinner) " + Term.paint(Term.dim, "Enter queues · start with ! to steer  › ") + Term.clip(String(draft.suffix(max(10, Term.width - 50))), max(10, Term.width - 48))) }
         }
         await task.value
         current.value = nil
@@ -256,6 +284,7 @@ final class CLI {
         let steps = session.activities.count - firstActivity
         var facts = ["\(steps) tool call\(steps == 1 ? "" : "s")", seconds < 90 ? "\(Int(seconds))s" : String(format: "%.1f min", seconds / 60)]
         if let tokens = session.promptTokens { facts.append("\(tokens) tokens of context") }
+        if let waiting = session.pendingInput, !waiting.isEmpty { facts.append("\(waiting.count) queued, /queue runs them") }
         Term.line("  " + state + Term.paint(Term.dim, "  ·  " + facts.joined(separator: "  ·  ")))
         if !session.detail.isEmpty { Term.line("  " + Term.paint(Term.dim, session.detail)) }
     }
@@ -420,6 +449,10 @@ final class CLI {
             Term.line()
             for command in commands { Term.line("  \(Term.paint(Term.accent, ("/" + command.name).padding(toLength: 22, withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, Term.clip(command.description, max(20, Term.width - 30))))") }
             Term.line(Term.paint(Term.dim, "  Run one by typing it, with any arguments after the name."))
+        case "/queue":
+            let waiting = session.pendingInput ?? []
+            if waiting.isEmpty { Term.line(Term.paint(Term.dim, "  Nothing is queued. While Mason works, type a message and press Enter to queue it, or start it with ! to steer.")) }
+            else { await send("/queue") }
         case "/mcp": try await mcp(rest)
         case "/model": try await chooseModel(rest)
         case "/models": try await models(rest)
@@ -440,6 +473,7 @@ final class CLI {
             ("/diff [path]", "Show what this session changed"),
             ("/undo · /redo", "Put back, or reapply, everything the latest request changed"),
             ("/compact", "Replace the conversation so far with a summary to free context"),
+            ("/queue", "Run the messages you queued, after a stop or a failure"),
             ("/agent [name|none]", "List your custom agents, or use one for this session"),
             ("/commands", "List your custom slash commands"),
             ("/mcp", "List your MCP servers and the tools Mason may call"),
@@ -461,7 +495,8 @@ final class CLI {
         Term.line()
         for (command, text) in rows { Term.line("  \(Term.paint(Term.accent, command.padding(toLength: 36, withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, text))") }
         Term.line()
-        Term.line(Term.paint(Term.dim, "  While Mason works: Esc or Ctrl+C stops the run. End a line with \\ to continue on the next line."))
+        Term.line(Term.paint(Term.dim, "  While Mason works: Esc or Ctrl+C stops the run. Type a message and press Enter to queue it for afterwards,"))
+        Term.line(Term.paint(Term.dim, "  or start it with ! to interrupt and steer. End a line with \\ to continue on the next line."))
     }
 
     /// MCP servers are registered in Mason's data folder, for every project, and can only do what is allowed here.

@@ -36,6 +36,10 @@ final class AppModel: ObservableObject {
     @Published var chatRunning = false
     @Published var chatLive = ""
     @Published var chatAttachments: [ChatAttachment] = []
+    /// The engine working on the current request, so a follow-up can be handed to it.
+    private var activeAgent: Agent?
+    /// Follow-ups sent during the current request that have not started yet.
+    @Published var waitingFollowUps = 0
     private var chatStore: ChatStore?
     private var chatTask: Task<Void, Never>?
 
@@ -193,8 +197,10 @@ final class AppModel: ObservableObject {
     // MARK: running a request
 
     func send() {
+        // While a request runs, Send queues the message for afterwards.
+        if running { followUp(steer: false); return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !running, let current = session, let store else { return }
+        guard !text.isEmpty, let current = session, let store else { return }
         // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
         if text.lowercased() == "/compact" { draft = ""; compact(); return }
         if text.lowercased() == "/mcp" { draft = ""; showMcpServers(); return }
@@ -221,10 +227,31 @@ final class AppModel: ObservableObject {
             }, emit: { [weak self] event in
                 Task { @MainActor in self?.receive(event) }
             })
+            self.activeAgent = agent
             var working = current
             await agent.run(&working, request: text)
+            self.activeAgent = nil
             self.finish(working)
         }
+    }
+
+    /// Sends what is in the request box to the running request: queued for afterwards, or steering it now.
+    func followUp(steer: Bool) {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard running, !text.isEmpty, approval == nil else { return }
+        guard let activeAgent else { notice = "This request cannot take a follow-up. Wait for it to finish, or stop it."; return }
+        do {
+            try activeAgent.sendWhileRunning(text, steer: steer)
+            draft = ""
+            waitingFollowUps += 1
+        } catch { notice = describe(error) }
+    }
+
+    /// Runs the follow-ups a stopped or failed request left waiting.
+    func runQueued() {
+        guard !running, session?.pendingInput?.isEmpty == false else { return }
+        draft = "/queue"
+        send()
     }
 
     private func receive(_ event: AgentEvent) {
@@ -238,6 +265,14 @@ final class AppModel: ObservableObject {
             if let index = liveActivities.firstIndex(where: { $0.id == activity.id }) { liveActivities[index] = activity }
             liveStatus = "Thinking"
         case .status(let text): liveStatus = text
+        case .followUp(let state, let text):
+            // The previous request is finished: show it as it ended, and the follow-up as the request now running.
+            var shown = state
+            shown.turns.append(Turn(request: text, firstActivity: state.activities.count))
+            shown.state = "Running"
+            replace(shown)
+            liveText = ""; liveActivities = []
+            waitingFollowUps = max(0, waitingFollowUps - 1)
         }
     }
 
@@ -245,6 +280,7 @@ final class AppModel: ObservableObject {
         if let pending = approval { pending.answer.resume(returning: false); approval = nil }
         replace(result)
         running = false; liveText = ""; liveStatus = ""; liveActivities = []
+        waitingFollowUps = 0
         runTask = nil
     }
 
