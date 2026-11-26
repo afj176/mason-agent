@@ -229,9 +229,9 @@ Auto records a baseline and reruns the pinned check before completion. Results d
 
 ## macOS app
 
-A SwiftUI app with the engine written in Swift, in [`macos/`](macos), available as a [preview download](#macos). The screenshot is from the automated check on a Mac runner, where a stand-in model asks to create a file and waits for approval.
+A SwiftUI app with the engine written in Swift, in [`macos/`](macos), available as a [preview download](#macos). The screenshot is from the automated check on a Mac runner, where a stand-in model plays a short demonstration session.
 
-<img src="docs/images/mac-app.png" alt="Mason Agent on macOS: a session with a completed shell command and an approval card for creating hello.txt">
+<img src="docs/images/mac-app.png" alt="Mason Agent on macOS in dark mode: a request to fix a CSV importer, the four steps Mason took, its explanation, and a link to the two changed files">
 
 - **Sessions by project.** Open a folder, ask for a change, and watch each tool call as it finishes. Answers render Markdown and code.
 - **Permissions.** Read-only, Review edits, Workspace edits, or Auto. In Auto, commands run under the macOS sandbox: they can write only inside the project and your temporary folder, cannot read `~/.ssh`, `~/.aws`, `~/.gnupg` or your keychains, and have no network access. Where the sandbox is unavailable, Auto refuses to run commands instead of running them unprotected.
@@ -250,7 +250,7 @@ A SwiftUI app with the engine written in Swift, in [`macos/`](macos), available 
 
 A GTK 4 and libadwaita app with its engine in C++, in [`linux/`](linux), available as a [preview download](#linux). It has been built, packaged and run on Ubuntu 24.04, including a real request approved through the app against a local model.
 
-<img src="docs/images/linux-app.png" alt="Mason Agent on Linux: a session's tool calls, an approval card for a shell command, and the Changes pane with a diff">
+<img src="docs/images/linux-app.png" alt="Mason Agent on Linux in dark mode: the same request and steps, with the Changes pane showing diffs of the two changed files">
 
 - **Sessions by project.** A sidebar of projects and sessions, the conversation with each tool call, and answers with Markdown and code blocks.
 - **Permissions.** Read-only, Review edits, Workspace edits, or Auto. In Auto, commands run under [bubblewrap](https://github.com/containers/bubblewrap): the system is read-only, only the project and a private `/tmp` are writable, credential folders such as `~/.ssh` and `~/.aws` are hidden, and there is no network. Where bubblewrap cannot create a sandbox, Auto refuses to run commands instead of running them unprotected.
