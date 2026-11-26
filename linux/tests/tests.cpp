@@ -18,6 +18,7 @@
 #include "planning.hpp"
 #include "chat.hpp"
 #include "schedules.hpp"
+#include "script.hpp"
 #include "models.hpp"
 
 using namespace mason;
@@ -898,6 +899,46 @@ static void test_extra_tools() {
         try { jobs.send(closed, "anyone", false); } catch (const Error&) { refused = true; }
         CHECK(refused);
         jobs.stop_all();
+    }
+
+    // The map ranks a name, and scripts run single operations that print JSON Lines.
+    {
+        Sandbox box;
+        box.write("main.py", "from calc import add\nprint(add(2, 2))\n");
+        box.write("test_calc.py", "from calc import add\n\ndef test_add():\n    assert add(1, 2) == 3\n");
+        const Workspace workspace(box.project.string());
+        const MapResult found = repository_map::query(workspace, "calc.add");
+        std::vector<std::string> kinds;
+        for (const MapMatch& match : found.matches) kinds.push_back(match.kind);
+        CHECK(!found.matches.empty() && found.matches[0].path == "calc.py" && found.matches[0].line == 1);  // the definition comes first
+        CHECK(kinds == (std::vector<std::string>{"definition candidate", "import candidate", "import candidate", "reference candidate", "test reference candidate"}));
+        CHECK(repository_map::report(found, "calc.add").find("main.py:2  [reference candidate]  print(add(2, 2))") != std::string::npos);
+
+        std::vector<json> events;
+        const auto collect = [&](const std::string& line) { events.push_back(json::parse(line)); };
+        const std::string root = box.project.string();
+        CHECK(script::run({"map", "--workspace", root, "--query", "add"}, collect) == 0);
+        CHECK(events.size() == 1 && events[0]["type"] == "map.result" && events[0]["data"]["matches"].size() == 5);
+        events.clear();
+        CHECK(script::run({"map", "--workspace", root}, collect) == 1);
+        CHECK(events.size() == 1 && events[0]["data"]["message"] == "--query is required.");
+        events.clear();
+        CHECK(script::run({"git-status", "--workspace", root}, collect) == 0);
+        CHECK(events.size() == 1 && events[0]["data"]["repository"] == false);
+
+        events.clear();
+        ScriptedModel model;
+        model.replies = {call("read_file", {{"path", "calc.py"}}), call("write_file", {{"path", "calc.py"}, {"content", "x"}}), say("It subtracts.")};
+        CHECK(script::run({"exec", "--workspace", root, "--prompt", "What does add do?", "--profile", (box.home / "runs").string()}, collect, &model) == 0);
+        std::vector<std::string> types;
+        for (const json& event : events) types.push_back(event["type"].get<std::string>());
+        CHECK(types == (std::vector<std::string>{"run.started", "tool.result", "tool.result", "run.finished"}));
+        if (events.size() == 4) {
+            CHECK(events[0]["data"]["mode"] == "ask" && events[1]["data"]["tool"] == "read_file" && events[3]["data"]["answer"] == "It subtracts.");
+        }
+        CHECK(box.read("calc.py") == "def add(a, b):\n    return a - b\n");  // without --auto the run only reads
+        events.clear();
+        CHECK(script::run({"exec", "--workspace", root, "--prompt", "x", "--profile", (box.project / "journal").string()}, collect, &model) == 1);  // the journal may not be inside the project
     }
 
     // A job runs in the background and stops when the request ends.

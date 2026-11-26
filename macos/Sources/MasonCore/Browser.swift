@@ -341,14 +341,21 @@ public enum BrowserCheck {
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { throw MasonError("The browser could not start: \(error.localizedDescription)") }
-        let deadline = Task { try? await Task.sleep(nanoseconds: 45_000_000_000); if process.isRunning { process.terminate() } }
-        let collected: Data = await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                DispatchQueue.global().async { continuation.resume(returning: output.fileHandleForReading.readDataToEndOfFile()) }
-            }
-        } onCancel: { process.terminate() }
+        // Reading stops when the result has arrived, when the browser closes its output, or after 45 seconds. Waiting for
+        // the output to close is not enough: a helper process of the browser can keep it open after the browser is gone.
+        let collected = OutputBuffer(limit: 64 * 1024 * 1024)
+        let done = AsyncSignal()
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty { done.fire(); return }
+            collected.append(data)
+            if collected.snapshot().0.contains(":MASON") { done.fire() }
+        }
+        let deadline = Task { try? await Task.sleep(nanoseconds: 45_000_000_000); done.fire() }
+        await withTaskCancellationHandler { await done.wait() } onCancel: { done.fire() }
         deadline.cancel()
-        // The answer is in. A browser that lingers after writing it is stopped rather than waited for.
+        output.fileHandleForReading.readabilityHandler = nil
+        // The answer is in, or will not come. A browser that lingers is stopped rather than waited for.
         let grace = Date().addingTimeInterval(3)
         while process.isRunning, Date() < grace { try? await Task.sleep(nanoseconds: 50_000_000) }
         if process.isRunning {
@@ -356,9 +363,12 @@ public enum BrowserCheck {
             try? await Task.sleep(nanoseconds: 500_000_000)
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
-        process.waitUntilExit()
+        // Not waitUntilExit: on macOS it can block without end here even after the browser has been killed, and the
+        // result does not depend on how the browser ended.
+        let gone = Date().addingTimeInterval(2)
+        while process.isRunning, Date() < gone { try? await Task.sleep(nanoseconds: 50_000_000) }
         try Task.checkCancellation()
-        let dom = String(decoding: collected, as: UTF8.self)
+        let dom = collected.snapshot().0
         guard let start = dom.range(of: "MASON:"), let end = dom.range(of: ":MASON", range: start.upperBound..<dom.endIndex),
               let json = Data(base64Encoded: String(dom[start.upperBound..<end.lowerBound])), let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any] else {
             throw MasonError("The browser gave no result for \(page). It may have been stopped, or it could not load the page.")

@@ -26,6 +26,27 @@ NavigationResult query(const Workspace& workspace, const std::string& directory,
 std::string report(const NavigationResult& result, const std::string& symbol, const std::string& mode);
 }  // namespace navigation
 
+struct MapMatch {
+    std::string path;
+    int line = 0;
+    std::string kind, name, text;
+};
+
+struct MapResult {
+    std::vector<MapMatch> matches;
+    size_t files = 0;
+    bool partial = false;
+};
+
+namespace repository_map {
+/// Where a name is defined, imported, used and tested, in the order a reader wants them: definitions, then imports,
+/// callers and tests. `query` is an identifier or a qualified name such as `Cart.total`; the part before the last one
+/// only ranks matches, by whether the file or the line mentions it. These are whole-word text matches.
+MapResult query(const Workspace& workspace, const std::string& query, const std::string& directory = ".", size_t limit = 32, const CancelToken& cancel = nullptr);
+/// The result as the model reads it.
+std::string report(const MapResult& result, const std::string& query);
+}  // namespace repository_map
+
 /// Jedi and the TypeScript compiler, run as helper programs on a copy of the project's source.
 namespace symbols {
 /// The folder holding python-symbols.py and typescript-symbols.cjs: beside the program as installed, or `MASON_LANGUAGE_TOOLS`.

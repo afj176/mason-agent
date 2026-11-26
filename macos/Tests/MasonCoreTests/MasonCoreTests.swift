@@ -336,6 +336,48 @@ final class MasonCoreTests: XCTestCase {
         await jobs.stopAll()
     }
 
+    func testTheMapRanksANameAndScriptsRunSingleOperations() async throws {
+        try "from calc import add\nprint(add(2, 2))\n".write(to: folder.appendingPathComponent("main.py"), atomically: true, encoding: .utf8)
+        try "from calc import add\n\ndef test_add():\n    assert add(1, 2) == 3\n".write(to: folder.appendingPathComponent("test_calc.py"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+        let found = try RepositoryMap.query(workspace, "calc.add")
+        XCTAssertEqual(found.matches.first.map { "\($0.path):\($0.line) \($0.kind)" }, "calc.py:1 definition candidate", "the definition comes first")
+        XCTAssertEqual(found.matches.map(\.kind), ["definition candidate", "import candidate", "import candidate", "reference candidate", "test reference candidate"])
+        XCTAssertTrue(RepositoryMap.report(found, query: "calc.add").contains("main.py:2  [reference candidate]  print(add(2, 2))"))
+
+        var lines: [String] = []
+        func events() -> [[String: Any]] { lines.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } }
+        var code = await ScriptOperations.run(["map", "--workspace", folder.path, "--query", "add"]) { lines.append($0) }
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(events().first?["type"] as? String, "map.result")
+        XCTAssertEqual(((events().first?["data"] as? [String: Any])?["matches"] as? [[String: Any]])?.count, 5)
+
+        lines = []
+        code = await ScriptOperations.run(["map", "--workspace", folder.path]) { lines.append($0) }
+        XCTAssertEqual(code, 1)
+        XCTAssertEqual((events().first?["data"] as? [String: Any])?["message"] as? String, "--query is required.")
+
+        lines = []
+        code = await ScriptOperations.run(["git-status", "--workspace", folder.path]) { lines.append($0) }
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual((events().first?["data"] as? [String: Any])?["repository"] as? Bool, false)
+
+        lines = []
+        let journal = home.appendingPathComponent("runs").path
+        let script = ScriptedModel([call("read_file", ["path": "calc.py"]), call("write_file", ["path": "calc.py", "content": "x"]), ModelReply(text: "It subtracts.")])
+        code = await ScriptOperations.run(["exec", "--workspace", folder.path, "--prompt", "What does add do?", "--profile", journal], model: script) { lines.append($0) }
+        XCTAssertEqual(code, 0, lines.joined(separator: "\n"))
+        XCTAssertEqual(events().map { $0["type"] as? String }, ["run.started", "tool.result", "tool.result", "run.finished"])
+        XCTAssertEqual((events()[0]["data"] as? [String: Any])?["mode"] as? String, "ask")
+        XCTAssertEqual((events()[1]["data"] as? [String: Any])?["tool"] as? String, "read_file")
+        XCTAssertEqual((events().last?["data"] as? [String: Any])?["answer"] as? String, "It subtracts.")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a - b\n", "without --auto the run only reads")
+
+        lines = []
+        code = await ScriptOperations.run(["exec", "--workspace", folder.path, "--prompt", "x", "--profile", folder.appendingPathComponent("journal").path], model: script) { lines.append($0) }
+        XCTAssertEqual(code, 1, "the journal may not be inside the project")
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

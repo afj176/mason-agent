@@ -96,6 +96,71 @@ std::string report(const NavigationResult& result, const std::string& symbol, co
 
 }  // namespace navigation
 
+namespace repository_map {
+
+MapResult query(const Workspace& workspace, const std::string& query, const std::string& directory, size_t limit, const CancelToken& cancel) {
+    std::vector<std::string> parts;
+    std::string current;
+    for (char c : query) {
+        if (std::string(".:#/ ()").find(c) == std::string::npos) { current += c; continue; }
+        if (!current.empty()) parts.push_back(current);
+        current.clear();
+    }
+    if (!current.empty()) parts.push_back(current);
+    if (parts.empty() || query.size() > 200) throw Error("Give an identifier or a qualified name such as Cart.total.");
+    const std::string name = parts.back();
+    const std::string qualifier = parts.size() > 1 ? to_lower(parts[parts.size() - 2]) : "";
+    const NavigationResult definitions = navigation::query(workspace, directory, name, "definitions", cancel);
+    const NavigationResult references = navigation::query(workspace, directory, name, "references", cancel);
+    static const std::regex import_line(R"RX(^\s*(?:import|from|using|use|#\s*include|export\b.*\bfrom)\b|\brequire\s*\()RX");
+    std::vector<MapMatch> groups[4];
+    for (const NavigationHit& hit : definitions.hits) groups[0].push_back({hit.path, hit.line, hit.kind, name, hit.text});
+    for (const NavigationHit& hit : references.hits) {
+        const bool imported = std::regex_search(hit.text, import_line);
+        groups[imported ? 1 : hit.kind.rfind("test", 0) == 0 ? 3 : 2].push_back({hit.path, hit.line, imported ? "import candidate" : hit.kind, name, hit.text});
+    }
+    if (!qualifier.empty()) {
+        // Matches that mention the qualifier come first, in their original order.
+        for (auto& group : groups) {
+            std::stable_partition(group.begin(), group.end(), [&](const MapMatch& match) {
+                return to_lower(match.path).find(qualifier) != std::string::npos || to_lower(match.text).find(qualifier) != std::string::npos;
+            });
+        }
+    }
+    // Every kind gets a share before any kind takes what is left.
+    const size_t shares[4] = {12, 6, 10, 6};
+    std::vector<MapMatch> chosen, left;
+    size_t all = 0;
+    for (int group = 0; group < 4; group++) {
+        all += groups[group].size();
+        for (size_t i = 0; i < groups[group].size(); i++) (i < shares[group] ? chosen : left).push_back(groups[group][i]);
+    }
+    for (const MapMatch& match : left) {
+        if (chosen.size() < limit) chosen.push_back(match);
+    }
+    if (chosen.size() > limit) chosen.resize(limit);
+    auto rank = [](const MapMatch& match) {
+        return match.kind == "definition candidate" ? 0 : match.kind == "import candidate" ? 1 : match.kind == "reference candidate" ? 2 : match.kind == "test reference candidate" ? 3 : 4;
+    };
+    std::stable_sort(chosen.begin(), chosen.end(), [&](const MapMatch& a, const MapMatch& b) { return rank(a) < rank(b); });
+    MapResult result;
+    result.files = std::max(definitions.files, references.files);
+    result.partial = definitions.partial || references.partial || all > chosen.size();
+    result.matches = std::move(chosen);
+    return result;
+}
+
+std::string report(const MapResult& result, const std::string& query) {
+    std::string text = std::to_string(result.matches.size()) + " matches for " + query + " in " + std::to_string(result.files) + " source files" +
+                       (result.partial ? " (not everything; narrow the folder or the name to see the rest)" : "") +
+                       ": definitions, then imports, callers and tests. These are whole-word text matches, not a compiler's answer; read the lines before relying on them.";
+    for (const MapMatch& match : result.matches) text += "\n" + match.path + ":" + std::to_string(match.line) + "  [" + match.kind + "]  " + match.text;
+    if (result.matches.empty()) text += "\nNothing matched. Check the spelling, or search with search_files.";
+    return text;
+}
+
+}  // namespace repository_map
+
 namespace symbols {
 
 namespace {
