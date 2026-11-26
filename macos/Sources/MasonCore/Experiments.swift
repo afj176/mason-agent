@@ -22,13 +22,15 @@ public struct ExperimentHunk: Equatable {
 
 public enum Experiments {
     /// Nothing in the repository's own settings may start a program, and paths are never read as patterns.
-    static let options = "-c core.hooksPath=/dev/null -c core.fsmonitor= -c core.quotepath=false -c commit.gpgsign=false -c user.name='Mason Experiment' -c user.email=mason@localhost --no-optional-locks --literal-pathspecs"
+    static let options = "-c core.hooksPath=/dev/null -c core.fsmonitor= -c core.quotepath=false -c commit.gpgsign=false --no-optional-locks --literal-pathspecs"
+    static let ownIdentity = " -c user.name='Mason Experiment' -c user.email=mason@localhost"
 
     /// Runs git in `workspace` and returns what it printed. This is not sandboxed: a worktree lives outside the project.
-    static func git(_ workspace: Workspace, _ arguments: [String], index: String? = nil) async throws -> String {
+    /// `identity` false leaves a commit to carry the user's own name.
+    static func git(_ workspace: Workspace, _ arguments: [String], index: String? = nil, identity: Bool = true) async throws -> String {
         let printed = FileManager.default.temporaryDirectory.appendingPathComponent("mason-git-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: printed) }
-        let command = (index.map { "GIT_INDEX_FILE=" + Shell.quote($0) + " " } ?? "") + "git " + options + " " + arguments.map(Shell.quote).joined(separator: " ") + " > " + Shell.quote(printed.path)
+        let command = (index.map { "GIT_INDEX_FILE=" + Shell.quote($0) + " " } ?? "") + "git " + options + (identity ? ownIdentity : "") + " " + arguments.map(Shell.quote).joined(separator: " ") + " > " + Shell.quote(printed.path)
         let result = try await Shell.run(command, in: workspace, sandboxed: false, timeout: 90)
         guard result.exitCode == 0, !result.timedOut else {
             throw MasonError("git \(arguments.first ?? "") failed: " + result.output.trimmingCharacters(in: .whitespacesAndNewlines))

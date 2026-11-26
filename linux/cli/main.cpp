@@ -18,6 +18,7 @@
 #include "schedules.hpp"
 #include "script.hpp"
 #include "experiments.hpp"
+#include "delivery.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
 
@@ -537,6 +538,12 @@ private:
             for (const std::string& line : split(experiments::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
             return true;
         }
+        if (name == "/deliver") {
+            const delivery::Said said = delivery::command(rest, workspace_, store_.home());
+            for (const std::string& line : split(said.text, '\n')) term::line("  " + line);
+            if (!said.request.empty()) send(said.request);
+            return true;
+        }
         if (name == "/comment" || name == "/comments") {
             if (to_lower(rest) == "send") {
                 if (session_.comments.empty()) term::line(paint(term::dim, "  No comments are waiting."));
@@ -636,6 +643,7 @@ private:
             {"/commands", "List your custom slash commands"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"},
             {"/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"},
             {"/review", "Have the model read what this session changed and pin what it finds as comments"},
             {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},

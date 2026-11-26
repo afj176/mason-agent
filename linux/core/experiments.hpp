@@ -25,6 +25,11 @@ namespace experiments {
 
 extern const char* const kUsage;
 
+/// Runs git in `workspace` and returns what it printed, with nothing in the repository's own settings able to start a
+/// program. It is not sandboxed: a worktree lives outside the project. `index` names a private index file.
+/// `identity` false leaves a commit to carry the user's own name.
+std::string git(const Workspace& workspace, const std::vector<std::string>& arguments, const std::string& index = "", bool identity = true);
+
 /// Adds a worktree for a new branch at `destination`, which must be a new folder outside the project. Returns its path.
 std::string create_worktree(const Workspace& project, const std::string& destination, const std::string& branch, const std::string& revision = "HEAD");
 

@@ -20,6 +20,7 @@
 #include "schedules.hpp"
 #include "script.hpp"
 #include "experiments.hpp"
+#include "delivery.hpp"
 #include "shell.hpp"
 #include "models.hpp"
 
@@ -983,6 +984,53 @@ static void test_extra_tools() {
                 CHECK(refused);  // a worktree inside the project is refused
             }
         }
+    }
+
+    // A delivery is one commit of chosen hunks, and leaves the checkout alone.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        std::vector<std::string> lines;
+        for (int i = 1; i <= 30; i++) lines.push_back("line " + std::to_string(i));
+        box.write("big.txt", join(lines, "\n") + "\n");
+        const CommandResult made = shell::run("git init -q . && git symbolic-ref HEAD refs/heads/main && git config user.name t && git config user.email t@t.invalid && git add . && git commit -qm start && git remote add origin git@github.com:someone/shop.git", workspace, false);
+        CHECK(made.exit_code == 0);
+        if (made.exit_code == 0) {
+            lines[1] = "line two";
+            lines[27] = "line twenty-eight";
+            box.write("big.txt", join(lines, "\n") + "\n");
+            const std::string head = trim(shell::run("git rev-parse HEAD", workspace, false).output);
+            const DeliveryReview reviewed = delivery::review(workspace, "main");
+            CHECK(reviewed.patches.size() == 2);  // two separate hunks
+            if (reviewed.patches.size() == 2) {
+                const DeliveryDraft draft = delivery::draft(workspace, "main", reviewed.revision, "Spell out two", {reviewed.patches[0].hunk.id}, box.home);
+                CHECK(draft.repository == "someone/shop" && draft.branch.rfind("mason/review-", 0) == 0 && draft.url.empty() && draft.paths == std::vector<std::string>{"big.txt"});
+                const std::string shown = shell::run("git show " + draft.commit + ":big.txt && git log -1 --format=%s%n%an " + draft.commit, workspace, false).output;
+                CHECK(shown.find("line two\n") != std::string::npos && shown.find("line 28\n") != std::string::npos && shown.find("twenty-eight") == std::string::npos);  // only the chosen hunk
+                CHECK(shown.find("Spell out two\nt\n") != std::string::npos);  // the commit carries the user's name
+                const std::string after = shell::run("git rev-parse HEAD && git status --porcelain", workspace, false).output;
+                CHECK(after.rfind(head, 0) == 0 && after.find(" M big.txt") != std::string::npos);  // the branch, the index and the files are as they were
+                const auto current = delivery::current(workspace, box.home);
+                CHECK(current && current->commit == draft.commit);
+                const delivery::Said all = delivery::command("draft main all Both lines", workspace, box.home);
+                CHECK(all.text.find("\"Both lines\" onto main") != std::string::npos && all.text.find("someone/shop") != std::string::npos);
+                bool refused = false;
+                try { delivery::draft(workspace, "main", std::string(40, '0'), "x", {"a"}, box.home); } catch (const Error&) { refused = true; }
+                CHECK(refused);  // a base that moved is refused
+                refused = false;
+                try { delivery::feedback(workspace, draft); } catch (const Error&) { refused = true; }
+                CHECK(refused);  // feedback needs a published draft
+            }
+        }
+        CHECK(delivery::repository("https://github.com/Owner/Repo.git") == "Owner/Repo");
+        bool refused = false;
+        try { delivery::repository("https://example.com/owner/repo.git"); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+        const DeliveryFeedback feedback = delivery::parse_feedback(
+            R"J({"url":"https://github.com/someone/shop/pull/7","headRefOid":"abc","statusCheckRollup":[{"name":"build","conclusion":"FAILURE","detailsUrl":"https://ci/1"},{"name":"lint","conclusion":"SUCCESS"},{"context":"deploy","state":"ERROR"}],"reviews":[{"state":"CHANGES_REQUESTED","body":"Rename it."},{"state":"APPROVED","body":"ok"}]})J",
+            R"J([{"path":"big.txt","line":2,"body":"Why two?"}])J");
+        CHECK(feedback.observations == (std::vector<std::string>{"CI · build · FAILURE · https://ci/1", "CI · deploy · ERROR · ", "Review · Rename it.", "big.txt:2 · Why two?"}));
+        CHECK(feedback.head == "abc");
     }
 
     // A job runs in the background and stops when the request ends.

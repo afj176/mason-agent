@@ -408,6 +408,40 @@ final class MasonCoreTests: XCTestCase {
         do { _ = try await Experiments.createWorktree(workspace, destination: folder.appendingPathComponent("inside").path, branch: "x"); XCTFail("a worktree inside the project is refused") } catch {}
     }
 
+    func testADeliveryIsOneCommitOfChosenHunksAndLeavesTheCheckoutAlone() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let lines = (1...30).map { "line \($0)" }
+        try (lines.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
+        let made = try await Shell.run("git init -q . && git symbolic-ref HEAD refs/heads/main && git config user.name t && git config user.email t@t.invalid && git add . && git commit -qm start && git remote add origin git@github.com:someone/shop.git", in: workspace, sandboxed: false)
+        try XCTSkipIf(made.exitCode != 0, "git is not available: " + made.output)
+        var edited = lines; edited[1] = "line two"; edited[27] = "line twenty-eight"
+        try (edited.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
+        let head = try await Shell.run("git rev-parse HEAD", in: workspace, sandboxed: false).output
+
+        let reviewed = try await Delivery.review(workspace, base: "main")
+        XCTAssertEqual(reviewed.patches.map(\.path), ["big.txt", "big.txt"], "two separate hunks")
+        let draft = try await Delivery.draft(workspace, base: "main", pinned: reviewed.revision, title: "Spell out two", selected: [reviewed.patches[0].hunk.id], home: home)
+        XCTAssertEqual(draft.repository, "someone/shop")
+        XCTAssertTrue(draft.branch.hasPrefix("mason/review-") && draft.url == nil && draft.paths == ["big.txt"])
+        let shown = try await Shell.run("git show \(draft.commit):big.txt && git log -1 --format=%s%n%an \(draft.commit)", in: workspace, sandboxed: false).output
+        XCTAssertTrue(shown.contains("line two\n") && shown.contains("line 28\n") && !shown.contains("twenty-eight"), "only the chosen hunk is in the commit")
+        XCTAssertTrue(shown.contains("Spell out two\nt\n"), "the commit carries the user's name: " + shown)
+        let after = try await Shell.run("git rev-parse HEAD && git status --porcelain", in: workspace, sandboxed: false).output
+        XCTAssertTrue(after.hasPrefix(head) && after.contains(" M big.txt"), "the branch, the index and the files are as they were: " + after)
+        XCTAssertEqual(Delivery.current(workspace, home: home), draft)
+        let all = try await Delivery.command("draft main all Both lines", workspace: workspace, home: home)
+        XCTAssertTrue(all.text.contains("\"Both lines\" onto main") && all.text.contains("someone/shop"), all.text)
+        do { _ = try await Delivery.draft(workspace, base: "main", pinned: String(repeating: "0", count: 40), title: "x", selected: ["a"], home: home); XCTFail("a base that moved is refused") } catch {}
+        do { _ = try await Delivery.feedback(workspace, draft); XCTFail("feedback needs a published draft") } catch {}
+
+        XCTAssertEqual(try Delivery.repository("https://github.com/Owner/Repo.git"), "Owner/Repo")
+        XCTAssertThrowsError(try Delivery.repository("https://example.com/owner/repo.git"))
+        let state = #"{"url":"https://github.com/someone/shop/pull/7","headRefOid":"abc","statusCheckRollup":[{"name":"build","conclusion":"FAILURE","detailsUrl":"https://ci/1"},{"name":"lint","conclusion":"SUCCESS"},{"context":"deploy","state":"ERROR"}],"reviews":[{"state":"CHANGES_REQUESTED","body":"Rename it."},{"state":"APPROVED","body":"ok"}]}"#
+        let feedback = try Delivery.parseFeedback(state: state, comments: #"[{"path":"big.txt","line":2,"body":"Why two?"}]"#)
+        XCTAssertEqual(feedback.observations, ["CI · build · FAILURE · https://ci/1", "CI · deploy · ERROR · ", "Review · Rename it.", "big.txt:2 · Why two?"])
+        XCTAssertEqual(feedback.head, "abc")
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

@@ -9,23 +9,13 @@ namespace mason::experiments {
 namespace {
 
 // Nothing in the repository's own settings may start a program, and paths are never read as patterns.
-const char* const kOptions = "-c core.hooksPath=/dev/null -c core.fsmonitor= -c core.quotepath=false -c commit.gpgsign=false -c user.name='Mason Experiment' -c user.email=mason@localhost --no-optional-locks --literal-pathspecs";
+const char* const kOptions = "-c core.hooksPath=/dev/null -c core.fsmonitor= -c core.quotepath=false -c commit.gpgsign=false --no-optional-locks --literal-pathspecs";
+const char* const kOwnIdentity = " -c user.name='Mason Experiment' -c user.email=mason@localhost";
 
 struct Removed {
     fs::path path;
     ~Removed() { std::error_code ignored; fs::remove(path, ignored); fs::remove(path.string() + ".lock", ignored); }
 };
-
-/// Runs git in `workspace` and returns what it printed. This is not sandboxed: a worktree lives outside the project.
-std::string git(const Workspace& workspace, const std::vector<std::string>& arguments, const std::string& index = "") {
-    const Removed printed{fs::temp_directory_path() / ("mason-git-" + new_id())};
-    std::string command = (index.empty() ? "" : "GIT_INDEX_FILE=" + shell::quote(index) + " ") + "git " + kOptions;
-    for (const std::string& argument : arguments) command += " " + shell::quote(argument);
-    command += " > " + shell::quote(printed.path.string());
-    const CommandResult result = shell::run(command, workspace, false, 90);
-    if (result.exit_code != 0 || result.timed_out) throw Error("git " + (arguments.empty() ? std::string() : arguments[0]) + " failed: " + trim(result.output));
-    return fs::exists(printed.path) ? read_file(printed.path) : "";
-}
 
 /// The tree of everything in the checkout now, built in a private index so the user's own index is untouched.
 std::string snapshot(const Workspace& workspace) {
@@ -63,6 +53,16 @@ void save(const std::vector<Experiment>& all, const fs::path& home) {
 bool same(const Experiment& a, const Experiment& b) { return a.parent == b.parent && a.name == b.name && a.path == b.path; }
 
 }  // namespace
+
+std::string git(const Workspace& workspace, const std::vector<std::string>& arguments, const std::string& index, bool identity) {
+    const Removed printed{fs::temp_directory_path() / ("mason-git-" + new_id())};
+    std::string command = (index.empty() ? "" : "GIT_INDEX_FILE=" + shell::quote(index) + " ") + "git " + kOptions + (identity ? kOwnIdentity : "");
+    for (const std::string& argument : arguments) command += " " + shell::quote(argument);
+    command += " > " + shell::quote(printed.path.string());
+    const CommandResult result = shell::run(command, workspace, false, 90);
+    if (result.exit_code != 0 || result.timed_out) throw Error("git " + (arguments.empty() ? std::string() : arguments[0]) + " failed: " + trim(result.output));
+    return fs::exists(printed.path) ? read_file(printed.path) : "";
+}
 
 const char* const kUsage =
     "/experiment                       List this project's experiments and what each has changed\n"

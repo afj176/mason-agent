@@ -501,6 +501,10 @@ final class CLI {
             }
         case "/experiment", "/experiments":
             for line in try await Experiments.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/deliver":
+            let said = try await Delivery.command(rest, workspace: workspace)
+            for line in said.text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            if let request = said.request { await send(request) }
         case "/comment", "/comments":
             if rest.lowercased() == "send" {
                 if (session.comments ?? []).isEmpty { Term.line(Term.paint(Term.dim, "  No comments are waiting.")) } else { await send(" ") }
@@ -592,6 +596,7 @@ final class CLI {
             ("/commands", "List your custom slash commands"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"),
             ("/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"),
             ("/review", "Have the model read what this session changed and pin what it finds as comments"),
             ("/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"),
