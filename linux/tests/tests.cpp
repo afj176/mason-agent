@@ -906,11 +906,97 @@ static void test_extra_tools() {
     }
 }
 
+static void test_verification() {
+    const auto approve = [](const ApprovalRequest&) { return true; };
+    const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
+    // A project whose verify workflow passes when calc.py contains the needle, with the rule that lets Mason run it.
+    auto prepare = [](Sandbox& box, SessionStore& store, const std::string& needle, bool allowed) {
+        box.write("mason.workflows.json", R"({"version": 1, "workflows": {"verify": {"executable": "grep", "arguments": ["-q", ")" + needle + R"(", "calc.py"]}}})");
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::WorkspaceEdits);
+        if (allowed) ApprovalRules(store.home(), session.workspace).add("run_workflow", "workflow verify");
+        return session;
+    };
+
+    // A regression is handed back to the model, and the receipt records the repair.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = prepare(box, store, "def add", true);
+        ScriptedModel model;
+        model.replies = {call("write_file", {{"path", "calc.py"}, {"content", "def plus(a, b):\n    return a + b\n"}}), say("Renamed it."),
+                         call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Kept the name and fixed the sum.")};
+        int verifying = 0;
+        Agent(store, model, approve, [&](const AgentEvent& event) { verifying += event.kind == AgentEvent::Kind::Status && event.text == "Verifying" ? 1 : 0; }).run(session, "Fix add");
+        const auto& receipt = session.turns[0].verification;
+        CHECK(session.state == "Completed" && receipt && receipt->verdict == "passed" && receipt->repairs == 1 && receipt->baseline_exit_code == std::optional<int>(0));
+        CHECK(session.turns[0].answer == "Kept the name and fixed the sum." && receipt && receipt->summary() == "verify passed");
+        CHECK(model.seen[2].back().content.find("It passed before your changes and fails now") != std::string::npos);
+        CHECK(verifying == 3);  // once before the first change, and once after each answer
+        const SessionStore reloaded(box.home);
+        CHECK(reloaded.sessions()[0].turns[0].verification && reloaded.sessions()[0].turns[0].verification->verdict == "passed");
+    }
+
+    // The receipt tells a regression from a failure that was already there.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = prepare(box, store, "never-in-the-file", true);
+        ScriptedModel model;
+        model.replies = edit();
+        Agent(store, model, approve, [](const AgentEvent&) {}).run(session, "Fix add");
+        CHECK(session.turns[0].verification && session.turns[0].verification->verdict == "failingBefore" && model.seen.size() == 2);  // not sent back
+    }
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = prepare(box, store, "a + b", true);
+        ScriptedModel model;
+        model.replies = edit();
+        Agent(store, model, approve, [](const AgentEvent&) {}).run(session, "Fix add");
+        CHECK(session.turns[0].verification && session.turns[0].verification->verdict == "fixed");
+    }
+    {
+        // A regression the model cannot repair is recorded as one, after two attempts.
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = prepare(box, store, "def add", true);
+        ScriptedModel model;
+        for (int number = 1; number <= 3; number++) {
+            model.replies.push_back(call("write_file", {{"path", "calc.py"}, {"content", "broken " + std::to_string(number) + "\n"}}));
+            model.replies.push_back(say("Attempt."));
+        }
+        Agent(store, model, approve, [](const AgentEvent&) {}).run(session, "Break it");
+        CHECK(session.state == "Completed" && session.turns[0].verification && session.turns[0].verification->verdict == "regression" && session.turns[0].verification->repairs == 2);
+    }
+
+    // Verification needs permission and a change.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = prepare(box, store, "def add", false);
+        ScriptedModel model;
+        model.replies = edit();
+        Agent(store, model, approve, [](const AgentEvent&) {}).run(session, "Change it");
+        CHECK(session.turns[0].verification && session.turns[0].verification->verdict == "notRun");
+        ApprovalRules(store.home(), session.workspace).add("run_workflow", "workflow verify");
+        ScriptedModel reading;
+        reading.replies = {call("read_file", {{"path", "calc.py"}}), say("It adds.")};
+        Agent(store, reading, approve, [](const AgentEvent&) {}).run(session, "Explain it");
+        CHECK(!session.turns[1].verification);  // nothing changed, so nothing to verify
+        fs::remove(box.project / "mason.workflows.json");
+        ScriptedModel again;
+        again.replies = edit();
+        again.replies[0] = call("write_file", {{"path", "calc.py"}, {"content", "y\n"}});
+        Agent(store, again, approve, [](const AgentEvent&) {}).run(session, "Change it");
+        CHECK(!session.turns[2].verification);  // no verify workflow, no receipt
+    }
+}
+
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

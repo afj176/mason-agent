@@ -59,6 +59,10 @@ public:
     /// True when no background job from the last request is still held.
     bool jobs_empty() { return jobs_.empty(); }
     static constexpr size_t kFollowUpLimit = 16;
+    /// How many times a request is handed back to the model because verification regressed.
+    static constexpr int kRepairLimit = 2;
+    /// The name of the workflow in mason.workflows.json that Mason runs to verify a request.
+    static constexpr const char* kVerifyWorkflow = "verify";
     /// Runs a request, then any follow-ups sent while it ran. "/queue" resumes follow-ups left from an earlier stop.
     /// A queued follow-up runs only after a request that completed; a steering one runs whatever happened.
     /// The session is saved after every step, so an interruption loses nothing that already happened.
@@ -75,6 +79,14 @@ public:
 
 private:
     void run_turn(Session& session, const std::string& request, const CancelToken& cancel);
+    /// The verify workflow's command, when the project defines one.
+    std::optional<std::string> verify_command(const Workspace& workspace) const;
+    /// Mason runs the workflow itself, so it needs the permission a command would: Auto, or a saved rule for "workflow verify".
+    bool may_verify(const Session& session) const;
+    /// Runs the verify workflow, or returns nothing when there is none or it may not be run.
+    std::optional<CommandResult> verify_run(const Workspace& workspace, const Session& session, const CancelToken& cancel);
+    /// After the model's answer: when the request changed files and the project has a verify workflow, the receipt.
+    std::optional<Verification> verify(const Workspace& workspace, const Session& session, const std::optional<CommandResult>& baseline, int repairs, const CancelToken& cancel);
     std::string perform(const ToolCall& call, const Workspace& workspace, Session& session, const CancelToken& cancel);
     /// The tools for this request: the built-in ones, the extra ones that fit the session and the project, and the
     /// MCP tools when a server is registered.

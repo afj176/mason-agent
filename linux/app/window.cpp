@@ -583,6 +583,22 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
     } else if (!turn.answer.empty()) {
         reply->append(*answer_widget(turn.answer));
     }
+    if (!live && turn.verification) {
+        // What Mason found when it ran the project's verify workflow itself.
+        const Verification& receipt = *turn.verification;
+        const bool good = receipt.verdict == "passed" || receipt.verdict == "fixed";
+        const bool quiet = receipt.verdict == "notRun" || receipt.verdict == "failingBefore";
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        auto* icon = Gtk::make_managed<Gtk::Image>();
+        icon->set_from_icon_name(good ? "emblem-ok-symbolic" : quiet ? "dialog-information-symbolic" : "dialog-error-symbolic");
+        auto* label = Gtk::make_managed<Gtk::Label>("Verified by Mason: " + receipt.summary() + (receipt.repairs > 0 ? " · after " + std::to_string(receipt.repairs) + (receipt.repairs == 1 ? " repair" : " repairs") : ""));
+        label->set_xalign(0);
+        for (Gtk::Widget* part : {static_cast<Gtk::Widget*>(icon), static_cast<Gtk::Widget*>(label)}) part->add_css_class(good ? "success" : quiet ? "warning" : "error");
+        row->append(*icon);
+        row->append(*label);
+        row->set_tooltip_text(receipt.command + (receipt.output.empty() ? "" : "\n\n" + utf8_suffix(receipt.output, 600)));
+        reply->append(*row);
+    }
     if (!live && (!activities.empty() || !turn.changes.empty())) {
         // What the request amounted to, in one line, and the way to its changes.
         int reads = 0, edits = 0, commands = 0, other = 0;

@@ -123,6 +123,54 @@ public final class Agent {
         """
     }
 
+    // MARK: verification
+
+    /// How many times a request is handed back to the model because verification regressed.
+    public static let repairLimit = 2
+    /// The name of the workflow in mason.workflows.json that Mason runs to verify a request.
+    public static let verifyWorkflow = "verify"
+    /// Tools that can change the project.
+    static let changing: Set<String> = ["edit_file", "write_file", "apply_edits", "run_shell", "run_workflow", "start_job"]
+
+    /// The verify workflow, when the project defines one.
+    func verifyCommand(_ workspace: Workspace) -> String? {
+        (try? ProjectWorkflows.load(workspace))?.workflows[Agent.verifyWorkflow].map(ProjectWorkflows.commandLine)
+    }
+
+    /// Mason runs the workflow itself, so it needs the same permission a command would: Auto (it runs sandboxed),
+    /// or a saved rule for "workflow verify". It never asks in the middle of a request.
+    func mayVerify(_ session: Session) -> Bool {
+        if session.askOnly || session.permission == .readOnly { return false }
+        return session.permission == .auto || ApprovalRules(home: home, workspace: session.workspace).allows(tool: "run_workflow", subject: "workflow " + Agent.verifyWorkflow)
+    }
+
+    /// Runs the verify workflow, or returns nil when there is none or it may not be run.
+    func verifyRun(_ workspace: Workspace, session: Session) async -> CommandResult? {
+        guard let command = verifyCommand(workspace), mayVerify(session) else { return nil }
+        emit(.status("Verifying"))
+        let result = try? await Shell.run(command, in: workspace, sandboxed: session.permission == .auto)
+        // Whatever the run left behind is not part of the request's changes.
+        snapshot = Snapshot.capture(workspace, previous: snapshot).entries
+        return result
+    }
+
+    /// After the model's answer: when the request changed files and the project has a verify workflow, the receipt.
+    func verify(_ workspace: Workspace, session: inout Session, baseline: CommandResult?, repairs: Int) async throws -> Verification? {
+        guard !session.turns[session.turns.count - 1].changes.isEmpty, let command = verifyCommand(workspace) else { return nil }
+        guard mayVerify(session) else {
+            return Verification(workflow: Agent.verifyWorkflow, command: command, verdict: .notRun, exitCode: nil, baselineExitCode: nil,
+                                output: "Mason runs it by itself in Auto, or when you have chosen Always Allow for the verify workflow.", repairs: repairs)
+        }
+        try Task.checkCancellation()
+        guard let after = await verifyRun(workspace, session: session) else { return nil }
+        try Task.checkCancellation()
+        let passed = after.exitCode == 0 && !after.timedOut
+        let before = baseline.map { $0.exitCode == 0 && !$0.timedOut }
+        let verdict: Verification.Verdict = passed ? (before == false ? .fixed : .passed) : (before == true ? .regression : before == false ? .failingBefore : .failed)
+        return Verification(workflow: Agent.verifyWorkflow, command: command, verdict: verdict, exitCode: after.exitCode, baselineExitCode: baseline?.exitCode,
+                            output: String(after.output.suffix(4000)), repairs: repairs)
+    }
+
     /// Adds a message while a request is running. Steering stops the model's current step and handles the message
     /// next; otherwise the message is queued until the request completes.
     public func sendWhileRunning(_ text: String, steer: Bool) throws {
@@ -220,6 +268,7 @@ public final class Agent {
         try? store.save(session)
         do {
             var finished = false, asked = false
+            var baselineTaken = false, baseline: CommandResult?, repairs = 0
             pendingQuestion = nil
             let window = await model.contextWindow()
             for _ in 0..<Agent.actionLimit {
@@ -236,11 +285,26 @@ public final class Agent {
                 session.messages.append(ChatMessage(role: "assistant", content: reply.text, toolCalls: reply.toolCalls.isEmpty ? nil : reply.toolCalls))
                 if reply.toolCalls.isEmpty {
                     session.turns[session.turns.count - 1].answer = reply.text
+                    // The model says it is done. If the project can be verified and files changed, Mason checks for itself.
+                    if let receipt = try await verify(workspace, session: &session, baseline: baseline, repairs: repairs) {
+                        session.turns[session.turns.count - 1].verification = receipt
+                        if receipt.verdict == .regression, repairs < Agent.repairLimit {
+                            repairs += 1
+                            session.messages.append(ChatMessage(role: "user", content: "Mason ran the project's verify workflow (\(receipt.command)). It passed before your changes and fails now:\n\(receipt.output)\nFix what your changes broke, then answer again."))
+                            try? store.save(session)
+                            continue
+                        }
+                    }
                     finished = true
                     break
                 }
                 for call in reply.toolCalls {
                     try Task.checkCancellation()
+                    // Before the first step that can change the project, note whether it verifies as it stands.
+                    if !baselineTaken, Agent.changing.contains(call.name) {
+                        baselineTaken = true
+                        baseline = await verifyRun(workspace, session: session)
+                    }
                     let result = await perform(call, in: workspace, session: &session)
                     session.messages.append(ChatMessage(role: "tool", content: result, toolCallId: call.id))
                     try? store.save(session)

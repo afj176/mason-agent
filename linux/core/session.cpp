@@ -31,6 +31,15 @@ Permission permission_from_key(const std::string& key) {
     return Permission::ReviewEdits;
 }
 
+std::string Verification::summary() const {
+    if (verdict == "passed") return workflow + " passed";
+    if (verdict == "fixed") return workflow + " passes now; it failed before this request";
+    if (verdict == "regression") return workflow + " fails now; it passed before this request";
+    if (verdict == "failingBefore") return workflow + " fails, as it did before this request";
+    if (verdict == "notRun") return workflow + " was not run";
+    return workflow + " failed";
+}
+
 json message_json(const ChatMessage& message) {
     json item = {{"role", message.role}, {"content", message.content}};
     if (!message.tool_calls.empty()) {
@@ -66,7 +75,14 @@ json to_json(const Session& session) {
             if (change.by_command) item["byCommand"] = true;
             changes.push_back(std::move(item));
         }
-        turns.push_back({{"id", turn.id}, {"request", turn.request}, {"answer", turn.answer}, {"changes", changes}, {"undone", turn.undone}, {"firstActivity", turn.first_activity}});
+        json saved = {{"id", turn.id}, {"request", turn.request}, {"answer", turn.answer}, {"changes", changes}, {"undone", turn.undone}, {"firstActivity", turn.first_activity}};
+        if (turn.verification) {
+            const Verification& receipt = *turn.verification;
+            saved["verification"] = {{"workflow", receipt.workflow}, {"command", receipt.command}, {"verdict", receipt.verdict}, {"output", receipt.output}, {"repairs", receipt.repairs}};
+            if (receipt.exit_code) saved["verification"]["exitCode"] = *receipt.exit_code;
+            if (receipt.baseline_exit_code) saved["verification"]["baselineExitCode"] = *receipt.baseline_exit_code;
+        }
+        turns.push_back(std::move(saved));
     }
     json result = {{"version", 1}, {"id", session.id}, {"title", session.title}, {"workspace", session.workspace},
                    {"permission", permission_key(session.permission)}, {"askOnly", session.ask_only}, {"state", session.state},
@@ -114,6 +130,18 @@ Session session_from_json(const json& value) {
         turn.answer = item.value("answer", "");
         turn.undone = item.value("undone", false);
         turn.first_activity = item.value("firstActivity", size_t{0});
+        if (item.contains("verification") && item["verification"].is_object()) {
+            const json& saved = item["verification"];
+            Verification receipt;
+            receipt.workflow = saved.value("workflow", "");
+            receipt.command = saved.value("command", "");
+            receipt.verdict = saved.value("verdict", "");
+            receipt.output = saved.value("output", "");
+            receipt.repairs = saved.value("repairs", 0);
+            if (saved.contains("exitCode") && saved["exitCode"].is_number_integer()) receipt.exit_code = saved["exitCode"].get<int>();
+            if (saved.contains("baselineExitCode") && saved["baselineExitCode"].is_number_integer()) receipt.baseline_exit_code = saved["baselineExitCode"].get<int>();
+            turn.verification = std::move(receipt);
+        }
         for (const json& change : item.value("changes", json::array())) {
             FileChange entry{change.value("path", ""), std::nullopt, change.value("after", "")};
             if (change.contains("before") && change["before"].is_string()) entry.before = change["before"].get<std::string>();

@@ -394,6 +394,80 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertFalse(try RepositoryMap.outline(workspace, under: "src").contains("calc.py"))
     }
 
+    // MARK: verification
+
+    /// A project whose verify workflow passes when calc.py contains `needle`, with the rule that lets Mason run it.
+    func verifying(_ needle: String, allowed: Bool = true) throws -> (SessionStore, Session) {
+        let manifest = #"{"version": 1, "workflows": {"verify": {"executable": "grep", "arguments": ["-q", "NEEDLE", "calc.py"]}}}"#.replacingOccurrences(of: "NEEDLE", with: needle)
+        try manifest.write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        let (store, session) = try session(.workspaceEdits)
+        if allowed {
+            var rules = ApprovalRules(home: home, workspace: session.workspace)
+            try rules.add(tool: "run_workflow", prefix: "workflow verify")
+        }
+        return (store, session)
+    }
+
+    func testARegressionIsHandedBackToTheModelAndTheReceiptRecordsTheRepair() async throws {
+        var (store, session) = try verifying("def add")
+        let model = ScriptedModel([
+            call("write_file", ["path": "calc.py", "content": "def plus(a, b):\n    return a + b\n"]), ModelReply(text: "Renamed it."),
+            call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a + b\n"]), ModelReply(text: "Kept the name and fixed the sum."),
+        ])
+        var statuses: [String] = []
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { if case .status(let text) = $0 { statuses.append(text) } }).run(&session, request: "Fix add")
+        XCTAssertEqual(session.state, "Completed")
+        let receipt = try XCTUnwrap(session.turns[0].verification)
+        XCTAssertEqual(receipt.verdict, .passed)
+        XCTAssertEqual(receipt.repairs, 1)
+        XCTAssertEqual(receipt.baselineExitCode, 0)
+        XCTAssertEqual(session.turns[0].answer, "Kept the name and fixed the sum.")
+        XCTAssertTrue(model.seen[2].last!.content.contains("It passed before your changes and fails now"), "the model is told what Mason found")
+        XCTAssertEqual(statuses.filter { $0 == "Verifying" }.count, 3, "once before the first change, and once after each answer")
+        XCTAssertEqual(receipt.summary, "verify passed")
+    }
+
+    func testTheReceiptTellsARegressionFromAFailureThatWasAlreadyThere() async throws {
+        // It failed before and still fails: not the request's doing, so the model is not sent back.
+        var (store, session) = try verifying("never-in-the-file")
+        let edit = [call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a + b\n"]), ModelReply(text: "Done.")]
+        let before = ScriptedModel(edit)
+        await Agent(store: store, model: before, approve: { _ in true }, emit: { _ in }).run(&session, request: "Fix add")
+        XCTAssertEqual(session.turns[0].verification?.verdict, .failingBefore)
+        XCTAssertEqual(before.seen.count, 2)
+
+        // It failed before and passes after.
+        _ = try Agent.undoLatest(&session, store: store)
+        (store, session) = try verifying("a + b")
+        await Agent(store: store, model: ScriptedModel(edit), approve: { _ in true }, emit: { _ in }).run(&session, request: "Fix add")
+        XCTAssertEqual(session.turns.last?.verification?.verdict, .fixed)
+        XCTAssertEqual(session.turns.last?.verification?.summary, "verify passes now; it failed before this request")
+
+        // A regression the model cannot repair is recorded as one, after two attempts.
+        (store, session) = try verifying("a + b")
+        let stubborn = ScriptedModel((1...3).flatMap { number in [call("write_file", ["path": "calc.py", "content": "broken \(number)\n"]), ModelReply(text: "Attempt \(number).")] })
+        await Agent(store: store, model: stubborn, approve: { _ in true }, emit: { _ in }).run(&session, request: "Break it")
+        XCTAssertEqual(session.turns.last?.verification?.verdict, .regression)
+        XCTAssertEqual(session.turns.last?.verification?.repairs, 2)
+        XCTAssertEqual(session.state, "Completed")
+    }
+
+    func testVerificationNeedsPermissionAndAChange() async throws {
+        // Without Auto or a saved rule, Mason does not run it, and says so.
+        var (store, session) = try verifying("def add", allowed: false)
+        await Agent(store: store, model: ScriptedModel([call("write_file", ["path": "calc.py", "content": "x\n"]), ModelReply(text: "Done.")]), approve: { _ in true }, emit: { _ in }).run(&session, request: "Change it")
+        XCTAssertEqual(session.turns[0].verification?.verdict, .notRun)
+        // A request that changes nothing has nothing to verify.
+        (store, session) = try verifying("def add")
+        await Agent(store: store, model: ScriptedModel([call("read_file", ["path": "calc.py"]), ModelReply(text: "It adds.")]), approve: { _ in true }, emit: { _ in }).run(&session, request: "Explain it")
+        XCTAssertNil(session.turns.last?.verification)
+        // A project without a verify workflow gets no receipt.
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("mason.workflows.json"))
+        await Agent(store: store, model: ScriptedModel([call("write_file", ["path": "calc.py", "content": "y\n"]), ModelReply(text: "Done.")]), approve: { _ in true }, emit: { _ in }).run(&session, request: "Change it")
+        XCTAssertNil(session.turns.last?.verification)
+        XCTAssertNotNil(try SessionStore(home: home).sessions.first)
+    }
+
     // MARK: queue and steer
 
     func testAQueuedMessageRunsAfterTheRequestCompletes() async throws {
