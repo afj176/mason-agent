@@ -348,6 +348,14 @@ public enum BrowserCheck {
             }
         } onCancel: { process.terminate() }
         deadline.cancel()
+        // The answer is in. A browser that lingers after writing it is stopped rather than waited for.
+        let grace = Date().addingTimeInterval(3)
+        while process.isRunning, Date() < grace { try? await Task.sleep(nanoseconds: 50_000_000) }
+        if process.isRunning {
+            process.terminate()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
         process.waitUntilExit()
         try Task.checkCancellation()
         let dom = String(decoding: collected, as: UTF8.self)
