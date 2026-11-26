@@ -35,6 +35,21 @@ printf '/undo\n/compact\n/status\n/exit\n' | mason --resume --auto --endpoint "h
 [ ! -e made.txt ] || { echo "/undo did not remove the file the command created."; exit 1; }
 grep -q "replaced by a summary" "$WORK/cli2.txt" || { echo "/compact did not replace the conversation with a summary."; exit 1; }
 
+echo "--- command line, a plan, a comment and a Transformers folder ---"
+printf 'x = 1\n' > notes.py
+mkdir -p "$WORK/weights" && printf '{}' > "$WORK/weights/config.json" && printf '{}' > "$WORK/weights/tokenizer_config.json" && : > "$WORK/weights/model.safetensors"
+printf '/milestone add Notes exist | notes.py\n/milestone check 1 Read it through.\n/milestone\n/comment notes.py:1 Rename x.\n/comment\n/comment clear\n/models check %s\n/exit\n' "$WORK/weights" \
+  | mason --resume --auto --endpoint "http://127.0.0.1:$PORT" --model stub | tee "$WORK/cli3.txt"
+grep -q "\[Reviewed\] Notes exist" "$WORK/cli3.txt" || { echo "The milestone was not recorded as reviewed."; exit 1; }
+grep -q "notes.py · updated line 1 — Rename x." "$WORK/cli3.txt" || { echo "The comment was not pinned to its line."; exit 1; }
+# The folder is not a real model, so the check must fail, and with the words of the Python program that ships in the app.
+[ -f "/Applications/Mason Agent.app/Contents/Resources/transformers/Serve-Transformers.py" ] || { echo "The Transformers server is not in the app."; exit 1; }
+grep -q "managed text adapter" "$WORK/cli3.txt" || { echo "The Transformers check did not run the program that ships in the app."; exit 1; }
+rm -f notes.py
+
+echo "--- command line, windows of other apps (reported only: it needs the Accessibility permission) ---"
+printf '/window\n/exit\n' | mason --resume --auto --endpoint "http://127.0.0.1:$PORT" --model stub 2>&1 | tail -8 || true
+
 # Hand the same session to the app in Review edits, so its next edit has to be approved.
 printf '/exit\n' | mason --resume --review --endpoint "http://127.0.0.1:$PORT" --model stub >/dev/null
 
@@ -99,4 +114,4 @@ echo "--- app, a fuller session for the screenshot ---"
   grep -E "Completed|Failed" "$WORK/demo.txt" | tail -1
 ) || echo "The demo screenshot could not be made."
 
-echo "Installed Mason Agent passed: PATH, sandboxed command, undo, compaction, an approved edit through the app, and a chat."
+echo "Installed Mason Agent passed: PATH, sandboxed command, undo, compaction, a milestone, a comment, the Transformers check, an approved edit through the app, and a chat."
