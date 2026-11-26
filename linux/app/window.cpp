@@ -47,23 +47,14 @@ Gtk::Label* dim_label(const std::string& text) {
 
 namespace {
 
-const char* const kStyle = R"css(
-.request-bubble { background: alpha(@accent_bg_color, 0.16); border-radius: 12px; padding: 10px 14px; }
-.code-block { background: alpha(@view_fg_color, 0.06); border-radius: 8px; padding: 10px; }
-.approval-card { background: alpha(@warning_bg_color, 0.14); border: 1px solid alpha(@warning_bg_color, 0.6); border-radius: 12px; padding: 14px; }
-.composer { background: alpha(@view_fg_color, 0.05); border-radius: 10px; padding: 6px; }
-.composer textview, .composer textview text { background: transparent; }
-.diff-added { color: @success_color; background: alpha(@success_bg_color, 0.12); }
-.diff-removed { color: @error_color; background: alpha(@error_bg_color, 0.12); }
-.project-row { font-weight: 600; }
-)css";
-
 Gtk::Label* text_label(const std::string& text, bool selectable = true) {
     auto* label = Gtk::make_managed<Gtk::Label>(text);
     label->set_xalign(0);
     label->set_wrap(true);
     label->set_wrap_mode(Pango::WrapMode::WORD_CHAR);
     label->set_selectable(selectable);
+    // Text can be selected with the pointer, but moving the keyboard through the window does not select whole messages.
+    label->set_can_focus(false);
     return label;
 }
 
@@ -90,9 +81,7 @@ std::vector<DiffLine> visible_rows(const std::vector<DiffLine>& rows) {
 }  // namespace
 
 MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : controller_(controller), models_(controller), chat_(controller) {
-    auto provider = Gtk::CssProvider::create();
-    provider->load_from_data(kStyle);
-    Gtk::StyleContext::add_provider_for_display(Gdk::Display::get_default(), provider, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    install_style();
 
     window_ = ADW_APPLICATION_WINDOW(adw_application_window_new(application.gobj()));
     gtk_window_set_title(GTK_WINDOW(window_), "Mason Agent");
@@ -114,15 +103,22 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     open_button->set_icon_name("folder-new-symbolic");
     open_button->set_tooltip_text("Open a project folder");
     open_button->signal_clicked().connect([this] { open_project(); });
+    auto* brand = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    brand->append(*mascot(28));
+    auto* brand_name = Gtk::make_managed<Gtk::Label>("Mason Agent");
+    brand_name->add_css_class("brand-title");
+    brand->append(*brand_name);
     GtkWidget* sidebar_header = adw_header_bar_new();
-    adw_header_bar_pack_start(ADW_HEADER_BAR(sidebar_header), GTK_WIDGET(open_button->gobj()));
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(sidebar_header), GTK_WIDGET(brand->gobj()));
+    adw_header_bar_set_show_end_title_buttons(ADW_HEADER_BAR(sidebar_header), FALSE);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(sidebar_header), GTK_WIDGET(open_button->gobj()));
     GtkWidget* sidebar_view = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(sidebar_view), sidebar_header);
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(sidebar_view), GTK_WIDGET(sidebar_scroll->gobj()));
-    AdwNavigationPage* sidebar_page = adw_navigation_page_new(sidebar_view, "Mason Agent");
 
     // ---- session page ----
-    transcript_.set_margin(20);
+    transcript_.set_margin(24);
+    transcript_.set_spacing(22);
     transcript_.set_valign(Gtk::Align::START);
     GtkWidget* clamp = adw_clamp_new();
     adw_clamp_set_maximum_size(ADW_CLAMP(clamp), 860);
@@ -155,7 +151,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     draft_scroll->set_min_content_height(54);
     draft_scroll->set_max_content_height(150);
     draft_scroll->set_propagate_natural_height(true);
-    draft_scroll->add_css_class("composer");
+    draft_.set_tooltip_text("");
 
     permission_.set_model(Gtk::StringList::create({"Read-only", "Review edits", "Workspace edits", "Auto (sandboxed)"}));
     permission_.set_tooltip_text("What Mason may do without asking. Auto runs commands in a sandbox limited to this project, with network access off.");
@@ -164,7 +160,12 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         const Permission choices[] = {Permission::ReadOnly, Permission::ReviewEdits, Permission::WorkspaceEdits, Permission::Auto};
         controller_.set_permission(choices[std::min<guint>(permission_.get_selected(), 3)]);
     });
+    send_.set_label("");
+    send_.set_icon_name("go-up-symbolic");
+    send_.set_tooltip_text("Send (Ctrl+Enter)");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(send_.gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Send", -1);
     send_.add_css_class("suggested-action");
+    send_.add_css_class("send-round");
     send_.signal_clicked().connect([this] {
         const std::string text = draft_.get_buffer()->get_text();
         if (trim(text).empty() || controller_.running) return;
@@ -191,18 +192,41 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     auto* controls = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     auto* spacer = Gtk::make_managed<Gtk::Box>();
     spacer->set_hexpand(true);
+    model_button_.add_css_class("chip");
+    composer_hint_.add_css_class("composer-hint");
+    composer_hint_.set_text("Ctrl+Enter to send");
     controls->append(permission_);
+    controls->append(model_button_);
     controls->append(*spacer);
+    controls->append(composer_hint_);
     controls->append(waiting_);
     controls->append(steer_);
     controls->append(queue_);
     controls->append(run_queued_);
     controls->append(stop_);
     controls->append(send_);
-    auto* composer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
-    composer->set_margin(14);
-    composer->append(*draft_scroll);
-    composer->append(*controls);
+    auto* composer_card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+    composer_card->add_css_class("composer-card");
+    // A hint in the empty request box, in front of the text and out of the way of the pointer.
+    auto* placeholder = Gtk::make_managed<Gtk::Label>("Describe a change, or ask about the project…");
+    placeholder->add_css_class("composer-hint");
+    placeholder->set_halign(Gtk::Align::START);
+    placeholder->set_valign(Gtk::Align::START);
+    placeholder->set_margin_start(9);
+    placeholder->set_margin_top(7);
+    placeholder->set_can_target(false);
+    draft_.get_buffer()->signal_changed().connect([this, placeholder] { placeholder->set_visible(draft_.get_buffer()->get_char_count() == 0); });
+    auto* draft_overlay = Gtk::make_managed<Gtk::Overlay>();
+    draft_overlay->set_child(*draft_scroll);
+    draft_overlay->add_overlay(*placeholder);
+    composer_card->append(*draft_overlay);
+    composer_card->append(*controls);
+    GtkWidget* composer_clamp = adw_clamp_new();
+    adw_clamp_set_maximum_size(ADW_CLAMP(composer_clamp), 900);
+    adw_clamp_set_child(ADW_CLAMP(composer_clamp), GTK_WIDGET(composer_card->gobj()));
+    auto* composer = Glib::wrap(composer_clamp);
+    composer->set_margin(16);
+    composer->set_margin_top(6);
 
     auto* conversation = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
     conversation->append(transcript_scroll_);
@@ -221,16 +245,27 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     paned->set_shrink_start_child(false);
     paned->set_shrink_end_child(false);
 
-    GtkWidget* empty = adw_status_page_new();
-    adw_status_page_set_icon_name(ADW_STATUS_PAGE(empty), "site.masonagent.MasonAgent");
-    adw_status_page_set_title(ADW_STATUS_PAGE(empty), "Make the next move clear");
-    adw_status_page_set_description(ADW_STATUS_PAGE(empty), "Open a project folder and ask Mason to read, explain or change it. Sessions start by asking before each edit and command.");
+    auto* welcome = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 14);
+    welcome->set_valign(Gtk::Align::CENTER);
+    welcome->set_halign(Gtk::Align::CENTER);
+    welcome->set_margin(32);
+    welcome->append(*welcome_art(230));
+    auto* welcome_title = Gtk::make_managed<Gtk::Label>("Make the next move clear");
+    welcome_title->add_css_class("welcome-title");
+    auto* welcome_lede = Gtk::make_managed<Gtk::Label>("Open a project folder and ask Mason to read, explain or change it.\nIt runs on your own local model, and asks before each edit and command.");
+    welcome_lede->add_css_class("welcome-lede");
+    welcome_lede->set_justify(Gtk::Justification::CENTER);
+    welcome_lede->set_wrap(true);
     auto* open_first = Gtk::make_managed<Gtk::Button>("Open Project…");
     open_first->add_css_class("suggested-action");
     open_first->add_css_class("pill");
     open_first->set_halign(Gtk::Align::CENTER);
+    open_first->set_margin_top(8);
     open_first->signal_clicked().connect([this] { open_project(); });
-    adw_status_page_set_child(ADW_STATUS_PAGE(empty), GTK_WIDGET(open_first->gobj()));
+    welcome->append(*welcome_title);
+    welcome->append(*welcome_lede);
+    welcome->append(*open_first);
+    GtkWidget* empty = GTK_WIDGET(welcome->gobj());
     session_stack_.add(*paned, "session");
     gtk_stack_add_named(session_stack_.gobj(), empty, "empty");
 
@@ -249,26 +284,59 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         changes_scroll_.set_visible(changes_toggle_.get_active());
         refresh_changes();
     });
-    model_button_.add_css_class("flat");
     model_button_.signal_clicked().connect([this] { adw_view_stack_set_visible_child_name(stack_, "models"); });
+
+    // Appearance: follow the system, or always light or dark.
+    auto appearance_menu = Gio::Menu::create();
+    appearance_menu->append("Follow System", "look.appearance::system");
+    appearance_menu->append("Light", "look.appearance::light");
+    appearance_menu->append("Dark", "look.appearance::dark");
+    auto look = Gio::SimpleActionGroup::create();
+    const Appearance current = appearance();
+    look->add_action_radio_string("appearance", [look](const Glib::ustring& choice) {
+        set_appearance(choice == "light" ? Appearance::Light : choice == "dark" ? Appearance::Dark : Appearance::System);
+        if (auto action = std::dynamic_pointer_cast<Gio::SimpleAction>(look->lookup_action("appearance"))) action->set_state(Glib::Variant<Glib::ustring>::create(choice));
+    }, current == Appearance::Light ? "light" : current == Appearance::Dark ? "dark" : "system");
+    auto* appearance_button = Gtk::make_managed<Gtk::MenuButton>();
+    appearance_button->set_icon_name("weather-clear-night-symbolic");
+    appearance_button->set_tooltip_text("Appearance");
+    appearance_button->set_menu_model(appearance_menu);
+    appearance_button->insert_action_group("look", look);
 
     GtkWidget* header = adw_header_bar_new();
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), switcher);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(header), GTK_WIDGET(appearance_button->gobj()));
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), GTK_WIDGET(changes_toggle_.gobj()));
-    adw_header_bar_pack_end(ADW_HEADER_BAR(header), GTK_WIDGET(model_button_.gobj()));
+
+    // A quiet line at the bottom: what Mason is doing, and where the session lives.
+    auto* status = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+    status->add_css_class("status-bar");
+    status_left_.set_xalign(0);
+    status_left_.set_hexpand(true);
+    status_left_.set_ellipsize(Pango::EllipsizeMode::END);
+    status_right_.set_xalign(1);
+    status_right_.set_ellipsize(Pango::EllipsizeMode::START);
+    status->append(status_left_);
+    status->append(status_right_);
+
     GtkWidget* content_view = adw_toolbar_view_new();
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(content_view), header);
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(content_view), GTK_WIDGET(stack_));
-    content_page_ = adw_navigation_page_new(content_view, "Mason Agent");
+    adw_toolbar_view_add_bottom_bar(ADW_TOOLBAR_VIEW(content_view), GTK_WIDGET(status->gobj()));
 
-    GtkWidget* split = adw_navigation_split_view_new();
-    adw_navigation_split_view_set_sidebar(ADW_NAVIGATION_SPLIT_VIEW(split), sidebar_page);
-    adw_navigation_split_view_set_content(ADW_NAVIGATION_SPLIT_VIEW(split), content_page_);
-    adw_navigation_split_view_set_min_sidebar_width(ADW_NAVIGATION_SPLIT_VIEW(split), 220);
-    adw_navigation_split_view_set_max_sidebar_width(ADW_NAVIGATION_SPLIT_VIEW(split), 320);
+    split_ = adw_overlay_split_view_new();
+    adw_overlay_split_view_set_sidebar(ADW_OVERLAY_SPLIT_VIEW(split_), sidebar_view);
+    adw_overlay_split_view_set_content(ADW_OVERLAY_SPLIT_VIEW(split_), content_view);
+    adw_overlay_split_view_set_min_sidebar_width(ADW_OVERLAY_SPLIT_VIEW(split_), 230);
+    adw_overlay_split_view_set_max_sidebar_width(ADW_OVERLAY_SPLIT_VIEW(split_), 320);
+    // Projects and sessions belong to Code. Chat has its own list, and Models needs the room.
+    g_signal_connect(stack_, "notify::visible-child-name", G_CALLBACK(+[](GObject* stack, GParamSpec*, gpointer split) {
+        const char* page = adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(stack));
+        adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(split), page && std::string(page) == "code");
+    }), split_);
 
     toasts_ = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
-    adw_toast_overlay_set_child(toasts_, split);
+    adw_toast_overlay_set_child(toasts_, split_);
     adw_application_window_set_content(window_, GTK_WIDGET(toasts_));
 
     controller_.changed.connect([this] { refresh(); });
@@ -319,8 +387,13 @@ void MainWindow::refresh() {
     chat_.refresh();
     const Session* session = controller_.session();
     session_stack_.set_visible_child(session ? "session" : "empty");
-    adw_navigation_page_set_title(content_page_, session ? session->title.c_str() : "Mason Agent");
+    gtk_window_set_title(GTK_WINDOW(window_), session ? (session->title + " · Mason Agent").c_str() : "Mason Agent");
     model_button_.set_label(controller_.endpoint ? controller_.endpoint_name : "No model running");
+    std::string doing = "Ready";
+    if (controller_.running) doing = controller_.live_status.empty() ? "Working" : controller_.live_status;
+    else if (session && session->state != "Ready") doing = session->state + (session->detail.empty() ? "" : " · " + session->detail);
+    status_left_.set_text(utf8_prefix(replace_all(doing, "\n", " "), 160));
+    status_right_.set_text(session ? fs::path(session->workspace).filename().string() + " · " + permission_label(session->ask_only ? Permission::ReadOnly : session->permission) + " · Session saved on this computer" : "Everything stays on this computer");
     model_button_.set_tooltip_text(controller_.endpoint ? "Running at " + controller_.endpoint->url : "No model is running. Open Models to start one.");
     updating_ = false;
 }
@@ -357,16 +430,25 @@ void MainWindow::refresh_sidebar() {
         sidebar_.append(*header_row);
         for (const Session& item : controller_.sessions()) {
             if (item.workspace != project) continue;
-            auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
-            box->set_margin_start(22);
+            auto* text = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 1);
             auto* title = Gtk::make_managed<Gtk::Label>(item.title);
             title->set_xalign(0);
             title->set_ellipsize(Pango::EllipsizeMode::END);
-            auto* state = dim_label(item.state);
-            state->add_css_class("caption");
-            state->set_wrap(false);
-            box->append(*title);
-            box->append(*state);
+            auto* state = Gtk::make_managed<Gtk::Label>(item.state);
+            state->set_xalign(0);
+            state->add_css_class("session-state");
+            text->append(*title);
+            text->append(*state);
+            text->set_hexpand(true);
+            auto* bubble = Gtk::make_managed<Gtk::Image>();
+            bubble->set_from_icon_name(item.state == "Running" || item.state == "Awaiting review" ? "content-loading-symbolic" : "user-available-symbolic");
+            bubble->add_css_class("dim-label");
+            auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
+            box->set_margin_start(14);
+            box->set_margin_top(3);
+            box->set_margin_bottom(3);
+            box->append(*bubble);
+            box->append(*text);
             auto* row = Gtk::make_managed<Gtk::ListBoxRow>();
             row->set_child(*box);
             row->set_name(item.id);
@@ -475,11 +557,17 @@ Gtk::Widget* answer_view(const std::string& text) {
 
 Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activity>& activities, bool live) {
     auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
-    auto* request = text_label(turn.request);
-    request->add_css_class("request-bubble");
-    request->set_halign(Gtk::Align::END);
-    box->append(*request);
-    for (const Activity& activity : activities) box->append(*activity_widget(activity));
+    box->add_css_class("turn");
+    box->append(*speaker(false));
+    box->append(*message_body(*text_label(turn.request)));
+
+    auto* reply = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
+    if (!activities.empty()) {
+        auto* card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
+        card->add_css_class("tool-card");
+        for (const Activity& activity : activities) card->append(*activity_widget(activity));
+        reply->append(*card);
+    }
     if (live) {
         auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
         auto* spinner = Gtk::make_managed<Gtk::Spinner>();
@@ -489,27 +577,49 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
         live_label_->set_ellipsize(Pango::EllipsizeMode::START);
         row->append(*spinner);
         row->append(*live_label_);
-        box->append(*row);
+        reply->append(*row);
     } else if (!turn.answer.empty()) {
-        box->append(*answer_widget(turn.answer));
+        reply->append(*answer_widget(turn.answer));
     }
-    if (!turn.changes.empty() && !live) {
-        auto* chips = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-        for (size_t i = 0; i < turn.changes.size() && i < 6; i++) {
-            const FileChange& changed = turn.changes[i];
-            const DiffCounts counts = diff_counts(changed.before, changed.deleted() ? "" : changed.after);
-            auto* chip = Gtk::make_managed<Gtk::Label>(changed.opaque() ? changed.path + "  binary" : changed.path + "  +" + std::to_string(counts.added) + " −" + std::to_string(counts.removed));
-            chip->add_css_class("caption");
-            chip->add_css_class("dim-label");
-            chips->append(*chip);
+    if (!live && (!activities.empty() || !turn.changes.empty())) {
+        // What the request amounted to, in one line, and the way to its changes.
+        int reads = 0, edits = 0, commands = 0, other = 0;
+        for (const Activity& activity : activities) {
+            if (activity.state != "completed") continue;
+            if (activity.tool == "read_file" || activity.tool == "read_lines" || activity.tool == "list_files" || activity.tool == "search_files") reads++;
+            else if (activity.tool == "edit_file" || activity.tool == "write_file" || activity.tool == "apply_edits") edits++;
+            else if (activity.tool == "run_shell" || activity.tool == "run_workflow" || activity.tool == "start_job") commands++;
+            else other++;
+        }
+        std::vector<std::string> parts;
+        auto count = [&](int number, const char* one, const char* many) { if (number > 0) parts.push_back(std::to_string(number) + " " + (number == 1 ? one : many)); };
+        count(reads, "read", "reads");
+        count(edits, "edit", "edits");
+        count(commands, "command", "commands");
+        count(other, "other step", "other steps");
+        auto* line = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
+        auto* summary = Gtk::make_managed<Gtk::Label>(parts.empty() ? "No steps completed" : join(parts, " · "));
+        summary->add_css_class("summary-line");
+        line->append(*summary);
+        if (!turn.changes.empty()) {
+            auto* changed = Gtk::make_managed<Gtk::Button>(std::to_string(turn.changes.size()) + (turn.changes.size() == 1 ? " changed file" : " changed files"));
+            changed->add_css_class("flat");
+            changed->add_css_class("changed-link");
+            changed->set_tooltip_text("Show what changed");
+            changed->signal_clicked().connect([this] { changes_toggle_.set_active(true); });
+            line->append(*changed);
         }
         if (turn.undone) {
             auto* undone = Gtk::make_managed<Gtk::Label>("Undone");
             undone->add_css_class("caption");
             undone->add_css_class("warning");
-            chips->append(*undone);
+            line->append(*undone);
         }
-        box->append(*chips);
+        reply->append(*line);
+    }
+    if (reply->get_first_child()) {
+        box->append(*speaker(true));
+        box->append(*message_body(*reply));
     }
     return box;
 }
@@ -521,6 +631,7 @@ Gtk::Widget* MainWindow::approval_widget(const ApprovalRequest& request) {
     card->set_margin_start(16);
     card->set_margin_end(16);
     card->set_margin_top(8);
+    card->set_margin_bottom(4);
     auto* heading = Gtk::make_managed<Gtk::Label>("Review " + tool);
     heading->set_xalign(0);
     heading->add_css_class("heading");
@@ -630,6 +741,8 @@ void MainWindow::refresh_transcript() {
         Glib::signal_idle().connect_once([this] {
             auto adjustment = transcript_scroll_.get_vadjustment();
             adjustment->set_value(adjustment->get_upper());
+            // The keyboard belongs in the request box, not on the first line of the conversation.
+            if (!controller_.approval && adw_view_stack_get_visible_child(stack_) == GTK_WIDGET(session_stack_.gobj())) draft_.grab_focus();
         });
     }
     if (live_label_) {

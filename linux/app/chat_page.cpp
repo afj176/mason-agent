@@ -11,6 +11,7 @@ Gtk::Label* wrapped(const std::string& text) {
     label->set_wrap(true);
     label->set_wrap_mode(Pango::WrapMode::WORD_CHAR);
     label->set_selectable(true);
+    label->set_can_focus(false);
     return label;
 }
 
@@ -41,7 +42,8 @@ std::string shown(const std::string& content) {
 ChatPage::ChatPage(Controller& controller) : Gtk::Box(Gtk::Orientation::HORIZONTAL, 0), controller_(controller) {
     // ---- the list of chats ----
     auto* side = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
-    side->set_size_request(230, -1);
+    side->set_size_request(250, -1);
+    side->add_css_class("sidebar-pane");
     list_.set_selection_mode(Gtk::SelectionMode::SINGLE);
     list_.add_css_class("navigation-sidebar");
     list_.signal_row_selected().connect([this](Gtk::ListBoxRow* row) {
@@ -59,7 +61,7 @@ ChatPage::ChatPage(Controller& controller) : Gtk::Box(Gtk::Orientation::HORIZONT
     side->append(*add);
 
     // ---- the conversation ----
-    transcript_.set_margin(18);
+    transcript_.set_margin(24);
     transcript_scroll_.set_child(transcript_);
     transcript_scroll_.set_vexpand(true);
     transcript_scroll_.set_hexpand(true);
@@ -88,11 +90,16 @@ ChatPage::ChatPage(Controller& controller) : Gtk::Box(Gtk::Orientation::HORIZONT
     draft_scroll->set_min_content_height(54);
     draft_scroll->set_max_content_height(150);
     draft_scroll->set_propagate_natural_height(true);
-    draft_scroll->add_css_class("composer");
 
     attach_.set_tooltip_text("Attach text files to this message (up to 5, 256 KiB each)");
     attach_.signal_clicked().connect([this] { choose_files(); });
+    send_.set_label("");
+    send_.set_icon_name("go-up-symbolic");
+    send_.set_tooltip_text("Send (Ctrl+Enter)");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(send_.gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Send", -1);
     send_.add_css_class("suggested-action");
+    send_.add_css_class("send-round");
+    attach_.add_css_class("chip");
     send_.signal_clicked().connect([this] {
         const std::string text = draft_.get_buffer()->get_text();
         if (trim(text).empty() && controller_.chat_attachments.empty()) return;
@@ -111,7 +118,9 @@ ChatPage::ChatPage(Controller& controller) : Gtk::Box(Gtk::Orientation::HORIZONT
     buttons->append(send_);
 
     auto* composer = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
-    composer->set_margin(14);
+    composer->add_css_class("composer-card");
+    composer->set_margin(16);
+    composer->set_margin_top(6);
     composer->append(attachments_);
     composer->append(*draft_scroll);
     composer->append(*buttons);
@@ -214,18 +223,20 @@ void ChatPage::refresh() {
             hint->set_wrap(true);
             hint->set_justify(Gtk::Justification::CENTER);
             hint->set_halign(Gtk::Align::CENTER);
-            hint->set_margin_top(60);
+            auto* face = mascot(72);
+            face->set_halign(Gtk::Align::CENTER);
+            face->set_margin_top(70);
+            transcript_.append(*face);
             transcript_.append(*hint);
         }
         if (chat) {
             for (const ChatMessage& message : chat->messages) {
                 if (message.role == "user") {
-                    auto* bubble = wrapped(shown(message.content));
-                    bubble->add_css_class("request-bubble");
-                    bubble->set_halign(Gtk::Align::END);
-                    transcript_.append(*bubble);
+                    transcript_.append(*speaker(false));
+                    transcript_.append(*message_body(*wrapped(shown(message.content))));
                 } else if (message.role == "assistant") {
-                    transcript_.append(*answer_view(message.content));
+                    transcript_.append(*speaker(true));
+                    transcript_.append(*message_body(*answer_view(message.content)));
                 }
             }
         }

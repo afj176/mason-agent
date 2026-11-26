@@ -4,6 +4,7 @@
 #include <gtkmm.h>
 
 #include "controller.hpp"
+#include "style.hpp"
 
 namespace mason::app {
 
@@ -76,8 +77,10 @@ private:
     Controller& controller_;
     AdwApplicationWindow* window_ = nullptr;
     AdwToastOverlay* toasts_ = nullptr;
-    AdwNavigationPage* content_page_ = nullptr;
     AdwViewStack* stack_ = nullptr;
+    GtkWidget* split_ = nullptr;
+    Gtk::Label status_left_, status_right_;
+    Gtk::Label composer_hint_;
 
     Gtk::ListBox sidebar_;
     Gtk::Box transcript_{Gtk::Orientation::VERTICAL, 18};
