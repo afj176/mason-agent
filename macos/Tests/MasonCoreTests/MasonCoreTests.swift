@@ -1720,6 +1720,53 @@ final class CatalogTests: XCTestCase {
     }
 }
 
+final class LanguageServerTests: XCTestCase {
+    func testAnInstalledLanguageServerAnswersForItsLanguageAfterApproval() async throws {
+        guard let python = TransformersRuntime.python() else { throw XCTSkip("No python3 on this computer.") }
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-lsp-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "int total(int a, int b) {\n    return a + b;\n}\nint main() { return total(1, count); }\n".write(to: folder.appendingPathComponent("sum.c"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+        let fake = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fake-language-server.py").path
+        setenv("MASON_LANGUAGE_SERVERS", "{\"c\": [\"\(python)\", \"\(fake)\"]}", 1)
+        defer { unsetenv("MASON_LANGUAGE_SERVERS") }
+        let server = try XCTUnwrap(LanguageServers.server(for: "c"))
+        XCTAssertEqual(server.languageId, "c")
+        XCTAssertNil(LanguageServers.server(for: "txt"))
+
+        // What the server is sent is a well-formed conversation, and what it sends back is read frame by frame.
+        let sent = LanguageServers.messages(in: LanguageServers.conversation(root: workspace.root, file: workspace.root.appendingPathComponent("sum.c"), text: "x", languageId: "c", line: 4, column: 21, mode: "references"))
+        XCTAssertEqual(sent.map { $0["method"] as? String ?? "" }, ["initialize", "initialized", "textDocument/didOpen", "textDocument/references", "shutdown", "exit"])
+        XCTAssertEqual(((sent[3]["params"] as? [String: Any])?["position"] as? [String: Int]), ["line": 3, "character": 20])
+
+        let definition = try await LanguageServers.query(workspace, server: server, path: "sum.c", line: 4, column: 21, mode: "definitions", sandboxed: false)
+        XCTAssertEqual(definition, "\(server.name): 1 definitions in the project.\nsum.c:1:5  int total(int a, int b) {")
+        let references = try await LanguageServers.query(workspace, server: server, path: "sum.c", line: 4, column: 21, mode: "references", sandboxed: false)
+        XCTAssertTrue(references.hasPrefix("\(server.name): 2 references in the project, and 1 outside it (libraries).\nsum.c:1:5"), references)
+        XCTAssertTrue(references.contains("sum.c:4:21  int main() { return total(1, count); }"))
+        let diagnostics = try await LanguageServers.query(workspace, server: server, path: "sum.c", line: 1, column: 1, mode: "diagnostics", sandboxed: false)
+        XCTAssertEqual(diagnostics, "\(server.name): 1 diagnostic for sum.c.\nsum.c:3:12  error  use of undeclared identifier 'count'")
+
+        // Through the agent it asks first, like a command, and a read-only session may not start it.
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .reviewEdits)
+        XCTAssertTrue(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "inspect_symbol" })
+        let ask = call("inspect_symbol", ["path": "sum.c", "line": "4", "column": "21", "mode": "definitions"])
+        var asked: [String] = [], answers = [true, false]
+        let agent = Agent(store: store, model: ScriptedModel([ask, ask, ModelReply(text: "Found.")]), approve: { asked.append($0.subject); return answers.removeFirst() }, emit: { _ in })
+        await agent.run(&session, request: "Where is total defined?")
+        XCTAssertEqual(asked, ["language server \(server.name)", "language server \(server.name)"])
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .denied])
+        XCTAssertTrue(session.activities[0].result.contains("sum.c:1:5"))
+        session.permission = .readOnly; session.askOnly = true
+        await Agent(store: store, model: ScriptedModel([ask, ModelReply(text: "No.")]), approve: { _ in XCTFail("a read-only session must not ask"); return false }, emit: { _ in }).run(&session, request: "Again")
+        XCTAssertEqual(session.activities.last?.state, .failed)
+        XCTAssertTrue(session.activities.last?.result.contains("read-only") ?? false)
+    }
+}
+
 final class TransformersTests: XCTestCase {
     /// A stand-in for Python: it writes the status file the real server writes, then serves the stub model.
     func testAFolderOfTransformersWeightsIsListedCheckedAndServed() async throws {

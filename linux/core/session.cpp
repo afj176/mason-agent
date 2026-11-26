@@ -82,6 +82,15 @@ json to_json(const Session& session) {
             if (receipt.exit_code) saved["verification"]["exitCode"] = *receipt.exit_code;
             if (receipt.baseline_exit_code) saved["verification"]["baselineExitCode"] = *receipt.baseline_exit_code;
         }
+        if (turn.checks) {
+            json results = json::array();
+            for (const DerivedResult& result : turn.checks->results) {
+                const DerivedCheck& check = result.check;
+                results.push_back({{"unit", check.unit}, {"feature", check.feature}, {"kind", check.kind}, {"path", check.path}, {"target", check.target}, {"expected", check.expected},
+                                   {"steps", check.steps}, {"application", check.application}, {"state", result.state}, {"detail", result.detail}});
+            }
+            saved["checks"] = {{"results", results}, {"unverified", turn.checks->unverified}, {"repairs", turn.checks->repairs}};
+        }
         turns.push_back(std::move(saved));
     }
     json result = {{"version", 1}, {"id", session.id}, {"title", session.title}, {"workspace", session.workspace},
@@ -184,6 +193,18 @@ Session session_from_json(const json& value) {
             entry.after_missing = change.value("afterMissing", false);
             entry.by_command = change.value("byCommand", false);
             turn.changes.push_back(std::move(entry));
+        }
+        if (item.contains("checks") && item["checks"].is_object()) {
+            DerivedReceipt receipt;
+            receipt.unverified = item["checks"].value("unverified", std::vector<std::string>{});
+            receipt.repairs = item["checks"].value("repairs", 0);
+            for (const json& row : item["checks"].value("results", json::array())) {
+                if (!row.is_object()) continue;
+                DerivedCheck check{row.value("unit", 0), row.value("feature", ""), row.value("kind", ""), row.value("path", ""), row.value("target", ""), row.value("expected", ""),
+                                   row.value("steps", std::vector<std::vector<std::string>>{}), row.value("application", "")};
+                receipt.results.push_back({check, row.value("state", ""), row.value("detail", "")});
+            }
+            turn.checks = receipt;
         }
         session.turns.push_back(std::move(turn));
     }

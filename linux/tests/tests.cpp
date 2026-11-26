@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "agent.hpp"
+#include "derived.hpp"
 #include "navigation.hpp"
 #include "transfer.hpp"
 #include "acceptance.hpp"
@@ -1613,6 +1614,199 @@ static void test_verification_app() {
     CHECK(!std::all_of(broken.begin(), broken.end(), [](const AcceptanceResult& result) { return result.passed; }));
 }
 
+static void test_derived() {
+    Sandbox box;
+    fs::remove(box.project / "calc.py");
+    const Workspace workspace(box.project.string());
+    using Names = std::vector<std::string>;
+    const auto kinds = [](const DerivedPlan& plan) { Names found; for (const DerivedCheck& check : plan.checks) found.push_back(check.kind); return found; };
+
+    // Requirements with an exact outcome become checks without a model. Quoted text is kept whole.
+    CHECK(derived::units(R"(Show a heading "Orders, and more" and clicking "Add" must show "Added". Keep it tidy)") == (Names{R"(Show a heading "Orders, and more")", R"(clicking "Add" must show "Added")", "Keep it tidy"}));
+    const DerivedPlan plan = derived::prepare(R"(In index.html show a heading "Orders"; clicking "Add" must show "Added"; write notes.md containing "Shipped")", workspace, nullptr);
+    CHECK(kinds(plan) == (Names{"browser_heading", "browser_click", "document_text"}));
+    CHECK(derived::description(plan.checks[0]) == "index.html shows a heading that reads “Orders”" && derived::description(plan.checks[1]) == "in index.html, clicking “Add” makes “Added” appear");
+    CHECK(plan.unverified().empty() && starts_with(plan.brief(), "Mason will check these itself when you say you are done:\n- index.html shows a heading"));
+    const DerivedPlan vague = derived::prepare("Make the totals right and tidy up", workspace, nullptr);
+    CHECK(vague.checks.empty() && vague.unverified() == (Names{"Make the totals right", "tidy up"}));
+    box.write("notes.md", "Shipped on Monday");
+    DerivedPlan documents;
+    documents.units = {"x"};
+    documents.checks = {plan.checks[2], DerivedCheck{1, "x", "document_text", "missing.txt", "", "y", {}, ""}};
+    const std::vector<DerivedResult> read = derived::verify(documents, workspace);
+    CHECK(read.size() == 2 && read[0].state == "passed" && read[1].state == "failed");
+
+    // A model's proposals are kept only when Mason can run them and they quote the request.
+    {
+        ScriptedModel model;
+        model.replies = {say(R"({"checks": [{"Unit": 1, "Feature": "Banner text", "Kind": "browser_text", "Path": "shop.html", "Target": "", "Expected": "Open today"},
+            {"Unit": 1, "Feature": "Invented", "Kind": "browser_text", "Path": "shop.html", "Target": "", "Expected": "Welcome back"},
+            {"Unit": 2, "Feature": "Hiding", "Kind": "browser_text", "Path": "shop.html", "Target": "", "Expected": "Hide"},
+            {"Unit": 2, "Feature": "Unknown kind", "Kind": "screenshot", "Path": "shop.html", "Target": "", "Expected": "Hide"},
+            {"Unit": 9, "Feature": "No such requirement", "Kind": "browser_text", "Path": "shop.html", "Target": "", "Expected": "Hide"}]})")};
+        const DerivedPlan proposed = derived::prepare(R"(In shop.html the banner should say "Open today" and clicking the "Hide" button hides it)", workspace, &model);
+        CHECK(proposed.units.size() == 2 && proposed.checks.size() == 1 && proposed.checks[0].expected == "Open today");
+        CHECK(proposed.unverified() == (Names{R"(clicking the "Hide" button hides it)"}));
+        CHECK(model.seen[0][1].content.find("1. In shop.html the banner should say") != std::string::npos);
+    }
+
+    if (browser::find().empty()) {
+        std::cout << "  (no browser on this computer: the checks were not run in one)\n";
+        return;
+    }
+    // In Auto a failed check goes back to the model, and the receipt says what Mason found.
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::Auto);
+    const std::string wrong = "<!doctype html><h1>Order</h1><button onclick=\"document.getElementById('o').textContent='Added'\">Add</button><p id=o></p>";
+    ScriptedModel model;
+    model.replies = {call("write_file", {{"path", "index.html"}, {"content", wrong}}), say("Done."), call("write_file", {{"path", "index.html"}, {"content", replace_all(wrong, "<h1>Order</h1>", "<h1>Orders</h1>")}}), say("Fixed the heading.")};
+    Agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(session, R"(In index.html show a heading "Orders"; clicking "Add" must show "Added")");
+    CHECK(model.seen[0].back().content.find("Mason will check these itself") != std::string::npos);  // the model is told what will be checked
+    CHECK(model.seen.size() == 4 && model.seen[2].back().content.find("this does not hold yet:\n- index.html shows a heading that reads “Orders”") != std::string::npos);
+    CHECK(session.turns[0].checks && session.turns[0].checks->results.size() == 2 && derived::passed(*session.turns[0].checks) && session.turns[0].checks->repairs == 1);
+    if (session.turns[0].checks) CHECK(derived::summary(*session.turns[0].checks) == "Mason checked 2 requirements itself: all hold · handed back 1 time");
+    CHECK(session.turns[0].answer == "Fixed the heading.");
+    const std::vector<Session> saved = SessionStore(box.home).sessions();
+    CHECK(saved.front().turns[0].checks && saved.front().turns[0].checks->results[1].check.kind == "browser_click");  // the receipt is saved with the session
+
+    // Outside Auto nothing is derived or run.
+    Session reviewed = store.create(workspace.root(), Permission::WorkspaceEdits);
+    ScriptedModel plain;
+    plain.replies = {say("Ok.")};
+    Agent(store, plain, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(reviewed, R"(In index.html show a heading "Nope")");
+    CHECK(!reviewed.turns[0].checks);
+}
+
+static void test_catalog() {
+    const std::string request = "Build a whimsical bear market as a single offline index.html in this directory. Honey costs $8 each. Berries are $3 each; buy three or more Berries and they are $2.50 each. Salmon is $12 each.\n"
+                                "Shoppers can add items to a cart and see the total. Checkout must clear the cart and show a new receipt that starts with BEAR-, and the receipt persists after reload.";
+    const std::string extraction = R"({"Items": [{"Name": "Honey", "Price": 8, "SalePrice": 8, "Threshold": 0}, {"Name": "Berries", "Price": 3, "SalePrice": 2.5, "Threshold": 3}, {"Name": "Salmon", "Price": 12, "SalePrice": 2.5, "Threshold": 3}], "ReceiptPrefix": "BEAR-", "PersistReceipt": true, "ClearCart": true, "OtherRequirements": ["Shoppers can add items to a cart and see the total."]})";
+    const std::string design = R"rx({"Title": "The Bear Market", "Introduction": "Provisions for discerning bears, only $1!", "Accent": "#3b2f1e", "Background": "not a colour", "Descriptions": ["Golden <b>honey</b>", "Wild berries", "River salmon"]})rx";
+    using Names = std::vector<std::string>;
+
+    // The offers are read from the request and checked against it.
+    CHECK(catalog::amounts(request) == (std::set<int>{800, 300, 250, 1200}));
+    CHECK(catalog::explicit_receipt_prefix(request) == std::optional<std::string>("BEAR-") && catalog::requires_fresh_receipt(request));
+    ScriptedModel reader;
+    reader.replies = {say(extraction), say(replace_all(extraction, R"("Price": 12)", R"("Price": 11)")), say(replace_all(extraction, "Salmon", "Trout")),
+                      say(replace_all(extraction, "Shoppers can add items to a cart and see the total.", "Email the receipt to the shopper."))};
+    const std::optional<CatalogSpec> spec = catalog::extract(request, reader);
+    // The discount the model copied onto Salmon is dropped: the request gives it only to Berries.
+    CHECK(spec && spec->items == (std::vector<CatalogItem>{{"Honey", 800, 800, 0}, {"Berries", 300, 250, 3}, {"Salmon", 1200, 1200, 0}}));
+    if (!spec) return;
+    CHECK(spec->other_requirements.empty() && catalog::complete(*spec, request));  // a clause the component already covers is not an extra requirement
+    const std::optional<CatalogSpec> corrected = catalog::extract(request, reader);
+    CHECK(corrected && corrected->items.back() == (CatalogItem{"Salmon", 1200, 1200, 0}));  // a wrong price is put right from the request's own words
+    CHECK(!catalog::extract(request, reader));                                              // a product the request never names is refused
+    const std::optional<CatalogSpec> more = catalog::extract(request, reader);
+    CHECK(more && !catalog::complete(*more, request));  // something the component does not do keeps the request on the ordinary path
+
+    const std::vector<AcceptanceScenario> scenarios = catalog::scenarios(*spec, request);
+    Names ids, discount, order;
+    for (const AcceptanceScenario& scenario : scenarios) ids.push_back(scenario.id);
+    CHECK(ids == (Names{"offer-0", "offer-1", "discount-1", "offer-2", "order"}));
+    for (const AcceptanceStep& step : scenarios[2].steps) discount.push_back(step.op + " " + step.value);
+    CHECK(discount == (Names{"click ", "click ", "money 6.00", "click ", "money 7.50"}));  // two at the full price, then three at the sale price
+    for (const AcceptanceStep& step : scenarios[4].steps) order.push_back(step.op);
+    CHECK(order == (Names{"click", "click", "capture", "money", "empty", "reload", "same", "click", "click", "new_id", "reload", "same"}));
+
+    ScriptedModel writer;
+    writer.replies = {say(design)};
+    const CatalogDesign made = catalog::design(request, *spec, writer);
+    CHECK(made.introduction.empty());  // copy that states a price is left out
+    const std::string page = catalog::render(*spec, made);
+    CHECK(page.find("<h1>The Bear Market</h1>") != std::string::npos && page.find("--accent: #3b2f1e") != std::string::npos && page.find("--paper: #f6f1e2") != std::string::npos);
+    CHECK(page.find("Golden &lt;b&gt;honey&lt;/b&gt;") != std::string::npos && page.find(R"({name: "Berries", cents: 300, saleCents: 250, threshold: 3})") != std::string::npos);
+    CHECK(page.find(R"(const prefix = "BEAR-";)") != std::string::npos && page.find("<p>Buy 3 or more for $2.50 each.</p>") != std::string::npos && page.find("@") == std::string::npos);
+
+    // An empty project gets the store, and it passes its own scenarios.
+    Sandbox box;
+    fs::remove(box.project / "calc.py");
+    const Workspace workspace(box.project.string());
+    CHECK(catalog::applies(request, workspace) && !catalog::applies("Fix the login bug", workspace));
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::Auto);
+    ScriptedModel model;
+    model.replies = {say(extraction), say(design)};
+    Agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(session, request);
+    CHECK(session.state == "Completed" && model.seen.size() == 2);  // the model read the offers and wrote the copy; Mason wrote the page
+    CHECK(box.read("index.html").find("The Bear Market") != std::string::npos);
+    CHECK(session.turns[0].changes.size() == 1 && session.turns[0].changes[0].path == "index.html" && session.activities.size() == 1 && session.activities[0].tool == "write_file");
+    CHECK(session.turns[0].answer.find("Honey at $8.00, Berries at $3.00 ($2.50 each from 3), Salmon at $12.00") != std::string::npos);
+    CHECK(session.turns[0].checks && session.turns[0].checks->results.size() == 5);
+    if (session.turns[0].checks) {
+        const DerivedReceipt& receipt = *session.turns[0].checks;
+        const bool wanted = browser::find().empty() ? std::all_of(receipt.results.begin(), receipt.results.end(), [](const DerivedResult& result) { return result.state == "notRun"; })
+                                                    : std::all_of(receipt.results.begin(), receipt.results.end(), [](const DerivedResult& result) { return result.state == "passed"; });
+        CHECK(wanted);
+        if (!wanted) std::cerr << derived::report(receipt) << "\n";
+    }
+    CHECK(!catalog::applies(request, workspace));  // only an empty project gets the component
+}
+
+static void test_language_servers() {
+    Sandbox box;
+    fs::remove(box.project / "calc.py");
+    box.write("sum.c", "int total(int a, int b) {\n    return a + b;\n}\nint main() { return total(1, count); }\n");
+    const Workspace workspace(box.project.string());
+    using Names = std::vector<std::string>;
+
+    // What the server is sent is a well-formed conversation, and what it sends back is read frame by frame.
+    Names methods;
+    const std::vector<json> sent = language_servers::messages_in(language_servers::conversation(workspace.root(), workspace.root() + "/sum.c", "x", "c", 4, 21, "references"));
+    for (const json& message : sent) methods.push_back(message.value("method", ""));
+    CHECK(methods == (Names{"initialize", "initialized", "textDocument/didOpen", "textDocument/references", "shutdown", "exit"}));
+    CHECK(sent.size() == 6 && sent[3]["params"]["position"] == json({{"line", 3}, {"character", 20}}));
+    CHECK(!language_servers::server_for("txt"));
+
+    const std::string python = transformers::python();
+    const fs::path fake = fs::absolute(fs::path(__FILE__).parent_path().parent_path().parent_path() / "macos" / "Tests" / "fake-language-server.py").lexically_normal();
+    if (python.empty() || !fs::exists(fake)) {
+        std::cout << "  (no python3 on this computer: the stand-in server was not run)\n";
+    } else {
+        setenv("MASON_LANGUAGE_SERVERS", json{{"c", {python, fake.string()}}}.dump().c_str(), 1);
+        const std::optional<LanguageServer> server = language_servers::server_for("c");
+        CHECK(server && server->language_id == "c");
+        if (server) {
+            CHECK(language_servers::query(workspace, *server, "sum.c", 4, 21, "definitions", false) == server->name + ": 1 definitions in the project.\nsum.c:1:5  int total(int a, int b) {");
+            const std::string references = language_servers::query(workspace, *server, "sum.c", 4, 21, "references", false);
+            CHECK(starts_with(references, server->name + ": 2 references in the project, and 1 outside it (libraries).\nsum.c:1:5") && references.find("sum.c:4:21  int main() { return total(1, count); }") != std::string::npos);
+            CHECK(language_servers::query(workspace, *server, "sum.c", 1, 1, "diagnostics", false) == server->name + ": 1 diagnostic for sum.c.\nsum.c:3:12  error  use of undeclared identifier 'count'");
+
+            // Through the agent it asks first, like a command, and a read-only session may not start it.
+            SessionStore store(box.home);
+            Session session = store.create(workspace.root(), Permission::ReviewEdits);
+            const ModelReply ask = call("inspect_symbol", {{"path", "sum.c"}, {"line", 4}, {"column", 21}, {"mode", "definitions"}});
+            ScriptedModel model;
+            model.replies = {ask, ask, say("Found.")};
+            Names asked;
+            std::deque<bool> answers = {true, false};
+            Agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); const bool answer = answers.front(); answers.pop_front(); return answer; }, [](const AgentEvent&) {}).run(session, "Where is total defined?");
+            CHECK(asked == (Names{"language server " + server->name, "language server " + server->name}));
+            CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && session.activities[1].state == "denied" && session.activities[0].result.find("sum.c:1:5") != std::string::npos);
+            session.permission = Permission::ReadOnly;
+            session.ask_only = true;
+            ScriptedModel again;
+            again.replies = {ask, say("No.")};
+            Agent(store, again, [](const ApprovalRequest&) { return false; }, [](const AgentEvent&) {}).run(session, "Again");
+            CHECK(session.activities.back().state == "failed" && session.activities.back().result.find("read-only") != std::string::npos);
+        }
+        unsetenv("MASON_LANGUAGE_SERVERS");
+    }
+
+    // A real clangd, where there is one: the definition of total from its use, and the undeclared name.
+    const std::optional<LanguageServer> clangd = language_servers::server_for("c");
+    if (!clangd || clangd->name != "clangd") {
+        std::cout << "  (no clangd on this computer: a real language server was not run)\n";
+        return;
+    }
+    const std::string definition = language_servers::query(workspace, *clangd, "sum.c", 4, 21, "definitions", false);
+    CHECK(definition.find("sum.c:1:5  int total(int a, int b) {") != std::string::npos);
+    const std::string diagnostics = language_servers::query(workspace, *clangd, "sum.c", 1, 1, "diagnostics", false);
+    CHECK(diagnostics.find("sum.c:4:") != std::string::npos && diagnostics.find("count") != std::string::npos);
+    if (failures) std::cerr << definition << "\n" << diagnostics << "\n";
+}
+
 static void test_verification() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
@@ -1703,7 +1897,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

@@ -58,6 +58,8 @@ public:
     static const std::vector<ToolSpec>& mcp_tools();
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
     static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false);
+    /// In Auto, Mason works out checks from the request and runs them itself when the model says it is done.
+    bool derives_checks = true;
     /// What reads and operates the attached window. Left unset, it is this computer's accessibility interface.
     void set_desktop(std::shared_ptr<DesktopAutomation> automation) { desktop_ = std::move(automation); }
     /// What looks at a picture of the attached window. Left unset, it is the running model, which must take images.
@@ -89,6 +91,9 @@ public:
 
 private:
     void run_turn(Session& session, const std::string& request, const CancelToken& cancel);
+    /// Builds a single-page offline store with the catalog component, and checks it. Returns false, having changed
+    /// nothing, when the request is not one the component fully covers; the request then takes the ordinary path.
+    bool build_catalog(const std::string& request, const Workspace& workspace, Session& session, const CancelToken& cancel);
     /// The verify workflow's command, when the project defines one.
     std::optional<std::string> verify_command(const Workspace& workspace) const;
     /// Mason runs the workflow itself, so it needs the permission a command would: Auto, or a saved rule for "workflow verify".

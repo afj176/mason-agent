@@ -1,6 +1,7 @@
 #include "agent.hpp"
 #include "acceptance.hpp"
 #include "browser.hpp"
+#include "derived.hpp"
 #include "navigation.hpp"
 #include "planning.hpp"
 
@@ -229,8 +230,8 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
     list.push_back({"navigate_code", "Find where a name is defined, used or tested in a project folder. Returns labelled text candidates with file and line; they are whole-word matches, not a compiler's answer.",
                     schema({{"path", {{"type", "string"}, {"description", "Folder to look in, relative to the project. Use . for the whole project."}}}, {"symbol", text}, {"mode", {{"type", "string"}, {"enum", {"definitions", "references", "tests"}}}}},
                            {"path", "symbol", "mode"})});
-    if (symbols::available()) {
-        list.push_back({"inspect_symbol", "Ask a language service about one position in a Python, JavaScript or TypeScript file: where the name there is defined, where it is used, or the file's diagnostics. line and column are 1-based.",
+    if (symbols::available() || language_servers::available()) {
+        list.push_back({"inspect_symbol", "Ask a language service about one position in a source file: where the name there is defined, where it is used, or the file's diagnostics. It answers for Python, JavaScript and TypeScript, and for C#, Swift, C, C++, Go and Rust when that language's server is installed. line and column are 1-based.",
                         schema({{"path", text}, {"line", {{"type", "integer"}, {"minimum", 1}}}, {"column", {{"type", "integer"}, {"minimum", 1}}}, {"mode", {{"type", "string"}, {"enum", {"definitions", "references", "diagnostics"}}}}},
                                {"path", "line", "column", "mode"})});
     }
@@ -338,6 +339,21 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
             return arguments[key].is_string() ? std::atoi(arguments[key].get<std::string>().c_str()) : 0;
         };
         if (!path || !mode) throw Error("inspect_symbol needs a path, a line, a column and a mode.");
+        if (!symbols::handles(*path)) {
+            const std::string extension = to_lower(fs::path(*path).extension().string());
+            const std::optional<LanguageServer> server = language_servers::server_for(extension.empty() ? "" : extension.substr(1));
+            if (!server) throw Error("No language server for " + (extension.empty() ? std::string("such") : extension) + " files was found on this computer. Use navigate_code for text matches.");
+            // A language server reads the project and may run its build, so it is started the way a command is.
+            if (read_only) throw Error("This session is read-only, and starting " + server->name + " is like running a command. Use navigate_code for text matches.");
+            if (!sandboxed) {
+                const std::string detail = "Starts " + join(server->command, " ") + " on this project with your account and environment, to answer one question. It is not sandboxed, and some language servers run the project's build.";
+                if (!allowed({call.name, "Start " + server->name + " to look up " + *path + ":" + std::to_string(whole("line")), detail, "language server " + server->name}, session)) {
+                    return Outcome{"denied", "The user declined. Do not retry it; use navigate_code instead."};
+                }
+            }
+            emit_({AgentEvent::Kind::Status, "Asking " + server->name, {}});
+            return Outcome{"completed", language_servers::query(workspace, *server, *path, whole("line"), whole("column"), *mode, sandboxed, cancel)};
+        }
         emit_({AgentEvent::Kind::Status, "Asking the language service", {}});
         return Outcome{"completed", symbols::query(workspace, *path, whole("line"), whole("column"), *mode, cancel)};
     }
@@ -666,6 +682,50 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
     }
 }
 
+bool Agent::build_catalog(const std::string& request, const Workspace& workspace, Session& session, const CancelToken& cancel) {
+    emit_({AgentEvent::Kind::Status, "Reading the offers", {}});
+    const std::optional<CatalogSpec> spec = catalog::extract(request, model_, cancel);
+    if (!spec || !catalog::complete(*spec, request)) return false;
+    emit_({AgentEvent::Kind::Status, "Writing the store", {}});
+    const CatalogDesign design = catalog::design(request, *spec, model_, cancel);
+    check_cancel(cancel);
+    const std::string page = catalog::render(*spec, design);
+    Activity activity;
+    activity.tool = "write_file";
+    activity.subject = "index.html";
+    session.activities.push_back(activity);
+    emit_({AgentEvent::Kind::ActivityStarted, "", activity});
+    workspace.write("index.html", page);
+    session.turns.back().changes.push_back({"index.html", std::nullopt, page});
+    activity.state = "completed";
+    activity.result = "Created index.html with Mason's catalog component: " + std::to_string(spec->items.size()) + " products, totals in whole cents.";
+    session.activities.back() = activity;
+    emit_({AgentEvent::Kind::ActivityFinished, "", activity});
+    emit_({AgentEvent::Kind::Status, "Checking the store", {}});
+    DerivedPlan plan;
+    for (const AcceptanceScenario& scenario : catalog::scenarios(*spec, request)) {
+        plan.units.push_back(scenario.requirement);
+        DerivedCheck check{static_cast<int>(plan.units.size()), scenario.requirement, "browser_flow", scenario.page, scenario.id, "All scenario assertions pass", {}, ""};
+        for (const AcceptanceStep& step : scenario.steps) check.steps.push_back({step.op, step.target, step.value});
+        plan.checks.push_back(std::move(check));
+    }
+    const DerivedReceipt receipt{derived::verify(plan, workspace, false, cancel), {}, 0};
+    session.turns.back().checks = receipt;
+    std::vector<std::string> offers;
+    for (const CatalogItem& item : spec->items) {
+        offers.push_back(item.name + " at $" + catalog::money(item.cents) + (item.threshold > 0 ? " ($" + catalog::money(item.sale_cents) + " each from " + std::to_string(item.threshold) + ")" : ""));
+    }
+    const bool ran = std::any_of(receipt.results.begin(), receipt.results.end(), [](const DerivedResult& result) { return result.state != "notRun"; });
+    const std::string answer = "I built index.html with Mason's catalog component, which computes totals in whole cents and makes the receipt in the browser. The offers, as the request states them: " + join(offers, ", ") + "." +
+                               (ran ? (derived::passed(receipt) ? " Mason then checked the page in a browser at a phone width and a desktop width: every offer, discount and the checkout hold."
+                                                                : " Mason checked the page in a browser and some checks failed; they are listed with this request.")
+                                    : " No browser was found on this computer, so the page was not checked: open it and try each offer and the checkout.");
+    session.messages.push_back({"assistant", answer, {}, ""});
+    session.turns.back().answer = answer;
+    emit_({AgentEvent::Kind::Text, answer, {}});
+    return true;
+}
+
 void Agent::run_turn(Session& session, const std::string& request, const CancelToken& cancel) {
     std::optional<Workspace> workspace;
     try {
@@ -732,6 +792,21 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         int repairs = 0;
         static const std::set<std::string> changing = {"edit_file", "write_file", "apply_edits", "run_shell", "run_workflow", "start_job"};
         pending_question_.reset();
+        // In Auto, Mason works out what it can check for itself before the work starts.
+        std::optional<DerivedPlan> plan;
+        if (derives_checks && session.permission == Permission::Auto && !session.ask_only) {
+            if (catalog::applies(input, *workspace) && build_catalog(input, *workspace, session, cancel)) {
+                session.state = "Completed";
+                session.detail.clear();
+                store_.save(session);
+                return;
+            }
+            DerivedPlan made = derived::prepare(input, *workspace, &model_, cancel);
+            if (!made.checks.empty()) {
+                session.messages.back().content += "\n\n" + made.brief();
+                plan = std::move(made);
+            }
+        }
         const int window = model_.context_window();
         for (int step = 0; step < kActionLimit; step++) {
             check_cancel(cancel);
@@ -756,6 +831,22 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                         repairs++;
                         session.messages.push_back({"user", "Mason ran the project's verify workflow (" + receipt->command + "). It passed before your changes and fails now:\n" + receipt->output +
                                                                 "\nFix what your changes broke, then answer again.", {}, ""});
+                        store_.save(session);
+                        continue;
+                    }
+                }
+                // Then the checks Mason worked out from the request itself. A failed one goes back to the model.
+                if (plan) {
+                    emit_({AgentEvent::Kind::Status, "Checking the result", {}});
+                    DerivedReceipt receipt{derived::verify(*plan, *workspace, true, cancel), plan->unverified(), repairs};
+                    session.turns.back().checks = receipt;
+                    if (!derived::passed(receipt) && repairs < kRepairLimit) {
+                        repairs++;
+                        std::string failed;
+                        for (const DerivedResult& result : receipt.results) {
+                            if (result.state == "failed") failed += "\n- " + derived::description(result.check) + ": " + result.detail;
+                        }
+                        session.messages.push_back({"user", "Mason checked the result itself and this does not hold yet:" + failed + "\nFix it, then answer again.", {}, ""});
                         store_.save(session);
                         continue;
                     }

@@ -34,6 +34,32 @@ fs::path folder();
 bool available();
 /// Definitions, references or diagnostics at a 1-based position, as the helper's JSON.
 std::string query(const Workspace& workspace, const std::string& path, int line, int column, const std::string& mode, const CancelToken& cancel = nullptr);
+/// True for the files Jedi or the TypeScript compiler answer for.
+bool handles(const std::string& path);
 }  // namespace symbols
+
+/// For languages beyond Python and JavaScript, `inspect_symbol` asks the language server the user already has for that
+/// language: csharp-ls or OmniSharp for C#, sourcekit-lsp for Swift, clangd for C and C++, gopls for Go, rust-analyzer
+/// for Rust. The server is a program on this computer that reads the project, and some run the project's build, so it
+/// is started the way a command is: inside the sandbox in Auto, and after asking otherwise.
+struct LanguageServer {
+    std::string name;
+    std::vector<std::string> command;
+    std::string language_id;
+};
+
+namespace language_servers {
+/// The language server for a file with this extension (without the dot), when one is installed.
+/// `MASON_LANGUAGE_SERVERS` can name one, as JSON such as {"cs": ["/opt/csharp-ls/csharp-ls"]}.
+std::optional<LanguageServer> server_for(const std::string& extension);
+/// True when some language server is installed, so the tool is worth offering.
+bool available();
+/// Everything the server is sent, in order: open the project and the file, ask the question, then leave.
+std::string conversation(const std::string& root, const std::string& file, const std::string& text, const std::string& language_id, int line, int column, const std::string& mode);
+/// The messages in what a server wrote.
+std::vector<json> messages_in(const std::string& output);
+/// Asks the server about one position. The server runs as a command does: `sandboxed` puts it in the sandbox.
+std::string query(const Workspace& workspace, const LanguageServer& server, const std::string& path, int line, int column, const std::string& mode, bool sandboxed, const CancelToken& cancel = nullptr);
+}  // namespace language_servers
 
 }  // namespace mason
