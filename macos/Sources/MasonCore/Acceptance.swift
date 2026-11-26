@@ -27,6 +27,13 @@ public struct AcceptanceResult: Equatable {
     public let detail: [String]
 }
 
+extension Optional {
+    func asyncMap<T>(_ transform: (Wrapped) async throws -> T) async rethrows -> T? {
+        guard let value = self else { return nil }
+        return try await transform(value)
+    }
+}
+
 public enum Acceptance {
     public static let filename = "mason.acceptance.json"
     public static let widths = [390, 1280]
@@ -80,11 +87,11 @@ public enum Acceptance {
     }
 
     /// Runs every scenario at each width. A scenario passes when every step does at both widths and the page raises no script error.
-    public static func run(_ workspace: Workspace, _ contract: AcceptanceContract, progress: (String) -> Void = { _ in }) async throws -> [AcceptanceResult] {
-        if let application = contract.application {
-            throw MasonError("This contract runs a Python application (\(application)) in an isolated copy, which Mason does on Windows only for now. Contracts for static pages run here.")
-        }
-        if contract.scenarios.contains(where: { $0.steps.contains { applicationSteps.contains($0.op) } }) { throw MasonError("API and database assertions require an isolated verification application.") }
+    /// A contract that names an application runs it in a throwaway copy of the project, a fresh one for each width.
+    /// `requireSandbox` refuses to run the application where the command sandbox is unavailable.
+    public static func run(_ workspace: Workspace, _ contract: AcceptanceContract, requireSandbox: Bool = false, progress: (String) -> Void = { _ in }) async throws -> [AcceptanceResult] {
+        if contract.application == nil, contract.scenarios.contains(where: { $0.steps.contains { applicationSteps.contains($0.op) } }) { throw MasonError("API and database assertions require an isolated verification application.") }
+        if contract.application != nil, requireSandbox, !Shell.sandboxAvailable { throw MasonError("The sandbox is unavailable here, so Auto will not run the project's application. Choose another permission mode to be asked first.") }
         var results: [AcceptanceResult] = []
         for scenario in contract.scenarios {
             try Task.checkCancellation()
@@ -92,7 +99,10 @@ public enum Acceptance {
             var detail: [String] = [], passed = true
             for width in widths where passed {
                 let steps: [[String: Any]] = [["action": "viewport", "width": width]] + scenario.steps.map { ["action": "accept", "op": $0.op, "target": $0.target, "value": $0.value] }
-                let result = try await BrowserCheck.run(workspace, page: scenario.page, steps: steps)
+                let app = try await contract.application.asyncMap { try await VerificationApp.start(workspace, entry: $0, sandboxed: Shell.sandboxAvailable) }
+                let result: BrowserCheck.Result
+                do { result = try await BrowserCheck.run(workspace, page: scenario.page, steps: steps, backend: app) } catch { await app?.stop(); throw error }
+                await app?.stop()
                 if let failed = result.steps.firstIndex(where: { !$0.ok }) {
                     passed = false
                     detail = ["at \(width)px, step \(failed + 1), \(result.steps[failed].action): \(result.steps[failed].detail)"]

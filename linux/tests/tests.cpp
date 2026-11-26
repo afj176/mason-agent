@@ -1323,7 +1323,6 @@ document.getElementById('checkout').onclick = function () { var id = 'ORD-' + (N
     CHECK_THROWS(acceptance::parse(workspace, one("../x.html", R"({"Op": "text", "Target": "#x", "Value": "y"})")));  // the page must be in the project
     CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "hover", "Target": "#x"}, {"Op": "text", "Target": "#x", "Value": "y"})")));
     CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "money", "Target": "#x", "Value": "ten"})")));
-    CHECK_THROWS(acceptance::run(workspace, acceptance::parse(workspace, R"({"Version": 1, "Application": "store:application", "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]})")));
 
     // A review keeps only findings that quote the line they name.
     {
@@ -1467,6 +1466,58 @@ static void test_navigation() {
     unsetenv("MASON_LANGUAGE_TOOLS");
 }
 
+static void test_verification_app() {
+    // The checkout fixture the Windows tests use: a WSGI shop with an order database.
+    Sandbox box;
+    const fs::path fixture = fs::path(__FILE__).parent_path().parent_path().parent_path() / "windows" / "tests" / "fixtures" / "checkout";
+    fs::remove(box.project / "calc.py");
+    for (const char* name : {"index.html", "store.py", "mason.acceptance.json"}) fs::copy_file(fixture / name, box.project / name);
+    const Workspace workspace(box.project.string());
+    if (transformers::python().empty()) {
+        std::cout << "  (no python3 on this computer: the application was not run)\n";
+        return;
+    }
+    CHECK_THROWS(VerificationApp(workspace, "store; import os", false));  // only module:callable
+    fs::path copy;
+    {
+        VerificationApp app(workspace, "store:application", shell::sandbox_available());
+        copy = app.folder();
+        CHECK(starts_with(copy.filename().string(), "mason-verify-") && fs::exists(copy / "store.py"));
+        CHECK(!app.answer("GET", "/__mason/harness?page=x", {}, ""));  // the harness stays with the page server
+        const auto page = app.answer("GET", "/index.html", {}, "");
+        CHECK(page && page->status == 200 && page->body.find("window.__masonErrors") != std::string::npos && page->body.find("<li>Honey</li>") != std::string::npos);
+        const auto price = app.answer("GET", "/price?quantity=3", {}, "");
+        CHECK(price && price->body == R"({"total": 27.0})");
+        const auto missing = app.answer("GET", "/missing", {}, "");
+        CHECK(missing && missing->status == 404);
+        CHECK_THROWS(app.check("response_count", "POST /checkout", "1", ""));  // nothing was ordered yet
+        const auto order = app.answer("POST", "/checkout", {{"content-type", "application/json"}}, "{}");
+        const std::string id = order ? json::parse(order->body, nullptr, false).value("id", "") : "";
+        CHECK(starts_with(id, "ORD-"));
+        CHECK(app.check("response_count", "POST /checkout", "1", "") == "1 responses");
+        CHECK(app.check("response_same", "POST /checkout", "id", id) == "1 responses matched " + id);
+        CHECK_THROWS(app.check("response_same", "POST /checkout", "id", "ORD-other"));
+        CHECK(app.check("sqlite_count", "orders.sqlite#orders", "1", "") == "1 rows");
+        CHECK_THROWS(app.check("sqlite_count", "orders.sqlite#orders", "2", ""));
+        CHECK_THROWS(app.check("sqlite_count", "../x.sqlite#orders", "1", ""));
+    }
+    CHECK(!fs::exists(copy));                            // the copy and its database are thrown away
+    CHECK(!fs::exists(box.project / "orders.sqlite"));  // the project itself was never written to
+
+    if (browser::find().empty()) {
+        std::cout << "  (no browser on this computer: the checkout contract was not run)\n";
+        return;
+    }
+    const std::vector<AcceptanceResult> passed = acceptance::run(workspace, acceptance::read(workspace));
+    const bool all = std::all_of(passed.begin(), passed.end(), [](const AcceptanceResult& result) { return result.passed; });
+    CHECK(all);
+    if (!all) std::cerr << acceptance::receipt(passed) << "\n";
+    // An order that is shown but never saved must fail the scenario that reloads the order page.
+    box.write("store.py", replace_all(box.read("store.py"), "SAVE_ORDER = True", "SAVE_ORDER = False"));
+    const std::vector<AcceptanceResult> broken = acceptance::run(workspace, acceptance::read(workspace));
+    CHECK(!std::all_of(broken.begin(), broken.end(), [](const AcceptanceResult& result) { return result.passed; }));
+}
+
 static void test_verification() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
@@ -1557,7 +1608,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

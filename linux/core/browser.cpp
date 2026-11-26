@@ -69,6 +69,11 @@ const char* const kHarness = R"html(<!doctype html><meta charset="utf-8"><title>
           var op = s.op, target = String(s.target || ''), expected = String(s.value == null ? '' : s.value);
           var nodes = function () { return target ? Array.prototype.slice.call(doc().querySelectorAll(target)).filter(function (e) { return e.getClientRects().length > 0; }) : []; };
           r.action = op + (target ? ' ' + target : '');
+          if (op === 'sqlite_count' || op === 'response_count' || op === 'response_same') {
+            var told = await (await fetch('/__mason/assert?op=' + encodeURIComponent(op) + '&target=' + encodeURIComponent(target) + '&value=' + encodeURIComponent(expected) + '&captured=' + encodeURIComponent(captured || ''))).json();
+            if (!told.ok) throw new Error(told.detail);
+            r.ok = true; r.detail = told.detail;
+          } else
           if (op === 'reload') {
             out.errors = out.errors.concat((f.contentWindow.__masonErrors || []).slice(0, 20));
             await new Promise(function (done) { f.onload = done; f.contentWindow.location.reload(); });
@@ -194,7 +199,7 @@ std::string content_type(const std::string& path) {
 /// A server on 127.0.0.1 that answers GET requests for project files until it is destroyed.
 class Server {
 public:
-    explicit Server(const Workspace& workspace) : workspace_(workspace) {
+    explicit Server(const Workspace& workspace, Backend* backend = nullptr) : workspace_(workspace), backend_(backend) {
         listener_ = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
         sockaddr_in address{};
         address.sin_family = AF_INET;
@@ -237,9 +242,33 @@ private:
         }
         const std::vector<std::string> parts = split(request.substr(0, request.find("\r\n")), ' ', false);
         Reply reply{405, "text/plain; charset=utf-8", "Only GET is served."};
-        if (parts.size() >= 2 && (parts[0] == "GET" || parts[0] == "HEAD")) reply = respond(parts[1], workspace_);
-        std::string wire = "HTTP/1.1 " + std::to_string(reply.status) + (reply.status == 200 ? " OK" : " Error") + "\r\nContent-Type: " + reply.content_type +
-                           "\r\nContent-Length: " + std::to_string(reply.body.size()) + "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+        std::string extra;
+        bool answered = false;
+        const size_t end = request.find("\r\n\r\n");
+        if (backend_ && parts.size() >= 2 && end != std::string::npos) {
+            // An application gets the whole request: its headers and, for a POST, its body.
+            std::map<std::string, std::string> headers;
+            const std::vector<std::string> fields = split(replace_all(request.substr(0, end), "\r\n", "\n"), '\n');
+            for (size_t i = 1; i < fields.size(); i++) {
+                const size_t colon = fields[i].find(':');
+                if (colon != std::string::npos) headers[to_lower(fields[i].substr(0, colon))] = trim(fields[i].substr(colon + 1));
+            }
+            std::string sent = request.substr(end + 4);
+            const size_t length = std::min<size_t>(headers.count("content-length") ? static_cast<size_t>(std::atol(headers["content-length"].c_str())) : 0, 128 * 1024);
+            while (sent.size() < length) {
+                const ssize_t count = recv(client, buffer, sizeof buffer, 0);
+                if (count <= 0) break;
+                sent.append(buffer, static_cast<size_t>(count));
+            }
+            if (const std::optional<BackendReply> given = backend_->answer(parts[0], parts[1], headers, sent)) {
+                reply = {given->status, given->content_type, given->body};
+                for (const auto& [name, value] : given->headers) extra += name + ": " + value + "\r\n";
+                answered = true;
+            }
+        }
+        if (!answered && parts.size() >= 2 && (parts[0] == "GET" || parts[0] == "HEAD")) reply = respond(parts[1], workspace_);
+        std::string wire = "HTTP/1.1 " + std::to_string(reply.status) + (reply.status >= 200 && reply.status < 400 ? " OK" : " Error") + "\r\nContent-Type: " + reply.content_type +
+                           "\r\nContent-Length: " + std::to_string(reply.body.size()) + "\r\n" + extra + "Cache-Control: no-store\r\nConnection: close\r\n\r\n";
         if (parts.empty() || parts[0] != "HEAD") wire += reply.body;
         size_t sent = 0;
         while (sent < wire.size()) {
@@ -250,6 +279,7 @@ private:
     }
 
     Workspace workspace_;
+    Backend* backend_ = nullptr;  ///< When set, it answers first; nothing from it falls back to the project's files and the harness.
     int listener_ = -1, port_ = 0;
     std::atomic<bool> stopped_{false};
     std::thread thread_;
@@ -276,6 +306,16 @@ std::string find() {
     return "";
 }
 
+std::string with_recorder(const std::string& html) {
+    // After the doctype when there is one, so the page keeps its rendering mode.
+    static const std::regex doctype("<!doctype[^>]*>", std::regex::icase);
+    std::smatch match;
+    std::string page = html;
+    if (std::regex_search(page, match, doctype)) page.insert(static_cast<size_t>(match.position(0) + match.length(0)), kRecorder);
+    else page = kRecorder + page;
+    return page;
+}
+
 Reply respond(const std::string& target, const Workspace& workspace) {
     const std::string path = target.substr(0, target.find('?'));
     if (path == "/__mason/harness") return {200, "text/html; charset=utf-8", kHarness};
@@ -291,27 +331,22 @@ Reply respond(const std::string& target, const Workspace& workspace) {
     if (!data) return {404, "text/plain; charset=utf-8", "Not in the project."};
     const std::string kind = content_type(relative);
     if (starts_with(kind, "text/html") && is_valid_utf8(*data)) {
-        // After the doctype when there is one, so the page keeps its rendering mode.
-        static const std::regex doctype("<!doctype[^>]*>", std::regex::icase);
-        std::smatch match;
-        std::string page = *data;
-        if (std::regex_search(page, match, doctype)) page.insert(static_cast<size_t>(match.position(0) + match.length(0)), kRecorder);
-        else page = kRecorder + page;
-        return {200, kind, page};
+        return {200, kind, with_recorder(*data)};
     }
     return {200, kind, *data};
 }
 
-Result run(const Workspace& workspace, const std::string& page, const json& steps, const CancelToken& cancel) {
+Result run(const Workspace& workspace, const std::string& page, const json& steps, const CancelToken& cancel, Backend* backend) {
     const std::string program = find();
     if (program.empty()) {
         throw Error("No Chrome, Chromium, Edge or Brave was found on this computer, so the page cannot be checked. Install one, or set MASON_BROWSER to its program.");
     }
     std::string kind = fs::path(page).extension().string();
-    if (!workspace.exists(page) || (to_lower(kind) != ".html" && to_lower(kind) != ".htm")) throw Error(page + " is not an HTML file in the project.");
+    // An application serves its own pages, so the page need not be a file.
+    if (!backend && (!workspace.exists(page) || (to_lower(kind) != ".html" && to_lower(kind) != ".htm"))) throw Error(page + " is not an HTML file in the project.");
     if (!steps.is_array() || steps.size() > 40) throw Error("steps must be a list of at most 40 steps.");
 
-    Server server(workspace);
+    Server server(workspace, backend);
     const fs::path profile = fs::temp_directory_path() / ("mason-browser-" + new_id().substr(0, 12));
     struct Cleanup {
         fs::path folder;

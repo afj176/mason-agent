@@ -320,10 +320,12 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         const AcceptanceContract contract = acceptance::read(workspace);
         if (session.permission != Permission::Auto) {
             const std::string detail = "Opens the pages of " + std::to_string(contract.scenarios.size()) + (contract.scenarios.size() == 1 ? " scenario" : " scenarios") +
-                                       " in a headless browser with a fresh profile and no network beyond this computer.";
+                                       " in a headless browser with a fresh profile and no network beyond this computer." +
+                                       (contract.application.empty() ? "" : " Runs the project's Python application " + contract.application + " in a throwaway copy of the project" +
+                                                                                (shell::sandbox_available() ? ", inside the sandbox." : ". The sandbox is unavailable here, so it runs with your account."));
             if (!allowed({call.name, "Run the acceptance scenarios in a browser", detail, acceptance::kFilename}, session)) return Outcome{"denied", "The user declined. Do not retry it; ask what they want instead."};
         }
-        const std::vector<AcceptanceResult> results = acceptance::run(workspace, contract, [this](const std::string& status) { emit_({AgentEvent::Kind::Status, status, {}}); }, cancel);
+        const std::vector<AcceptanceResult> results = acceptance::run(workspace, contract, [this](const std::string& status) { emit_({AgentEvent::Kind::Status, status, {}}); }, cancel, session.permission == Permission::Auto);
         const bool passed = std::all_of(results.begin(), results.end(), [](const AcceptanceResult& result) { return result.passed; });
         return Outcome{passed ? "completed" : "failed", acceptance::receipt(results)};
     }

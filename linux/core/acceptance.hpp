@@ -4,7 +4,11 @@
 //   {"Version": 1, "Scenarios": [{"Id": "discount", "Requirement": "Ten percent off at three units", "Page": "index.html",
 //     "Steps": [{"Op": "fill", "Target": "#qty", "Value": "3"}, {"Op": "money", "Target": "#total", "Value": "27.00"}]}]}
 #pragma once
+#include <thread>
+
+#include "browser.hpp"
 #include "model.hpp"
+#include "shell.hpp"
 #include "session.hpp"
 #include "workspace.hpp"
 
@@ -37,10 +41,38 @@ bool exists(const Workspace& workspace);
 AcceptanceContract parse(const Workspace& workspace, const std::string& source);
 AcceptanceContract read(const Workspace& workspace);
 /// Runs every scenario at each width. A scenario passes when every step does at both widths and the page raises no script error.
-std::vector<AcceptanceResult> run(const Workspace& workspace, const AcceptanceContract& contract, const std::function<void(const std::string&)>& progress = nullptr, const CancelToken& cancel = nullptr);
+/// A contract that names an application runs it in a throwaway copy of the project, a fresh one for each width.
+/// `require_sandbox` refuses to run the application where the command sandbox is unavailable.
+std::vector<AcceptanceResult> run(const Workspace& workspace, const AcceptanceContract& contract, const std::function<void(const std::string&)>& progress = nullptr, const CancelToken& cancel = nullptr,
+                                  bool require_sandbox = false);
 /// The results as the user and the model read them.
 std::string receipt(const std::vector<AcceptanceResult>& results);
 }  // namespace acceptance
+
+/// An acceptance contract can name a Python WSGI application ("module:callable"). Mason copies the project to a
+/// temporary folder, runs the application there inside the sandbox with no network, and passes the browser's requests
+/// to it through files, so the application never opens a socket. The copy and its database are thrown away afterwards.
+class VerificationApp : public browser::Backend {
+public:
+    /// Copies the project and starts its application. `sandboxed` runs it inside the command sandbox.
+    VerificationApp(const Workspace& project, const std::string& entry, bool sandboxed, const CancelToken& cancel = nullptr);
+    ~VerificationApp() override;
+    VerificationApp(const VerificationApp&) = delete;
+    VerificationApp& operator=(const VerificationApp&) = delete;
+    const fs::path& folder() const { return folder_; }
+    std::optional<browser::BackendReply> answer(const std::string& method, const std::string& target, const std::map<std::string, std::string>& headers, const std::string& body) override;
+    /// The steps that look at the application itself rather than the page. Throws Error when the check fails.
+    std::string check(const std::string& op, const std::string& target, const std::string& value, const std::string& captured);
+
+private:
+    void stop();
+    fs::path folder_, mailbox_;
+    std::thread thread_;
+    CancelToken stop_ = make_cancel();
+    std::mutex lock_;
+    std::optional<CommandResult> ended_;
+    std::vector<std::pair<std::string, std::string>> responses_;  ///< "METHOD /path" and its JSON body.
+};
 
 /// What a reviewing model found in a change, kept only when it points at a real line.
 struct ReviewFindings {

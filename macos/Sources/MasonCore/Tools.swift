@@ -273,11 +273,12 @@ extension Agent {
             let contract = try Acceptance.read(workspace)
             if session.permission != .auto {
                 let detail = "Opens the pages of \(contract.scenarios.count) scenario\(contract.scenarios.count == 1 ? "" : "s") in a headless browser with a fresh profile and no network beyond this computer."
+                    + (contract.application.map { " Runs the project's Python application \($0) in a throwaway copy of the project" + (Shell.sandboxAvailable ? ", inside the sandbox." : ". The sandbox is unavailable here, so it runs with your account.") } ?? "")
                 if !(await allowed(ApprovalRequest(tool: call.name, title: "Run the acceptance scenarios in a browser", detail: detail, subject: Acceptance.filename), session: &session)) {
                     return (.denied, "The user declined. Do not retry it; ask what they want instead.")
                 }
             }
-            let results = try await Acceptance.run(workspace, contract) { [emit] in emit(.status($0)) }
+            let results = try await Acceptance.run(workspace, contract, requireSandbox: session.permission == .auto) { [emit] in emit(.status($0)) }
             return (results.allSatisfy(\.passed) ? .completed : .failed, Acceptance.receipt(results))
 
         case "check_page":

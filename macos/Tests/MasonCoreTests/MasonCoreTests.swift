@@ -1311,11 +1311,56 @@ final class AcceptanceTests: XCTestCase {
         XCTAssertTrue(model.seen[0][0].content.contains("acceptance scenarios in mason.acceptance.json"))
     }
 
-    func testAnApplicationContractSaysWhereItRuns() async throws {
-        let workspace = try Workspace(path: folder.path)
-        let source = ##"{"Version": 1, "Application": "store:application", "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]}"##
-        do { _ = try await Acceptance.run(workspace, try Acceptance.parse(workspace, source)); XCTFail("expected an error") }
-        catch { XCTAssertTrue("\(error)".contains("on Windows only for now"), "\(error)") }
+    /// The checkout fixture the Windows tests use: a WSGI shop with an order database.
+    func checkout() throws -> Workspace {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("windows/tests/fixtures/checkout")
+        let project = folder.appendingPathComponent("checkout")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        for name in ["index.html", "store.py", "mason.acceptance.json"] { try FileManager.default.copyItem(at: fixture.appendingPathComponent(name), to: project.appendingPathComponent(name)) }
+        return try Workspace(path: project.path)
+    }
+
+    func testAnApplicationRunsInAThrowawayCopyAndIsAskedThroughFiles() async throws {
+        guard VerificationApp.python() != nil else { throw XCTSkip("No python3 on this computer.") }
+        let workspace = try checkout()
+        await XCTAssertThrowsErrorAsync(try await VerificationApp.start(workspace, entry: "store; import os", sandboxed: false), "only module:callable")
+        let app = try await VerificationApp.start(workspace, entry: "store:application", sandboxed: Shell.sandboxAvailable)
+        let copy = app.folder
+        XCTAssertTrue(copy.lastPathComponent.hasPrefix("mason-verify-") && FileManager.default.fileExists(atPath: copy.appendingPathComponent("store.py").path))
+        XCTAssertNil(app.answer(method: "GET", target: "/__mason/harness?page=x", headers: [:], body: Data()), "the harness stays with the page server")
+
+        let page = try XCTUnwrap(app.answer(method: "GET", target: "/index.html", headers: [:], body: Data()))
+        XCTAssertEqual(page.status, 200)
+        XCTAssertTrue(String(decoding: page.body, as: UTF8.self).contains("window.__masonErrors") && String(decoding: page.body, as: UTF8.self).contains("<li>Honey</li>"), "the application's page, with the error recorder added")
+        let price = try XCTUnwrap(app.answer(method: "GET", target: "/price?quantity=3", headers: [:], body: Data()))
+        XCTAssertEqual(String(decoding: price.body, as: UTF8.self), #"{"total": 27.0}"#)
+        XCTAssertEqual(app.answer(method: "GET", target: "/missing", headers: [:], body: Data())?.status, 404)
+
+        XCTAssertThrowsError(try app.check(op: "response_count", target: "POST /checkout", value: "1", captured: ""), "nothing was ordered yet")
+        let order = try XCTUnwrap(app.answer(method: "POST", target: "/checkout", headers: ["content-type": "application/json"], body: Data("{}".utf8)))
+        let id = try XCTUnwrap((try JSONSerialization.jsonObject(with: order.body) as? [String: String])?["id"])
+        XCTAssertEqual(try app.check(op: "response_count", target: "POST /checkout", value: "1", captured: ""), "1 responses")
+        XCTAssertEqual(try app.check(op: "response_same", target: "POST /checkout", value: "id", captured: id), "1 responses matched \(id)")
+        XCTAssertThrowsError(try app.check(op: "response_same", target: "POST /checkout", value: "id", captured: "ORD-other"))
+        XCTAssertEqual(try app.check(op: "sqlite_count", target: "orders.sqlite#orders", value: "1", captured: ""), "1 rows")
+        XCTAssertThrowsError(try app.check(op: "sqlite_count", target: "orders.sqlite#orders", value: "2", captured: ""))
+        XCTAssertThrowsError(try app.check(op: "sqlite_count", target: "../x.sqlite#orders", value: "1", captured: ""))
+
+        await app.stop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path), "the copy and its database are thrown away")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.root.appendingPathComponent("orders.sqlite").path), "the project itself was never written to")
+    }
+
+    func testTheCheckoutContractPassesInARealBrowserAndCatchesABrokenShop() async throws {
+        guard BrowserCheck.findBrowser() != nil, VerificationApp.python() != nil else { throw XCTSkip("Needs a Chromium-family browser and python3.") }
+        let workspace = try checkout()
+        let passed = try await Acceptance.run(workspace, try Acceptance.read(workspace))
+        XCTAssertTrue(passed.allSatisfy(\.passed), Acceptance.receipt(passed))
+        // An order that is shown but never saved must fail the scenario that reloads the order page.
+        let store = workspace.root.appendingPathComponent("store.py")
+        try String(contentsOf: store, encoding: .utf8).replacingOccurrences(of: "SAVE_ORDER = True", with: "SAVE_ORDER = False").write(to: store, atomically: true, encoding: .utf8)
+        let broken = try await Acceptance.run(workspace, try Acceptance.read(workspace))
+        XCTAssertFalse(broken.allSatisfy(\.passed), Acceptance.receipt(broken))
     }
 
     func testAReviewKeepsOnlyFindingsThatQuoteTheLineTheyName() async throws {
