@@ -13,3 +13,7 @@ macos/** text eol=lf
 linux/** text eol=lf
 *.sh text eol=lf
 *.swift text eol=lf
+
+# Images inside the platform folders are binary, whatever the folder-wide rule above says.
+macos/**/*.png binary
+linux/**/*.png binary

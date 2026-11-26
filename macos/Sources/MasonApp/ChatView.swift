@@ -21,6 +21,8 @@ struct ChatSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(Brand.sidebar)
         .safeAreaInset(edge: .bottom) {
             Button { model.newChat() } label: { Label("New Chat", systemImage: "square.and.pencil").frame(maxWidth: .infinity, alignment: .leading) }
                 .buttonStyle(.borderless)
@@ -42,15 +44,11 @@ struct ChatView: View {
                         VStack(alignment: .leading, spacing: 16) {
                             ForEach(Array(chat.messages.enumerated()), id: \.offset) { _, message in
                                 if message.role == "user" {
-                                    HStack {
-                                        Spacer(minLength: 80)
-                                        Text(ChatView.shown(message.content))
-                                            .textSelection(.enabled)
-                                            .padding(.horizontal, 14).padding(.vertical, 9)
-                                            .background(Color.accentColor.opacity(0.16), in: RoundedRectangle(cornerRadius: 14))
-                                    }
+                                    Speaker(mason: false)
+                                    Text(ChatView.shown(message.content)).textSelection(.enabled).messageBody()
                                 } else if message.role == "assistant" {
-                                    MarkdownText(text: message.content).textSelection(.enabled)
+                                    Speaker(mason: true)
+                                    MarkdownText(text: message.content).textSelection(.enabled).messageBody()
                                 }
                             }
                             if model.chatRunning {
@@ -69,6 +67,7 @@ struct ChatView: View {
                     .onChange(of: model.chatLive) { _, _ in proxy.scrollTo("end") }
                 }
                 if chat.messages.count <= 1, !model.chatRunning {
+                    Mascot(size: 72)
                     Text("Ask anything. Chat answers from the conversation alone: it cannot read your project, edit files or run commands. Use Code for that.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 60).padding(.bottom, 12)
                 }
@@ -115,13 +114,11 @@ struct ChatView: View {
             TextEditor(text: $model.chatDraft)
                 .font(.body)
                 .focused($focused)
-                .frame(minHeight: 44, maxHeight: 140)
+                .frame(height: 62)
                 .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .topLeading) {
                     if model.chatDraft.isEmpty {
-                        Text("Message the model").foregroundStyle(.tertiary).padding(.horizontal, 13).padding(.vertical, 8).allowsHitTesting(false)
+                        Text("Message the model…").foregroundStyle(.tertiary).padding(.horizontal, 5).allowsHitTesting(false)
                     }
                 }
                 .accessibilityLabel("Message")
@@ -134,14 +131,23 @@ struct ChatView: View {
                 if model.chatRunning {
                     Button(role: .cancel) { model.stopChat() } label: { Label("Stop", systemImage: "stop.fill") }
                 } else {
-                    Button { model.sendChat() } label: { Label("Send", systemImage: "arrow.up.circle.fill") }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatAttachments.isEmpty)
-                        .help("Send (⌘Return)")
+                    Button { model.sendChat() } label: {
+                        Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold)).foregroundStyle(Brand.onAccent)
+                            .frame(width: 34, height: 34).background(Brand.accent, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.chatAttachments.isEmpty)
+                    .accessibilityLabel("Send")
+                    .help("Send (⌘Return)")
                 }
             }
         }
-        .padding(16)
+        .padding(12)
+        .card(radius: 18)
+        .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16).padding(.bottom, 14).padding(.top, 6)
         // The message box takes the keyboard whenever a chat is shown. The short wait lets the pane finish appearing;
         // asking for focus in the same pass as the switch is ignored.
         .task(id: model.chatSelection) {

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/site/masonagent/MasonAgent">
+    <file alias="mascot.png">assets/mascot.png</file>
+    <file alias="welcome.png">assets/welcome.png</file>
+  </gresource>
+</gresources>

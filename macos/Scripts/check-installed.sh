@@ -39,6 +39,8 @@ grep -q "replaced by a summary" "$WORK/cli2.txt" || { echo "/compact did not rep
 printf '/exit\n' | mason --resume --review --endpoint "http://127.0.0.1:$PORT" --model stub >/dev/null
 
 echo "--- app ---"
+# Screenshots are taken in the dark theme, the one the website shows.
+defaults write site.masonagent.MasonAgent appearance -string "Dark" || true
 "$APP/Contents/MacOS/MasonAgent" &
 APP_PID=$!
 sleep 6
@@ -71,4 +73,26 @@ screencapture -x "$SHOTS/4-chat.png" || true
 grep -rqs "say hello" "$MASON_DATA_HOME/chats" || { echo "The app did not save the chat message."; exit 1; }
 grep -rqs "Summary: the stub" "$MASON_DATA_HOME/chats" || { echo "The chat did not get an answer from the model."; exit 1; }
 kill -0 $APP_PID
+
+echo "--- app, a fuller session for the screenshot ---"
+# Not a check: it only produces a picture of the app with a realistic session, so a failure here is reported and ignored.
+(
+  set +e
+  kill $APP_PID; sleep 1
+  DEMO="$WORK/ledger-lite"
+  "$HERE/Scripts/demo-project.sh" "$DEMO" >/dev/null
+  cd "$DEMO"
+  printf '%s\n/exit\n' 'Bank exports with quoted payee names like "Smith, Jones & Co" break the importer: the row splits into too many columns. Use the csv module instead of split, and add a regression test.' \
+    | mason --auto --endpoint "http://127.0.0.1:$PORT" --model stub > "$WORK/demo.txt" 2>&1
+  printf '/exit\n' | mason --resume --review --endpoint "http://127.0.0.1:$PORT" --model stub >/dev/null 2>&1
+  "$APP/Contents/MacOS/MasonAgent" &
+  DEMO_PID=$!
+  sleep 6
+  osascript -e 'tell application "System Events" to set frontmost of (first process whose unix id is '"$DEMO_PID"') to true'
+  sleep 2
+  screencapture -x "$SHOTS/5-demo.png"
+  kill $DEMO_PID
+  grep -E "Completed|Failed" "$WORK/demo.txt" | tail -1
+) || echo "The demo screenshot could not be made."
+
 echo "Installed Mason Agent passed: PATH, sandboxed command, undo, compaction, an approved edit through the app, and a chat."
