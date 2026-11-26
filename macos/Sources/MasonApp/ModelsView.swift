@@ -4,6 +4,8 @@ import MasonCore
 /// Models on this Mac: what is running, the files found, the llama.cpp runtime, and Hugging Face search and download.
 struct ModelsView: View {
     @EnvironmentObject var model: AppModel
+    @State private var graphics: [GpuAdapter] = []
+    @State private var graphicsNote: String?
 
     var body: some View {
         ScrollView {
@@ -32,6 +34,7 @@ struct ModelsView: View {
                     .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
                 }
                 running
+                graphicsSection
                 runtime
                 local
                 discover
@@ -43,6 +46,28 @@ struct ModelsView: View {
         .navigationTitle("Models")
         .navigationSubtitle("\(ByteText.size(MemoryFit.budgetBytes)) of memory available for a model")
         .task { await model.refreshModels() }
+        .task {
+            // A reading every two seconds while the page is open.
+            while !Task.isCancelled {
+                let read = await Task.detached { Gpu.read() }.value
+                graphics = read.adapters
+                graphicsNote = read.note
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    var graphicsSection: some View {
+        Section2(title: "Graphics", note: "How busy the graphics processor is and how much memory it has in use, read every two seconds while this page is open.") {
+            if graphics.isEmpty { Text(graphicsNote ?? "Reading…").foregroundStyle(.secondary) }
+            ForEach(Array(graphics.enumerated()), id: \.offset) { _, adapter in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(adapter.name)
+                    if let busy = adapter.busyPercent { ProgressView(value: Double(busy), total: 100) }
+                    Text(Gpu.describe(adapter)).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     // MARK: sections

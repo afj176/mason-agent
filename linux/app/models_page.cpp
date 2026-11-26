@@ -1,3 +1,4 @@
+#include <thread>
 #include "window.hpp"
 
 namespace mason::app {
@@ -52,6 +53,39 @@ ModelsPage::ModelsPage(Controller& controller) : controller_(controller) {
     search_.set_placeholder_text("Search Hugging Face, for example qwen coder");
     search_.set_hexpand(true);
     search_.signal_activate().connect([this] { controller_.search(search_.get_text()); });
+    read_gpu();
+    gpu_timer_ = Glib::signal_timeout().connect([this] {
+        if (get_mapped()) read_gpu();
+        return true;
+    }, 2000);
+}
+
+ModelsPage::~ModelsPage() {
+    *alive_ = false;
+    gpu_timer_.disconnect();
+}
+
+/// Takes a reading on another thread, since the driver's tool can take a moment, and shows it when it is back.
+void ModelsPage::read_gpu() {
+    if (gpu_reading_) return;
+    gpu_reading_ = true;
+    const std::shared_ptr<bool> alive = alive_;
+    std::thread([this, alive] {
+        GpuSample sample = gpu::read();
+        Glib::signal_idle().connect_once([this, alive, sample = std::move(sample)] {
+            if (!*alive) return;
+            gpu_reading_ = false;
+            const bool same_shape = sample.adapters.size() == gpu_.adapters.size() && sample.adapters.size() == gpu_rows_.size() && !sample.adapters.empty();
+            gpu_ = sample;
+            if (same_shape) {
+                for (size_t i = 0; i < gpu_rows_.size(); i++) adw_action_row_set_subtitle(gpu_rows_[i], gpu::describe(gpu_.adapters[i]).c_str());
+            } else {
+                // A different number of processors, or the first reading: the page is laid out again.
+                shown_.clear();
+                refresh();
+            }
+        });
+    }).detach();
 }
 
 void ModelsPage::refresh() {
@@ -71,6 +105,7 @@ void ModelsPage::refresh() {
     shown_ = fingerprint;
     status_label_ = nullptr;
     progress_ = nullptr;
+    gpu_rows_.clear();
     if (search_.get_parent()) search_.unparent();
     clear(content_);
 
@@ -117,6 +152,11 @@ void ModelsPage::refresh() {
     refresh_button->set_sensitive(!busy);
     refresh_button->signal_clicked().connect([this] { controller_.refresh_models(); });
     adw_preferences_group_set_header_suffix(running, GTK_WIDGET(refresh_button->gobj()));
+
+    // ---- graphics ----
+    AdwPreferencesGroup* graphics = group(content_, "Graphics", "How busy each graphics processor is and how much of its memory is in use, read every two seconds while this page is open.");
+    if (gpu_.adapters.empty()) row(graphics, "Nothing to show", gpu_.note.empty() ? "Reading…" : gpu_.note);
+    for (const GpuAdapter& adapter : gpu_.adapters) gpu_rows_.push_back(row(graphics, adapter.name, gpu::describe(adapter)));
 
     // ---- runtime ----
     AdwPreferencesGroup* runtime = group(content_, "Runtime", "llama.cpp runs GGUF models. Mason can install the official build for this computer, verified against its published SHA-256.");

@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "gpu.hpp"
 #include "generation.hpp"
 #include "agent.hpp"
 #include "derived.hpp"
@@ -2542,6 +2543,35 @@ static void test_catalog() {
     CHECK(!catalog::applies(request, workspace));  // only an empty project gets the component
 }
 
+static void test_gpu_reading() {
+    // What the NVIDIA driver's tool prints, in mebibytes.
+    const std::vector<GpuAdapter> cards = gpu::parse_nvidia("NVIDIA GeForce RTX 4090, 37, 24564, 8123\nNVIDIA RTX A2000, [N/A], 6138, 12\nnot a card\n");
+    CHECK(cards.size() == 2 && cards[0].name == "NVIDIA GeForce RTX 4090" && cards[0].busy_percent == 37 && cards[0].total_bytes == 24564LL * 1048576 && cards[0].used_bytes == 8123LL * 1048576);
+    CHECK(cards.size() == 2 && cards[1].busy_percent == -1);
+    CHECK(gpu::describe(cards[0]) == "37% busy · " + byte_text(8123LL * 1048576) + " of " + byte_text(24564LL * 1048576) + " in use");
+    CHECK(gpu::describe(cards[1]).rfind("use not reported", 0) == 0);
+    CHECK(gpu::parse_nvidia("").empty());
+    // What the kernel publishes for AMD and Intel processors; outputs and other vendors are passed over.
+    Sandbox box;
+    const fs::path drm = box.home / "drm";
+    const auto put = [&](const std::string& file, const std::string& text) {
+        fs::create_directories((drm / file).parent_path());
+        write_file_atomic(drm / file, text);
+    };
+    put("card0/device/vendor", "0x1002\n");
+    put("card0/device/gpu_busy_percent", "12\n");
+    put("card0/device/mem_info_vram_total", "8589934592\n");
+    put("card0/device/mem_info_vram_used", "1073741824\n");
+    put("card0-HDMI-A-1/status", "connected\n");
+    put("card1/device/vendor", "0x8086\n");
+    put("card2/device/vendor", "0x10de\n");
+    const std::vector<GpuAdapter> found = gpu::read_drm(drm);
+    CHECK(found.size() == 2 && found[0].name == "AMD graphics (card0)" && found[0].busy_percent == 12 && found[0].total_bytes == 8589934592LL && found[0].used_bytes == 1073741824LL);
+    CHECK(found.size() == 2 && found[1].name == "Intel graphics (card1)" && found[1].busy_percent == -1 && found[1].total_bytes == 0);
+    CHECK(found.size() == 2 && gpu::describe(found[1]) == "use not reported · shares the computer's memory");
+    CHECK(gpu::read_drm(box.home / "nothing-here").empty());
+}
+
 static void test_generation_settings() {
     Sandbox box;
     const ModelEndpoint coder{"http://127.0.0.1:8080/", "coder", ""}, other{"http://127.0.0.1:8080/", "other", ""};
@@ -2849,7 +2879,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

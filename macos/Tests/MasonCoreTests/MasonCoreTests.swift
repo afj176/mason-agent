@@ -2469,6 +2469,23 @@ final class LanguageServerTests: XCTestCase {
     }
 }
 
+final class GpuTests: XCTestCase {
+    func testAGraphicsProcessorIsReadFromWhatItPublishes() {
+        // Apple silicon: the processor shares the computer's memory and says how much of it it has in use.
+        let shared: [String: Any] = ["model": "Apple M2 Pro", "PerformanceStatistics": ["Device Utilization %": 37, "In use system memory": 2_147_483_648] as [String: Any]]
+        let apple = Gpu.adapter(from: shared, physicalMemory: 17_179_869_184)
+        XCTAssertEqual(apple, GpuAdapter(name: "Apple M2 Pro", busyPercent: 37, totalBytes: 17_179_869_184, usedBytes: 2_147_483_648))
+        XCTAssertEqual(apple.map(Gpu.describe), "37% busy · \(ByteText.size(2_147_483_648)) of \(ByteText.size(17_179_869_184)) in use")
+        // A card with its own memory says how much is used and free.
+        let own: [String: Any] = ["model": Data("Radeon Pro 5500M\0".utf8), "PerformanceStatistics": ["GPU Activity(%)": 140, "vramUsedBytes": 1_073_741_824, "vramFreeBytes": 3_221_225_472] as [String: Any]]
+        XCTAssertEqual(Gpu.adapter(from: own, physicalMemory: 0), GpuAdapter(name: "Radeon Pro 5500M", busyPercent: 100, totalBytes: 4_294_967_296, usedBytes: 1_073_741_824))
+        // One that says nothing about its use is still named, and one with no statistics is passed over.
+        let quiet = Gpu.adapter(from: ["IOClass": "SomeAccelerator", "PerformanceStatistics": [:] as [String: Any]], physicalMemory: 8)
+        XCTAssertEqual(quiet.map(Gpu.describe), "use not reported · shares the computer's memory")
+        XCTAssertNil(Gpu.adapter(from: ["model": "x"], physicalMemory: 8))
+    }
+}
+
 final class GenerationTests: XCTestCase {
     func testGenerationSettingsAreKeptPerConnectionAndSentWithItsRequests() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("mason-generation-" + UUID().uuidString)
