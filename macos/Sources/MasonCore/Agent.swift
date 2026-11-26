@@ -72,6 +72,8 @@ public final class Agent {
     let jobs = Jobs()
     /// What reads and operates the attached window. Left nil, it is this computer's accessibility interface.
     public var desktop: DesktopAutomation?
+    /// What looks at a picture of the attached window. Left nil, it is the running model, which must take images.
+    public var vision: DesktopVision?
     /// The controls from the latest observation of the attached window; an action must name one of them.
     var lastObservation: [DesktopControl] = []
     /// What searches code by meaning. Left nil, it is the embeddings server saved in settings, if there is one.
@@ -270,7 +272,7 @@ public final class Agent {
         var prompt = Agent.systemPrompt(session, servers: servers)
         let skills = Skills.list(workspace)
         if !skills.isEmpty { prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + skills.map { "\($0.name) (\($0.description))" }.joined(separator: "; ") + "." }
-        if let window = session.desktop, (desktop ?? Desktop.system) != nil { prompt += "\nThe user attached a window of another app: \(window.label). Read it with desktop_observe. Acting on it asks the user each time." }
+        if let window = session.desktop, (desktop ?? Desktop.system) != nil { prompt += "\nThe user attached a window of another app: \(window.label). Read it with desktop_observe; use desktop_visual for what its controls do not name. Acting on it asks the user each time." }
         if offeredNames.contains("verify_acceptance") { prompt += "\nThis project has acceptance scenarios in mason.acceptance.json. Run verify_acceptance after changing a page they cover, and do not edit that file unless asked." }
         if let plan = session.milestones, !plan.isEmpty { prompt += "\n" + Milestones.context(workspace, plan: plan) }
         if session.messages.first?.role == "system" { session.messages[0].content = prompt }

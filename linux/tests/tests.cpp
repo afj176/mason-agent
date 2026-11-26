@@ -1238,7 +1238,102 @@ struct FakeDesktop : DesktopAutomation {
         acted.push_back(operation + " " + control + " " + value);
         if (control == "c1") field = value; else saved = field;
     }
+    /// The window's picture changes whenever something is drawn on its canvas.
+    int strokes = 0;
+    std::optional<DesktopFrame> frame(const DesktopWindow&) override { return DesktopFrame{200, 100, "picture " + std::to_string(strokes)}; }
+    void pointer(const DesktopWindow&, const std::string& action, int x, int y, int end_x, int end_y) override {
+        const std::string at = std::to_string(x) + "," + std::to_string(y);
+        acted.push_back(action == "drag" ? "drag " + at + " to " + std::to_string(end_x) + "," + std::to_string(end_y) : "click " + at);
+        strokes++;
+    }
 };
+
+/// Answers about a picture from a script. `draws` makes the window change while the model is looking.
+struct ScriptedVision : DesktopVision {
+    std::deque<std::string> replies;
+    FakeDesktop* draws = nullptr;
+    PixelDecision see(const std::string&, const DesktopFrame& frame, const CancelToken&) override {
+        if (draws) draws->strokes++;
+        const std::string reply = replies.front();
+        replies.pop_front();
+        return desktop::parse_decision(reply, frame);
+    }
+};
+
+static void test_desktop_vision() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+    auto desktop = std::make_shared<FakeDesktop>();
+    session.desktop = desktop->window;
+    const DesktopFrame frame{200, 100, "x"};
+    using Names = std::vector<std::string>;
+
+    // The model's reply is read strictly: a point outside the picture is refused.
+    const PixelDecision read = desktop::parse_decision(R"(Sure: {"observation": "A red circle", "action": "click", "x": 40.4, "y": 20})", frame);
+    CHECK(read.action == "click" && read.x == 40 && read.y == 20 && read.observation == "A red circle");
+    CHECK_THROWS(desktop::parse_decision(R"({"action": "click", "x": 400, "y": 20, "observation": ""})", frame));
+    CHECK_THROWS(desktop::parse_decision(R"({"action": "drag", "x": 4, "y": 2, "endX": 4, "endY": 200, "observation": ""})", frame));
+    CHECK_THROWS(desktop::parse_decision(R"({"action": "type", "observation": ""})", frame));
+    CHECK_THROWS(desktop::parse_decision("I cannot see images.", frame));
+    CHECK(desktop::vision_prompt("Find the circle", frame).find("200 by 100 pixels") != std::string::npos);
+
+    // A picture is a real PNG: its signature, a header with the size, and the pixels stored whole.
+    const std::string png = desktop::encode_png(2, 1, std::string("\xff\x00\x00\x00\xff\x00", 6));
+    CHECK(png.substr(0, 8) == std::string("\x89PNG\r\n\x1a\n", 8) && png.substr(12, 4) == "IHDR" && png.substr(16, 8) == std::string("\0\0\0\x02\0\0\0\x01", 8));
+    CHECK(png.find(std::string("\x00\xff\x00\x00\x00\xff\x00", 7)) != std::string::npos && png.substr(png.size() - 8, 4) == "IEND");
+
+    const auto look = [](const char* task) { return call("desktop_visual", {{"task", task}}); };
+    auto vision = std::make_shared<ScriptedVision>();
+    vision->replies = {R"({"observation": "A chart with three bars", "action": "none"})", R"({"observation": "A canvas with a red circle at the left", "action": "click", "x": 40, "y": 20})",
+                       R"({"observation": "The circle", "action": "drag", "x": 40, "y": 20, "endX": 150, "endY": 60})", R"({"observation": "A Clear button", "action": "click", "x": 10, "y": 10})",
+                       R"({"observation": "The canvas", "action": "click", "x": 5, "y": 5})"};
+    ScriptedModel model;
+    model.replies = {look("What does the chart show?"), look("Click the red circle"), look("Drag the circle to the right"), look("Click Clear"), look("Click the corner"), say("Done.")};
+    Names asked;
+    std::deque<bool> answers = {true, true, false, true};
+    Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.title + " | " + split(request.detail, '\n').front()); const bool answer = answers.front(); answers.pop_front(); return answer; },
+                [](const AgentEvent&) {});
+    agent.set_desktop(desktop);
+    agent.set_vision(vision);
+    agent.run(session, "Use the drawing app");
+    Names states;
+    for (const Activity& activity : session.activities) states.push_back(activity.state);
+    CHECK(states == (Names{"completed", "completed", "completed", "denied", "completed"}));
+    CHECK(session.activities[0].result == "Seen in Notes — Shopping: A chart with three bars");  // looking needs no approval
+    // Every click and drag asks, even in Auto.
+    CHECK(asked == (Names{"Click at (40, 20) in Notes — Shopping | The vision model saw: A canvas with a red circle at the left", "Drag from (40, 20) to (150, 60) in Notes — Shopping | The vision model saw: The circle",
+                          "Click at (10, 10) in Notes — Shopping | The vision model saw: A Clear button", "Click at (5, 5) in Notes — Shopping | The vision model saw: The canvas"}));
+    CHECK(desktop->acted == (Names{"click 40,20", "drag 40,20 to 150,60", "click 5,5"}));  // the declined click was not made
+    CHECK(starts_with(session.activities[1].result, "Click at (40, 20) was made.") && session.activities[1].result.find("c2 · push button · Save") != std::string::npos);
+
+    // A window that changed between the look and the approval is left alone.
+    const Names before = desktop->acted;
+    auto shifting = std::make_shared<ScriptedVision>();
+    shifting->replies = {R"({"observation": "A button", "action": "click", "x": 1, "y": 1})"};
+    shifting->draws = desktop.get();
+    ScriptedModel second;
+    second.replies = {look("Click the button"), say("It changed.")};
+    Agent changed(store, second, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {});
+    changed.set_desktop(desktop);
+    changed.set_vision(shifting);
+    changed.run(session, "Again");
+    CHECK(session.activities.back().state == "failed" && session.activities.back().result.find("The window changed before the click could be made") != std::string::npos);
+    CHECK(desktop->acted == before);  // nothing was clicked
+
+    // A read-only session may look, and is told what was seen, but may not click.
+    session.permission = Permission::ReadOnly;
+    session.ask_only = true;
+    auto last = std::make_shared<ScriptedVision>();
+    last->replies = {R"({"observation": "A big button", "action": "click", "x": 3, "y": 3})"};
+    ScriptedModel third;
+    third.replies = {look("Click it"), say("Read-only.")};
+    Agent reading(store, third, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {});
+    reading.set_desktop(desktop);
+    reading.set_vision(last);
+    reading.run(session, "Look");
+    CHECK(session.activities.back().state == "failed" && session.activities.back().result.find("The model saw: A big button") != std::string::npos && desktop->acted == before);
+}
 
 static void test_desktop() {
     Sandbox box;
@@ -1257,7 +1352,7 @@ static void test_desktop() {
     CHECK(starts_with(desktop::command("", session, desktop), "1. Calculator\n2. Notes — Shopping\nAttach one with /window NUMBER."));
     CHECK_THROWS(desktop::command("9", session, desktop));
     CHECK(starts_with(desktop::command("2", session, desktop), "Attached Notes — Shopping."));
-    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe", "desktop_act"}) && Agent::desktop_tools(session, false).empty());
+    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe", "desktop_visual", "desktop_act"}) && Agent::desktop_tools(session, false).empty());
     desktop->trusted = false;
     CHECK_THROWS(desktop::command("", session, desktop));  // a missing service is said plainly
     desktop->trusted = true;
@@ -1286,7 +1381,7 @@ static void test_desktop() {
     // A read-only session may look but not touch.
     session.permission = Permission::ReadOnly;
     session.ask_only = true;
-    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe"}));
+    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe", "desktop_visual"}));
     CHECK(desktop::command("off", session, desktop) == "No window is attached to this session." && !session.desktop);
 }
 
@@ -1608,7 +1703,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

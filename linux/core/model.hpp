@@ -74,6 +74,7 @@ class OpenAIClient : public ChatModel {
 public:
     explicit OpenAIClient(ModelEndpoint endpoint);
     std::string name() const override { return endpoint_.model; }
+    const ModelEndpoint& endpoint() const { return endpoint_; }
     ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>& tools,
                         const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override;
     /// llama.cpp reports the loaded context size at /props. Other servers do not, and then compaction stays manual.

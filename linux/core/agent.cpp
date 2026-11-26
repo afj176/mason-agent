@@ -134,20 +134,53 @@ std::vector<ToolSpec> Agent::desktop_tools(const Session& session, bool availabl
     const json text = {{"type", "string"}};
     std::vector<ToolSpec> list = {{"desktop_observe", "Read the control names and available actions from the window the user attached to this session.",
                                    json{{"type", "object"}, {"properties", json::object()}, {"required", json::array()}, {"additionalProperties", false}}}};
+    list.push_back({"desktop_visual", "Look at a picture of the attached window with the vision model, for things its controls do not name: a canvas, a chart, a drawing. Describe what to look for, or one click or drag to make; a click or drag asks the user first and happens only if the window still looks the same.",
+                    json{{"type", "object"}, {"properties", {{"task", text}}}, {"required", {"task"}}, {"additionalProperties", false}}});
     if (session.ask_only || session.permission == Permission::ReadOnly) return list;
     list.push_back({"desktop_act", "Ask the user to invoke (press) or set a control from the most recent observation of the attached window. Returns a fresh observation. value is the text to set; use an empty string with invoke.",
                     json{{"type", "object"}, {"properties", {{"operation", {{"type", "string"}, {"enum", {"invoke", "set"}}}}, {"id", text}, {"value", text}}}, {"required", {"operation", "id", "value"}}, {"additionalProperties", false}}});
     return list;
 }
 
-std::optional<std::pair<std::string, std::string>> Agent::perform_desktop(const ToolCall& call, const json& arguments, Session& session) {
+std::optional<std::pair<std::string, std::string>> Agent::perform_desktop(const ToolCall& call, const json& arguments, Session& session, const CancelToken& cancel) {
     using Outcome = std::pair<std::string, std::string>;
-    if (call.name != "desktop_observe" && call.name != "desktop_act") return std::nullopt;
+    if (call.name != "desktop_observe" && call.name != "desktop_act" && call.name != "desktop_visual") return std::nullopt;
     if (!session.desktop) throw Error("No window is attached to this session.");
     const std::shared_ptr<DesktopAutomation> automation = desktop_automation();
     if (!automation) throw Error("This build cannot operate windows on this computer.");
     if (const std::string problem = automation->unavailable(); !problem.empty()) throw Error(problem);
     const DesktopWindow window = *session.desktop;
+    if (call.name == "desktop_visual") {
+        const std::string task = trim(arguments.contains("task") && arguments["task"].is_string() ? arguments["task"].get<std::string>() : "");
+        if (task.empty() || utf8_length(task) > 2000) throw Error("desktop_visual needs a task of up to 2,000 characters.");
+        std::shared_ptr<DesktopVision> seer = vision_;
+        if (!seer) {
+            if (const auto* client = dynamic_cast<OpenAIClient*>(&model_)) seer = std::make_shared<ModelVision>(client->endpoint());
+        }
+        if (!seer) throw Error("No vision model is available to look at the window.");
+        const std::optional<DesktopFrame> frame = automation->frame(window);
+        if (!frame) throw Error("This computer cannot take a picture of that window.");
+        emit_({AgentEvent::Kind::Status, "Looking at " + window.app, {}});
+        const PixelDecision decision = seer->see(task, *frame, cancel);
+        if (decision.action == "none") return Outcome{"completed", "Seen in " + desktop::label(window) + ": " + decision.observation};
+        if (session.ask_only || session.permission == Permission::ReadOnly) throw Error("This session is read-only. It can look at the window but not click in it. The model saw: " + decision.observation);
+        const std::string at = "(" + std::to_string(decision.x) + ", " + std::to_string(decision.y) + ")";
+        const std::string what = decision.action == "click" ? "Click at " + at : "Drag from " + at + " to (" + std::to_string(decision.end_x) + ", " + std::to_string(decision.end_y) + ")";
+        if (!approve_({call.name, what + " in " + desktop::label(window), "The vision model saw: " + decision.observation + "\nThis acts on another app's window, outside the project and outside the sandbox.", "window " + window.app})) {
+            return Outcome{"denied", "The user declined. Do not retry it; ask what they want instead."};
+        }
+        // The point was chosen on one picture; it is only used while the window still shows that picture.
+        const std::optional<DesktopFrame> again = automation->frame(window);
+        if (!again || again->hash() != frame->hash()) return Outcome{"failed", "The window changed before the " + decision.action + " could be made, so nothing was done. Look again."};
+        automation->pointer(window, decision.action, decision.x, decision.y, decision.end_x, decision.end_y);
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        try {
+            last_observation_ = automation->observe(window);
+        } catch (const std::exception&) {
+            last_observation_.clear();
+        }
+        return Outcome{"completed", what + " was made. Before it, the model saw: " + decision.observation + "\n" + desktop::report(window, last_observation_)};
+    }
     if (call.name == "desktop_act") {
         if (session.ask_only || session.permission == Permission::ReadOnly) throw Error("This session is read-only. It can observe the window but not act on it.");
         const auto field = [&](const char* key) { return arguments.contains(key) && arguments[key].is_string() ? arguments[key].get<std::string>() : std::string(); };
@@ -675,7 +708,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     if (std::find(offered_names_.begin(), offered_names_.end(), "verify_acceptance") != offered_names_.end()) {
         prompt += "\nThis project has acceptance scenarios in mason.acceptance.json. Run verify_acceptance after changing a page they cover, and do not edit that file unless asked.";
     }
-    if (session.desktop && desktop_automation()) prompt += "\nThe user attached a window of another app: " + desktop::label(*session.desktop) + ". Read it with desktop_observe. Acting on it asks the user each time.";
+    if (session.desktop && desktop_automation()) prompt += "\nThe user attached a window of another app: " + desktop::label(*session.desktop) + ". Read it with desktop_observe; use desktop_visual for what its controls do not name. Acting on it asks the user each time.";
     last_observation_.clear();
     if (!session.milestones.empty()) prompt += "\n" + milestones::context(*workspace, session.milestones);
     if (!session.messages.empty() && session.messages.front().role == "system") session.messages.front().content = prompt;
@@ -942,7 +975,7 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             return finish("completed", mcp::request(*server, operation, uri.value_or(""), json::object(), cancel));
         }
         if (const auto extra = perform_extra(call, arguments, workspace, session, cancel)) return finish(extra->first, extra->second);
-        if (const auto window = perform_desktop(call, arguments, session)) return finish(window->first, window->second);
+        if (const auto window = perform_desktop(call, arguments, session, cancel)) return finish(window->first, window->second);
         throw Error("Unknown tool " + call.name + ". Use one of: " + join(offered_names_, ", "));
     } catch (const Cancelled&) {
         finish("failed", "Stopped by the user.");

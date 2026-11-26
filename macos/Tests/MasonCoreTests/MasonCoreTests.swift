@@ -1192,6 +1192,24 @@ final class FakeDesktop: DesktopAutomation {
         acted.append("\(operation) \(control) \(value)")
         if control == "c1" { field = value } else { saved = field }
     }
+    /// The window's picture changes whenever something is drawn on its canvas.
+    var strokes = 0
+    func frame(_ window: DesktopWindow) async throws -> DesktopFrame? { DesktopFrame(width: 200, height: 100, png: Data("picture \(strokes)".utf8)) }
+    func pointer(_ window: DesktopWindow, action: String, x: Int, y: Int, endX: Int, endY: Int) async throws {
+        acted.append(action == "drag" ? "drag \(x),\(y) to \(endX),\(endY)" : "click \(x),\(y)")
+        strokes += 1
+    }
+}
+
+/// Answers about a picture from a script, and records what it was asked.
+final class ScriptedVision: DesktopVision {
+    var replies: [String]
+    var asked: [String] = []
+    init(_ replies: [String]) { self.replies = replies }
+    func see(task: String, frame: DesktopFrame) async throws -> PixelDecision {
+        asked.append(Vision.prompt(task, frame: frame))
+        return try Vision.parse(replies.removeFirst(), frame: frame)
+    }
 }
 
 final class DesktopTests: XCTestCase {
@@ -1208,7 +1226,7 @@ final class DesktopTests: XCTestCase {
         XCTAssertTrue(try Desktop.command("", session: &session, desktop: desktop).hasPrefix("1. Calculator\n2. Notes — Shopping\nAttach one with /window NUMBER."))
         XCTAssertThrowsError(try Desktop.command("9", session: &session, desktop: desktop))
         XCTAssertTrue(try Desktop.command("2", session: &session, desktop: desktop).hasPrefix("Attached Notes — Shopping."))
-        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe", "desktop_act"])
+        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe", "desktop_visual", "desktop_act"])
         XCTAssertTrue(Agent.desktopTools(for: session, available: false).isEmpty)
         desktop.trusted = false
         XCTAssertThrowsError(try Desktop.command("", session: &session, desktop: desktop), "a missing permission is said plainly")
@@ -1229,7 +1247,7 @@ final class DesktopTests: XCTestCase {
 
         // A read-only session may look but not touch.
         session.permission = .readOnly; session.askOnly = true
-        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe"])
+        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe", "desktop_visual"])
         XCTAssertEqual(try Desktop.command("off", session: &session, desktop: desktop), "No window is attached to this session.")
         XCTAssertNil(session.desktop)
     }
@@ -1491,6 +1509,73 @@ final class NavigationTests: XCTestCase {
         await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Where is total?")
         XCTAssertEqual(session.activities.map(\.state), [.completed, .completed])
         XCTAssertTrue(session.activities[1].result.contains(#""references""#))
+    }
+}
+
+final class DesktopVisionTests: XCTestCase {
+    func testAWindowIsOperatedBySightOnlyWithApprovalAndWhileItLooksTheSame() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-sight-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base.appendingPathComponent("project"), withIntermediateDirectories: true)
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: try Workspace(path: base.appendingPathComponent("project").path).root.path, permission: .auto)
+        let desktop = FakeDesktop()
+        session.desktop = desktop.window
+        let frame = DesktopFrame(width: 200, height: 100, png: Data("x".utf8))
+
+        // The model's reply is read strictly: a point outside the picture is refused.
+        XCTAssertEqual(try Vision.parse(#"Sure: {"observation": "A red circle", "action": "click", "x": 40.4, "y": 20}"#, frame: frame), PixelDecision(action: "click", x: 40, y: 20, observation: "A red circle"))
+        XCTAssertThrowsError(try Vision.parse(#"{"action": "click", "x": 400, "y": 20, "observation": ""}"#, frame: frame))
+        XCTAssertThrowsError(try Vision.parse(#"{"action": "drag", "x": 4, "y": 2, "endX": 4, "endY": 200, "observation": ""}"#, frame: frame))
+        XCTAssertThrowsError(try Vision.parse(#"{"action": "type", "observation": ""}"#, frame: frame))
+        XCTAssertThrowsError(try Vision.parse("I cannot see images.", frame: frame))
+        XCTAssertTrue(Vision.prompt("Find the circle", frame: frame).contains("200 by 100 pixels"))
+
+        func look(_ task: String) -> ModelReply { call("desktop_visual", ["task": task]) }
+        let vision = ScriptedVision([#"{"observation": "A chart with three bars", "action": "none"}"#,
+                                     #"{"observation": "A canvas with a red circle at the left", "action": "click", "x": 40, "y": 20}"#,
+                                     #"{"observation": "The circle", "action": "drag", "x": 40, "y": 20, "endX": 150, "endY": 60}"#,
+                                     #"{"observation": "A Clear button", "action": "click", "x": 10, "y": 10}"#,
+                                     #"{"observation": "The canvas", "action": "click", "x": 5, "y": 5}"#])
+        let model = ScriptedModel([look("What does the chart show?"), look("Click the red circle"), look("Drag the circle to the right"), look("Click Clear"), look("Click the corner"), ModelReply(text: "Done.")])
+        var asked: [String] = [], answers = [true, true, false, true]
+        let agent = Agent(store: store, model: model, approve: { asked.append($0.title + " | " + $0.detail.split(separator: "\n")[0]); return answers.removeFirst() }, emit: { _ in })
+        agent.desktop = desktop
+        agent.vision = vision
+        await agent.run(&session, request: "Use the drawing app")
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .completed, .denied, .completed])
+        XCTAssertEqual(session.activities[0].result, "Seen in Notes — Shopping: A chart with three bars", "looking needs no approval")
+        XCTAssertEqual(asked, ["Click at (40, 20) in Notes — Shopping | The vision model saw: A canvas with a red circle at the left",
+                               "Drag from (40, 20) to (150, 60) in Notes — Shopping | The vision model saw: The circle",
+                               "Click at (10, 10) in Notes — Shopping | The vision model saw: A Clear button",
+                               "Click at (5, 5) in Notes — Shopping | The vision model saw: The canvas"], "every click and drag asks, even in Auto")
+        XCTAssertEqual(desktop.acted, ["click 40,20", "drag 40,20 to 150,60", "click 5,5"], "the declined click was not made")
+        XCTAssertTrue(session.activities[1].result.hasPrefix("Click at (40, 20) was made.") && session.activities[1].result.contains("c2 · button · Save"), "an action returns the controls as they are afterwards")
+
+        // A window that changed between the look and the approval is left alone.
+        final class Shifting: DesktopVision {
+            let desktop: FakeDesktop
+            init(_ desktop: FakeDesktop) { self.desktop = desktop }
+            func see(task: String, frame: DesktopFrame) async throws -> PixelDecision { desktop.strokes += 1; return PixelDecision(action: "click", x: 1, y: 1, observation: "A button") }
+        }
+        let before = desktop.acted
+        let second = Agent(store: store, model: ScriptedModel([look("Click the button"), ModelReply(text: "It changed.")]), approve: { _ in true }, emit: { _ in })
+        second.desktop = desktop
+        second.vision = Shifting(desktop)
+        await second.run(&session, request: "Again")
+        XCTAssertEqual(session.activities.last?.state, .failed)
+        XCTAssertTrue(session.activities.last?.result.contains("The window changed before the click could be made") ?? false)
+        XCTAssertEqual(desktop.acted, before, "nothing was clicked")
+
+        // A read-only session may look, and is told what was seen, but may not click.
+        session.permission = .readOnly; session.askOnly = true
+        let third = Agent(store: store, model: ScriptedModel([look("Click it"), ModelReply(text: "Read-only.")]), approve: { _ in true }, emit: { _ in })
+        third.desktop = desktop
+        third.vision = ScriptedVision([#"{"observation": "A big button", "action": "click", "x": 3, "y": 3}"#])
+        await third.run(&session, request: "Look")
+        XCTAssertEqual(session.activities.last?.state, .failed)
+        XCTAssertTrue(session.activities.last?.result.contains("The model saw: A big button") ?? false)
+        XCTAssertEqual(desktop.acted, before)
     }
 }
 
