@@ -4,6 +4,7 @@
 #include <gtkmm.h>
 
 #include "controller.hpp"
+#include "derived.hpp"
 #include "style.hpp"
 
 namespace mason::app {

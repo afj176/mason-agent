@@ -70,6 +70,8 @@ public final class Agent {
     public static let followUpLimit = 16
     /// Background programs started during the current request.
     let jobs = Jobs()
+    /// In Auto, Mason works out checks from the request and runs them itself when the model says it is done.
+    public var derivesChecks = true
     /// What reads and operates the attached window. Left nil, it is this computer's accessibility interface.
     public var desktop: DesktopAutomation?
     /// What looks at a picture of the attached window. Left nil, it is the running model, which must take images.
@@ -289,6 +291,20 @@ public final class Agent {
             var finished = false, asked = false
             var baselineTaken = false, baseline: CommandResult?, repairs = 0
             pendingQuestion = nil
+            // In Auto, Mason works out what it can check for itself before the work starts.
+            var plan: DerivedPlan?
+            if derivesChecks, session.permission == .auto, !session.askOnly {
+                if Catalog.applies(input, workspace: workspace), try await buildCatalog(input, workspace: workspace, session: &session) {
+                    session.state = "Completed"; session.detail = ""
+                    try? store.save(session)
+                    return
+                }
+                let made = await Derived.prepare(input, workspace: workspace, model: model)
+                if !made.checks.isEmpty {
+                    plan = made
+                    session.messages[session.messages.count - 1].content += "\n\n" + made.brief
+                }
+            }
             let window = await model.contextWindow()
             for _ in 0..<Agent.actionLimit {
                 try Task.checkCancellation()
@@ -310,6 +326,20 @@ public final class Agent {
                         if receipt.verdict == .regression, repairs < Agent.repairLimit {
                             repairs += 1
                             session.messages.append(ChatMessage(role: "user", content: "Mason ran the project's verify workflow (\(receipt.command)). It passed before your changes and fails now:\n\(receipt.output)\nFix what your changes broke, then answer again."))
+                            try? store.save(session)
+                            continue
+                        }
+                    }
+                    // Then the checks Mason worked out from the request itself. A failed one goes back to the model.
+                    if let plan {
+                        emit(.status("Checking the result"))
+                        let results = try await Derived.verify(plan, workspace: workspace, requireSandbox: true)
+                        let receipt = DerivedReceipt(results: results, unverified: plan.unverified, repairs: repairs)
+                        session.turns[session.turns.count - 1].checks = receipt
+                        if !receipt.passed, repairs < Agent.repairLimit {
+                            repairs += 1
+                            let failed = results.filter { $0.state == "failed" }.map { "- \($0.check.description): \($0.detail)" }.joined(separator: "\n")
+                            session.messages.append(ChatMessage(role: "user", content: "Mason checked the result itself and this does not hold yet:\n\(failed)\nFix it, then answer again."))
                             try? store.save(session)
                             continue
                         }
@@ -347,6 +377,42 @@ public final class Agent {
         // A tool call without a result would make the next request invalid for the model, so close any that were cut short.
         Agent.closeOpenCalls(&session)
         try? store.save(session)
+    }
+
+    /// Builds a single-page offline store with the catalog component, and checks it. Returns false, having changed
+    /// nothing, when the request is not one the component fully covers; the request then takes the ordinary path.
+    func buildCatalog(_ request: String, workspace: Workspace, session: inout Session) async throws -> Bool {
+        emit(.status("Reading the offers"))
+        guard let spec = await Catalog.extract(request, model: model), Catalog.complete(spec, request: request) else { return false }
+        emit(.status("Writing the store"))
+        let design = await Catalog.design(request, spec: spec, model: model)
+        try Task.checkCancellation()
+        let page = Catalog.render(spec, design)
+        var activity = Activity(tool: "write_file", subject: "index.html", state: .running, result: "")
+        session.activities.append(activity)
+        emit(.activityStarted(activity))
+        try workspace.write("index.html", page)
+        record(path: "index.html", before: nil, after: page, session: &session)
+        activity.state = .completed
+        activity.result = "Created index.html with Mason's catalog component: \(spec.items.count) products, totals in whole cents."
+        session.activities[session.activities.count - 1] = activity
+        emit(.activityFinished(activity))
+        emit(.status("Checking the store"))
+        let scenarios = Catalog.scenarios(spec, request: request)
+        let plan = DerivedPlan(units: scenarios.map(\.requirement), checks: scenarios.enumerated().map { index, scenario in
+            DerivedCheck(unit: index + 1, feature: scenario.requirement, kind: "browser_flow", path: scenario.page, target: scenario.id, expected: "All scenario assertions pass", steps: scenario.steps.map { [$0.op, $0.target, $0.value] })
+        })
+        let receipt = DerivedReceipt(results: try await Derived.verify(plan, workspace: workspace), unverified: [], repairs: 0)
+        session.turns[session.turns.count - 1].checks = receipt
+        let offers = spec.items.map { item in "\(item.name) at $\(Catalog.money(item.cents))" + (item.threshold > 0 ? " ($\(Catalog.money(item.saleCents)) each from \(item.threshold))" : "") }.joined(separator: ", ")
+        let ran = receipt.results.contains { $0.state != "notRun" }
+        let answer = "I built index.html with Mason's catalog component, which computes totals in whole cents and makes the receipt in the browser. The offers, as the request states them: \(offers)."
+            + (ran ? (receipt.passed ? " Mason then checked the page in a browser at a phone width and a desktop width: every offer, discount and the checkout hold." : " Mason checked the page in a browser and some checks failed; they are listed with this request.")
+                   : " No browser was found on this computer, so the page was not checked: open it and try each offer and the checkout.")
+        session.messages.append(ChatMessage(role: "assistant", content: answer))
+        session.turns[session.turns.count - 1].answer = answer
+        emit(.text(answer))
+        return true
     }
 
     static func closeOpenCalls(_ session: inout Session) {

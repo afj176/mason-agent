@@ -115,6 +115,8 @@ public struct Turn: Codable, Equatable, Identifiable {
     public var firstActivity = 0
     /// Set when the project has a `verify` workflow and the request changed files.
     public var verification: Verification?
+    /// Set in Auto when Mason worked out checks from the request and ran them itself.
+    public var checks: DerivedReceipt?
 
     public init(request: String, firstActivity: Int = 0) { self.request = request; self.firstActivity = firstActivity }
 }

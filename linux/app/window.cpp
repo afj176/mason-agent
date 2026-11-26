@@ -624,6 +624,23 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
     } else if (!turn.answer.empty()) {
         reply->append(*answer_widget(turn.answer));
     }
+    if (!live && turn.checks) {
+        // What Mason found when it ran the checks it worked out from the request.
+        const DerivedReceipt& receipt = *turn.checks;
+        const bool ran = std::any_of(receipt.results.begin(), receipt.results.end(), [](const DerivedResult& result) { return result.state != "notRun"; });
+        const bool good = derived::passed(receipt);
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        auto* icon = Gtk::make_managed<Gtk::Image>();
+        icon->set_from_icon_name(!ran ? "dialog-information-symbolic" : good ? "emblem-ok-symbolic" : "dialog-error-symbolic");
+        auto* label = Gtk::make_managed<Gtk::Label>(derived::summary(receipt));
+        label->set_xalign(0);
+        label->set_wrap(true);
+        for (Gtk::Widget* part : {static_cast<Gtk::Widget*>(icon), static_cast<Gtk::Widget*>(label)}) part->add_css_class(!ran ? "warning" : good ? "success" : "error");
+        row->append(*icon);
+        row->append(*label);
+        row->set_tooltip_text(derived::report(receipt));
+        reply->append(*row);
+    }
     if (!live && turn.verification) {
         // What Mason found when it ran the project's verify workflow itself.
         const Verification& receipt = *turn.verification;

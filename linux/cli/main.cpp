@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "agent.hpp"
+#include "derived.hpp"
 #include "transfer.hpp"
 #include "acceptance.hpp"
 #include "planning.hpp"
@@ -347,6 +348,16 @@ private:
         char elapsed[32];
         if (seconds < 90) std::snprintf(elapsed, sizeof elapsed, "%ds", static_cast<int>(seconds));
         else std::snprintf(elapsed, sizeof elapsed, "%.1f min", seconds / 60);
+        if (turn && turn->checks) {
+            // What Mason found when it ran the checks it worked out from the request.
+            const DerivedReceipt& receipt = *turn->checks;
+            const bool ran = std::any_of(receipt.results.begin(), receipt.results.end(), [](const DerivedResult& result) { return result.state != "notRun"; });
+            const bool good = derived::passed(receipt);
+            term::line("  " + paint(!ran ? term::yellow : good ? term::green : term::red, std::string(!ran ? "· " : good ? "✓ " : "✗ ") + derived::summary(receipt)));
+            for (const DerivedResult& result : receipt.results) {
+                if (result.state == "failed") term::line(paint(term::dim, "    " + derived::description(result.check) + ": " + result.detail));
+            }
+        }
         if (turn && turn->verification) {
             // What Mason found when it ran the project's verify workflow itself.
             const Verification& receipt = *turn->verification;

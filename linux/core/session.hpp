@@ -71,6 +71,28 @@ struct Verification {
     std::string summary() const;
 };
 
+/// A check Mason worked out from a request. `kind` is document_text, browser_heading, browser_text, browser_click or
+/// browser_flow; for a flow, `steps` holds each step as op, target, value.
+struct DerivedCheck {
+    int unit = 0;  ///< The requirement this checks, numbered from 1 in the order the request states them.
+    std::string feature, kind, path, target, expected;
+    std::vector<std::vector<std::string>> steps;
+    std::string application;
+};
+
+struct DerivedResult {
+    DerivedCheck check;
+    std::string state;  ///< passed, failed, or notRun (no browser on this computer)
+    std::string detail;
+};
+
+/// What Mason found when it checked a request's requirements itself. The model does not write this.
+struct DerivedReceipt {
+    std::vector<DerivedResult> results;
+    std::vector<std::string> unverified;  ///< Requirements Mason had no way to check.
+    int repairs = 0;                      ///< How many times the model was handed a failed check to fix.
+};
+
 struct Turn {
     std::string id = new_id();
     std::string request, answer;
@@ -79,6 +101,8 @@ struct Turn {
     size_t first_activity = 0;
     /// Set when the project has a `verify` workflow and the request changed files.
     std::optional<Verification> verification;
+    /// Set in Auto when Mason worked out checks from the request and ran them itself.
+    std::optional<DerivedReceipt> checks;
 };
 
 /// A note on one line of a file. `revision` is the file's SHA-256 when the note was made; a note on a line the

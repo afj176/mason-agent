@@ -91,6 +91,7 @@ public enum BrowserCheck {
                 }
                 else if (s.action === 'expect_text') { r.ok = body().indexOf(String(s.text)) >= 0; if (!r.ok) r.detail = 'the page does not show it'; }
                 else if (s.action === 'expect_no_text') { r.ok = body().indexOf(String(s.text)) < 0; if (!r.ok) r.detail = 'the page shows it'; }
+                else if (s.action === 'expect_heading') { var want = String(s.text).trim(); r.ok = Array.prototype.slice.call(doc().querySelectorAll('h1,h2,h3,h4,h5,h6,[role=heading]')).some(function (e) { return e.getClientRects().length > 0 && String(e.innerText || '').trim() === want; }); if (!r.ok) r.detail = 'no visible heading reads exactly that'; }
                 else if (s.action === 'wait') { await sleep(Math.min(Number(s.ms) || 500, 5000)); r.ok = true; }
                 else if (s.action === 'accept') {
                   var op = s.op, target = String(s.target || ''), expected = String(s.value == null ? '' : s.value);
@@ -347,6 +348,14 @@ public enum BrowserCheck {
             }
         } onCancel: { process.terminate() }
         deadline.cancel()
+        // The answer is in. A browser that lingers after writing it is stopped rather than waited for.
+        let grace = Date().addingTimeInterval(3)
+        while process.isRunning, Date() < grace { try? await Task.sleep(nanoseconds: 50_000_000) }
+        if process.isRunning {
+            process.terminate()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
         process.waitUntilExit()
         try Task.checkCancellation()
         let dom = String(decoding: collected, as: UTF8.self)

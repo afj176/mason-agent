@@ -165,7 +165,7 @@
           <p><a href="#download" data-platform="linux">Download for Linux</a></p>
         </li>
       </ul>
-      <p class="section-lede">The previews now have nearly everything the Windows app does: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. Still Windows only for now: C# navigation through the compiler, the acceptance checks Mason derives by itself, and the built-in catalog component.</p>
+      <p class="section-lede">The previews now do what the Windows app does: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. They also work out checks from a request and run them, and build a simple offline store with a built-in component. One difference remains: for C#, Windows uses the compiler built into the app, while macOS and Linux ask the C# language server you have installed.</p>
       <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, Mason starts a local model, reads a file, asks before editing it, and reports the change">
         <pre><code><span class="t-dim">~/src/shop $</span> mason
   <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
@@ -282,7 +282,7 @@
             </div>
           </div>
           <p class="note"><strong>First launch:</strong> the preview is not notarized by Apple, so macOS blocks it the first time. Open <em>System Settings → Privacy &amp; Security</em> and choose <em>Open Anyway</em>. On macOS 14 you can also right-click the file and choose <em>Open</em>.</p>
-          <p class="note"><strong>Preview:</strong> built and checked on a Mac for every change, but new. It has nearly everything the Windows app does; the few features still Windows only are listed above.</p>
+          <p class="note"><strong>Preview:</strong> built and checked on a Mac for every change, but new. It does what the Windows app does; the one difference is listed above.</p>
         </div>
 
         <div class="platform-panel" id="panel-linux" role="tabpanel" aria-labelledby="tab-linux">
@@ -312,7 +312,7 @@ cd mason-agent-*-linux-amd64 &amp;&amp; ./install.sh</code></pre>
               </ul>
             </div>
           </div>
-          <p class="note"><strong>Preview:</strong> built and checked on Ubuntu 24.04 for every change, and not yet tried on other distributions. It has nearly everything the Windows app does; the few features still Windows only are listed above.</p>
+          <p class="note"><strong>Preview:</strong> built and checked on Ubuntu 24.04 for every change, and not yet tried on other distributions. It does what the Windows app does; the one difference is listed above.</p>
         </div>
 
         <p class="note">SHA-256 checksums are attached to each release if you want to verify a download.</p>

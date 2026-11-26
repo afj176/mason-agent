@@ -193,8 +193,8 @@ extension Agent {
                               parameters: schema(["question": text], required: ["question"])))
         tools.append(ToolSpec(name: "navigate_code", description: "Find where a name is defined, used or tested in a project folder. Returns labelled text candidates with file and line; they are whole-word matches, not a compiler's answer.",
                               parameters: schema(["path": ["type": "string", "description": "Folder to look in, relative to the project. Use . for the whole project."], "symbol": text, "mode": ["type": "string", "enum": ["definitions", "references", "tests"]]], required: ["path", "symbol", "mode"])))
-        if SymbolService.available {
-            tools.append(ToolSpec(name: "inspect_symbol", description: "Ask a language service about one position in a Python, JavaScript or TypeScript file: where the name there is defined, where it is used, or the file's diagnostics. line and column are 1-based.",
+        if SymbolService.available || LanguageServers.available {
+            tools.append(ToolSpec(name: "inspect_symbol", description: "Ask a language service about one position in a source file: where the name there is defined, where it is used, or the file's diagnostics. It answers for Python, JavaScript and TypeScript, and for C#, Swift, C, C++, Go and Rust when that language's server is installed. line and column are 1-based.",
                                   parameters: schema(["path": text, "line": ["type": "integer", "minimum": 1], "column": ["type": "integer", "minimum": 1], "mode": ["type": "string", "enum": ["definitions", "references", "diagnostics"]]], required: ["path", "line", "column", "mode"])))
         }
         let readOnly = session.askOnly || session.permission == .readOnly
@@ -260,6 +260,22 @@ extension Agent {
 
         case "inspect_symbol":
             guard let path = text("path"), let line = number("line"), let column = number("column"), let mode = text("mode") else { throw MasonError("inspect_symbol needs a path, a line, a column and a mode.") }
+            let kind = (path as NSString).pathExtension.lowercased()
+            if !SymbolService.python.contains(kind), !SymbolService.script.contains(kind) {
+                guard let server = LanguageServers.server(for: kind) else {
+                    throw MasonError("No language server for .\(kind) files was found on this computer. Use navigate_code for text matches.")
+                }
+                // A language server reads the project and may run its build, so it is started the way a command is.
+                if readOnly { throw MasonError("This session is read-only, and starting \(server.name) is like running a command. Use navigate_code for text matches.") }
+                if !sandboxed {
+                    let detail = "Starts \(server.command.joined(separator: " ")) on this project with your account and environment, to answer one question. It is not sandboxed, and some language servers run the project's build."
+                    if !(await allowed(ApprovalRequest(tool: call.name, title: "Start \(server.name) to look up \(path):\(line)", detail: detail, subject: "language server " + server.name), session: &session)) {
+                        return (.denied, "The user declined. Do not retry it; use navigate_code instead.")
+                    }
+                }
+                emit(.status("Asking \(server.name)"))
+                return (.completed, try await LanguageServers.query(workspace, server: server, path: path, line: line, column: column, mode: mode, sandboxed: sandboxed))
+            }
             emit(.status("Asking the language service"))
             return (.completed, try await SymbolService.query(workspace, path: path, line: line, column: column, mode: mode))
 
