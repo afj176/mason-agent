@@ -205,6 +205,10 @@ extension Agent {
                                       parameters: schema(["name": text], required: ["name"])))
             }
         }
+        if BrowserCheck.findBrowser() != nil {
+            tools.append(ToolSpec(name: "check_page", description: "Load one of the project's HTML pages in a real browser and report what it shows and any script errors. steps_json is a JSON array of steps carried out in order, each one of: {\"action\":\"click\",\"text\":\"Add\"}, {\"action\":\"fill\",\"selector\":\"#name\",\"value\":\"Ada\"}, {\"action\":\"expect_text\",\"text\":\"Saved\"}, {\"action\":\"expect_no_text\",\"text\":\"Error\"}, {\"action\":\"wait\",\"ms\":500}. Use text or selector to name an element. Use [] to only load the page. The page has no network beyond this computer.",
+                                  parameters: schema(["path": text, "steps_json": text], required: ["path", "steps_json"])))
+        }
         if !Skills.list(workspace).isEmpty {
             tools.append(ToolSpec(name: "read_skill", description: "Read the project's instructions for one kind of work, by skill name.", parameters: schema(["name": text], required: ["name"])))
         }
@@ -235,6 +239,20 @@ extension Agent {
             guard let question = text("question")?.trimmingCharacters(in: .whitespacesAndNewlines), !question.isEmpty, question.count <= 2000 else { throw MasonError("ask_user needs a question of up to 2,000 characters.") }
             pendingQuestion = question
             return (.completed, "Asked the user. The request stops here; their reply will come as the next message.")
+
+        case "check_page":
+            guard let path = text("path") else { throw MasonError("check_page needs the path of an HTML file in the project.") }
+            guard let steps = try? JSONSerialization.jsonObject(with: Data((text("steps_json") ?? "[]").utf8)) as? [[String: Any]] else { throw MasonError("steps_json must be a JSON array of steps.") }
+            // The page's scripts run in a browser outside the command sandbox, so outside Auto this asks like a command.
+            if session.permission != .auto {
+                let detail = "Opens \(path) in a headless browser with a fresh profile and no network beyond this computer, and carries out \(steps.count) step\(steps.count == 1 ? "" : "s")."
+                if !(await allowed(ApprovalRequest(tool: call.name, title: "Check \(path) in a browser", detail: detail, subject: path), session: &session)) {
+                    return (.denied, "The user declined. Do not retry it; ask what they want instead.")
+                }
+            }
+            emit(.status("Checking \(path) in a browser"))
+            let result = try await BrowserCheck.run(workspace, page: path, steps: steps)
+            return (result.passed ? .completed : .failed, BrowserCheck.report(result, page: path))
 
         case "git_status":
             guard FileManager.default.fileExists(atPath: workspace.root.appendingPathComponent(".git").path) else { return (.completed, "This project is not a Git repository.") }

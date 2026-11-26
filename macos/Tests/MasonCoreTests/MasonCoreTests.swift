@@ -758,6 +758,84 @@ final class RecoveryTests: XCTestCase {
     }
 }
 
+final class BrowserTests: XCTestCase {
+    var folder: URL!
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-browser-tests-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try """
+            <!doctype html><html><head><title>Cart</title></head><body>
+            <h1>Cart</h1><label for="item">Item</label> <input id="item"><button id="add">Add item</button><ul id="list"></ul><p id="count">0 items</p>
+            <script src="cart.js"></script></body></html>
+            """.write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        try """
+            var items = [];
+            document.getElementById('add').addEventListener('click', function () {
+              var name = document.getElementById('item').value || 'unnamed';
+              items.push(name);
+              var row = document.createElement('li'); row.textContent = name; document.getElementById('list').appendChild(row);
+              document.getElementById('count').textContent = items.length + (items.length === 1 ? ' item' : ' items');
+            });
+            """.write(to: folder.appendingPathComponent("cart.js"), atomically: true, encoding: .utf8)
+        try "<!doctype html><title>Broken</title><p>before</p><script>missingFunction();</script>".write(to: folder.appendingPathComponent("broken.html"), atomically: true, encoding: .utf8)
+        try "SECRET=1".write(to: folder.appendingPathComponent(".env"), atomically: true, encoding: .utf8)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    func testTheServerSendsOnlyProjectFilesAndRecordsErrorsFromTheFirstScript() throws {
+        let workspace = try Workspace(path: folder.path)
+        let (status, kind, body) = BrowserCheck.respond(to: "/index.html?x=1", workspace: workspace)
+        let page = String(decoding: body, as: UTF8.self)
+        XCTAssertEqual(status, 200)
+        XCTAssertTrue(kind.hasPrefix("text/html"))
+        XCTAssertTrue(page.hasPrefix("<!doctype html><script>window.__masonErrors=[]"), "the recorder comes right after the doctype")
+        XCTAssertEqual(BrowserCheck.respond(to: "/cart.js", workspace: workspace).1, "text/javascript; charset=utf-8")
+        XCTAssertEqual(BrowserCheck.respond(to: "/", workspace: workspace).0, 200, "a folder serves its index.html")
+        for outside in ["/.env", "/../outside.txt", "/%2e%2e/outside.txt", "/missing.html"] {
+            XCTAssertEqual(BrowserCheck.respond(to: outside, workspace: workspace).0, 404, outside)
+        }
+        XCTAssertTrue(String(decoding: BrowserCheck.respond(to: "/__mason/harness?page=/index.html", workspace: workspace).2, as: UTF8.self).contains("mason-result"))
+    }
+
+    func testAPageIsClickedFilledAndReadInARealBrowser() async throws {
+        try XCTSkipIf(BrowserCheck.findBrowser() == nil, "no Chromium-family browser on this machine")
+        let workspace = try Workspace(path: folder.path)
+        let result = try await BrowserCheck.run(workspace, page: "index.html", steps: [
+            ["action": "expect_text", "text": "0 items"],
+            ["action": "fill", "selector": "#item", "value": "Wrench"],
+            ["action": "click", "text": "Add item"],
+            ["action": "expect_text", "text": "1 item"],
+            ["action": "fill", "text": "Item", "value": "Hammer"],
+            ["action": "click", "selector": "#add"],
+            ["action": "expect_text", "text": "2 items"],
+            ["action": "expect_no_text", "text": "unnamed"],
+        ])
+        XCTAssertTrue(result.passed, BrowserCheck.report(result, page: "index.html"))
+        XCTAssertEqual(result.title, "Cart")
+        XCTAssertTrue(result.text.contains("Wrench") && result.text.contains("Hammer"))
+        XCTAssertEqual(result.steps.count, 8)
+
+        // A step that fails stops the run and says why.
+        let missing = try await BrowserCheck.run(workspace, page: "index.html", steps: [["action": "click", "text": "Checkout"], ["action": "expect_text", "text": "never reached"]])
+        XCTAssertFalse(missing.passed)
+        XCTAssertEqual(missing.steps.count, 1)
+        XCTAssertTrue(missing.steps[0].detail.contains("nothing on the page matches"))
+
+        // A script error on the page fails the check even with no steps.
+        let broken = try await BrowserCheck.run(workspace, page: "broken.html")
+        XCTAssertFalse(broken.passed)
+        XCTAssertTrue(broken.errors.contains { $0.contains("missingFunction") }, "\(broken.errors)")
+        XCTAssertTrue(BrowserCheck.report(broken, page: "broken.html").hasPrefix("FAILED: broken.html"))
+    }
+
+    func testOnlyProjectPagesCanBeChecked() async throws {
+        let workspace = try Workspace(path: folder.path)
+        for bad in ["cart.js", "missing.html", "../index.html"] {
+            do { _ = try await BrowserCheck.run(workspace, page: bad); XCTFail("\(bad) must be refused") } catch {}
+        }
+    }
+}
+
 final class ScheduleTests: XCTestCase {
     var base: URL!, home: URL!, project: URL!
     var calendar: Calendar = { var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "UTC")!; return c }()
