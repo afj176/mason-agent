@@ -87,6 +87,8 @@ public final class Agent {
     var semanticModels: SemanticModels? { semantic ?? EmbeddingSettings.load(home: home).map(EmbeddingServers.init) }
     /// The tools offered for the request in progress, for the message about an unknown tool.
     var offeredNames: [String] = []
+    /// The tool groups this request has loaded with enable_tools.
+    var enabledGroups: Set<String> = []
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     var pendingQuestion: String?
     /// The reviewer that reads a request's changes before it may finish. Normally the model chosen with /roles; a test supplies its own.
@@ -337,11 +339,18 @@ public final class Agent {
         let everything = Agent.tools + Agent.extraTools(session: session, workspace: workspace, semantic: semanticModels != nil, presents: present != nil, home: home)
             + Agent.desktopTools(for: session, available: (desktop ?? Desktop.system) != nil) + (servers.isEmpty ? [] : Agent.mcpTools)
         // A tool the user's policy switches off is not offered at all.
-        let offered = everything.filter { !(policy?.disabledTools.contains($0.name) ?? false) }
+        let allowed = everything.filter { !(policy?.disabledTools.contains($0.name) ?? false) }
         lastObservation = []
-        offeredNames = offered.map(\.name)
-        var prompt = Agent.systemPrompt(session, servers: servers)
         let skills = Skills.list(workspace, home: home)
+        // Specialised tools are loaded a group at a time, so the model is not sent every definition with every
+        // step. A group the prompt already points the model at starts loaded.
+        enabledGroups = []
+        if !servers.isEmpty { enabledGroups.insert("mcp") }
+        if !skills.isEmpty { enabledGroups.insert("workflows") }
+        let loader = Agent.loaderTool(for: allowed, enabled: enabledGroups)
+        offeredNames = allowed.map(\.name) + (loader == nil ? [] : ["enable_tools"])
+        var prompt = Agent.systemPrompt(session, servers: servers)
+        if loader != nil { prompt += "\n" + Agent.groupsNote(for: allowed, enabled: enabledGroups) }
         if !skills.isEmpty { prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + skills.map { "\($0.name) (\($0.description))" }.joined(separator: "; ") + "." }
         if let window = session.desktop, (desktop ?? Desktop.system) != nil { prompt += "\nThe user attached a window of another app: \(window.label). Read it with desktop_observe; use desktop_visual for what its controls do not name. Acting on it asks the user each time." }
         if offeredNames.contains("verify_acceptance") { prompt += "\nThis project has acceptance scenarios in mason.acceptance.json. Run verify_acceptance after changing a page they cover, and do not edit that file unless asked." }
@@ -388,6 +397,7 @@ public final class Agent {
                     if try await Compaction.compact(&session, model: model, keep: 6) { try? store.save(session) }
                     else { session.promptTokens = nil }
                 }
+                let offered = Agent.offered(allowed, enabled: enabledGroups)
                 var reply = try await model.complete(messages: session.messages, tools: offered) { [emit] text in emit(.text(text)) }
                 // A call the model wrote as text instead of through the tool-call channel is recovered.
                 if reply.toolCalls.isEmpty, let written = ToolCallRecovery.recover(from: reply.text, tools: offered) { reply.toolCalls = [written] }
@@ -551,7 +561,17 @@ public final class Agent {
         let readOnly = session.askOnly || session.permission == .readOnly
         do {
             try policy?.check(call.name, workflow: text("name"))
+            // A tool called before its group was loaded loads the group: the model knew the tool, so it is not turned away.
+            if let group = Agent.group(of: call.name) { enabledGroups.insert(group) }
             switch call.name {
+            case "enable_tools":
+                guard let name = text("group"), let group = Agent.toolGroups.first(where: { $0.name == name }) else {
+                    throw MasonError("enable_tools needs a group: " + Agent.toolGroups.map(\.name).joined(separator: ", ") + ".")
+                }
+                let loaded = group.tools.filter { offeredNames.contains($0) }
+                guard !loaded.isEmpty else { throw MasonError("The \(name) tools are not available in this session.") }
+                enabledGroups.insert(name)
+                return finish(.completed, "Loaded the \(name) tools: " + loaded.joined(separator: ", ") + ". They can be called from the next step.")
             case "list_files":
                 let listing = try workspace.files(under: text("path") ?? ".", limit: 800)
                 return finish(.completed, listing.paths.isEmpty ? "No files." : listing.paths.joined(separator: "\n") + (listing.truncated ? "\n[Listing clipped at 800 files.]" : ""))

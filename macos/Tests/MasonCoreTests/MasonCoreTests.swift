@@ -2469,6 +2469,35 @@ final class LanguageServerTests: XCTestCase {
     }
 }
 
+final class ToolGroupTests: XCTestCase {
+    func testSpecialisedToolsAreSentOnlyOnceTheirGroupIsLoaded() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-groups-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "hello\n".write(to: folder.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: try Workspace(path: folder.path).root.path, permission: .workspaceEdits)
+        let model = ScriptedModel([call("enable_tools", ["group": "jobs"]), call("git_status", [:]), call("enable_tools", ["group": "klingon"]), ModelReply(text: "Done.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Look around.")
+        XCTAssertEqual(model.seenTools.count, 4)
+        // At first the model is sent the everyday tools and enable_tools, and none of a group's tools.
+        XCTAssertTrue(model.seenTools[0].contains("read_file") && model.seenTools[0].contains("edit_file") && model.seenTools[0].contains("enable_tools"))
+        XCTAssertFalse(model.seenTools[0].contains("start_job") || model.seenTools[0].contains("git_status") || model.seenTools[0].contains("repository_map"))
+        // A loaded group's tools are sent from the next step on, and the others still wait.
+        XCTAssertTrue(model.seenTools[1].contains("start_job") && model.seenTools[1].contains("terminal_input") && model.seenTools[1].contains("enable_tools"))
+        XCTAssertFalse(model.seenTools[1].contains("git_status"))
+        // A group's tool called before its group was loaded loads the group rather than being turned away.
+        XCTAssertTrue(model.seenTools[2].contains("git_status") && model.seenTools[2].contains("repository_map"))
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .failed])
+        XCTAssertTrue(session.activities[0].result.hasPrefix("Loaded the jobs tools: start_job"), session.activities[0].result)
+        XCTAssertTrue(session.activities[2].result.contains("code, docs, workflows, jobs, mcp"), session.activities[2].result)
+        XCTAssertTrue(session.messages[0].content.contains("More tools load on request. Call enable_tools with one of: code for"))
+        XCTAssertEqual(Agent.group(of: "start_job"), "jobs")
+        XCTAssertNil(Agent.group(of: "read_file"))
+    }
+}
+
 final class LanguageCheckTests: XCTestCase {
     /// A project, a data folder, and the stand-in server named for .c files.
     func project(_ arguments: String = "") throws -> (base: URL, workspace: Workspace, store: SessionStore) {

@@ -71,14 +71,18 @@ struct Sandbox {
 struct ScriptedModel : ChatModel {
     std::deque<ModelReply> replies;
     std::vector<std::vector<ChatMessage>> seen;
+    /// The names of the tools offered with each request.
+    std::vector<std::vector<std::string>> seen_tools;
     int window = 0;
     int context_window() override { return window; }
     /// Called at the start of each request, with its number, so a test can act while the "model" is busy.
     std::function<void(size_t)> on_request;
     int delay_ms = 0;
     std::string name() const override { return "scripted"; }
-    ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>&, const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override {
+    ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>& tools, const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override {
         seen.push_back(messages);
+        seen_tools.emplace_back();
+        for (const ToolSpec& tool : tools) seen_tools.back().push_back(tool.name);
         if (on_request) on_request(seen.size());
         for (int waited = 0; waited < delay_ms; waited += 10) {
             check_cancel(cancel);
@@ -2537,6 +2541,27 @@ static void test_catalog() {
     CHECK(!catalog::applies(request, workspace));  // only an empty project gets the component
 }
 
+static void test_tool_groups() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+    ScriptedModel model;
+    model.replies = {call("enable_tools", {{"group", "jobs"}}), call("git_status", {}), call("enable_tools", {{"group", "klingon"}}), say("Done.")};
+    Agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(session, "Look around.");
+    const auto has = [&](size_t step, const char* name) { return step < model.seen_tools.size() && std::find(model.seen_tools[step].begin(), model.seen_tools[step].end(), name) != model.seen_tools[step].end(); };
+    CHECK(model.seen_tools.size() == 4);
+    // At first the model is sent the everyday tools and enable_tools, and none of a group's tools.
+    CHECK(has(0, "read_file") && has(0, "edit_file") && has(0, "enable_tools") && !has(0, "start_job") && !has(0, "git_status") && !has(0, "repository_map"));
+    // A loaded group's tools are sent from the next step on, and the others still wait.
+    CHECK(has(1, "start_job") && has(1, "terminal_input") && !has(1, "git_status") && has(1, "enable_tools"));
+    // A group's tool called before its group was loaded loads the group rather than being turned away.
+    CHECK(has(2, "git_status") && has(2, "repository_map"));
+    CHECK(session.activities.size() == 3 && session.activities[0].state == "completed" && session.activities[0].result.find("Loaded the jobs tools: start_job") != std::string::npos);
+    CHECK(session.activities.size() == 3 && session.activities[1].state == "completed" && session.activities[2].state == "failed" && session.activities[2].result.find("code, docs, workflows, jobs, mcp") != std::string::npos);
+    CHECK(!session.messages.empty() && session.messages[0].content.find("More tools load on request. Call enable_tools with one of: code for") != std::string::npos);
+    CHECK(tool_groups::group_of("start_job") == "jobs" && tool_groups::group_of("read_file").empty());
+}
+
 static void test_language_servers() {
     Sandbox box;
     fs::remove(box.project / "calc.py");
@@ -2797,7 +2822,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {
