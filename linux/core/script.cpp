@@ -1,6 +1,7 @@
 #include "script.hpp"
 
 #include "agent.hpp"
+#include "background.hpp"
 #include "experiments.hpp"
 #include "navigation.hpp"
 #include "shell.hpp"
@@ -11,7 +12,7 @@
 namespace mason::script {
 
 const std::set<std::string>& names() {
-    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree"};
+    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"};
     return all;
 }
 
@@ -21,10 +22,17 @@ const char* const kUsage =
     "mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics\n"
     "mason git-status --workspace PATH\n"
     "mason worktree --workspace PATH --destination NEW_PATH --branch NEW_BRANCH\n"
+    "mason task-start --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto]\n"
+    "mason task-list [--workspace PATH]\n"
+    "mason task-show --id TASK_ID\n"
+    "mason task-allow|task-deny --id TASK_ID --request APPROVAL_ID\n"
+    "mason task-cancel --id TASK_ID\n"
     "  For scripts: one operation, printed as JSON Lines, then exit. 0 means it completed, 2 that it ran and did not, 1 an error.\n"
     "  exec only reads unless you pass --auto, which lets it edit files and run commands in the sandbox. Nothing is ever asked:\n"
     "  an approval it would need is reported and declined. --prompt-file PATH reads the request from a file.\n"
-    "  Each exec keeps its own journal, or the one in --profile.\n";
+    "  Each exec keeps its own journal, or the one in --profile.\n"
+    "  A task runs in the background and keeps going after this command returns. Without --auto it waits for\n"
+    "  task-allow before each edit and command; task-show prints the approval it is waiting on.\n";
 
 int run(const std::vector<std::string>& arguments, const std::function<void(const std::string&)>& write, ChatModel* model, const CancelToken& cancel) {
     auto event = [&](const std::string& type, const json& data) {
@@ -51,6 +59,53 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
             if (digits.empty() || digits.size() > 9 || digits.find_first_not_of("0123456789") != std::string::npos || std::stoi(digits) < 1) throw Error("--line and --column are numbers from 1.");
             return std::stoi(digits);
         };
+        if (operation.rfind("task-", 0) == 0) {
+            const fs::path home = values.count("task-home") ? fs::path(values["task-home"]) : data_home();
+            if (operation == "task-run") {
+                background::detach();
+                return background::work(get("id"), home, model);
+            }
+            if (operation == "task-start") {
+                std::string prompt;
+                if (values.count("prompt-file")) {
+                    std::ifstream file(values["prompt-file"], std::ios::binary);
+                    if (!file) throw Error("The prompt file could not be read.");
+                    std::ostringstream content;
+                    content << file.rdbuf();
+                    prompt = content.str();
+                } else {
+                    prompt = get("prompt");
+                }
+                const ModelEndpoint endpoint{validated_endpoint(get("endpoint")), get("model"), ""};
+                event("task.started", {{"id", background::start(background::own_program(), Workspace(get("workspace")), prompt, endpoint, automatic, home)}});
+            } else if (operation == "task-list") {
+                std::optional<Workspace> only;
+                if (values.count("workspace")) only.emplace(values["workspace"]);
+                json tasks = json::array();
+                for (const auto& [task, status] : background::all(only ? &*only : nullptr, home)) {
+                    tasks.push_back({{"id", task.id}, {"workspace", task.workspace}, {"prompt", task.prompt}, {"state", status.state}, {"detail", status.detail}});
+                }
+                event("tasks", {{"tasks", tasks}});
+            } else if (operation == "task-show") {
+                const std::string id = get("id");
+                const TaskStatus state = background::status(id, home);
+                json events = json::array();
+                for (const std::string& line : background::tail(id, 40, home)) {
+                    const json parsed = json::parse(line, nullptr, false);
+                    if (parsed.is_object()) events.push_back(parsed);
+                }
+                json data = {{"id", id}, {"state", state.state}, {"detail", state.detail}, {"session", state.session}, {"events", events}};
+                if (state.approval) data["approval"] = {{"id", state.approval->id}, {"tool", state.approval->tool}, {"title", state.approval->title}, {"detail", state.approval->detail}, {"subject", state.approval->subject}};
+                event("task", data);
+            } else if (operation == "task-allow" || operation == "task-deny") {
+                background::decide(get("id"), get("request"), operation == "task-allow", home);
+                event("task.decision", {{"id", get("id")}, {"request", get("request")}, {"allowed", operation == "task-allow"}});
+            } else {
+                background::cancel(get("id"), home);
+                event("task.cancel", {{"id", get("id")}});
+            }
+            return 0;
+        }
         const Workspace workspace(get("workspace"));
 
         if (operation == "map") {

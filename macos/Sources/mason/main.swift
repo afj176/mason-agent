@@ -501,6 +501,8 @@ final class CLI {
             }
         case "/experiment", "/experiments":
             for line in try await Experiments.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/task", "/tasks":
+            for line in try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: session.permission == .auto && !session.askOnly, program: ScriptOperations.ownProgram).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/deliver":
             let said = try await Delivery.command(rest, workspace: workspace)
             for line in said.text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
@@ -596,6 +598,7 @@ final class CLI {
             ("/commands", "List your custom slash commands"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"),
             ("/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"),
             ("/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"),
             ("/review", "Have the model read what this session changed and pin what it finds as comments"),

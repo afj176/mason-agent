@@ -21,6 +21,7 @@
 #include "script.hpp"
 #include "experiments.hpp"
 #include "delivery.hpp"
+#include "background.hpp"
 #include "shell.hpp"
 #include "models.hpp"
 
@@ -1031,6 +1032,62 @@ static void test_extra_tools() {
             R"J([{"path":"big.txt","line":2,"body":"Why two?"}])J");
         CHECK(feedback.observations == (std::vector<std::string>{"CI · build · FAILURE · https://ci/1", "CI · deploy · ERROR · ", "Review · Rename it.", "big.txt:2 · Why two?"}));
         CHECK(feedback.head == "abc");
+    }
+
+    // A background task waits for its approval, finishes, and can be cancelled.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        const std::string root = fs::weakly_canonical(box.project).string();
+        auto record = [&](const std::string& id) {
+            fs::create_directories(box.home / "background-tasks" / id);
+            write_file_atomic(box.home / "background-tasks" / id / "request.json", json{{"id", id}, {"workspace", root}, {"prompt", "Fix add"}, {"endpoint", {{"url", "http://127.0.0.1:1"}, {"model", "m"}, {"key", ""}}}, {"auto", false}, {"created", 1}}.dump());
+            write_file_atomic(box.home / "background-tasks" / id / "status.json", json{{"state", "Starting"}, {"detail", ""}, {"pid", 0}, {"started", static_cast<long long>(std::time(nullptr))}, {"session", ""}}.dump());
+        };
+        auto waiting = [&](const std::string& id) {
+            TaskStatus state = background::status(id, box.home);
+            for (int i = 0; i < 100 && state.state != "Waiting for approval"; i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                state = background::status(id, box.home);
+            }
+            return state;
+        };
+        // The worker runs here in the test; a real one is the same code in its own process.
+        const std::string first = "aaaaaaaa0001";
+        record(first);
+        ScriptedModel fix;
+        fix.replies = {call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Fixed add.")};
+        int code = -1;
+        std::thread worker([&] { code = background::work(first, box.home, &fix); });
+        const TaskStatus asked = waiting(first);
+        CHECK(asked.state == "Waiting for approval" && asked.approval && asked.approval->tool == "write_file");
+        bool refused = false;
+        try { background::decide(first, "not-this-one", true, box.home); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // an answer for another approval is refused
+        CHECK(box.read("calc.py") == "def add(a, b):\n    return a - b\n");  // nothing is written while it waits
+        const std::string listed = background::command("", workspace, std::nullopt, false, "/bin/sh", box.home);
+        CHECK(listed.find(first) != std::string::npos && listed.find("waiting on:") != std::string::npos);
+        background::command("allow " + first, workspace, std::nullopt, false, "/bin/sh", box.home);
+        worker.join();
+        CHECK(code == 0 && background::status(first, box.home).state == "Completed");
+        CHECK(box.read("calc.py") == "def add(a, b):\n    return a + b\n");
+        const std::string shown = background::command("show " + first, workspace, std::nullopt, false, "/bin/sh", box.home);
+        CHECK(shown.find("Fixed add.") != std::string::npos && shown.find("write_file calc.py") != std::string::npos);
+
+        const std::string second = "aaaaaaaa0002";
+        record(second);
+        ScriptedModel touch;
+        touch.replies = {call("run_shell", {{"command", "touch made"}}), say("Done.")};
+        code = -1;
+        std::thread other([&] { code = background::work(second, box.home, &touch); });
+        waiting(second);
+        background::cancel(second, box.home);
+        other.join();
+        CHECK(code == 2 && background::status(second, box.home).state == "Cancelled");
+        CHECK(!fs::exists(box.project / "made"));  // a cancelled task's pending command never ran
+        refused = false;
+        try { background::status("../../etc", box.home); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // an id is never a path
     }
 
     // A job runs in the background and stops when the request ends.

@@ -59,7 +59,10 @@ extension RepositoryMap {
 /// one `{"type": ..., "data": ...}` object per line, and returns the exit code: 0 completed, 2 ran and did not
 /// complete, 1 error.
 public enum ScriptOperations {
-    public static let names: Set<String> = ["exec", "map", "symbol", "git-status", "worktree"]
+    public static let names: Set<String> = ["exec", "map", "symbol", "git-status", "worktree", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"]
+
+    /// The path of the running mason, which is what a background task's worker is started from.
+    public static var ownProgram: String { (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "mason")).resolvingSymlinksInPath().path }
 
     public static let usage = """
         mason exec --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto] [--profile PATH] [--resume SESSION_ID]
@@ -67,10 +70,17 @@ public enum ScriptOperations {
         mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics
         mason git-status --workspace PATH
         mason worktree --workspace PATH --destination NEW_PATH --branch NEW_BRANCH
+        mason task-start --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto]
+        mason task-list [--workspace PATH]
+        mason task-show --id TASK_ID
+        mason task-allow|task-deny --id TASK_ID --request APPROVAL_ID
+        mason task-cancel --id TASK_ID
           For scripts: one operation, printed as JSON Lines, then exit. 0 means it completed, 2 that it ran and did not, 1 an error.
           exec only reads unless you pass --auto, which lets it edit files and run commands in the sandbox. Nothing is ever asked:
           an approval it would need is reported and declined. --prompt-file PATH reads the request from a file.
           Each exec keeps its own journal, or the one in --profile.
+          A task runs in the background and keeps going after this command returns. Without --auto it waits for
+          task-allow before each edit and command; task-show prints the approval it is waiting on.
         """
 
     /// `model` replaces the endpoint in tests. `write` receives each line.
@@ -91,6 +101,34 @@ public enum ScriptOperations {
             func get(_ name: String) throws -> String {
                 guard let value = values[name] else { throw MasonError("--\(name) is required.") }
                 return value
+            }
+            if operation.hasPrefix("task-") {
+                let home = values["task-home"].map { URL(fileURLWithPath: $0) } ?? DataHome.url
+                switch operation {
+                case "task-run":
+                    BackgroundTasks.detach()
+                    return await BackgroundTasks.work(try get("id"), home: home, model: model)
+                case "task-start":
+                    let prompt = try values["prompt-file"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? get("prompt")
+                    let endpoint = ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model"))
+                    event("task.started", ["id": try BackgroundTasks.start(program: ownProgram, workspace: try Workspace(path: try get("workspace")), prompt: prompt, endpoint: endpoint, auto: auto, home: home)])
+                case "task-list":
+                    let found = BackgroundTasks.all(workspace: try values["workspace"].map { try Workspace(path: $0) }, home: home)
+                    event("tasks", ["tasks": found.map { ["id": $0.task.id, "workspace": $0.task.workspace, "prompt": $0.task.prompt, "state": $0.status.state, "detail": $0.status.detail] }])
+                case "task-show":
+                    let id = try get("id"), state = try BackgroundTasks.status(id, home: home)
+                    var data: [String: Any] = ["id": id, "state": state.state, "detail": state.detail, "session": state.session ?? "",
+                                               "events": try BackgroundTasks.tail(id, home: home).compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }]
+                    if let approval = state.approval { data["approval"] = ["id": approval.id, "tool": approval.tool, "title": approval.title, "detail": approval.detail, "subject": approval.subject] }
+                    event("task", data)
+                case "task-allow", "task-deny":
+                    try BackgroundTasks.decide(try get("id"), request: try get("request"), allow: operation == "task-allow", home: home)
+                    event("task.decision", ["id": try get("id"), "request": try get("request"), "allowed": operation == "task-allow"])
+                default:
+                    try BackgroundTasks.cancel(try get("id"), home: home)
+                    event("task.cancel", ["id": try get("id")])
+                }
+                return 0
             }
             let workspace = try Workspace(path: try get("workspace"))
             switch operation {

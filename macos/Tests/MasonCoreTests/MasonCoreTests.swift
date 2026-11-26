@@ -442,6 +442,50 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(feedback.head, "abc")
     }
 
+    func testABackgroundTaskWaitsForItsApprovalAndCanBeCancelled() async throws {
+        let workspace = try Workspace(path: folder.path)
+        func record(_ id: String) throws {
+            try FileManager.default.createDirectory(at: BackgroundTasks.folder(id, home), withIntermediateDirectories: true)
+            BackgroundTasks.write(BackgroundTask(id: id, workspace: realPath(folder.path), prompt: "Fix add", endpoint: ModelEndpoint(url: "http://127.0.0.1:1", model: "m"), auto: false, created: Date()), BackgroundTasks.folder(id, home).appendingPathComponent("request.json"))
+            BackgroundTasks.write(TaskStatus(state: "Starting", detail: "", pid: 0, started: Date()), BackgroundTasks.folder(id, home).appendingPathComponent("status.json"))
+        }
+        func waiting(_ id: String) async throws -> TaskStatus {
+            var state = try BackgroundTasks.status(id, home: home)
+            for _ in 0..<100 where state.state != "Waiting for approval" { try await Task.sleep(nanoseconds: 100_000_000); state = try BackgroundTasks.status(id, home: home) }
+            return state
+        }
+        // The worker runs here in the test; a real one is the same code in its own process.
+        let first = "aaaaaaaa0001"
+        try record(first)
+        let fix = ScriptedModel([call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a + b\n"]), ModelReply(text: "Fixed add.")])
+        async let finished = BackgroundTasks.work(first, home: home, model: fix)
+        let asked = try await waiting(first)
+        XCTAssertEqual(asked.state, "Waiting for approval")
+        XCTAssertEqual(asked.approval?.tool, "write_file")
+        XCTAssertThrowsError(try BackgroundTasks.decide(first, request: "not-this-one", allow: true, home: home), "an answer for another approval is refused")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a - b\n", "nothing is written while it waits")
+        let listed = try BackgroundTasks.command("", workspace: workspace, endpoint: nil, auto: false, program: "/bin/sh", home: home)
+        XCTAssertTrue(listed.contains(first) && listed.contains("waiting on:"), listed)
+        _ = try BackgroundTasks.command("allow \(first)", workspace: workspace, endpoint: nil, auto: false, program: "/bin/sh", home: home)
+        let code = await finished
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(try BackgroundTasks.status(first, home: home).state, "Completed")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a + b\n")
+        let shown = try BackgroundTasks.command("show \(first)", workspace: workspace, endpoint: nil, auto: false, program: "/bin/sh", home: home)
+        XCTAssertTrue(shown.contains("Fixed add.") && shown.contains("write_file calc.py"), shown)
+
+        let second = "aaaaaaaa0002"
+        try record(second)
+        async let stopped = BackgroundTasks.work(second, home: home, model: ScriptedModel([call("run_shell", ["command": "touch made"]), ModelReply(text: "Done.")]))
+        _ = try await waiting(second)
+        try BackgroundTasks.cancel(second, home: home)
+        let ended = await stopped
+        XCTAssertEqual(ended, 2)
+        XCTAssertEqual(try BackgroundTasks.status(second, home: home).state, "Cancelled")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("made").path), "a cancelled task's pending command never ran")
+        XCTAssertThrowsError(try BackgroundTasks.status("../../etc", home: home), "an id is never a path")
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []
