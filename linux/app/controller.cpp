@@ -151,6 +151,47 @@ void Controller::remove_comment(const std::string& id) {
     keep(updated);
 }
 
+void Controller::review_changes() {
+    const Session* current = session();
+    if (!current || !store_ || running || reviewing || !milestone_busy.empty()) return;
+    if (!endpoint) {
+        notice.emit("No model is running. Open Models to start one.");
+        return;
+    }
+    if (plan_thread_.joinable()) plan_thread_.join();
+    reviewing = true;
+    plan_cancel_ = make_cancel();
+    changed.emit();
+    const std::shared_ptr<bool> alive = alive_;
+    plan_thread_ = std::thread([this, alive, working = *current, target = *endpoint, cancel = plan_cancel_] {
+        ReviewFindings found;
+        std::string problem;
+        try {
+            OpenAIClient model(target);
+            found = review::findings(working, Workspace(working.workspace), model, cancel);
+        } catch (const Cancelled&) {
+            problem = "The review was stopped.";
+        } catch (const std::exception& error) {
+            problem = error.what();
+        }
+        if (!*alive) return;
+        post([this, found, problem, id = working.id] {
+            reviewing = false;
+            const auto latest = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& each) { return each.id == id; });
+            if (problem.empty() && latest != sessions_.end() && !found.comments.empty()) {
+                Session updated = *latest;
+                for (const ReviewComment& item : found.comments) {
+                    if (updated.comments.size() < review::kLimit) updated.comments.push_back(item);
+                }
+                keep(updated);
+            }
+            notice.emit(!problem.empty() ? problem : found.comments.empty() ? review::summary(found)
+                        : "The review pinned " + std::to_string(found.comments.size()) + (found.comments.size() == 1 ? " comment" : " comments") + " above the request box. A model wrote them: check each before sending.");
+            changed.emit();
+        });
+    });
+}
+
 std::vector<MilestoneStatus> Controller::milestone_status() const {
     const Session* current = session();
     if (!current || current->milestones.empty()) return {};

@@ -513,6 +513,18 @@ final class CLI {
             session = changed
             for line in text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             try store.save(session)
+        case "/accept", "/acceptance":
+            let folder = workspace
+            let results = try await busy("Running the acceptance scenarios") { progress in try await Acceptance.run(folder, try Acceptance.read(folder), progress: progress) }
+            for line in Acceptance.receipt(results).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/review":
+            guard let endpoint, let model = try? OpenAIClient(endpoint) else { throw MasonError("No model is running. /models lists the ones on this computer.") }
+            let current = session, folder = workspace
+            let found = try await busy("Reviewing what this session changed") { _ in try await Review.findings(current, workspace: folder, model: model) }
+            session.comments = Array(((session.comments ?? []) + found.comments).prefix(Review.limit))
+            if session.comments?.isEmpty == true { session.comments = nil }
+            try store.save(session)
+            for line in Review.summary(found).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/window", "/windows":
             for line in try Desktop.command(rest, session: &session).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             try store.save(session)
@@ -543,6 +555,8 @@ final class CLI {
             ("/commands", "List your custom slash commands"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/review", "Have the model read what this session changed and pin what it finds as comments"),
+            ("/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"),
             ("/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"),
             ("/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"),
             ("/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"),

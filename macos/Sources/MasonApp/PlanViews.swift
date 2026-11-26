@@ -19,6 +19,27 @@ extension AppModel {
         }
     }
 
+    /// Has the model read what this session changed. What it finds is pinned as comments, to go with the next request.
+    func reviewChanges() {
+        guard !reviewing, !running, let current = session, let workspace = try? Workspace(path: current.workspace) else { return }
+        guard let endpoint, let client = try? OpenAIClient(endpoint) else { notice = "No model is running. Open Models to start one."; return }
+        reviewing = true
+        Task {
+            do {
+                let found = try await Review.findings(current, workspace: workspace, model: client)
+                if var latest = sessions.first(where: { $0.id == current.id }) {
+                    latest.comments = Array(((latest.comments ?? []) + found.comments).prefix(Review.limit))
+                    if latest.comments?.isEmpty == true { latest.comments = nil }
+                    save(latest)
+                }
+                notice = found.comments.isEmpty ? Review.summary(found) : "The review pinned \(found.comments.count) comment\(found.comments.count == 1 ? "" : "s") above the request box. A model wrote them: check each before sending."
+            } catch {
+                notice = describe(error)
+            }
+            reviewing = false
+        }
+    }
+
     func removeComment(_ id: UUID) {
         guard var current = session else { return }
         current.comments?.removeAll { $0.id == id }

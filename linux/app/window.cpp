@@ -1039,7 +1039,7 @@ void MainWindow::refresh_changes() {
     const Session* session = controller_.session();
     std::vector<FileChange> merged;
     if (plan_shown_) { refresh_plan(); return; }
-    std::string fingerprint = controller_.running ? "run|" : "idle|";
+    std::string fingerprint = std::string(controller_.running ? "run|" : "idle|") + (controller_.reviewing ? "reviewing|" : "");
     if (session) {
         for (const Turn& turn : session->turns) {
             fingerprint += turn.id + (turn.undone ? "u" : "-") + std::to_string(turn.changes.size());
@@ -1063,7 +1063,12 @@ void MainWindow::refresh_changes() {
     auto* redo = Gtk::make_managed<Gtk::Button>("Redo");
     redo->set_sensitive(!controller_.running);
     redo->signal_clicked().connect([this] { controller_.undo(true); });
+    auto* review = Gtk::make_managed<Gtk::Button>(controller_.reviewing ? "Reviewing…" : "Review");
+    review->set_tooltip_text("Have the model read these changes and pin what it finds as comments");
+    review->set_sensitive(!controller_.running && !controller_.reviewing && !merged.empty());
+    review->signal_clicked().connect([this] { controller_.review_changes(); });
     bar->append(*heading);
+    bar->append(*review);
     bar->append(*undo);
     bar->append(*redo);
     changes_.append(*bar);

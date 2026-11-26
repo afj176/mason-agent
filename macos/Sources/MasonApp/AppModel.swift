@@ -45,6 +45,8 @@ final class AppModel: ObservableObject {
     @Published var waitingFollowUps = 0
     /// The milestone whose check is running.
     @Published var milestoneBusy: UUID?
+    /// True while the model is reading what the session changed.
+    @Published var reviewing = false
     private var chatStore: ChatStore?
     private var chatTask: Task<Void, Never>?
 

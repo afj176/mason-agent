@@ -373,6 +373,9 @@ struct ChangesView: View {
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                 Spacer()
                 if !showPlan {
+                    if model.reviewing { ProgressView().controlSize(.small) }
+                    Button("Review") { model.reviewChanges() }.disabled(model.running || model.reviewing || changes.isEmpty)
+                        .help("Have the model read these changes and pin what it finds as comments")
                     Button("Undo") { model.undo() }.disabled(model.running).help("Put back everything the latest request changed")
                     Button("Redo") { model.undo(redo: true) }.disabled(model.running)
                 }

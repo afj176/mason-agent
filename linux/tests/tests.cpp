@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "agent.hpp"
+#include "acceptance.hpp"
 #include "browser.hpp"
 #include "planning.hpp"
 #include "chat.hpp"
@@ -1286,6 +1287,91 @@ static void test_desktop() {
     CHECK(desktop::command("off", session, desktop) == "No window is attached to this session." && !session.desktop);
 }
 
+static void test_acceptance() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    // A small shop: three products, ten percent off at three units, and an order number that survives a reload.
+    box.write("index.html", R"html(<!doctype html><title>Shop</title><ul aria-label="Products"><li>Wrench</li><li>Hammer</li><li>Saw</li></ul>
+<input id="qty" value="1"><p id="total">Total: $10.00</p><button id="checkout">Check out</button><p id="order"></p>
+<script>
+var qty = document.getElementById('qty'), total = document.getElementById('total'), order = document.getElementById('order');
+qty.addEventListener('input', function () { var n = Number(qty.value) || 0, sum = n * 10; if (n >= 3) sum = sum * 0.9; total.textContent = 'Total: $' + sum.toFixed(2); });
+order.textContent = localStorage.getItem('order') || '';
+document.getElementById('checkout').onclick = function () { var id = 'ORD-' + (Number(localStorage.getItem('count') || 0) + 1); localStorage.setItem('count', id.slice(4)); localStorage.setItem('order', id); order.textContent = id; };
+</script>)html");
+    const auto contract = [](const std::string& discount) {
+        return R"({"Version": 1, "Scenarios": [
+          {"Id": "products", "Requirement": "List three distinct products", "Page": "index.html", "Steps": [{"Op": "count_distinct", "Target": "ul[aria-label='Products'] li", "Value": "3"}]},
+          {"Id": "discount", "Requirement": "Ten percent off at three units", "Page": "index.html",
+           "Steps": [{"Op": "fill", "Target": "#qty", "Value": "3"}, {"Op": "money", "Target": "#total", "Value": ")" + discount + R"("}, {"Op": "fill", "Target": "#qty", "Value": "2"}, {"Op": "money", "Target": "#total", "Value": "20.00"}]},
+          {"Id": "order", "Requirement": "Checkout makes an order number that survives a reload", "Page": "index.html",
+           "Steps": [{"Op": "empty", "Target": "#order", "Value": ""}, {"Op": "click", "Target": "#checkout", "Value": ""}, {"Op": "capture", "Target": "#order", "Value": "ORD-"},
+                     {"Op": "reload", "Target": "", "Value": ""}, {"Op": "same", "Target": "#order", "Value": ""}, {"Op": "click", "Target": "#checkout"}, {"Op": "new_id", "Target": "#order", "Value": "ORD-"}]}
+        ]})";
+    };
+
+    // A contract is checked before it is run.
+    const AcceptanceContract parsed = acceptance::parse(workspace, contract("27.00"));
+    CHECK(parsed.scenarios.size() == 3 && parsed.scenarios[2].steps.size() == 7 && parsed.application.empty());
+    const auto one = [](const std::string& page, const std::string& steps) { return R"({"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": ")" + page + R"(", "Steps": [)" + steps + "]}]}"; };
+    CHECK_THROWS(acceptance::parse(workspace, R"({"Version": 2, "Scenarios": []})"));
+    CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "click", "Target": "#x"})")));  // must end with an assertion
+    CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "same", "Target": "#x"})")));   // nothing was captured to compare
+    CHECK_THROWS(acceptance::parse(workspace, one("../x.html", R"({"Op": "text", "Target": "#x", "Value": "y"})")));  // the page must be in the project
+    CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "hover", "Target": "#x"}, {"Op": "text", "Target": "#x", "Value": "y"})")));
+    CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "money", "Target": "#x", "Value": "ten"})")));
+    CHECK_THROWS(acceptance::run(workspace, acceptance::parse(workspace, R"({"Version": 1, "Application": "store:application", "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]})")));
+
+    // A review keeps only findings that quote the line they name.
+    {
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        CHECK_THROWS(review::findings(session, workspace, model));  // nothing was changed yet
+        Turn turn;
+        turn.request = "Add an add function";
+        turn.changes.push_back({"calc.py", std::nullopt, "def add(a, b):\n    return a - b\n"});
+        session.turns.push_back(turn);
+        model.replies = {say(R"(Here is what I found:
+[{"path": "calc.py", "line": 2, "evidence": "return a - b", "problem": "It subtracts instead of adding."},
+ {"path": "calc.py", "line": 1, "evidence": "return a - b", "problem": "Quoted from the wrong line."},
+ {"path": "other.py", "line": 1, "evidence": "x", "problem": "A file that was not changed."}])"), say("[]")};
+        const ReviewFindings found = review::findings(session, workspace, model);
+        CHECK(found.comments.size() == 1 && review::location(found.comments[0]) == "calc.py · updated line 2" && found.comments[0].note == "It subtracts instead of adding." && found.dropped == 2);
+        CHECK(model.seen[0][1].content.find("2\t    return a - b") != std::string::npos);  // the model reads numbered lines
+        CHECK(starts_with(review::summary(found), "The review found 1 thing in calc.py:\ncalc.py · updated line 2 — It subtracts instead of adding.\n2 findings were left out"));
+        review::validate(workspace, found.comments);  // a finding is a comment that can be sent
+        CHECK(review::summary(review::findings(session, workspace, model)) == "The review of calc.py found nothing to report.");
+    }
+
+    if (browser::find().empty()) {
+        std::cout << "  (no browser on this computer: the scenarios were not run)\n";
+        return;
+    }
+    const std::vector<AcceptanceResult> passed = acceptance::run(workspace, parsed);
+    CHECK(passed.size() == 3 && passed[0].passed && passed[1].passed && passed[2].passed);
+    if (passed.size() == 3 && !(passed[0].passed && passed[1].passed && passed[2].passed)) std::cerr << acceptance::receipt(passed) << "\n";
+    CHECK(starts_with(acceptance::receipt(passed), "3 of 3 acceptance scenarios passed, each at 390px and 1280px."));
+    CHECK(std::find(passed[1].detail.begin(), passed[1].detail.end(), "money #total = Total: $27.00") != passed[1].detail.end());
+    CHECK(std::find(passed[2].detail.begin(), passed[2].detail.end(), "new_id #order = ORD-2") != passed[2].detail.end());
+    const std::vector<AcceptanceResult> failed = acceptance::run(workspace, acceptance::parse(workspace, contract("30.00")));
+    CHECK(failed[0].passed && !failed[1].passed && failed[2].passed);
+    CHECK(failed[1].detail == std::vector<std::string>{"at 390px, step 2, money #total: expected '30.00', observed 'Total: $27.00' (1 visible)"});
+
+    // The agent runs them as a tool, asking first outside Auto.
+    box.write(acceptance::kFilename, contract("27.00"));
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::ReviewEdits);
+    ScriptedModel model;
+    model.replies = {call("verify_acceptance", json::object()), say("All three hold.")};
+    std::vector<std::string> asked;
+    Agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); return true; }, [](const AgentEvent&) {}).run(session, "Check the shop");
+    CHECK(asked == std::vector<std::string>{"mason.acceptance.json"});
+    CHECK(session.activities.size() == 1 && session.activities[0].state == "completed");
+    CHECK(session.activities[0].result.find("PASSED order — Checkout makes an order number that survives a reload (index.html)") != std::string::npos);
+    CHECK(model.seen[0][0].content.find("acceptance scenarios in mason.acceptance.json") != std::string::npos);
+}
+
 static void test_verification() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
@@ -1376,7 +1462,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

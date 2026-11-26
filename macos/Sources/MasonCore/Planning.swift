@@ -45,6 +45,57 @@ public enum Review {
         return ((typed.isEmpty ? ["Address these review comments."] : [typed]) + rows).joined(separator: "\n")
     }
 
+    /// What a reviewing model found in a change, kept only when it points at a real line.
+    public struct Findings: Equatable {
+        public var comments: [ReviewComment] = []
+        /// Findings whose quoted evidence was not on the line they named; they are not shown as fact.
+        public var dropped = 0
+        public var files: [String] = []
+    }
+
+    /// Asks the model to read the files a session changed and report defects. Each finding must quote text from the
+    /// line it names; one that does not is dropped rather than shown. The findings come back as comments on those lines.
+    public static func findings(_ session: Session, workspace: Workspace, model: ChatModel) async throws -> Findings {
+        var paths: [String] = []
+        for turn in session.turns where !turn.undone { for change in turn.changes where !paths.contains(change.path) && !change.isOpaque && !change.deleted { paths.append(change.path) } }
+        var sources: [(path: String, lines: [String], data: Data)] = [], size = 0
+        for path in paths.prefix(12) {
+            guard let data = try? workspace.data(path), let text = String(data: data, encoding: .utf8), size + text.count <= 120_000 else { continue }
+            size += text.count
+            var lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+            if lines.last == "" { lines.removeLast() }
+            sources.append((path, lines, data))
+        }
+        guard !sources.isEmpty else { throw MasonError("This session has not changed any text files to review.") }
+        let request = session.turns.last { !$0.undone && !$0.changes.isEmpty }?.request ?? ""
+        let listing = sources.map { source in "File: \(source.path)\n" + source.lines.enumerated().map { "\($0.offset + 1)\t\($0.element)" }.joined(separator: "\n") }.joined(separator: "\n\n")
+        let system = """
+        You review a change another engineer just made. Report only real defects: wrong results, crashes, broken edge cases, security problems. Not style.
+        Reply with only a JSON array. Each finding is {"path": file, "line": line number, "evidence": text copied exactly from that line, "problem": one or two sentences}.
+        Reply [] when you find nothing.
+        """
+        let reply = try await model.complete(messages: [ChatMessage(role: "system", content: system), ChatMessage(role: "user", content: "The request was: \(request.prefix(2000))\n\nThe changed files as they are now, with line numbers:\n\n\(listing)")], tools: [], onText: { _ in })
+        guard let start = reply.text.firstIndex(of: "["), let end = reply.text.lastIndex(of: "]"), start < end,
+              let items = try? JSONSerialization.jsonObject(with: Data(reply.text[start...end].utf8)) as? [[String: Any]] else { throw MasonError("The model did not answer with a list of findings.") }
+        var found = Findings(files: sources.map(\.path))
+        for item in items.prefix(limit) {
+            let evidence = (item["evidence"] as? String ?? "").trimmingCharacters(in: .whitespaces), problem = (item["problem"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let line = (item["line"] as? Int) ?? (item["line"] as? String).flatMap(Int.init) ?? 0
+            guard let source = sources.first(where: { $0.path == item["path"] as? String }), !evidence.isEmpty, !problem.isEmpty, line >= 1, line <= source.lines.count, source.lines[line - 1].contains(evidence) else { found.dropped += 1; continue }
+            found.comments.append(ReviewComment(path: source.path, revision: sha256Hex(source.data), original: false, line: line, quote: source.lines[line - 1], note: String(problem.prefix(2000))))
+        }
+        return found
+    }
+
+    /// What to tell the user about a review.
+    public static func summary(_ found: Findings) -> String {
+        var lines = found.comments.map { "\($0.location) — \($0.note)" }
+        lines.insert(found.comments.isEmpty ? "The review of \(found.files.joined(separator: ", ")) found nothing to report." : "The review found \(found.comments.count) thing\(found.comments.count == 1 ? "" : "s") in \(found.files.joined(separator: ", ")):", at: 0)
+        if found.dropped > 0 { lines.append("\(found.dropped) finding\(found.dropped == 1 ? " was" : "s were") left out because the text quoted was not on the line named.") }
+        if !found.comments.isEmpty { lines.append("They are pinned as comments and go with your next request. A model wrote them: check each before acting on it.") }
+        return lines.joined(separator: "\n")
+    }
+
     /// A comment is only sent while the file is the one it was written on.
     public static func validate(_ workspace: Workspace, comments: [ReviewComment]) throws {
         for comment in comments {

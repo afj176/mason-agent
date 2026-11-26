@@ -12,6 +12,7 @@
 #include <glibmm/dispatcher.h>
 #include <sigc++/sigc++.h>
 
+#include "acceptance.hpp"
 #include "agent.hpp"
 #include "planning.hpp"
 #include "models.hpp"
@@ -89,6 +90,9 @@ public:
     /// Runs the milestone's workflow, or records what the user saw.
     void check_milestone(const std::string& id, const std::string& observation);
     std::string milestone_busy;  ///< The milestone whose check is running, or empty.
+    /// Has the model read what this session changed. What it finds is pinned as comments, to go with the next request.
+    void review_changes();
+    bool reviewing = false;
 
     // ---- an attached window ----
     /// The windows of other apps, or none when the accessibility service is not answering.

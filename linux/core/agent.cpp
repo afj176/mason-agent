@@ -1,4 +1,5 @@
 #include "agent.hpp"
+#include "acceptance.hpp"
 #include "browser.hpp"
 #include "planning.hpp"
 
@@ -216,6 +217,10 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
         list.push_back({"check_page", "Load one of the project's HTML pages in a real browser and report what it shows and any script errors. steps_json is a JSON array of steps carried out in order, each one of: {\"action\":\"click\",\"text\":\"Add\"}, {\"action\":\"fill\",\"selector\":\"#name\",\"value\":\"Ada\"}, {\"action\":\"expect_text\",\"text\":\"Saved\"}, {\"action\":\"expect_no_text\",\"text\":\"Error\"}, {\"action\":\"wait\",\"ms\":500}. Use text or selector to name an element. Use [] to only load the page. The result lists the page's controls with a selector for each, so you can operate a page step by step: load it, read the controls, then call again with the steps so far plus the next one. The page has no network beyond this computer.",
                         schema({{"path", text}, {"steps_json", text}}, {"path", "steps_json"})});
     }
+    if (!browser::find().empty() && acceptance::exists(workspace)) {
+        list.push_back({"verify_acceptance", "Run the project's acceptance scenarios from mason.acceptance.json in a real browser, at a phone width and a desktop width, and report which requirements hold. Run it after changing a page the scenarios cover.",
+                        schema(json::object(), {})});
+    }
     if (!skills::list(workspace).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
     return list;
 }
@@ -285,6 +290,17 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         if (!query) throw Error("semantic_search needs a query.");
         emit_({AgentEvent::Kind::Status, "Searching by meaning", {}});
         return Outcome{"completed", semantic::search(workspace, *models, *query, text("path").value_or("."), 8, cancel).report()};
+    }
+    if (call.name == "verify_acceptance") {
+        const AcceptanceContract contract = acceptance::read(workspace);
+        if (session.permission != Permission::Auto) {
+            const std::string detail = "Opens the pages of " + std::to_string(contract.scenarios.size()) + (contract.scenarios.size() == 1 ? " scenario" : " scenarios") +
+                                       " in a headless browser with a fresh profile and no network beyond this computer.";
+            if (!allowed({call.name, "Run the acceptance scenarios in a browser", detail, acceptance::kFilename}, session)) return Outcome{"denied", "The user declined. Do not retry it; ask what they want instead."};
+        }
+        const std::vector<AcceptanceResult> results = acceptance::run(workspace, contract, [this](const std::string& status) { emit_({AgentEvent::Kind::Status, status, {}}); }, cancel);
+        const bool passed = std::all_of(results.begin(), results.end(), [](const AcceptanceResult& result) { return result.passed; });
+        return Outcome{passed ? "completed" : "failed", acceptance::receipt(results)};
     }
     if (call.name == "check_page") {
         const auto path = text("path");
@@ -628,6 +644,9 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         std::vector<std::string> names;
         for (const McpServer& server : mcp::enabled(store_.home())) names.push_back(server.name);
         if (!names.empty()) prompt += "\nThe user registered these MCP servers: " + join(names, ", ") + ". Use mcp_tools to see what one offers before calling it.";
+    }
+    if (std::find(offered_names_.begin(), offered_names_.end(), "verify_acceptance") != offered_names_.end()) {
+        prompt += "\nThis project has acceptance scenarios in mason.acceptance.json. Run verify_acceptance after changing a page they cover, and do not edit that file unless asked.";
     }
     if (session.desktop && desktop_automation()) prompt += "\nThe user attached a window of another app: " + desktop::label(*session.desktop) + ". Read it with desktop_observe. Acting on it asks the user each time.";
     last_observation_.clear();

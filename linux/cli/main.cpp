@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "agent.hpp"
+#include "acceptance.hpp"
 #include "planning.hpp"
 #include "schedules.hpp"
 #include "models.hpp"
@@ -537,6 +538,24 @@ private:
             store_.save(session_);
             return true;
         }
+        if (name == "/accept" || name == "/acceptance") {
+            const std::vector<AcceptanceResult> results = busy<std::vector<AcceptanceResult>>("Running the acceptance scenarios", [&](const auto& progress, const CancelToken& cancel) {
+                return acceptance::run(workspace_, acceptance::read(workspace_), progress, cancel);
+            });
+            for (const std::string& line : split(acceptance::receipt(results), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/review") {
+            if (!endpoint) throw Error("No model is running. /models lists the ones on this computer.");
+            OpenAIClient model(*endpoint);
+            const ReviewFindings found = busy<ReviewFindings>("Reviewing what this session changed", [&](const auto&, const CancelToken& cancel) { return review::findings(session_, workspace_, model, cancel); });
+            for (const ReviewComment& item : found.comments) {
+                if (session_.comments.size() < review::kLimit) session_.comments.push_back(item);
+            }
+            store_.save(session_);
+            for (const std::string& line : split(review::summary(found), '\n')) term::line("  " + line);
+            return true;
+        }
         if (name == "/window" || name == "/windows") {
             for (const std::string& line : split(desktop::command(rest, session_), '\n')) term::line("  " + line);
             store_.save(session_);
@@ -569,6 +588,8 @@ private:
             {"/commands", "List your custom slash commands"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/review", "Have the model read what this session changed and pin what it finds as comments"},
+            {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},
             {"/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"},
             {"/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"},
             {"/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"},

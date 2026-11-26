@@ -213,6 +213,10 @@ extension Agent {
             tools.append(ToolSpec(name: "check_page", description: "Load one of the project's HTML pages in a real browser and report what it shows and any script errors. steps_json is a JSON array of steps carried out in order, each one of: {\"action\":\"click\",\"text\":\"Add\"}, {\"action\":\"fill\",\"selector\":\"#name\",\"value\":\"Ada\"}, {\"action\":\"expect_text\",\"text\":\"Saved\"}, {\"action\":\"expect_no_text\",\"text\":\"Error\"}, {\"action\":\"wait\",\"ms\":500}. Use text or selector to name an element. Use [] to only load the page. The result lists the page's controls with a selector for each, so you can operate a page step by step: load it, read the controls, then call again with the steps so far plus the next one. The page has no network beyond this computer.",
                                   parameters: schema(["path": text, "steps_json": text], required: ["path", "steps_json"])))
         }
+        if BrowserCheck.findBrowser() != nil, Acceptance.exists(workspace) {
+            tools.append(ToolSpec(name: "verify_acceptance", description: "Run the project's acceptance scenarios from mason.acceptance.json in a real browser, at a phone width and a desktop width, and report which requirements hold. Run it after changing a page the scenarios cover.",
+                                  parameters: schema([:], required: [])))
+        }
         if !Skills.list(workspace).isEmpty {
             tools.append(ToolSpec(name: "read_skill", description: "Read the project's instructions for one kind of work, by skill name.", parameters: schema(["name": text], required: ["name"])))
         }
@@ -249,6 +253,17 @@ extension Agent {
             guard let query = text("query") else { throw MasonError("semantic_search needs a query.") }
             emit(.status("Searching by meaning"))
             return (.completed, try await SemanticSearch.search(workspace, models: models, query: query, directory: text("path") ?? ".").report)
+
+        case "verify_acceptance":
+            let contract = try Acceptance.read(workspace)
+            if session.permission != .auto {
+                let detail = "Opens the pages of \(contract.scenarios.count) scenario\(contract.scenarios.count == 1 ? "" : "s") in a headless browser with a fresh profile and no network beyond this computer."
+                if !(await allowed(ApprovalRequest(tool: call.name, title: "Run the acceptance scenarios in a browser", detail: detail, subject: Acceptance.filename), session: &session)) {
+                    return (.denied, "The user declined. Do not retry it; ask what they want instead.")
+                }
+            }
+            let results = try await Acceptance.run(workspace, contract) { [emit] in emit(.status($0)) }
+            return (results.allSatisfy(\.passed) ? .completed : .failed, Acceptance.receipt(results))
 
         case "check_page":
             guard let path = text("path") else { throw MasonError("check_page needs the path of an HTML file in the project.") }

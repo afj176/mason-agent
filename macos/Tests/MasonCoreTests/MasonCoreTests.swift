@@ -1235,6 +1235,117 @@ final class DesktopTests: XCTestCase {
     }
 }
 
+final class AcceptanceTests: XCTestCase {
+    var folder: URL!
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-accept-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // A small shop: three products, ten percent off at three units, and an order number that survives a reload.
+        try """
+        <!doctype html><title>Shop</title><ul aria-label="Products"><li>Wrench</li><li>Hammer</li><li>Saw</li></ul>
+        <input id="qty" value="1"><p id="total">Total: $10.00</p><button id="checkout">Check out</button><p id="order"></p>
+        <script>
+        var qty = document.getElementById('qty'), total = document.getElementById('total'), order = document.getElementById('order');
+        qty.addEventListener('input', function () { var n = Number(qty.value) || 0, sum = n * 10; if (n >= 3) sum = sum * 0.9; total.textContent = 'Total: $' + sum.toFixed(2); });
+        order.textContent = localStorage.getItem('order') || '';
+        document.getElementById('checkout').onclick = function () { var id = 'ORD-' + (Number(localStorage.getItem('count') || 0) + 1); localStorage.setItem('count', id.slice(4)); localStorage.setItem('order', id); order.textContent = id; };
+        </script>
+        """.write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    func contract(discount: String = "27.00") -> String {
+        """
+        {"Version": 1, "Scenarios": [
+          {"Id": "products", "Requirement": "List three distinct products", "Page": "index.html", "Steps": [{"Op": "count_distinct", "Target": "ul[aria-label='Products'] li", "Value": "3"}]},
+          {"Id": "discount", "Requirement": "Ten percent off at three units", "Page": "index.html",
+           "Steps": [{"Op": "fill", "Target": "#qty", "Value": "3"}, {"Op": "money", "Target": "#total", "Value": "\(discount)"}, {"Op": "fill", "Target": "#qty", "Value": "2"}, {"Op": "money", "Target": "#total", "Value": "20.00"}]},
+          {"Id": "order", "Requirement": "Checkout makes an order number that survives a reload", "Page": "index.html",
+           "Steps": [{"Op": "empty", "Target": "#order", "Value": ""}, {"Op": "click", "Target": "#checkout", "Value": ""}, {"Op": "capture", "Target": "#order", "Value": "ORD-"},
+                     {"Op": "reload", "Target": "", "Value": ""}, {"Op": "same", "Target": "#order", "Value": ""}, {"Op": "click", "Target": "#checkout"}, {"Op": "new_id", "Target": "#order", "Value": "ORD-"}]}
+        ]}
+        """
+    }
+
+    func testAContractIsCheckedBeforeItIsRun() throws {
+        let workspace = try Workspace(path: folder.path)
+        let parsed = try Acceptance.parse(workspace, contract())
+        XCTAssertEqual(parsed.scenarios.map(\.id), ["products", "discount", "order"])
+        XCTAssertEqual(parsed.scenarios[2].steps.count, 7)
+        XCTAssertNil(parsed.application)
+        func refused(_ source: String, _ why: String) { XCTAssertThrowsError(try Acceptance.parse(workspace, source), why) }
+        refused(##"{"Version": 2, "Scenarios": []}"##, "only version 1")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "click", "Target": "#x"}]}]}"##, "a scenario must end with an assertion")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "same", "Target": "#x"}]}]}"##, "nothing was captured to compare")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "../x.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]}"##, "the page must be in the project")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "hover", "Target": "#x"}, {"Op": "text", "Target": "#x", "Value": "y"}]}]}"##, "an unknown step")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "money", "Target": "#x", "Value": "ten"}]}]}"##, "an amount must be a number")
+        let twice = ##"{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}"##
+        refused("{\"Version\": 1, \"Scenarios\": [\(twice), \(twice)]}", "ids must be unique")
+    }
+
+    func testScenariosRunInARealBrowserAtBothWidths() async throws {
+        guard BrowserCheck.findBrowser() != nil else { throw XCTSkip("No Chromium-family browser on this computer.") }
+        let workspace = try Workspace(path: folder.path)
+        let passed = try await Acceptance.run(workspace, try Acceptance.parse(workspace, contract()))
+        XCTAssertEqual(passed.map(\.passed), [true, true, true], Acceptance.receipt(passed))
+        XCTAssertTrue(Acceptance.receipt(passed).hasPrefix("3 of 3 acceptance scenarios passed, each at 390px and 1280px."))
+        XCTAssertTrue(passed[1].detail.contains("money #total = Total: $27.00"), "\(passed[1].detail)")
+        XCTAssertTrue(passed[2].detail.contains("new_id #order = ORD-2"), "\(passed[2].detail)")
+
+        let failed = try await Acceptance.run(workspace, try Acceptance.parse(workspace, contract(discount: "30.00")))
+        XCTAssertEqual(failed.map(\.passed), [true, false, true])
+        XCTAssertEqual(failed[1].detail, ["at 390px, step 2, money #total: expected '30.00', observed 'Total: $27.00' (1 visible)"])
+
+        // The agent runs them as a tool, asking first outside Auto.
+        try contract().write(to: folder.appendingPathComponent(Acceptance.filename), atomically: true, encoding: .utf8)
+        let store = try SessionStore(home: folder.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .reviewEdits)
+        XCTAssertTrue(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "verify_acceptance" })
+        let model = ScriptedModel([call("verify_acceptance", [:]), ModelReply(text: "All three hold.")])
+        var asked: [String] = []
+        await Agent(store: store, model: model, approve: { asked.append($0.subject); return true }, emit: { _ in }).run(&session, request: "Check the shop")
+        XCTAssertEqual(asked, ["mason.acceptance.json"])
+        XCTAssertEqual(session.activities.first?.state, .completed)
+        XCTAssertTrue(session.activities.first?.result.contains("PASSED order — Checkout makes an order number that survives a reload (index.html)") ?? false)
+        XCTAssertTrue(model.seen[0][0].content.contains("acceptance scenarios in mason.acceptance.json"))
+    }
+
+    func testAnApplicationContractSaysWhereItRuns() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let source = ##"{"Version": 1, "Application": "store:application", "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]}"##
+        do { _ = try await Acceptance.run(workspace, try Acceptance.parse(workspace, source)); XCTFail("expected an error") }
+        catch { XCTAssertTrue("\(error)".contains("on Windows only for now"), "\(error)") }
+    }
+
+    func testAReviewKeepsOnlyFindingsThatQuoteTheLineTheyName() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try "def add(a, b):\n    return a - b\n".write(to: folder.appendingPathComponent("calc.py"), atomically: true, encoding: .utf8)
+        let store = try SessionStore(home: folder.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        do { _ = try await Review.findings(session, workspace: workspace, model: ScriptedModel([])); XCTFail("nothing was changed yet") } catch {}
+        var turn = Turn(request: "Add an add function")
+        turn.changes = [FileChange(path: "calc.py", before: nil, after: "def add(a, b):\n    return a - b\n")]
+        session.turns = [turn]
+        let answer = """
+        Here is what I found:
+        [{"path": "calc.py", "line": 2, "evidence": "return a - b", "problem": "It subtracts instead of adding."},
+         {"path": "calc.py", "line": 1, "evidence": "return a - b", "problem": "Quoted from the wrong line."},
+         {"path": "other.py", "line": 1, "evidence": "x", "problem": "A file that was not changed."}]
+        """
+        let model = ScriptedModel([ModelReply(text: answer), ModelReply(text: "[]")])
+        let found = try await Review.findings(session, workspace: workspace, model: model)
+        XCTAssertEqual(found.comments.map(\.location), ["calc.py · updated line 2"])
+        XCTAssertEqual(found.comments[0].note, "It subtracts instead of adding.")
+        XCTAssertEqual(found.dropped, 2)
+        XCTAssertTrue(model.seen[0][1].content.contains("2\t    return a - b"), "the model reads numbered lines")
+        XCTAssertTrue(Review.summary(found).hasPrefix("The review found 1 thing in calc.py:\ncalc.py · updated line 2 — It subtracts instead of adding.\n2 findings were left out"))
+        XCTAssertNoThrow(try Review.validate(workspace, comments: found.comments), "a finding is a comment that can be sent")
+        let nothing = try await Review.findings(session, workspace: workspace, model: model)
+        XCTAssertEqual(Review.summary(nothing), "The review of calc.py found nothing to report.")
+    }
+}
+
 final class TransformersTests: XCTestCase {
     /// A stand-in for Python: it writes the status file the real server writes, then serves the stub model.
     func testAFolderOfTransformersWeightsIsListedCheckedAndServed() async throws {
