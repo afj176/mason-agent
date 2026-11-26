@@ -32,9 +32,6 @@ internal static class ProjectEvidenceChecks
             ["go-json","""{"Action":"pass","Package":"shop","Test":"TestTotal"}""","shop/TestTotal"],
             ["flutter-json","""{"type":"testStart","test":{"id":1,"name":"tax"}}"""+"\n"+"""{"type":"testDone","testID":1,"result":"success"}""","tax"]];
         if(examples.Any(t=>CodeProjectTests.Parse(t[0],t[1]).GetValueOrDefault(t[2])!="passed"))throw new Exception("Test reporter identity lost.");
-        var attachment=DeveloperEvidence.Editor(scope,JsonSerializer.Serialize(new{version=1,workspace=scope.Root,path=price.Path,selection="unsaved",line=1,endLine=1,bufferVersion=2,dirty=true,diskHash=price.Sha256,diagnostics="old signature"}));
-        var info=JsonSerializer.SerializeToElement(attachment.ForModel(scope));
-        if(!attachment.Unsaved || info.GetProperty("disk_revision_current").GetBoolean())throw new Exception("Unsaved or stale buffer evidence misreported.");
         var profile=Path.Combine(Path.GetDirectoryName(area)!,"notes-profile");
         var noteId=Guid.NewGuid();
         using(var store=new CodeStore(profile)){var p=store.AddProject(scope.Root);store.SaveNote(p.Id,noteId,"contract in price",price.Path);}
@@ -79,6 +76,6 @@ internal static class ProjectEvidenceChecks
                 throw new Exception("Independent example did not respect the reviewed argument roles.");
         }
         Console.WriteLine("PASS a grounded symmetric follow-up catches an asymmetric result and a directional function keeps its declared argument roles");
-        Console.WriteLine("PASS named test baseline, pre-existing failure, pinned oracle, four machine reporters, unsaved buffer and project memory freshness");
+        Console.WriteLine("PASS named test baseline, pre-existing failure, pinned oracle, four machine reporters and project memory freshness");
     }
 }

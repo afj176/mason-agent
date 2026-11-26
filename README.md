@@ -32,7 +32,6 @@ The three apps do the same things. Each one is built natively for its system, so
 - **C#.** All three use the C# language server (csharp-ls) for errors after edits. Windows also binds C# names with a compiler built into the app.
 - **Where the controls are.** Experiments, pull request drafting, background tasks, model roles, project policy, network mode and bundles are in Settings on macOS and Linux, and in the project menu and its panels on Windows. On all three they are also commands (`/experiment`, `/deliver`, `/task`, `/roles`, `/policy`, `/network`, `/bundle`).
 - **The graphics reading.** All three show how busy the graphics processor is and how much memory it has in use. Windows reads NVIDIA cards and lists the programs using them; Linux reads NVIDIA, AMD and Intel; macOS reads the Mac's own graphics processor.
-- **Windows only for now.** Editor evidence from VS Code.
 
 Each platform lives in its own folder and builds on its own, with nothing shared but the brand kit, the docs and this README:
 
@@ -254,7 +253,7 @@ Open **Plan & repository map** in the project menu. Search for a qualified symbo
 
 #### Connect the preview and editor
 
-Use the element picker in **Website** to attach an accessible control, its screenshot and recent console diagnostics. **Verify click** repeats the interaction in disposable Edge at mobile and desktop widths. For VS Code, install `integrations/mason-workspace.vsix` from the Mason installation directory. Run **Mason: Share Selection with Local Project**, then **Attach editor selection** in Mason. The attachment records the editor buffer version, selected text, diagnostics and disk hash. **Mason: Toggle Project Task Notifications** follows this folder’s background tasks in VS Code.
+Use the element picker in **Website** to attach an accessible control, its screenshot and recent console diagnostics. **Verify click** repeats the interaction in disposable Edge at mobile and desktop widths.
 
 #### Run tasks and review changes
 

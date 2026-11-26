@@ -686,19 +686,6 @@ public sealed partial class MainWindow
                 var plan = new MenuFlyoutItem { Text = "Plan & repository map", Icon = new FontIcon { Glyph = "\uE8FD" } };
                 plan.Click += (_, _) => OpenTab("plan", "", true);
                 projectMenu.Items.Add(plan);
-                var selection = new MenuFlyoutItem {Text = "Attach editor selection", IsEnabled = codeOperation == null};
-                selection.Click += (_, _) => {
-                    try {
-                        if (session == null || codeOperation != null) return;
-                        var scope = new CodeWorkspace(session.Workspace);
-                        string key = CodeProtocol.Hash(System.Text.Encoding.UTF8.GetBytes(Path.TrimEndingDirectorySeparator(scope.Root).ToLowerInvariant()));
-                        string path = Path.Combine(Store.Root, "editor-inbox", key + ".json");
-                        if (!File.Exists(path)) throw new InvalidOperationException("Use Mason: Share Selection with Local Project in VS Code first.");
-                        if (new FileInfo(path).Length > 120000) throw new InvalidDataException("Editor selection exceeds the limit.");
-                        AttachEvidence(session, DeveloperEvidence.Editor(scope, File.ReadAllText(path)));
-                    } catch (Exception ex) { state.Text = ex.Message; }
-                };
-                projectMenu.Items.Add(selection);
                 var delivery=new MenuFlyoutItem{Text="Git delivery & CI feedback"};delivery.Click+=(_,_)=>OpenTab("delivery","",true);projectMenu.Items.Add(delivery);
                 var settingsItem=new MenuFlyoutItem{Text="Project policy & extensions"};settingsItem.Click+=(_,_)=>OpenTab("harness","",true);projectMenu.Items.Add(settingsItem);
                 var roles=new MenuFlyoutItem{Text="Model roles & decision inspector"};
@@ -948,7 +935,7 @@ public sealed partial class MainWindow
                     if (codeOperation != null) return;
                     session.Evidence.Remove(item); RenderReferences(); Save();
                 });
-                ToolTipService.SetToolTip(chip, item.Kind + (item.Unsaved ? " · unsaved buffer" : "") + "\n" + item.Details);
+                ToolTipService.SetToolTip(chip, item.Kind + "\n" + item.Details);
                 references.Children.Add(chip);
             }
             foreach (var path in session.References.ToArray())
@@ -1032,12 +1019,6 @@ public sealed partial class MainWindow
                         {
                             var panel = Stack(CodeNote(item.Details));
                             if(item.HasScreenshot) panel.Children.Add(new Image{Source=new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(DeveloperEvidence.ImageFile(Store.Root,session.Id,item.Id))),MaxHeight=200});
-                            if(item.Source.Length>0 && item.Line>0) {
-                                var scope=new CodeWorkspace(session.Workspace);
-                                panel.Children.Add(CodeLink("Open source in VS Code",async (_,_)=>{
-                                    try { await Windows.System.Launcher.LaunchUriAsync(new Uri("vscode://file/"+string.Join("/",scope.Resolve(item.Source).Replace('\\','/').Split('/').Select(Uri.EscapeDataString))+":"+item.Line+":1")); } catch(Exception ex){state.Text=ex.Message;}
-                                }));
-                            }
                             captured.Children.Add(new Expander{Header=item.Kind+" · "+item.Label,Content=panel});
                         }
                         container=captured;

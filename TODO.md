@@ -8,7 +8,7 @@ Reviewed against the installed Windows build 2.1.1 and source commit `6f27413` o
 | --- | --- |
 | Repository context and milestones | Qualified C# and TypeScript references, file-revision invalidation, independent and dependent milestones across restart. The desktop exposes the map, editable decisions and source-linked project notes. |
 | Edit recovery and tests | Per-file recovery preserves a concurrent edit. A named project test captures a baseline, reruns against the current revision and distinguishes unrelated failures. The Node fixture runs under the real sandbox. TRX, JUnit, Go and Flutter also have reporter parser checks. |
-| Preview and editor | The embedded preview captures selected controls. The same Edge check passes on the working fixture and fails after removing its handler. The VS Code extension host shares an unsaved selection and diagnostic while preserving the on-disk file. |
+| Preview | The embedded preview captures selected controls. The same Edge check passes on the working fixture and fails after removing its handler. |
 | Reconnectable work | The desktop and CLI share one task journal. A real Qwen worker survived closing its desktop at review. The pending decision was accepted once. Tests cover Windows model lifetimes and sandboxed terminal input. |
 | Model roles and inspection | A paired run recorded a hash-bound LFM image observation after a Qwen implementation passed its browser checks. The inspector compares recorded text requests without executing the proposed tools. |
 | Experiments and delivery | A dirty Git checkout can be forked and compared by hunk. The regression preserves a concurrent edit and a second unapplied hunk. Local Git draft creation and CI feedback parsing have separate checks. |
