@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MasonCore
 
 /// How the app looks: Mason's colours in light and dark, the mascot, and the pieces every pane shares.
 enum Brand {
