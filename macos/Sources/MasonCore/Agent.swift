@@ -82,12 +82,29 @@ public final class Agent {
         ]
     }()
 
-    static func systemPrompt(_ session: Session) -> String {
+    /// Offered only when the user has registered an MCP server, so sessions without one keep a short tool list.
+    public static let mcpTools: [ToolSpec] = {
+        func schema(_ names: [String]) -> [String: Any] {
+            ["type": "object", "properties": Dictionary(uniqueKeysWithValues: names.map { ($0, ["type": "string"] as [String: Any]) }), "required": names, "additionalProperties": false]
+        }
+        return [
+            ToolSpec(name: "mcp_tools", description: "List the tools you may call on a user-registered MCP server.", parameters: schema(["server"])),
+            ToolSpec(name: "mcp_call", description: "Call one allowed tool on a registered MCP server. arguments_json is a JSON object. The user is asked first.", parameters: schema(["server", "tool", "arguments_json"])),
+            ToolSpec(name: "mcp_resources", description: "List the resources you may read from a registered MCP server.", parameters: schema(["server"])),
+            ToolSpec(name: "mcp_read", description: "Read one allowed resource from a registered MCP server.", parameters: schema(["server", "uri"])),
+        ]
+    }()
+
+    /// The tools for this request: the built-in ones, plus the MCP tools when a server is registered.
+    func offeredTools() -> [ToolSpec] { Mcp.enabled(home: home).isEmpty ? Agent.tools : Agent.tools + Agent.mcpTools }
+
+    static func systemPrompt(_ session: Session, servers: [McpServer] = []) -> String {
         """
         You are Mason Agent, a coding agent working in the project folder \(session.workspace) on macOS.
         Use the tools to inspect the project before changing it, and call one tool at a time. Read a file before editing it.
         Make the smallest change that does what was asked, then check your work when a quick check exists.
         \(session.askOnly || session.permission == .readOnly ? "This session is read-only: answer from what you read; do not edit files or run commands." : "")
+        \(servers.isEmpty ? "" : "The user registered these MCP servers: " + servers.map(\.name).joined(separator: ", ") + ". Use mcp_tools to see what one offers before calling it.")
         When you are done, reply in plain text with a short summary of what you did and anything the user should verify. Do not claim a check passed unless you ran it.
         """
     }
@@ -102,8 +119,10 @@ public final class Agent {
             session.state = "Failed"; session.detail = "The project folder \(session.workspace) is no longer available."; return
         }
         if session.title == "New session" { session.title = input.count > 55 ? String(input.prefix(55)) + "…" : input }
-        if session.messages.first?.role == "system" { session.messages[0].content = Agent.systemPrompt(session) }
-        else { session.messages.insert(ChatMessage(role: "system", content: Agent.systemPrompt(session)), at: 0) }
+        let servers = Mcp.enabled(home: home)
+        let offered = servers.isEmpty ? Agent.tools : Agent.tools + Agent.mcpTools
+        if session.messages.first?.role == "system" { session.messages[0].content = Agent.systemPrompt(session, servers: servers) }
+        else { session.messages.insert(ChatMessage(role: "system", content: Agent.systemPrompt(session, servers: servers)), at: 0) }
         // A note from undo or redo travels with the next request, so the conversation keeps alternating user and assistant turns.
         // A custom command is expanded and the selected agent's instructions are added; the session still shows what was typed.
         let prepared = Customization.prepare(home: home, session: session, input: input)
@@ -122,9 +141,9 @@ public final class Agent {
                     if try await Compaction.compact(&session, model: model, keep: 6) { try? store.save(session) }
                     else { session.promptTokens = nil }
                 }
-                var reply = try await model.complete(messages: session.messages, tools: Agent.tools) { [emit] text in emit(.text(text)) }
+                var reply = try await model.complete(messages: session.messages, tools: offered) { [emit] text in emit(.text(text)) }
                 // A call the model wrote as text instead of through the tool-call channel is recovered.
-                if reply.toolCalls.isEmpty, let written = ToolCallRecovery.recover(from: reply.text, tools: Agent.tools) { reply.toolCalls = [written] }
+                if reply.toolCalls.isEmpty, let written = ToolCallRecovery.recover(from: reply.text, tools: offered) { reply.toolCalls = [written] }
                 if let tokens = reply.promptTokens { session.promptTokens = tokens }
                 session.messages.append(ChatMessage(role: "assistant", content: reply.text, toolCalls: reply.toolCalls.isEmpty ? nil : reply.toolCalls))
                 if reply.toolCalls.isEmpty {
@@ -169,7 +188,7 @@ public final class Agent {
     func perform(_ call: ToolCall, in workspace: Workspace, session: inout Session) async -> String {
         let arguments = (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any]) ?? [:]
         func text(_ key: String) -> String? { arguments[key] as? String }
-        let subject = text("command") ?? text("path") ?? text("query") ?? ""
+        let subject = text("command") ?? text("path") ?? text("query") ?? [text("server"), text("tool") ?? text("uri")].compactMap { $0 }.joined(separator: "/")
         var activity = Activity(tool: call.name, subject: subject, state: .running, result: "")
         session.activities.append(activity)
         emit(.activityStarted(activity))
@@ -242,8 +261,34 @@ public final class Agent {
                     output += "\n[Files changed by this command: " + changed.prefix(12).joined(separator: ", ") + (changed.count > 12 ? " and \(changed.count - 12) more" : "") + "]"
                 }
                 return finish(result.exitCode == 0 && !result.timedOut ? .completed : .failed, output)
+            case "mcp_tools", "mcp_resources", "mcp_read", "mcp_call":
+                // MCP servers run outside the sandbox and outside the project, so every call that can act asks first.
+                guard let name = text("server"), let server = Mcp.enabled(home: home).first(where: { $0.name == name }) else {
+                    throw MasonError("No MCP server named \(text("server") ?? "") is registered. Registered: " + Mcp.enabled(home: home).map(\.name).joined(separator: ", "))
+                }
+                if call.name == "mcp_call" {
+                    guard let tool = text("tool"), server.tools.contains(tool) else { throw MasonError("Choose one of the tools allowed for \(server.name): " + server.tools.joined(separator: ", ")) }
+                    guard let parsed = try? JSONSerialization.jsonObject(with: Data((text("arguments_json") ?? "{}").utf8)) as? [String: Any] else { throw MasonError("arguments_json must be a JSON object.") }
+                    let shown = String(decoding: (try? JSONSerialization.data(withJSONObject: parsed, options: [.prettyPrinted, .sortedKeys])) ?? Data(), as: UTF8.self)
+                    if !(await allowed(ApprovalRequest(tool: call.name, title: "Call \(server.name) / \(tool)", detail: server.transport + "\n" + shown, subject: server.name + "/" + tool), session: &session)) {
+                        return finish(.denied, "The user declined this MCP call. Do not retry it; ask what they want instead.")
+                    }
+                    emit(.status("Calling \(server.name) / \(tool)"))
+                    return finish(.completed, try await Mcp.request(server, .call(tool: tool, arguments: parsed)))
+                }
+                let uri = text("uri")
+                if call.name == "mcp_read", uri == nil { throw MasonError("mcp_read needs a uri.") }
+                // Starting a program, or reading a resource, asks first; listing what an HTTP server offers does not.
+                if server.executable != nil || call.name == "mcp_read" {
+                    let title = call.name == "mcp_read" ? "Read \(uri ?? "") from \(server.name)" : "Start \(server.name) to list what it offers"
+                    if !(await allowed(ApprovalRequest(tool: call.name, title: title, detail: server.transport, subject: server.name + (uri.map { "/" + $0 } ?? "")), session: &session)) {
+                        return finish(.denied, "The user declined. Do not retry it; ask what they want instead.")
+                    }
+                }
+                let operation: Mcp.Operation = call.name == "mcp_read" ? .read(uri: uri ?? "") : call.name == "mcp_resources" ? .resources(all: false) : .tools(all: false)
+                return finish(.completed, try await Mcp.request(server, operation))
             default:
-                throw MasonError("Unknown tool \(call.name). Use one of: " + Agent.tools.map(\.name).joined(separator: ", "))
+                throw MasonError("Unknown tool \(call.name). Use one of: " + offeredTools().map(\.name).joined(separator: ", "))
             }
         } catch is CancellationError {
             return finish(.failed, "Stopped by the user.")

@@ -106,6 +106,29 @@ size_t count_occurrences(const std::string& text, const std::string& part) {
 
 }  // namespace
 
+const std::vector<ToolSpec>& Agent::mcp_tools() {
+    static const std::vector<ToolSpec> list = [] {
+        auto schema = [](const std::vector<std::string>& names) {
+            json properties = json::object();
+            for (const std::string& name : names) properties[name] = {{"type", "string"}};
+            return json{{"type", "object"}, {"properties", properties}, {"required", names}, {"additionalProperties", false}};
+        };
+        return std::vector<ToolSpec>{
+            {"mcp_tools", "List the tools you may call on a user-registered MCP server.", schema({"server"})},
+            {"mcp_call", "Call one allowed tool on a registered MCP server. arguments_json is a JSON object. The user is asked first.", schema({"server", "tool", "arguments_json"})},
+            {"mcp_resources", "List the resources you may read from a registered MCP server.", schema({"server"})},
+            {"mcp_read", "Read one allowed resource from a registered MCP server.", schema({"server", "uri"})},
+        };
+    }();
+    return list;
+}
+
+std::vector<ToolSpec> Agent::offered_tools() const {
+    std::vector<ToolSpec> offered = tools();
+    if (!mcp::enabled(store_.home()).empty()) offered.insert(offered.end(), mcp_tools().begin(), mcp_tools().end());
+    return offered;
+}
+
 void Agent::run(Session& session, const std::string& request, const CancelToken& cancel) {
     const std::string input = trim(request);
     if (input.empty() || utf8_length(input) > 16000) {
@@ -122,8 +145,15 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
         return;
     }
     if (session.title == "New session") session.title = utf8_length(input) > 55 ? utf8_prefix(input, 55) + "…" : input;
-    if (!session.messages.empty() && session.messages.front().role == "system") session.messages.front().content = system_prompt(session);
-    else session.messages.insert(session.messages.begin(), ChatMessage{"system", system_prompt(session), {}, ""});
+    const std::vector<ToolSpec> offered = offered_tools();
+    std::string prompt = system_prompt(session);
+    {
+        std::vector<std::string> names;
+        for (const McpServer& server : mcp::enabled(store_.home())) names.push_back(server.name);
+        if (!names.empty()) prompt += "\nThe user registered these MCP servers: " + join(names, ", ") + ". Use mcp_tools to see what one offers before calling it.";
+    }
+    if (!session.messages.empty() && session.messages.front().role == "system") session.messages.front().content = prompt;
+    else session.messages.insert(session.messages.begin(), ChatMessage{"system", prompt, {}, ""});
     // A note from undo or redo travels with the next request, so the conversation keeps alternating user and assistant turns.
     // A custom command is expanded and the selected agent's instructions are added; the session still shows what was typed.
     const std::string prepared = customization::prepare(store_.home(), session, input);
@@ -147,10 +177,10 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
                 if (compaction::compact(session, model_, 6, cancel)) store_.save(session);
                 else session.prompt_tokens = 0;
             }
-            ModelReply reply = model_.complete(session.messages, tools(), [this](const std::string& text) { emit_({AgentEvent::Kind::Text, text, {}}); }, cancel);
+            ModelReply reply = model_.complete(session.messages, offered, [this](const std::string& text) { emit_({AgentEvent::Kind::Text, text, {}}); }, cancel);
             // A call the model wrote as text instead of through the tool-call channel is recovered.
             if (reply.tool_calls.empty()) {
-                if (auto written = recover_tool_call(reply.text, tools())) reply.tool_calls.push_back(*written);
+                if (auto written = recover_tool_call(reply.text, offered)) reply.tool_calls.push_back(*written);
             }
             if (reply.prompt_tokens > 0) session.prompt_tokens = reply.prompt_tokens;
             session.messages.push_back({"assistant", reply.text, reply.tool_calls, ""});
@@ -216,6 +246,7 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
     Activity activity;
     activity.tool = call.name;
     activity.subject = text("command").value_or(text("path").value_or(text("query").value_or("")));
+    if (activity.subject.empty() && text("server")) activity.subject = *text("server") + (text("tool") ? "/" + *text("tool") : text("uri") ? "/" + *text("uri") : "");
     session.activities.push_back(activity);
     const size_t slot = session.activities.size() - 1;
     emit_({AgentEvent::Kind::ActivityStarted, "", activity});
@@ -322,8 +353,41 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             }
             return finish(result.exit_code == 0 && !result.timed_out ? "completed" : "failed", output);
         }
+        if (call.name == "mcp_tools" || call.name == "mcp_resources" || call.name == "mcp_read" || call.name == "mcp_call") {
+            // MCP servers run outside the sandbox and outside the project, so every call that can act asks first.
+            const std::vector<McpServer> servers = mcp::enabled(store_.home());
+            const std::string wanted = text("server").value_or("");
+            const auto server = std::find_if(servers.begin(), servers.end(), [&](const McpServer& item) { return item.name == wanted; });
+            if (server == servers.end()) {
+                std::vector<std::string> registered;
+                for (const McpServer& item : servers) registered.push_back(item.name);
+                throw Error("No MCP server named " + wanted + " is registered. Registered: " + join(registered, ", "));
+            }
+            if (call.name == "mcp_call") {
+                const std::string tool = text("tool").value_or("");
+                if (!server->allows_tool(tool)) throw Error("Choose one of the tools allowed for " + server->name + ": " + join(server->tools, ", "));
+                const json parsed_arguments = json::parse(text("arguments_json").value_or("{}"), nullptr, false);
+                if (!parsed_arguments.is_object()) throw Error("arguments_json must be a JSON object.");
+                if (!allowed({call.name, "Call " + server->name + " / " + tool, server->transport() + "\n" + parsed_arguments.dump(2), server->name + "/" + tool}, session)) {
+                    return finish("denied", "The user declined this MCP call. Do not retry it; ask what they want instead.");
+                }
+                emit_({AgentEvent::Kind::Status, "Calling " + server->name + " / " + tool, {}});
+                return finish("completed", mcp::request(*server, mcp::Operation::Call, tool, parsed_arguments, cancel));
+            }
+            const std::optional<std::string> uri = text("uri");
+            if (call.name == "mcp_read" && !uri) throw Error("mcp_read needs a uri.");
+            // Starting a program, or reading a resource, asks first; listing what an HTTP server offers does not.
+            if (server->is_program() || call.name == "mcp_read") {
+                const std::string title = call.name == "mcp_read" ? "Read " + *uri + " from " + server->name : "Start " + server->name + " to list what it offers";
+                if (!allowed({call.name, title, server->transport(), server->name + (uri ? "/" + *uri : "")}, session)) {
+                    return finish("denied", "The user declined. Do not retry it; ask what they want instead.");
+                }
+            }
+            const mcp::Operation operation = call.name == "mcp_read" ? mcp::Operation::Read : call.name == "mcp_resources" ? mcp::Operation::Resources : mcp::Operation::Tools;
+            return finish("completed", mcp::request(*server, operation, uri.value_or(""), json::object(), cancel));
+        }
         std::vector<std::string> names;
-        for (const ToolSpec& tool : tools()) names.push_back(tool.name);
+        for (const ToolSpec& tool : offered_tools()) names.push_back(tool.name);
         throw Error("Unknown tool " + call.name + ". Use one of: " + join(names, ", "));
     } catch (const Cancelled&) {
         finish("failed", "Stopped by the user.");

@@ -3,6 +3,9 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <csignal>
+#include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "agent.hpp"
@@ -462,11 +465,116 @@ static void test_compaction() {
     CHECK(continued && model.seen[1].back().content.find("fifth question") != std::string::npos);
 }
 
+static void test_mcp() {
+    Sandbox box;
+    fs::create_directories(box.home);
+    // The file is read like the one the Windows app writes, whatever the case of its keys.
+    std::ofstream(box.home / "mcp-servers.json") << R"([{"Name":"docs","Endpoint":"http://127.0.0.1:8088/mcp","Tools":["search_docs"]},{"name":"off","endpoint":"http://127.0.0.1:9/mcp","tools":[],"enabled":false}])";
+    CHECK(mcp::all(box.home).size() == 2);
+    const std::vector<McpServer> usable = mcp::enabled(box.home);
+    CHECK(usable.size() == 1 && usable[0].name == "docs" && usable[0].allows_tool("search_docs"));
+    for (const char* bad : {"http://example.com/mcp", "https://127.0.0.1/mcp", "http://127.0.0.1.evil.example/mcp", "http://user@127.0.0.1/mcp", "http://localhost:1/mcp"}) {
+        McpServer server;
+        server.name = "x";
+        server.endpoint = bad;
+        CHECK_THROWS(mcp::validate(server));
+    }
+    McpServer relative;
+    relative.name = "x";
+    relative.executable = "relative/program";
+    CHECK_THROWS(mcp::validate(relative));
+    McpServer one, two;
+    one.name = two.name = "same";
+    one.endpoint = "http://127.0.0.1:1/mcp";
+    two.endpoint = "http://127.0.0.1:2/mcp";
+    CHECK_THROWS(mcp::save({one, two}, box.home));
+    mcp::save({one}, box.home);
+    CHECK(read_file(box.home / "mcp-servers.json").find("\"Name\"") != std::string::npos);  // written with the keys Windows uses
+
+    const std::string python = "/usr/bin/python3";
+    const std::string script = (fs::path(__FILE__).parent_path() / "mcp-test-server.py").string();
+    if (access(python.c_str(), X_OK) != 0 || !fs::exists(script)) {
+        std::cout << "  note: python3 or the MCP test server is missing; the connection checks were skipped.\n";
+        return;
+    }
+
+    // A server started as a program: listed, called, and held to its allowlist.
+    McpServer program;
+    program.name = "test";
+    program.executable = python;
+    program.arguments = {script, "stdio"};
+    program.tools = {"echo", "fail"};
+    program.resources = {"note://hello"};
+    const std::vector<McpTool> offered = mcp::discover(program);
+    CHECK(offered.size() == 2 && offered[0].name == "echo" && offered[1].name == "fail");
+    CHECK(mcp::request(program, mcp::Operation::Call, "echo", {{"text", "hi"}}).find("echo: hi") != std::string::npos);
+    CHECK(mcp::request(program, mcp::Operation::Read, "note://hello").find("hello from the test server") != std::string::npos);
+    CHECK_THROWS(mcp::request(program, mcp::Operation::Call, "fail"));
+    program.tools = {"fail"};
+    CHECK(mcp::request(program, mcp::Operation::Tools).find("\"echo\"") == std::string::npos);  // the agent only sees allowed tools
+    CHECK_THROWS(mcp::request(program, mcp::Operation::Call, "echo", {{"text", "hi"}}));
+    CHECK_THROWS(mcp::request(program, mcp::Operation::Read, "note://other"));
+
+    // A program that exits without answering is an error straight away, not a wait.
+    McpServer silent;
+    silent.name = "silent";
+    silent.executable = python;
+    silent.arguments = {"-c", "pass"};
+    const auto started = std::chrono::steady_clock::now();
+    CHECK_THROWS(mcp::discover(silent));
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(10));
+
+    // Over HTTP: the session id from initialize is sent again, and a reply sent as an event stream is read.
+    const int port = 18600 + static_cast<int>(getpid() % 300);
+    const pid_t child = fork();
+    if (child == 0) {
+        const int null = open("/dev/null", O_WRONLY);
+        dup2(null, STDOUT_FILENO);
+        dup2(null, STDERR_FILENO);
+        execl(python.c_str(), python.c_str(), script.c_str(), "http", std::to_string(port).c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    McpServer web;
+    web.name = "web";
+    web.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+    web.tools = {"echo"};
+    std::vector<McpTool> listed;
+    for (int attempt = 0; attempt < 40 && listed.empty(); attempt++) {
+        try { listed = mcp::discover(web); } catch (const std::exception&) { usleep(150 * 1000); }
+    }
+    CHECK(listed.size() == 2);
+    bool echoed = false;
+    try { echoed = mcp::request(web, mcp::Operation::Call, "echo", {{"text", "over http"}}).find("echo: over http") != std::string::npos; } catch (const std::exception& error) { std::cerr << "  " << error.what() << "\n"; }
+    CHECK(echoed);
+    kill(child, SIGKILL);
+    waitpid(child, nullptr, 0);
+
+    // The agent calls an MCP tool only after the user allows it, even in Auto, because the call is not sandboxed.
+    program.tools = {"echo"};
+    mcp::save({program}, box.home);
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+    std::vector<ApprovalRequest> asked;
+    ScriptedModel model;
+    model.replies = {call("mcp_call", {{"server", "test"}, {"tool", "echo"}, {"arguments_json", "{\"text\":\"from the agent\"}"}}), say("Called it.")};
+    Agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request); return true; }, [](const AgentEvent&) {}).run(session, "Use the test server");
+    CHECK(asked.size() == 1 && asked[0].subject == "test/echo" && asked[0].detail.find("from the agent") != std::string::npos);
+    CHECK(session.activities.back().state == "completed" && session.activities.back().result.find("echo: from the agent") != std::string::npos);
+    CHECK(model.seen[0][0].content.find("MCP servers: test") != std::string::npos);
+
+    ScriptedModel declined;
+    declined.replies = {call("mcp_call", {{"server", "test"}, {"tool", "echo"}, {"arguments_json", "{}"}}), call("mcp_call", {{"server", "test"}, {"tool", "fail"}, {"arguments_json", "{}"}}), say("Stopped.")};
+    Agent(store, declined, [](const ApprovalRequest&) { return false; }, [](const AgentEvent&) {}).run(session, "Again");
+    const size_t count = session.activities.size();
+    // A declined call is not made, and a tool outside the allowlist is refused without asking.
+    CHECK(session.activities[count - 2].state == "denied" && session.activities[count - 1].state == "failed");
+}
+
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {
