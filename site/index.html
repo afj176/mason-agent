@@ -115,13 +115,12 @@
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M13 10v6M10 19h6"/></svg></span>
           <h3>Undo a whole request</h3>
-          <p>Edits show as diffs against the original files. Undo puts back the files a request edited and Redo reapplies them; on Windows that includes files its commands touched. Files you edited since are left alone.</p>
+          <p>Edits show as diffs against the original files. Undo puts back everything a request changed, including files its commands created, changed or deleted, and Redo reapplies it. Files you edited since are left alone.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg></span>
           <h3>Your agents and commands</h3>
-          <span class="only">Windows only for now</span>
-          <p>Write agents and slash commands as Markdown files in your project. Mason Agent also reads the ones you keep for Claude Code and OpenCode. Add MCP servers and choose which of their tools the agent may use.</p>
+          <p>Write agents and slash commands as Markdown files in your project. Mason Agent also reads the ones you keep for Claude Code and OpenCode. On Windows you can also add MCP servers and choose which of their tools the agent may use.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></svg></span>
@@ -168,7 +167,7 @@
           <p><a href="#download" data-platform="linux">Download for Linux</a></p>
         </li>
       </ul>
-      <p class="section-lede">The previews have the core of Mason Agent: sessions, reviewed edits with diffs and undo, commands with approvals and saved rules, the four permission modes, and finding, downloading and running models. Features marked <em>Windows only for now</em> above are not in them yet.</p>
+      <p class="section-lede">The previews have the core of Mason Agent: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, compaction of long sessions, and finding, downloading and running models. Features marked <em>Windows only for now</em> above are not in them yet.</p>
       <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, Mason starts a local model, reads a file, asks before editing it, and reports the change">
         <pre><code><span class="t-dim">~/src/shop $</span> mason
   <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>

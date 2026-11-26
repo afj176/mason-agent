@@ -1,7 +1,8 @@
 #!/bin/bash
 # Checks an installed Mason Agent on a Mac end to end, with a stand-in model so no download is needed:
 #   1. the installer put the app in /Applications and mason on PATH;
-#   2. mason completes a request in Auto, where the command runs inside the macOS sandbox;
+#   2. mason completes a request in Auto, where the command runs inside the macOS sandbox, then undoes what the
+#      command created and compacts the conversation;
 #   3. the app opens that session, takes a typed request, shows the approval sheet and writes the file once allowed.
 # Screenshots of the app are left in $SHOTS. Run after installing dist/MasonAgent-<version>-macos.pkg.
 set -euo pipefail
@@ -29,6 +30,11 @@ printf 'use the shell to make a file\n/status\n/exit\n' | mason --auto --endpoin
 [ "$(cat made.txt)" = "built" ] || { echo "The sandboxed command did not write made.txt."; exit 1; }
 grep -q "Done." "$WORK/cli.txt" || { echo "The request did not finish with the model's answer."; exit 1; }
 
+echo "--- command line, undo and compaction ---"
+printf '/undo\n/compact\n/status\n/exit\n' | mason --resume --auto --endpoint "http://127.0.0.1:$PORT" --model stub | tee "$WORK/cli2.txt"
+[ ! -e made.txt ] || { echo "/undo did not remove the file the command created."; exit 1; }
+grep -q "replaced by a summary" "$WORK/cli2.txt" || { echo "/compact did not replace the conversation with a summary."; exit 1; }
+
 # Hand the same session to the app in Review edits, so its next edit has to be approved.
 printf '/exit\n' | mason --resume --review --endpoint "http://127.0.0.1:$PORT" --model stub >/dev/null
 
@@ -52,4 +58,4 @@ sleep 2
 screencapture -x "$SHOTS/3-done.png" || true
 [ "$(cat hello.txt)" = "hello from the stub model" ] || { echo "The app did not write hello.txt after approval."; exit 1; }
 kill -0 $APP_PID
-echo "Installed Mason Agent passed: PATH, sandboxed command, and an approved edit through the app."
+echo "Installed Mason Agent passed: PATH, sandboxed command, undo, compaction, and an approved edit through the app."

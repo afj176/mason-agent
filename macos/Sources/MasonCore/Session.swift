@@ -55,6 +55,13 @@ public struct FileChange: Codable, Equatable {
     /// nil when the request created the file.
     public var before: String?
     public var after: String
+    /// Set when a side is binary or too large to keep as text; the content is in the blob store under this SHA-256.
+    public var beforeBlob: String? = nil
+    public var afterBlob: String? = nil
+    /// True when a command deleted the file.
+    public var afterMissing: Bool? = nil
+    /// True when a command, not an edit tool, made the change.
+    public var byCommand: Bool? = nil
 }
 
 public struct Turn: Codable, Equatable, Identifiable {
@@ -83,6 +90,11 @@ public struct Session: Codable, Identifiable {
     public var promptTokens: Int?
     /// Told to the model with the next request: what the user undid or redid outside the conversation.
     public var pendingNote: String?
+    /// The custom agent whose instructions frame each request, if one is selected.
+    public var agent: String?
+    /// Messages a compaction replaced with a summary, oldest first.
+    public var archived: [ChatMessage]?
+    public var compactions: Int?
     public init(workspace: String) { self.workspace = workspace }
 }
 

@@ -106,8 +106,9 @@ struct TurnView: View {
             if !turn.changes.isEmpty, !live {
                 HStack(spacing: 10) {
                     ForEach(turn.changes.prefix(6), id: \.path) { change in
-                        let counts = Diff.counts(before: change.before, after: change.after)
-                        Label("\(change.path)  +\(counts.added) −\(counts.removed)", systemImage: change.before == nil ? "doc.badge.plus" : "pencil")
+                        let counts = Diff.counts(before: change.before, after: change.deleted ? "" : change.after)
+                        Label(change.isOpaque ? "\(change.path)  binary" : "\(change.path)  +\(counts.added) −\(counts.removed)",
+                              systemImage: change.deleted ? "trash" : change.created ? "doc.badge.plus" : change.byCommand == true ? "terminal" : "pencil")
                             .font(.caption).padding(.horizontal, 8).padding(.vertical, 4)
                             .background(.quaternary, in: Capsule())
                     }
@@ -301,7 +302,7 @@ struct ChangesView: View {
         var merged: [String: FileChange] = [:], order: [String] = []
         for turn in session.turns where !turn.undone {
             for change in turn.changes {
-                if var existing = merged[change.path] { existing.after = change.after; merged[change.path] = existing } else { merged[change.path] = change; order.append(change.path) }
+                if var existing = merged[change.path] { existing.after = change.after; existing.afterBlob = change.afterBlob; existing.afterMissing = change.afterMissing; merged[change.path] = existing } else { merged[change.path] = change; order.append(change.path) }
             }
         }
         return order.compactMap { merged[$0] }
@@ -337,13 +338,16 @@ struct FileDiff: View {
     let change: FileChange
 
     var body: some View {
-        let rows = Diff.lines(before: change.before, after: change.after)
+        // A binary or very large file has no text to compare, so it is listed without lines.
+        let rows = change.isOpaque ? [] : Diff.lines(before: change.before, after: change.deleted ? "" : change.after)
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(change.path).fontWeight(.medium)
                 Text("+\(rows.filter { $0.kind == .added }.count)").foregroundStyle(.green)
                 Text("−\(rows.filter { $0.kind == .removed }.count)").foregroundStyle(.red)
-                if change.before == nil { Text("new file").foregroundStyle(.secondary) }
+                if change.deleted { Text("deleted").foregroundStyle(.secondary) } else if change.created { Text("new file").foregroundStyle(.secondary) }
+                if change.isOpaque { Text("binary or large file").foregroundStyle(.secondary) }
+                if change.byCommand == true { Text("by a command").foregroundStyle(.secondary) }
             }
             .font(.callout)
             ScrollView(.horizontal) {

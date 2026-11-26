@@ -285,10 +285,13 @@ private:
             term::line();
             for (size_t i = 0; i < turn->changes.size() && i < 30; i++) {
                 const FileChange& change = turn->changes[i];
-                const DiffCounts counts = diff_counts(change.before, change.after);
-                term::line("  " + paint(term::accent, change.before ? "M" : "A") + " " + change.path + "  " + paint(term::green, "+" + std::to_string(counts.added)) + " " + paint(term::red, "−" + std::to_string(counts.removed)));
+                const std::string mark = paint(term::accent, change.deleted() ? "D" : change.created() ? "A" : "M");
+                const std::string source = change.by_command ? paint(term::dim, "  by a command") : "";
+                if (change.opaque()) { term::line("  " + mark + " " + change.path + "  " + paint(term::dim, "binary or large file") + source); continue; }
+                const DiffCounts counts = diff_counts(change.before, change.deleted() ? "" : change.after);
+                term::line("  " + mark + " " + change.path + "  " + paint(term::green, "+" + std::to_string(counts.added)) + " " + paint(term::red, "−" + std::to_string(counts.removed)) + source);
             }
-            term::line(paint(term::dim, "  /diff shows the changes · /undo puts the edited files back"));
+            term::line(paint(term::dim, "  /diff shows the changes · /undo puts the files back"));
         }
         term::line();
         const std::string state = session_.state == "Completed" ? paint(term::green, "✓ Completed") : session_.state == "Stopped" ? paint(term::yellow, "■ Stopped")
@@ -424,13 +427,17 @@ private:
             if (!result) { term::line(paint(term::dim, redo ? "  Nothing to redo." : "  Nothing to undo in this session.")); return true; }
             term::line(paint(term::green, "  ✓ " + std::to_string(result->restored.size()) + " file" + (result->restored.size() == 1 ? "" : "s") + (redo ? " reapplied" : " put back")) +
                        (result->skipped.empty() ? "" : paint(term::yellow, "  ·  changed since, left alone: " + join(result->skipped, ", "))));
-            term::line(paint(term::dim, "  Covers files changed by edits. Files created or changed by commands are not tracked yet."));
             return true;
         }
         if (name == "/rules") { rules(rest); return true; }
+        if (name == "/compact") { compact(); return true; }
+        if (name == "/agent" || name == "/agents") { agent(rest); return true; }
+        if (name == "/commands") { commands(); return true; }
         if (name == "/model") { choose_model(rest); return true; }
         if (name == "/models") { models(rest); return true; }
-        term::line(paint(term::yellow, "  Unknown command " + name + ".") + paint(term::dim, " /help lists them."));
+        // A custom command from the project or the data folder runs as a request.
+        if (customization::expand(customization::commands(store_.home(), session_.workspace), input)) { send(input); return true; }
+        term::line(paint(term::yellow, "  Unknown command " + name + ".") + paint(term::dim, " /help lists them; /commands lists your own."));
         return true;
     }
 
@@ -441,7 +448,10 @@ private:
             {"/ask · /build", "Answer questions only, or make changes"},
             {"/permission read|review|edits|auto", "What Mason may do without asking (also /review, /edits, /auto)"},
             {"/diff [path]", "Show what this session changed"},
-            {"/undo · /redo", "Put back, or reapply, the files the latest request edited"},
+            {"/undo · /redo", "Put back, or reapply, everything the latest request changed"},
+            {"/compact", "Replace the conversation so far with a summary to free context"},
+            {"/agent [name|none]", "List your custom agents, or use one for this session"},
+            {"/commands", "List your custom slash commands"},
             {"/rules [revoke NUMBER]", "Saved always-allow rules for this project"},
             {"/model [number]", "List running model servers, or switch to one"},
             {"/models", "List the models on this computer and what each is for"},
@@ -460,6 +470,57 @@ private:
         term::line(paint(term::dim, "  While Mason works: Esc or Ctrl+C stops the run. End a line with \\ to continue on the next line."));
     }
 
+    void compact() {
+        if (session_.messages.size() <= 2) { term::line(paint(term::dim, "  There is nothing to compact yet.")); return; }
+        if (!endpoint) throw Error("Compaction needs a running model. /models lists the ones on this computer.");
+        term::line(paint(term::dim, "  Compacting the conversation… the original messages are kept."));
+        const size_t before = session_.messages.size();
+        OpenAIClient model(*endpoint);
+        Session working = session_;
+        if (!compaction::compact(working, model, 0)) { term::line(paint(term::dim, "  There is nothing to compact yet.")); return; }
+        session_ = working;
+        store_.save(session_);
+        term::line(paint(term::green, "  ✓ " + std::to_string(before - 1) + " messages replaced by a summary") + paint(term::dim, "  ·  it travels with your next request"));
+    }
+
+    void agent(const std::string& rest) {
+        const std::vector<Definition> agents = customization::agents(store_.home(), session_.workspace);
+        if (rest.empty()) {
+            if (agents.empty()) { term::line(paint(term::dim, "  No custom agents. Add a Markdown file to .mason/agents (or .claude/agents) in this project.")); return; }
+            term::line();
+            for (const Definition& item : agents) {
+                const bool current = to_lower(item.name) == to_lower(session_.agent);
+                term::line("  " + paint(current ? term::bold : term::accent, term::pad(item.name, 20)) + " " + paint(term::dim, term::clip(item.description, std::max(20, term::width() - 40))) +
+                           (current ? paint(term::dim, "  ← current") : ""));
+            }
+            term::line(paint(term::dim, "  Use one with /agent NAME · /agent none goes back to the default."));
+            return;
+        }
+        const std::string wanted = to_lower(rest);
+        if (wanted == "none" || wanted == "default" || wanted == "off") {
+            session_.agent.clear();
+            store_.save(session_);
+            term::line(paint(term::dim, "  Default agent."));
+            return;
+        }
+        for (const Definition& item : agents) {
+            if (to_lower(item.name) != wanted) continue;
+            session_.agent = item.name;
+            store_.save(session_);
+            term::line("  Agent: " + paint(term::bold, item.name) + paint(term::dim, "  ·  " + item.source));
+            return;
+        }
+        throw Error("No agent named " + rest + ". /agent lists them.");
+    }
+
+    void commands() {
+        const std::vector<Definition> found = customization::commands(store_.home(), session_.workspace);
+        if (found.empty()) { term::line(paint(term::dim, "  No custom commands. Add a Markdown file to .mason/commands (or .claude/commands) in this project.")); return; }
+        term::line();
+        for (const Definition& item : found) term::line("  " + paint(term::accent, term::pad("/" + item.name, 22)) + " " + paint(term::dim, term::clip(item.description, std::max(20, term::width() - 30))));
+        term::line(paint(term::dim, "  Run one by typing it, with any arguments after the name."));
+    }
+
     void status() {
         auto row = [](const std::string& label, const std::string& value) { term::line("  " + paint(term::dim, term::pad(label, 12)) + " " + value); };
         term::line();
@@ -468,7 +529,9 @@ private:
         row("Model", endpoint ? endpoint_name + paint(term::dim, "  " + endpoint->url) : paint(term::yellow, "none running"));
         row("Mode", mode_name());
         row("Shell", shell::path() + (shell::sandbox_available() ? paint(term::dim, "  ·  sandbox available for Auto") : paint(term::yellow, "  ·  no sandbox: Auto refuses commands")));
+        if (!session_.agent.empty()) row("Agent", session_.agent);
         if (session_.prompt_tokens > 0) row("Context", std::to_string(session_.prompt_tokens) + " tokens in the last request");
+        if (session_.compactions > 0) row("Compacted", std::to_string(session_.compactions) + (session_.compactions == 1 ? " time; " : " times; ") + std::to_string(session_.archived.size()) + " messages archived");
         row("Stored in", store_.folder().string());
     }
 
@@ -479,18 +542,24 @@ private:
             for (const FileChange& change : turn.changes) {
                 if (!filter.empty() && !contains_ci(change.path, filter)) continue;
                 auto existing = std::find_if(merged.begin(), merged.end(), [&](const FileChange& item) { return item.path == change.path; });
-                if (existing != merged.end()) existing->after = change.after;
+                if (existing != merged.end()) { existing->after = change.after; existing->after_blob = change.after_blob; existing->after_missing = change.after_missing; }
                 else merged.push_back(change);
             }
         }
         if (merged.empty()) { term::line(paint(term::dim, filter.empty() ? "  This session has not changed any files." : "  No changed file matches " + filter + ".")); return; }
         int budget = 400;
         for (const FileChange& change : merged) {
-            const std::vector<DiffLine> rows = diff_lines(change.before, change.after);
-            const DiffCounts counts = diff_counts(change.before, change.after);
+            if (change.opaque()) {
+                term::line();
+                term::line("  " + paint(term::bold, change.path) + paint(term::dim, std::string("  binary or large file, ") + (change.deleted() ? "deleted" : change.created() ? "created" : "changed")));
+                continue;
+            }
+            const std::string after = change.deleted() ? "" : change.after;
+            const std::vector<DiffLine> rows = diff_lines(change.before, after);
+            const DiffCounts counts = diff_counts(change.before, after);
             term::line();
             term::line("  " + paint(term::bold, change.path) + "  " + paint(term::green, "+" + std::to_string(counts.added)) + " " + paint(term::red, "−" + std::to_string(counts.removed)) +
-                       (change.before ? "" : paint(term::dim, "  new file")));
+                       (change.deleted() ? paint(term::dim, "  deleted") : change.created() ? paint(term::dim, "  new file") : "") + (change.by_command ? paint(term::dim, "  by a command") : ""));
             // Two lines of context around each change, with gaps marked.
             std::vector<bool> keep(rows.size(), false);
             for (size_t i = 0; i < rows.size(); i++) {

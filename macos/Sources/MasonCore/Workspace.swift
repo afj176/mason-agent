@@ -97,6 +97,19 @@ public struct Workspace {
         try Data(content.utf8).write(to: url, options: .atomic)
     }
 
+    /// A file's bytes, or nil when it does not exist. Used to compare and restore files of any kind.
+    public func data(_ relative: String) throws -> Data? {
+        let url = try resolve(relative)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url)
+    }
+
+    public func write(_ relative: String, data: Data) throws {
+        let url = try resolve(relative)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+    }
+
     public func delete(_ relative: String) throws {
         let url = try resolve(relative)
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }

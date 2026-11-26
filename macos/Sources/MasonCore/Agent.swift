@@ -57,6 +57,9 @@ public final class Agent {
     let model: ChatModel
     let approve: (ApprovalRequest) async -> Bool
     let emit: (AgentEvent) -> Void
+    /// The project as last read, so each command only re-reads the files that changed.
+    var snapshot: [String: Snapshot.Entry] = [:]
+    var home: URL { store.folder.deletingLastPathComponent() }
 
     public init(store: SessionStore, model: ChatModel, approve: @escaping (ApprovalRequest) async -> Bool, emit: @escaping (AgentEvent) -> Void) {
         self.store = store; self.model = model; self.approve = approve; self.emit = emit
@@ -102,15 +105,23 @@ public final class Agent {
         if session.messages.first?.role == "system" { session.messages[0].content = Agent.systemPrompt(session) }
         else { session.messages.insert(ChatMessage(role: "system", content: Agent.systemPrompt(session)), at: 0) }
         // A note from undo or redo travels with the next request, so the conversation keeps alternating user and assistant turns.
-        session.messages.append(ChatMessage(role: "user", content: (session.pendingNote.map { $0 + "\n\n" } ?? "") + input))
+        // A custom command is expanded and the selected agent's instructions are added; the session still shows what was typed.
+        let prepared = Customization.prepare(home: home, session: session, input: input)
+        session.messages.append(ChatMessage(role: "user", content: (session.pendingNote.map { $0 + "\n\n" } ?? "") + prepared))
         session.pendingNote = nil
         session.turns.append(Turn(request: input, firstActivity: session.activities.count))
         session.state = "Running"; session.detail = ""
         try? store.save(session)
         do {
             var finished = false
+            let window = await model.contextWindow()
             for _ in 0..<Agent.actionLimit {
                 try Task.checkCancellation()
+                if Compaction.needed(session, window: window) {
+                    emit(.status("Compacting the conversation"))
+                    if try await Compaction.compact(&session, model: model, keep: 6) { try? store.save(session) }
+                    else { session.promptTokens = nil }
+                }
                 var reply = try await model.complete(messages: session.messages, tools: Agent.tools) { [emit] text in emit(.text(text)) }
                 // A call the model wrote as text instead of through the tool-call channel is recovered.
                 if reply.toolCalls.isEmpty, let written = ToolCallRecovery.recover(from: reply.text, tools: Agent.tools) { reply.toolCalls = [written] }
@@ -220,8 +231,16 @@ public final class Agent {
                     }
                 }
                 emit(.status(sandboxed ? "Running sandboxed command" : "Running command"))
-                let result = try await Shell.run(command, in: workspace, sandboxed: sandboxed)
-                let output = "exit \(result.exitCode)\n" + result.output
+                // The project is read before and after, so whatever the command changed can be shown and undone.
+                let before = Snapshot.capture(workspace, previous: snapshot)
+                let result: CommandResult
+                do { result = try await Shell.run(command, in: workspace, sandboxed: sandboxed) }
+                catch { _ = recordCommandChanges(since: before.entries, in: workspace, session: &session); throw error }
+                let changed = recordCommandChanges(since: before.entries, in: workspace, session: &session)
+                var output = "exit \(result.exitCode)\n" + result.output
+                if !changed.isEmpty {
+                    output += "\n[Files changed by this command: " + changed.prefix(12).joined(separator: ", ") + (changed.count > 12 ? " and \(changed.count - 12) more" : "") + "]"
+                }
                 return finish(result.exitCode == 0 && !result.timedOut ? .completed : .failed, output)
             default:
                 throw MasonError("Unknown tool \(call.name). Use one of: " + Agent.tools.map(\.name).joined(separator: ", "))
@@ -246,24 +265,62 @@ public final class Agent {
     /// Keeps the first "before" of each file per request, so undo returns to the state the request started from.
     func record(path: String, before: String?, after: String, session: inout Session) {
         let turn = session.turns.count - 1
-        if let index = session.turns[turn].changes.firstIndex(where: { $0.path == path }) { session.turns[turn].changes[index].after = after }
-        else { session.turns[turn].changes.append(FileChange(path: path, before: before, after: after)) }
+        if let index = session.turns[turn].changes.firstIndex(where: { $0.path == path }) {
+            session.turns[turn].changes[index].after = after
+            session.turns[turn].changes[index].afterBlob = nil
+            session.turns[turn].changes[index].afterMissing = nil
+        } else { session.turns[turn].changes.append(FileChange(path: path, before: before, after: after)) }
+    }
+
+    /// Records what a command created, changed or deleted, and returns the paths. Text is kept in the session like an
+    /// edit; anything binary or over the text limit goes to the blob store.
+    func recordCommandChanges(since before: [String: Snapshot.Entry], in workspace: Workspace, session: inout Session) -> [String] {
+        let after = Snapshot.capture(workspace, previous: before)
+        snapshot = after.entries
+        let blobs = BlobStore(home: home)
+        func split(_ data: Data?) -> (text: String?, blob: String?) {
+            guard let data else { return (nil, nil) }
+            if data.count <= Workspace.maxFileBytes, let text = String(data: data, encoding: .utf8) { return (text, nil) }
+            return (nil, try? blobs.put(data))
+        }
+        let turn = session.turns.count - 1
+        var paths: [String] = []
+        for change in Snapshot.changes(from: before, to: after.entries) {
+            let new = split(change.after)
+            if change.after != nil, new.text == nil, new.blob == nil { continue }   // could not be saved, so it cannot be undone
+            if let index = session.turns[turn].changes.firstIndex(where: { $0.path == change.path }) {
+                session.turns[turn].changes[index].after = new.text ?? ""
+                session.turns[turn].changes[index].afterBlob = new.blob
+                session.turns[turn].changes[index].afterMissing = change.after == nil ? true : nil
+            } else {
+                let old = split(change.before)
+                if change.before != nil, old.text == nil, old.blob == nil { continue }
+                session.turns[turn].changes.append(FileChange(path: change.path, before: old.text, after: new.text ?? "", beforeBlob: old.blob, afterBlob: new.blob,
+                                                              afterMissing: change.after == nil ? true : nil, byCommand: true))
+            }
+            paths.append(change.path)
+        }
+        return paths
     }
 
     public struct UndoResult { public var restored: [String] = []; public var skipped: [String] = [] }
 
-    /// Puts back the files the latest request changed through edit tools. A file changed again since is left alone and reported.
-    /// Files created or changed by commands are not tracked yet.
+    /// Puts back every file the latest request changed, whether an edit tool or a command changed it.
+    /// A file changed again since is left alone and reported.
     public static func undoLatest(_ session: inout Session, store: SessionStore, redo: Bool = false) throws -> UndoResult? {
         guard let index = session.turns.lastIndex(where: { !$0.changes.isEmpty && $0.undone == redo }) else { return nil }
         let workspace = try Workspace(path: session.workspace)
+        let blobs = BlobStore(home: store.folder.deletingLastPathComponent())
         var result = UndoResult()
         for change in session.turns[index].changes {
-            let expected = redo ? change.before : change.after
-            let target = redo ? change.after : change.before
-            let current: String? = workspace.exists(change.path) ? try? workspace.read(change.path) : nil
+            // nil means "the file does not exist" on that side, so errors are kept apart from nil here.
+            let before: Data?, after: Data?, current: Data?
+            do { before = try change.beforeBytes(blobs); after = try change.afterBytes(blobs); current = try workspace.data(change.path) }
+            catch { result.skipped.append(change.path); continue }
+            let expected = redo ? before : after
+            let target = redo ? after : before
             guard current == expected else { result.skipped.append(change.path); continue }
-            if let target { try workspace.write(change.path, target) } else { try workspace.delete(change.path) }
+            if let target { try workspace.write(change.path, data: target) } else { try workspace.delete(change.path) }
             result.restored.append(change.path)
         }
         session.turns[index].undone = !redo

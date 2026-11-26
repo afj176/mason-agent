@@ -84,6 +84,23 @@ void Workspace::write(const std::string& relative, const std::string& content) c
     if (existed) fs::permissions(path, previous, failure);
 }
 
+std::optional<std::string> Workspace::data(const std::string& relative) const {
+    const fs::path path = resolve(relative);
+    std::error_code failure;
+    if (!fs::exists(path, failure)) return std::nullopt;
+    return read_file(path);
+}
+
+void Workspace::write_data(const std::string& relative, const std::string& bytes) const {
+    const fs::path path = resolve(relative);
+    std::error_code failure;
+    const bool existed = fs::exists(path, failure);
+    const fs::perms previous = existed ? fs::status(path, failure).permissions() : fs::perms::none;
+    fs::create_directories(path.parent_path(), failure);
+    write_file_atomic(path, bytes);
+    if (existed) fs::permissions(path, previous, failure);
+}
+
 void Workspace::remove(const std::string& relative) const {
     std::error_code failure;
     fs::remove(resolve(relative), failure);

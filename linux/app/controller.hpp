@@ -49,6 +49,10 @@ public:
     /// Answers the pending approval. A non-empty prefix also saves an always-allow rule for the project.
     void answer(bool allow, const std::string& always_prefix = "");
     void undo(bool redo = false);
+    /// Replaces the conversation so far with a summary from the model. The original messages stay in the session.
+    void compact();
+    /// "" lists the project's custom agents, a name uses one, "none" goes back to the default.
+    void choose_agent(const std::string& name);
 
     // ---- models ----
     std::optional<ModelEndpoint> endpoint;

@@ -332,6 +332,22 @@ ModelReply OpenAIClient::complete(const std::vector<ChatMessage>& messages, cons
     return assembler.finish();
 }
 
+int OpenAIClient::context_window() {
+    try {
+        const HttpResponse response = http_get(base_ + "props", {}, 3);
+        if (response.status != 200) return 0;
+        const json object = json::parse(response.body, nullptr, false);
+        if (!object.is_object()) return 0;
+        if (object.contains("default_generation_settings") && object["default_generation_settings"].is_object()) {
+            const json& settings = object["default_generation_settings"];
+            if (settings.contains("n_ctx") && settings["n_ctx"].is_number_integer()) return std::max(0, settings["n_ctx"].get<int>());
+        }
+        if (object.contains("n_ctx") && object["n_ctx"].is_number_integer()) return std::max(0, object["n_ctx"].get<int>());
+    } catch (const std::exception&) {
+    }
+    return 0;
+}
+
 std::optional<std::vector<std::string>> OpenAIClient::models(const std::string& url, const std::string& key, double timeout_seconds) {
     try {
         std::vector<std::string> headers;
