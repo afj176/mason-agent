@@ -65,9 +65,10 @@ public enum NetworkSettings {
         let here = asks(session, home: home)
         let source = session.network == nil ? "the computer's setting" : "this session's own choice"
         let allowed = alwaysAllowed(home: home, workspace: session.workspace).sorted()
-        return (here ? "In Auto, a sandboxed command in this session that needs a host over HTTPS asks first (\(source)). An answer lasts for that request; Always Allow keeps a host for this project."
-                     : "In Auto, sandboxed commands in this session have no network (\(source)).")
-            + (allowed.isEmpty ? "" : "\nAlways allowed in this project: " + allowed.joined(separator: ", "))
+        var said = "In Auto, sandboxed commands in this session have no network (\(source))."
+        if here { said = "In Auto, a sandboxed command in this session that needs a host over HTTPS asks first (\(source)). An answer lasts for that request; Always Allow keeps a host for this project." }
+        if !allowed.isEmpty { said += "\nAlways allowed in this project: " + allowed.joined(separator: ", ") }
+        return said
     }
 
     /// The /network command, shared by the command line and the app.

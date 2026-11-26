@@ -35,8 +35,20 @@ public enum Browse {
         let shot = picture ? FileManager.default.temporaryDirectory.appendingPathComponent("mason-page-" + UUID().uuidString + ".png") : nil
         defer { if let shot { try? FileManager.default.removeItem(at: shot) } }
         let result = try await BrowserCheck.run(workspace, page: page, steps: outcome.steps.map { $0 as [String: Any] }, screenshot: shot)
-        var message = ChatMessage(role: "user", content: "Task: \(task)\n\nSteps taken:\n" + (outcome.steps.isEmpty ? "(none)" : outcome.steps.enumerated().map { "\($0.offset + 1). \(describe($0.element))" }.joined(separator: "\n"))
-                                  + "\n\nThe page shows now:\n" + (result.text.isEmpty ? "(nothing)" : String(result.text.prefix(4000))) + "\n\nThe answer given:\n" + outcome.answer)
+        // Built in steps: one long expression here is more than the compiler will type-check.
+        var taken = "(none)"
+        if !outcome.steps.isEmpty {
+            let numbered: [String] = outcome.steps.enumerated().map { "\($0.offset + 1). \(describe($0.element))" }
+            taken = numbered.joined(separator: "\n")
+        }
+        let showing: String = result.text.isEmpty ? "(nothing)" : String(result.text.prefix(4000))
+        var content = "Task: \(task)\n\nSteps taken:\n"
+        content += taken
+        content += "\n\nThe page shows now:\n"
+        content += showing
+        content += "\n\nThe answer given:\n"
+        content += outcome.answer
+        var message = ChatMessage(role: "user", content: content)
         if let shot, let data = try? Data(contentsOf: shot), !data.isEmpty, data.count <= 4 * 1024 * 1024 { message.images = ["data:image/png;base64," + data.base64EncodedString()] }
         let reply = try await reviewer.complete(messages: [ChatMessage(role: "system", content: reviewInstructions), message], tools: []) { _ in }
         guard let start = reply.text.firstIndex(of: "{"), let end = reply.text.lastIndex(of: "}"), start < end,
