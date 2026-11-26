@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential meson ninja-build pkg-config ca-certificates git \
       libcurl4-openssl-dev nlohmann-json3-dev \
-      libgtkmm-4.0-dev libadwaita-1-dev \
+      libgtkmm-4.0-dev libadwaita-1-dev libatspi2.0-dev \
       bubblewrap python3 curl file dpkg-dev rpm \
       xvfb xauth dbus-x11 at-spi2-core fonts-cantarell fonts-dejavu-core adwaita-icon-theme librsvg2-common imagemagick x11-apps xdotool \
     && rm -rf /var/lib/apt/lists/*

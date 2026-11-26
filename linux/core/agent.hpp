@@ -1,5 +1,6 @@
 // The agent loop: ask the model, run the tool it calls, hand the result back, until it answers in text.
 #pragma once
+#include "desktop.hpp"
 #include "harness.hpp"
 #include "mcp.hpp"
 #include "tools.hpp"
@@ -57,6 +58,10 @@ public:
     static const std::vector<ToolSpec>& mcp_tools();
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
     static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false);
+    /// What reads and operates the attached window. Left unset, it is this computer's accessibility interface.
+    void set_desktop(std::shared_ptr<DesktopAutomation> automation) { desktop_ = std::move(automation); }
+    /// The window tools a session is offered: none without an attached window, and no acting in a read-only session.
+    static std::vector<ToolSpec> desktop_tools(const Session& session, bool available);
     /// What searches code by meaning. Left unset, it is the embeddings server saved in settings, if there is one.
     void set_semantic(std::shared_ptr<SemanticModels> models) { semantic_ = std::move(models); }
     /// True when no background job from the last request is still held.
@@ -113,6 +118,11 @@ private:
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     std::optional<std::string> pending_question_;
     std::shared_ptr<SemanticModels> semantic_;
+    std::shared_ptr<DesktopAutomation> desktop_;
+    std::shared_ptr<DesktopAutomation> desktop_automation() const { return desktop_ ? desktop_ : desktop::system(); }
+    /// The controls from the latest observation of the attached window; an action must name one of them.
+    std::vector<DesktopControl> last_observation_;
+    std::optional<std::pair<std::string, std::string>> perform_desktop(const ToolCall& call, const json& arguments, Session& session);
     std::shared_ptr<SemanticModels> semantic_models() const;
     /// Follow-ups that arrive while a request runs. Everything here is read and changed under the lock.
     std::mutex inbox_lock_;

@@ -94,6 +94,7 @@ json to_json(const Session& session) {
         result["pendingInput"] = json::array();
         for (const FollowUp& item : session.pending_input) result["pendingInput"].push_back({{"id", item.id}, {"text", item.text}, {"steer", item.steer}});
     }
+    if (session.desktop) result["desktop"] = {{"pid", session.desktop->pid}, {"app", session.desktop->app}, {"title", session.desktop->title}};
     if (!session.comments.empty()) {
         result["comments"] = json::array();
         for (const ReviewComment& item : session.comments) {
@@ -132,6 +133,7 @@ Session session_from_json(const json& value) {
     for (const json& item : value.value("pendingInput", json::array())) {
         if (item.is_object()) session.pending_input.push_back({item.value("id", new_id()), item.value("text", ""), item.value("steer", false)});
     }
+    if (value.contains("desktop") && value["desktop"].is_object()) session.desktop = DesktopWindow{value["desktop"].value("pid", 0), value["desktop"].value("app", ""), value["desktop"].value("title", "")};
     for (const json& item : value.value("comments", json::array())) {
         if (item.is_object()) session.comments.push_back({item.value("id", new_id()), item.value("path", ""), item.value("revision", ""), item.value("original", false), item.value("line", 0), item.value("quote", ""), item.value("note", "")});
     }

@@ -145,6 +145,8 @@ public struct Session: Codable, Identifiable {
     public var comments: [ReviewComment]?
     /// The saved plan, if the user made one.
     public var milestones: [Milestone]?
+    /// The window of another app the user attached, which Mason may read and, with approval, operate.
+    public var desktop: DesktopWindow?
     public init(workspace: String) { self.workspace = workspace }
 }
 

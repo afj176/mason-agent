@@ -97,6 +97,27 @@ void Controller::replace(const Session& session) {
     else sessions_.insert(sessions_.begin(), session);
 }
 
+std::vector<DesktopWindow> Controller::open_windows() {
+    const std::shared_ptr<DesktopAutomation> automation = desktop::system();
+    try {
+        if (!automation) throw Error("This build cannot operate windows on this computer.");
+        if (const std::string problem = automation->unavailable(); !problem.empty()) throw Error(problem);
+        return automation->windows();
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return {};
+    }
+}
+
+void Controller::attach_window(const std::optional<DesktopWindow>& window) {
+    const Session* current = session();
+    if (!current || !store_ || running) return;
+    Session updated = *current;
+    updated.desktop = window;
+    keep(updated);
+    notice.emit(window ? "Attached " + desktop::label(*window) + ". Mason asks before pressing or changing anything in it." : "No window is attached.");
+}
+
 void Controller::keep(Session& session) {
     try {
         store_->save(session);

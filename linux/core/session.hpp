@@ -91,6 +91,12 @@ struct ReviewComment {
     std::string quote, note;
 };
 
+/// A window of another app, as the user attached it to a session.
+struct DesktopWindow {
+    int pid = 0;
+    std::string app, title;
+};
+
 struct MilestoneReceipt {
     std::string id = new_id();
     std::string at = now_iso();
@@ -134,6 +140,8 @@ struct Session {
     std::vector<ReviewComment> comments;
     /// The saved plan, if the user made one.
     std::vector<Milestone> milestones;
+    /// The window of another app the user attached, which Mason may read and, with approval, operate.
+    std::optional<DesktopWindow> desktop;
 };
 
 json message_json(const ChatMessage& message);

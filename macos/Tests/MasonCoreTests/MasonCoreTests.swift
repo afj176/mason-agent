@@ -813,6 +813,7 @@ final class BrowserTests: XCTestCase {
         ])
         XCTAssertTrue(result.passed, BrowserCheck.report(result, page: "index.html"))
         XCTAssertEqual(result.title, "Cart")
+        XCTAssertTrue(result.controls.count >= 2 && result.controls.allSatisfy { $0.components(separatedBy: " | ").count == 3 }, "\(result.controls)")
         XCTAssertTrue(result.text.contains("Wrench") && result.text.contains("Hammer"))
         XCTAssertEqual(result.steps.count, 8)
 
@@ -1173,6 +1174,65 @@ final class PlanningTests: XCTestCase {
 
 func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async throws -> T, _ message: String = "", file: StaticString = #filePath, line: UInt = #line) async {
     do { _ = try await expression(); XCTFail("expected an error. " + message, file: file, line: line) } catch {}
+}
+
+/// A window with a text field, a button and a label that shows what was last saved.
+final class FakeDesktop: DesktopAutomation {
+    var trusted = true
+    var field = "", saved = ""
+    var acted: [String] = []
+    let window = DesktopWindow(pid: 42, app: "Notes", title: "Shopping")
+    func unavailable() -> String? { trusted ? nil : "Mason needs the Accessibility permission." }
+    func windows() throws -> [DesktopWindow] { [DesktopWindow(pid: 43, app: "Calculator", title: "Calculator"), window] }
+    func observe(_ window: DesktopWindow) throws -> [DesktopControl] {
+        [DesktopControl(id: "c1", role: "textfield", name: "Item", value: field, canSet: true), DesktopControl(id: "c2", role: "button", name: "Save", canPress: true),
+         DesktopControl(id: "c3", role: "statictext", name: "", value: saved.isEmpty ? "Nothing saved" : "Saved " + saved)]
+    }
+    func act(_ window: DesktopWindow, control: String, operation: String, value: String) throws {
+        acted.append("\(operation) \(control) \(value)")
+        if control == "c1" { field = value } else { saved = field }
+    }
+}
+
+final class DesktopTests: XCTestCase {
+    func testAnAttachedWindowIsReadAndOperatedWithApprovalEachTime() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-desk-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base.appendingPathComponent("project"), withIntermediateDirectories: true)
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: try Workspace(path: base.appendingPathComponent("project").path).root.path, permission: .auto)
+        let desktop = FakeDesktop()
+
+        // Attaching is the user's act; without a window the tools are not offered.
+        XCTAssertTrue(Agent.desktopTools(for: session, available: true).isEmpty)
+        XCTAssertTrue(try Desktop.command("", session: &session, desktop: desktop).hasPrefix("1. Calculator\n2. Notes — Shopping\nAttach one with /window NUMBER."))
+        XCTAssertThrowsError(try Desktop.command("9", session: &session, desktop: desktop))
+        XCTAssertTrue(try Desktop.command("2", session: &session, desktop: desktop).hasPrefix("Attached Notes — Shopping."))
+        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe", "desktop_act"])
+        XCTAssertTrue(Agent.desktopTools(for: session, available: false).isEmpty)
+        desktop.trusted = false
+        XCTAssertThrowsError(try Desktop.command("", session: &session, desktop: desktop), "a missing permission is said plainly")
+        desktop.trusted = true
+
+        func act(_ operation: String, _ id: String, _ value: String) -> ModelReply { call("desktop_act", ["operation": operation, "id": id, "value": value]) }
+        let model = ScriptedModel([act("set", "c1", "Milk"), call("desktop_observe", [:]), act("set", "c1", "Milk"), act("invoke", "c2", ""), act("invoke", "c3", ""), act("invoke", "c2", ""), ModelReply(text: "Saved.")])
+        var asked: [String] = [], answers = [true, true, false]
+        let agent = Agent(store: store, model: model, approve: { asked.append($0.title); return answers.removeFirst() }, emit: { _ in })
+        agent.desktop = desktop
+        await agent.run(&session, request: "Add milk to the list")
+        XCTAssertTrue(model.seen[0][0].content.contains("The user attached a window of another app: Notes — Shopping."))
+        XCTAssertEqual(session.activities.map(\.state), [.failed, .completed, .completed, .completed, .failed, .denied], "an action needs an observation first, a control that accepts it, and the user's yes")
+        XCTAssertTrue(session.activities[1].result.contains("c1 · textfield · Item  [set]") && session.activities[1].result.contains("c2 · button · Save  [invoke]"), session.activities[1].result)
+        XCTAssertEqual(asked, ["Set textfield “Item” to “Milk” in Notes — Shopping", "Press button “Save” in Notes — Shopping", "Press button “Save” in Notes — Shopping"], "it asks every time, even in Auto")
+        XCTAssertEqual(desktop.acted, ["set c1 Milk", "invoke c2 "])
+        XCTAssertTrue(session.activities[3].result.contains("c3 · statictext = Saved Milk"), "each action returns a fresh observation")
+
+        // A read-only session may look but not touch.
+        session.permission = .readOnly; session.askOnly = true
+        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe"])
+        XCTAssertEqual(try Desktop.command("off", session: &session, desktop: desktop), "No window is attached to this session.")
+        XCTAssertNil(session.desktop)
+    }
 }
 
 final class TransformersTests: XCTestCase {

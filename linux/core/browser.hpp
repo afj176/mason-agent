@@ -19,6 +19,8 @@ struct Result {
     std::string title, text;
     std::vector<std::string> errors;
     std::vector<Step> steps;
+    /// What can be clicked or filled, each as "selector | kind | label".
+    std::vector<std::string> controls;
     /// True when every step did what it was asked and the page raised no script error.
     bool passed() const;
 };

@@ -537,6 +537,11 @@ private:
             store_.save(session_);
             return true;
         }
+        if (name == "/window" || name == "/windows") {
+            for (const std::string& line : split(desktop::command(rest, session_), '\n')) term::line("  " + line);
+            store_.save(session_);
+            return true;
+        }
         if (name == "/embeddings") {
             for (const std::string& line : split(semantic::command(rest, store_.home()), '\n')) term::line("  " + line);
             return true;
@@ -564,6 +569,7 @@ private:
             {"/commands", "List your custom slash commands"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"},
             {"/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"},
             {"/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"},
             {"/mcp", "List your MCP servers and the tools Mason may call"},

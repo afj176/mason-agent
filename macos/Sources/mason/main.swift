@@ -513,6 +513,9 @@ final class CLI {
             session = changed
             for line in text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             try store.save(session)
+        case "/window", "/windows":
+            for line in try Desktop.command(rest, session: &session).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            try store.save(session)
         case "/embeddings":
             for line in try await EmbeddingSettings.command(rest, home: home).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/mcp": try await mcp(rest)
@@ -540,6 +543,7 @@ final class CLI {
             ("/commands", "List your custom slash commands"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"),
             ("/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"),
             ("/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"),
             ("/mcp", "List your MCP servers and the tools Mason may call"),

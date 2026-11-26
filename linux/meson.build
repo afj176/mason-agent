@@ -9,13 +9,17 @@ project('mason-agent', 'cpp',
 curl = dependency('libcurl')
 json = dependency('nlohmann_json')
 threads = dependency('threads')
+# AT-SPI lets Mason read and operate a window the user attaches. Without it the build has no window tools.
+atspi = dependency('atspi-2', required: false)
+gobject = dependency('gobject-2.0', required: atspi.found())
+core_args = atspi.found() ? ['-DMASON_HAVE_ATSPI'] : []
 
 core_sources = files(
   'core/util.cpp', 'core/workspace.cpp', 'core/session.cpp', 'core/model.cpp',
-  'core/shell.cpp', 'core/harness.cpp', 'core/tools.cpp', 'core/browser.cpp', 'core/planning.cpp', 'core/semantic.cpp', 'core/mcp.cpp', 'core/chat.cpp', 'core/schedules.cpp', 'core/agent.cpp', 'core/models.cpp',
+  'core/shell.cpp', 'core/harness.cpp', 'core/tools.cpp', 'core/browser.cpp', 'core/planning.cpp', 'core/semantic.cpp', 'core/desktop.cpp', 'core/mcp.cpp', 'core/chat.cpp', 'core/schedules.cpp', 'core/agent.cpp', 'core/models.cpp',
 )
-core = static_library('masoncore', core_sources, dependencies: [curl, json, threads])
-core_dep = declare_dependency(link_with: core, include_directories: include_directories('core'), dependencies: [curl, json, threads])
+core = static_library('masoncore', core_sources, dependencies: [curl, json, threads, atspi, gobject], cpp_args: core_args)
+core_dep = declare_dependency(link_with: core, include_directories: include_directories('core'), dependencies: [curl, json, threads, atspi, gobject])
 
 version_define = '-DMASON_VERSION="' + meson.project_version() + '"'
 executable('mason', files('cli/main.cpp'), dependencies: core_dep, cpp_args: version_define, install: true)

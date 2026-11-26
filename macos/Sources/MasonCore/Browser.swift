@@ -19,6 +19,8 @@ public enum BrowserCheck {
         public var text = ""
         public var errors: [String] = []
         public var steps: [Step] = []
+        /// What can be clicked or filled, each as "selector | kind | label".
+        public var controls: [String] = []
         /// True when every step did what it was asked and the page raised no script error.
         public var passed: Bool { errors.isEmpty && steps.allSatisfy(\.ok) }
     }
@@ -91,6 +93,10 @@ public enum BrowserCheck {
             }
             out.title = doc().title; out.text = String(doc().body.innerText || '').slice(0, 6000);
             out.errors = (f.contentWindow.__masonErrors || []).slice(0, 20);
+            out.controls = Array.prototype.slice.call(doc().querySelectorAll('button,a[href],input:not([type=hidden]):not([type=password]),select,textarea,[role=button]')).filter(function (e) { return e.getClientRects().length > 0; }).slice(0, 64).map(function (e) {
+              var kind = e.tagName.toLowerCase(), selector = e.id ? '#' + e.id : kind + (e.name ? '[name="' + e.name + '"]' : '');
+              return selector + ' | ' + kind + ' | ' + String(e.getAttribute('aria-label') || e.innerText || e.placeholder || e.value || e.name || e.type || '').trim().replace(/\\s+/g, ' ').slice(0, 80);
+            });
           } catch (error) { out.errors.push('The check could not run: ' + String(error && error.message || error)); }
           done();
         })();
@@ -258,6 +264,7 @@ public enum BrowserCheck {
         result.title = object["title"] as? String ?? ""
         result.text = object["text"] as? String ?? ""
         result.errors = object["errors"] as? [String] ?? []
+        result.controls = object["controls"] as? [String] ?? []
         result.steps = (object["steps"] as? [[String: Any]] ?? []).map { Step(action: $0["action"] as? String ?? "", ok: $0["ok"] as? Bool ?? false, detail: $0["detail"] as? String ?? "") }
         return result
     }
@@ -267,6 +274,7 @@ public enum BrowserCheck {
         var lines = ["\(result.passed ? "PASSED" : "FAILED"): \(page)" + (result.title.isEmpty ? "" : "  ·  title: \(result.title)")]
         for (index, step) in result.steps.enumerated() { lines.append("\(index + 1). \(step.action): \(step.ok ? "ok" : "FAILED" + (step.detail.isEmpty ? "" : " (" + step.detail + ")"))") }
         if !result.errors.isEmpty { lines.append("Script errors:"); lines += result.errors.map { "  " + $0 } }
+        if !result.controls.isEmpty { lines.append("Controls (selector | kind | label):"); lines += result.controls.map { "  " + $0 } }
         lines.append("What the page shows:")
         lines.append(result.text.isEmpty ? "  (nothing)" : result.text)
         return lines.joined(separator: "\n")

@@ -198,6 +198,15 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     composer_hint_.set_text("Ctrl+Enter to send");
     controls->append(permission_);
     controls->append(model_button_);
+    window_button_.set_label("Window");
+    window_button_.add_css_class("chip");
+    window_button_.set_tooltip_text("Attach a window of another app so Mason can read its controls and, with your approval each time, operate it");
+    window_list_.set_margin(8);
+    window_popover_.set_child(window_list_);
+    window_button_.set_popover(window_popover_);
+    // The list is read when the menu opens, so it shows the windows that are open now.
+    window_popover_.signal_show().connect([this] { fill_window_list(); });
+    controls->append(window_button_);
     controls->append(*spacer);
     controls->append(composer_hint_);
     controls->append(waiting_);
@@ -812,6 +821,8 @@ void MainWindow::refresh_composer() {
         }
     }
     const bool has_comments = session && !session->comments.empty();
+    window_button_.set_label(session && session->desktop ? session->desktop->app : "Window");
+    window_button_.set_sensitive(!controller_.running);
     stop_.set_visible(controller_.running);
     send_.set_visible(!controller_.running);
     send_.set_sensitive(has_text || has_comments);
@@ -846,6 +857,22 @@ Gtk::Widget* MainWindow::panel_switch() {
     box->append(*changes);
     box->append(*plan);
     return box;
+}
+
+void MainWindow::fill_window_list() {
+    clear(window_list_);
+    const Session* session = controller_.session();
+    auto row = [this](const std::string& label, std::function<void()> action) {
+        auto* button = Gtk::make_managed<Gtk::Button>(label);
+        button->add_css_class("flat");
+        if (auto* text = dynamic_cast<Gtk::Label*>(button->get_child())) { text->set_xalign(0); text->set_ellipsize(Pango::EllipsizeMode::END); text->set_max_width_chars(48); }
+        button->signal_clicked().connect([this, action] { window_popover_.popdown(); action(); });
+        window_list_.append(*button);
+    };
+    if (session && session->desktop) row("Detach " + desktop::label(*session->desktop), [this] { controller_.attach_window(std::nullopt); });
+    const std::vector<DesktopWindow> open = controller_.open_windows();
+    if (open.empty()) window_list_.append(*dim_label("No windows of other apps are open."));
+    for (const DesktopWindow& window : open) row(desktop::label(window), [this, window] { controller_.attach_window(window); });
 }
 
 void MainWindow::refresh_plan() {

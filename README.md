@@ -326,7 +326,7 @@ Scripts/build-app.sh        # universal app, .zip and .pkg in macos/dist
 On Ubuntu 24.04:
 
 ```sh
-sudo apt install build-essential meson ninja-build pkg-config libcurl4-openssl-dev nlohmann-json3-dev libgtkmm-4.0-dev libadwaita-1-dev bubblewrap dpkg-dev
+sudo apt install build-essential meson ninja-build pkg-config libcurl4-openssl-dev nlohmann-json3-dev libgtkmm-4.0-dev libadwaita-1-dev libatspi2.0-dev bubblewrap dpkg-dev
 cd linux
 meson setup builddir && meson compile -C builddir && meson test -C builddir
 ./builddir/mason                # the command line

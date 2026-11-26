@@ -90,6 +90,12 @@ public:
     void check_milestone(const std::string& id, const std::string& observation);
     std::string milestone_busy;  ///< The milestone whose check is running, or empty.
 
+    // ---- an attached window ----
+    /// The windows of other apps, or none when the accessibility service is not answering.
+    std::vector<DesktopWindow> open_windows();
+    /// Attaches a window to the session, or detaches with nothing.
+    void attach_window(const std::optional<DesktopWindow>& window);
+
     // ---- chat ----
     const std::vector<ChatConversation>& chats() const { return chats_; }
     const ChatConversation* chat() const;

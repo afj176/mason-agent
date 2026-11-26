@@ -107,6 +107,11 @@ private:
     Gtk::Box changes_{Gtk::Orientation::VERTICAL, 12};
     /// The notes waiting to go with the next request, above the request box.
     Gtk::Box comments_{Gtk::Orientation::VERTICAL, 4};
+    /// Attaches a window of another app to the session.
+    Gtk::MenuButton window_button_;
+    Gtk::Popover window_popover_;
+    Gtk::Box window_list_{Gtk::Orientation::VERTICAL, 4};
+    void fill_window_list();
     std::string comments_shown_;
     /// The side panel shows the changes or the plan.
     bool plan_shown_ = false, adding_milestone_ = false;

@@ -946,6 +946,8 @@ static void test_browser() {
     const browser::Result good = browser::run(workspace, "site/index.html", steps);
     CHECK(good.passed() && good.title == "Counter" && good.steps.size() == 5 && good.text.find("Total 2 for Ada") != std::string::npos);
     CHECK(starts_with(browser::report(good, "site/index.html"), "PASSED: site/index.html"));
+    CHECK(good.controls == (std::vector<std::string>{"#name | input | Name", "button | button | Add"}));
+    CHECK(browser::report(good, "site/index.html").find("Controls (selector | kind | label):\n  #name | input | Name") != std::string::npos);
 
     const browser::Result missing = browser::run(workspace, "site/index.html", json::array({{{"action", "click"}, {"text", "Remove"}}, {{"action", "expect_text"}, {"text", "never"}}}));
     CHECK(!missing.passed() && missing.steps.size() == 1 && !missing.steps[0].ok);
@@ -1217,6 +1219,73 @@ static void test_transformers() {
     unsetenv("MASON_DATA_HOME");
 }
 
+/// A window with a text field, a button and a label that shows what was last saved.
+struct FakeDesktop : DesktopAutomation {
+    bool trusted = true;
+    std::string field, saved;
+    std::vector<std::string> acted;
+    DesktopWindow window{42, "Notes", "Shopping"};
+    std::string unavailable() override { return trusted ? "" : "The accessibility service is not answering."; }
+    std::vector<DesktopWindow> windows() override { return {DesktopWindow{43, "Calculator", "Calculator"}, window}; }
+    std::vector<DesktopControl> observe(const DesktopWindow&) override {
+        return {{"c1", "text", "Item", field, false, true}, {"c2", "push button", "Save", "", true, false}, {"c3", "label", "", saved.empty() ? "Nothing saved" : "Saved " + saved, false, false}};
+    }
+    void act(const DesktopWindow&, const std::string& control, const std::string& operation, const std::string& value) override {
+        acted.push_back(operation + " " + control + " " + value);
+        if (control == "c1") field = value; else saved = field;
+    }
+};
+
+static void test_desktop() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+    auto desktop = std::make_shared<FakeDesktop>();
+    const auto names = [](const std::vector<ToolSpec>& tools) {
+        std::vector<std::string> found;
+        for (const ToolSpec& tool : tools) found.push_back(tool.name);
+        return found;
+    };
+    using Names = std::vector<std::string>;
+
+    // Attaching is the user's act; without a window the tools are not offered.
+    CHECK(Agent::desktop_tools(session, true).empty());
+    CHECK(starts_with(desktop::command("", session, desktop), "1. Calculator\n2. Notes — Shopping\nAttach one with /window NUMBER."));
+    CHECK_THROWS(desktop::command("9", session, desktop));
+    CHECK(starts_with(desktop::command("2", session, desktop), "Attached Notes — Shopping."));
+    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe", "desktop_act"}) && Agent::desktop_tools(session, false).empty());
+    desktop->trusted = false;
+    CHECK_THROWS(desktop::command("", session, desktop));  // a missing service is said plainly
+    desktop->trusted = true;
+    store.save(session);
+    CHECK(SessionStore(box.home).sessions().front().desktop && SessionStore(box.home).sessions().front().desktop->title == "Shopping");
+
+    const auto act = [](const char* operation, const char* id, const char* value) { return call("desktop_act", {{"operation", operation}, {"id", id}, {"value", value}}); };
+    ScriptedModel model;
+    model.replies = {act("set", "c1", "Milk"), call("desktop_observe", json::object()), act("set", "c1", "Milk"), act("invoke", "c2", ""), act("invoke", "c3", ""), act("invoke", "c2", ""), say("Saved.")};
+    std::vector<std::string> asked;
+    std::deque<bool> answers = {true, true, false};
+    Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.title); const bool answer = answers.front(); answers.pop_front(); return answer; }, [](const AgentEvent&) {});
+    agent.set_desktop(desktop);
+    agent.run(session, "Add milk to the list");
+    CHECK(model.seen[0][0].content.find("The user attached a window of another app: Notes — Shopping.") != std::string::npos);
+    Names states;
+    for (const Activity& activity : session.activities) states.push_back(activity.state);
+    // An action needs an observation first, a control that accepts it, and the user's yes.
+    CHECK(states == (Names{"failed", "completed", "completed", "completed", "failed", "denied"}));
+    CHECK(session.activities[1].result.find("c1 · text · Item  [set]") != std::string::npos && session.activities[1].result.find("c2 · push button · Save  [invoke]") != std::string::npos);
+    // It asks every time, even in Auto.
+    CHECK(asked == (Names{"Set text “Item” to “Milk” in Notes — Shopping", "Press push button “Save” in Notes — Shopping", "Press push button “Save” in Notes — Shopping"}));
+    CHECK(desktop->acted == (Names{"set c1 Milk", "invoke c2 "}));
+    CHECK(session.activities[3].result.find("c3 · label = Saved Milk") != std::string::npos);  // each action returns a fresh observation
+
+    // A read-only session may look but not touch.
+    session.permission = Permission::ReadOnly;
+    session.ask_only = true;
+    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe"}));
+    CHECK(desktop::command("off", session, desktop) == "No window is attached to this session." && !session.desktop);
+}
+
 static void test_verification() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
@@ -1307,7 +1376,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

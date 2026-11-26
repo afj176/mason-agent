@@ -127,6 +127,48 @@ const std::vector<ToolSpec>& Agent::mcp_tools() {
     return list;
 }
 
+std::vector<ToolSpec> Agent::desktop_tools(const Session& session, bool available) {
+    if (!available || !session.desktop) return {};
+    const json text = {{"type", "string"}};
+    std::vector<ToolSpec> list = {{"desktop_observe", "Read the control names and available actions from the window the user attached to this session.",
+                                   json{{"type", "object"}, {"properties", json::object()}, {"required", json::array()}, {"additionalProperties", false}}}};
+    if (session.ask_only || session.permission == Permission::ReadOnly) return list;
+    list.push_back({"desktop_act", "Ask the user to invoke (press) or set a control from the most recent observation of the attached window. Returns a fresh observation. value is the text to set; use an empty string with invoke.",
+                    json{{"type", "object"}, {"properties", {{"operation", {{"type", "string"}, {"enum", {"invoke", "set"}}}}, {"id", text}, {"value", text}}}, {"required", {"operation", "id", "value"}}, {"additionalProperties", false}}});
+    return list;
+}
+
+std::optional<std::pair<std::string, std::string>> Agent::perform_desktop(const ToolCall& call, const json& arguments, Session& session) {
+    using Outcome = std::pair<std::string, std::string>;
+    if (call.name != "desktop_observe" && call.name != "desktop_act") return std::nullopt;
+    if (!session.desktop) throw Error("No window is attached to this session.");
+    const std::shared_ptr<DesktopAutomation> automation = desktop_automation();
+    if (!automation) throw Error("This build cannot operate windows on this computer.");
+    if (const std::string problem = automation->unavailable(); !problem.empty()) throw Error(problem);
+    const DesktopWindow window = *session.desktop;
+    if (call.name == "desktop_act") {
+        if (session.ask_only || session.permission == Permission::ReadOnly) throw Error("This session is read-only. It can observe the window but not act on it.");
+        const auto field = [&](const char* key) { return arguments.contains(key) && arguments[key].is_string() ? arguments[key].get<std::string>() : std::string(); };
+        const std::string operation = field("operation"), id = field("id"), value = field("value");
+        if ((operation != "invoke" && operation != "set") || id.empty()) throw Error("desktop_act needs an operation (invoke or set) and the id of a control from the latest observation.");
+        if (utf8_length(value) > 1200) throw Error("A value can be up to 1,200 characters.");
+        const auto control = std::find_if(last_observation_.begin(), last_observation_.end(), [&](const DesktopControl& each) { return each.id == id; });
+        if (control == last_observation_.end()) throw Error("Observe the window first, then use the id of a control from that observation.");
+        if (operation == "invoke" ? !control->can_press : !control->can_set) throw Error(id + " does not accept " + operation + ".");
+        // Acting on another app is outside the project and the sandbox, so it asks every time, in every mode.
+        const std::string named = control->role + " " + (control->name.empty() ? id : "“" + control->name + "”");
+        const std::string what = operation == "invoke" ? "Press " + named : "Set " + named + " to “" + utf8_prefix(value, 200) + "”";
+        if (!approve_({call.name, what + " in " + desktop::label(window), "This acts on another app's window, outside the project and outside the sandbox.", "window " + window.app})) {
+            return Outcome{"denied", "The user declined. Do not retry it; ask what they want instead."};
+        }
+        automation->act(window, id, operation, value);
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    }
+    emit_({AgentEvent::Kind::Status, "Reading " + window.app, {}});
+    last_observation_ = automation->observe(window);
+    return Outcome{"completed", desktop::report(window, last_observation_)};
+}
+
 std::shared_ptr<SemanticModels> Agent::semantic_models() const {
     if (semantic_) return semantic_;
     if (const std::optional<EmbeddingSettings> saved = semantic::load(store_.home())) return std::make_shared<EmbeddingServers>(*saved);
@@ -171,7 +213,7 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
                         schema({{"query", text}, {"path", {{"type", "string"}, {"description", "Folder to search, relative to the project. Use . for the whole project."}}}}, {"query", "path"})});
     }
     if (!browser::find().empty()) {
-        list.push_back({"check_page", "Load one of the project's HTML pages in a real browser and report what it shows and any script errors. steps_json is a JSON array of steps carried out in order, each one of: {\"action\":\"click\",\"text\":\"Add\"}, {\"action\":\"fill\",\"selector\":\"#name\",\"value\":\"Ada\"}, {\"action\":\"expect_text\",\"text\":\"Saved\"}, {\"action\":\"expect_no_text\",\"text\":\"Error\"}, {\"action\":\"wait\",\"ms\":500}. Use text or selector to name an element. Use [] to only load the page. The page has no network beyond this computer.",
+        list.push_back({"check_page", "Load one of the project's HTML pages in a real browser and report what it shows and any script errors. steps_json is a JSON array of steps carried out in order, each one of: {\"action\":\"click\",\"text\":\"Add\"}, {\"action\":\"fill\",\"selector\":\"#name\",\"value\":\"Ada\"}, {\"action\":\"expect_text\",\"text\":\"Saved\"}, {\"action\":\"expect_no_text\",\"text\":\"Error\"}, {\"action\":\"wait\",\"ms\":500}. Use text or selector to name an element. Use [] to only load the page. The result lists the page's controls with a selector for each, so you can operate a page step by step: load it, read the controls, then call again with the steps so far plus the next one. The page has no network beyond this computer.",
                         schema({{"path", text}, {"steps_json", text}}, {"path", "steps_json"})});
     }
     if (!skills::list(workspace).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
@@ -182,6 +224,8 @@ std::vector<ToolSpec> Agent::offered_tools(const Session& session, const Workspa
     std::vector<ToolSpec> offered = tools();
     const std::vector<ToolSpec> extra = extra_tools(session, workspace, semantic_models() != nullptr);
     offered.insert(offered.end(), extra.begin(), extra.end());
+    const std::vector<ToolSpec> window = desktop_tools(session, desktop_automation() != nullptr);
+    offered.insert(offered.end(), window.begin(), window.end());
     if (!mcp::enabled(store_.home()).empty()) offered.insert(offered.end(), mcp_tools().begin(), mcp_tools().end());
     return offered;
 }
@@ -585,6 +629,8 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         for (const McpServer& server : mcp::enabled(store_.home())) names.push_back(server.name);
         if (!names.empty()) prompt += "\nThe user registered these MCP servers: " + join(names, ", ") + ". Use mcp_tools to see what one offers before calling it.";
     }
+    if (session.desktop && desktop_automation()) prompt += "\nThe user attached a window of another app: " + desktop::label(*session.desktop) + ". Read it with desktop_observe. Acting on it asks the user each time.";
+    last_observation_.clear();
     if (!session.milestones.empty()) prompt += "\n" + milestones::context(*workspace, session.milestones);
     if (!session.messages.empty() && session.messages.front().role == "system") session.messages.front().content = prompt;
     else session.messages.insert(session.messages.begin(), ChatMessage{"system", prompt, {}, ""});
@@ -850,6 +896,7 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             return finish("completed", mcp::request(*server, operation, uri.value_or(""), json::object(), cancel));
         }
         if (const auto extra = perform_extra(call, arguments, workspace, session, cancel)) return finish(extra->first, extra->second);
+        if (const auto window = perform_desktop(call, arguments, session)) return finish(window->first, window->second);
         throw Error("Unknown tool " + call.name + ". Use one of: " + join(offered_names_, ", "));
     } catch (const Cancelled&) {
         finish("failed", "Stopped by the user.");

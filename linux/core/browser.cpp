@@ -66,6 +66,10 @@ const char* const kHarness = R"html(<!doctype html><meta charset="utf-8"><title>
     }
     out.title = doc().title; out.text = String(doc().body.innerText || '').slice(0, 6000);
     out.errors = (f.contentWindow.__masonErrors || []).slice(0, 20);
+    out.controls = Array.prototype.slice.call(doc().querySelectorAll('button,a[href],input:not([type=hidden]):not([type=password]),select,textarea,[role=button]')).filter(function (e) { return e.getClientRects().length > 0; }).slice(0, 64).map(function (e) {
+      var kind = e.tagName.toLowerCase(), selector = e.id ? '#' + e.id : kind + (e.name ? '[name="' + e.name + '"]' : '');
+      return selector + ' | ' + kind + ' | ' + String(e.getAttribute('aria-label') || e.innerText || e.placeholder || e.value || e.name || e.type || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    });
   } catch (error) { out.errors.push('The check could not run: ' + String(error && error.message || error)); }
   done();
 })();
@@ -325,6 +329,11 @@ Result run(const Workspace& workspace, const std::string& page, const json& step
             if (item.is_string()) result.errors.push_back(item.get<std::string>());
         }
     }
+    if (object.contains("controls") && object["controls"].is_array()) {
+        for (const json& item : object["controls"]) {
+            if (item.is_string()) result.controls.push_back(item.get<std::string>());
+        }
+    }
     if (object.contains("steps") && object["steps"].is_array()) {
         for (const json& item : object["steps"]) {
             if (item.is_object()) result.steps.push_back({item.value("action", ""), item.value("ok", false), item.value("detail", "")});
@@ -342,6 +351,10 @@ std::string report(const Result& result, const std::string& page) {
     if (!result.errors.empty()) {
         text += "\nScript errors:";
         for (const std::string& error : result.errors) text += "\n  " + error;
+    }
+    if (!result.controls.empty()) {
+        text += "\nControls (selector | kind | label):";
+        for (const std::string& control : result.controls) text += "\n  " + control;
     }
     text += "\nWhat the page shows:\n" + (result.text.empty() ? std::string("  (nothing)") : result.text);
     return text;

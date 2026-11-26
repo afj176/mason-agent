@@ -306,6 +306,7 @@ struct Composer: View {
                 Button { model.pane = .models } label: { Label(model.endpoint == nil ? "No model running" : model.endpointName, systemImage: "cpu").lineLimit(1) }
                     .buttonStyle(.plain).chip()
                     .help(model.endpoint == nil ? "No model is running. Open Models to start one." : "Running at \(model.endpoint?.url ?? "")")
+                WindowMenu(session: session)
                 Spacer()
                 if !model.running { Text("⌘Return to send").font(.caption).foregroundStyle(Brand.muted) }
                 if model.running {
