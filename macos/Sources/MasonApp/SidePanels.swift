@@ -313,6 +313,8 @@ extension AppModel {
                 case "/roles", "/role": notice = try Roles.command(rest, home: home)
                 case "/policy": notice = try Policies.command(rest, workspace: workspace, home: home)
                 case "/bundle", "/bundles": notice = try Bundles.command(rest, home: home)
+                case "/notes", "/note": notice = try ProjectNotes.command(rest, workspace: workspace, home: home)
+                case "/generation": notice = try Generation.command(rest, endpoint: endpoint, home: home)
                 case "/languages", "/language":
                     if rest.hasPrefix("install") { notice = "Installing. This can take a few minutes." }
                     notice = try await LanguageServers.command(rest, workspace: workspace, home: home)

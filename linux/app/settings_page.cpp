@@ -3,6 +3,8 @@
 
 #include "background.hpp"
 #include "bundles.hpp"
+#include "generation.hpp"
+#include "notes.hpp"
 #include "language.hpp"
 #include "delivery.hpp"
 #include "experiments.hpp"
@@ -284,6 +286,31 @@ void SettingsPage::refresh() {
     // ---- what follows shares its code with the command line: each control runs the command it names ----
     auto run = [&c](const std::string& name, const std::string& rest) { c.host_command(name, rest); };
 
+    // ---- project notes ----
+    if (session) {
+        AdwPreferencesGroup* notes_group = group(content_, "Project notes", "Short facts about this project. The six newest are given to the model with each request, as background and not as instructions. "
+                                                                             "A note about a file stops being sent once that file changes.");
+        std::vector<ProjectNote> kept;
+        try {
+            kept = project_notes::load(home, Workspace(workspace).root());
+        } catch (const std::exception&) {
+        }
+        if (kept.empty()) row(notes_group, "No notes for this project", "Keep one below.");
+        for (size_t i = 0; i < kept.size(); i++) {
+            std::string about;
+            if (!kept[i].source.empty()) {
+                bool current = false;
+                try { current = project_notes::current(kept[i], Workspace(workspace)); } catch (const std::exception&) {}
+                about = "About " + kept[i].source + (current ? "" : ", which has changed, so this is no longer sent");
+            }
+            AdwActionRow* line = row(notes_group, kept[i].text, about);
+            const std::string number = std::to_string(i + 1);
+            button(line, "Remove", [run, number] { run("/notes", "remove " + number); });
+        }
+        entry_row(notes_group, "Keep a note", "Something worth telling the model every time", "Keep", [run](const std::string& text) { run("/notes", "add " + text); });
+        entry_row(notes_group, "Keep a note about a file", "PATH  A note about that file", "Keep", [run](const std::string& text) { run("/notes", "about " + text); });
+    }
+
     // ---- project policy ----
     if (session) {
         AdwPreferencesGroup* policy_group = group(content_, "Project policy", "Limits for this project, kept outside it so nothing in the project can change them.");
@@ -312,6 +339,26 @@ void SettingsPage::refresh() {
     if (!chosen_roles.trace.empty()) button(trace_row, "Turn Off", [run] { run("/roles", "trace off"); });
     entry_row(roles_group, "Record to a folder", "~/mason-traces    (outside your projects)", "Record", [run](const std::string& text) { run("/roles", "trace " + text); });
     entry_row(roles_group, "Reviewer calls in one review: " + std::to_string(chosen_roles.limit), "64", "Set", [run](const std::string& text) { run("/roles", "limit " + text); });
+
+    // ---- generation settings ----
+    AdwPreferencesGroup* generation_group = group(content_, "Generation settings", "Kept for the model in use, and sent whenever it works as the coding agent. A setting you leave alone is the server's. "
+                                                                                     "Top K, Min P and repeat penalty are llama.cpp's. Chats have their own options.");
+    if (!c.endpoint) {
+        row(generation_group, "No model in use", "Start or choose a model first.");
+    } else {
+        const std::map<std::string, double> kept = generation::values(*c.endpoint, home);
+        for (const GenerationField& field : generation::fields()) {
+            const auto found = kept.find(field.key);
+            const std::string key = field.key;
+            const std::string range = key == "seed" ? "A whole number, or off" : generation::shown(field.low, field) + " to " + generation::shown(field.high, field) + ", or off";
+            entry_row(generation_group, field.label + ": " + (found == kept.end() ? "the server's default" : generation::shown(found->second, field)), range, "Set",
+                      [run, key](const std::string& text) { run("/generation", key + " " + text); });
+        }
+        if (!kept.empty()) {
+            AdwActionRow* clear_generation = row(generation_group, "All of them", c.endpoint->model + " at " + c.endpoint->url);
+            button(clear_generation, "Use the Server's Defaults", [run] { run("/generation", "clear"); });
+        }
+    }
 
     // ---- network ----
     AdwPreferencesGroup* network_group = group(content_, "Network in Auto", "The setting for this computer; a session can choose its own with /network. Commands in the sandbox have no network unless you allow it.");

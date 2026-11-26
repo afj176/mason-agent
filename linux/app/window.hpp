@@ -3,6 +3,8 @@
 #include <adwaita.h>
 #include <gtkmm.h>
 
+#include "gpu.hpp"
+#include "palette.hpp"
 #include "controller.hpp"
 #include "browser.hpp"
 #include "chat.hpp"
@@ -38,6 +40,16 @@ private:
     std::string shown_;  ///< A fingerprint of what is displayed, so unchanged state does not rebuild the page.
     Gtk::Label* status_label_ = nullptr;  ///< Owned by the page; reset whenever the page is rebuilt.
     Gtk::ProgressBar* progress_ = nullptr;
+    /// The graphics reading: taken off the main thread every two seconds while the page is on screen.
+    GpuSample gpu_;
+    bool gpu_reading_ = false;
+    std::vector<AdwActionRow*> gpu_rows_;  ///< Owned by the page; reset whenever the page is rebuilt.
+    std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+    sigc::connection gpu_timer_;
+    void read_gpu();
+
+public:
+    ~ModelsPage() override;
 };
 
 /// The Settings page: saved approvals, agents and commands, MCP servers, and schedules.
@@ -94,6 +106,9 @@ private:
     void refresh_composer();
     void refresh_changes();
     void open_project();
+    /// The search box over sessions, projects, files, commands and chats (Ctrl+K), and going to what was chosen.
+    void show_palette();
+    void open_palette_item(const PaletteItem& item);
     Gtk::Widget* turn_widget(const Turn& turn, const std::vector<Activity>& activities, bool live);
     Gtk::Widget* activity_widget(const Activity& activity);
     Gtk::Widget* answer_widget(const std::string& text);

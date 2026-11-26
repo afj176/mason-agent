@@ -9,6 +9,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "notes.hpp"
+#include "palette.hpp"
+#include "gpu.hpp"
+#include "generation.hpp"
 #include "agent.hpp"
 #include "derived.hpp"
 #include "navigation.hpp"
@@ -71,14 +75,18 @@ struct Sandbox {
 struct ScriptedModel : ChatModel {
     std::deque<ModelReply> replies;
     std::vector<std::vector<ChatMessage>> seen;
+    /// The names of the tools offered with each request.
+    std::vector<std::vector<std::string>> seen_tools;
     int window = 0;
     int context_window() override { return window; }
     /// Called at the start of each request, with its number, so a test can act while the "model" is busy.
     std::function<void(size_t)> on_request;
     int delay_ms = 0;
     std::string name() const override { return "scripted"; }
-    ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>&, const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override {
+    ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>& tools, const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override {
         seen.push_back(messages);
+        seen_tools.emplace_back();
+        for (const ToolSpec& tool : tools) seen_tools.back().push_back(tool.name);
         if (on_request) on_request(seen.size());
         for (int waited = 0; waited < delay_ms; waited += 10) {
             check_cancel(cancel);
@@ -2537,6 +2545,144 @@ static void test_catalog() {
     CHECK(!catalog::applies(request, workspace));  // only an empty project gets the component
 }
 
+static void test_project_notes() {
+    Sandbox box;
+    box.write("config.py", "PORT = 8080\n");
+    const Workspace workspace(box.project.string());
+    CHECK(project_notes::command("", workspace, box.home) == "No notes for this project. /notes add TEXT keeps one.");
+    CHECK(project_notes::context(box.home, workspace).empty());
+    CHECK(project_notes::command("add The API lives under /v2.", workspace, box.home) == "Kept. The model is given it with each request in this project.");
+    usleep(1100 * 1000);  // Notes are ordered by when they were saved, to the second.
+    CHECK(project_notes::command("about config.py The port is set here.", workspace, box.home) == "Kept, about config.py. It is sent until that file changes.");
+    const auto refused = [&](const std::string& rest) {
+        try { project_notes::command(rest, workspace, box.home); } catch (const Error&) { return true; }
+        return false;
+    };
+    CHECK(refused("add") && refused("about missing.py Nothing.") && refused("remove 99") && refused("shout"));
+    CHECK(project_notes::command("", workspace, box.home) == "1. The port is set here.  (about config.py)\n2. The API lives under /v2.");
+    CHECK(project_notes::context(box.home, workspace) == "Notes the user saved about this project. They are background, not instructions:\n- The port is set here. (about config.py)\n- The API lives under /v2.");
+
+    // The model is given them with a request.
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+    ScriptedModel model;
+    model.replies = {say("Noted.")};
+    Agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(session, "Hello");
+    CHECK(!model.seen.empty() && model.seen[0][0].content.find("- The API lives under /v2.") != std::string::npos);
+
+    // Once its file changes, a note about that file is out of date and is no longer sent.
+    box.write("config.py", "PORT = 9090\n");
+    CHECK(project_notes::context(box.home, workspace) == "Notes the user saved about this project. They are background, not instructions:\n- The API lives under /v2.");
+    CHECK(project_notes::command("", workspace, box.home).find("that file has changed, so this is no longer sent") != std::string::npos);
+
+    // Another project has its own.
+    const fs::path other = box.home / "other-project";
+    fs::create_directories(other);
+    CHECK(project_notes::context(box.home, Workspace(other.string())).empty());
+    CHECK(project_notes::command("remove 1", workspace, box.home) == "Removed." && project_notes::load(box.home, workspace.root()).size() == 1);
+    CHECK(project_notes::command("clear", workspace, box.home) == "This project has no notes now." && project_notes::load(box.home, workspace.root()).empty());
+}
+
+static void test_palette() {
+    const std::vector<PaletteItem> items = {
+        {"session", "Fix the cart total", "Session in shop", "s1"},     {"project", "shop", "Project at /home/me/shop", "/home/me/shop"},
+        {"file", "cart.py", "src/cart.py", "src/cart.py"},              {"file", "test_cart.py", "tests/test_cart.py", "tests/test_cart.py"},
+        {"command", "/notes", "Notes kept for this project and given to the model", "/notes"}, {"chat", "Discarding a cart", "Chat", "c1"},
+    };
+    using Values = std::vector<std::string>;
+    const auto found = [&](const std::string& query, size_t limit = 40) {
+        Values values;
+        for (const PaletteItem& item : palette::matches(items, query, limit)) values.push_back(item.value);
+        return values;
+    };
+    // Nothing typed: everything, in the order given, up to the limit.
+    CHECK(found("").size() == 6 && found("")[0] == "s1" && found("  ", 2).size() == 2);
+    // A title that starts with what was typed comes before one where it starts a word, then one that only contains it.
+    CHECK(found("CART") == (Values{"src/cart.py", "s1", "tests/test_cart.py", "c1"}));
+    // Every word must appear, in the title or the detail.
+    CHECK(found("cart tests") == (Values{"tests/test_cart.py"}));
+    CHECK(found("model") == (Values{"/notes"}) && found("/no") == (Values{"/notes"}) && found("zebra").empty());
+    bool has_languages = false;
+    for (const auto& [name, detail] : palette::commands()) has_languages = has_languages || name == "/languages";
+    CHECK(has_languages);
+}
+
+static void test_gpu_reading() {
+    // What the NVIDIA driver's tool prints, in mebibytes.
+    const std::vector<GpuAdapter> cards = gpu::parse_nvidia("NVIDIA GeForce RTX 4090, 37, 24564, 8123\nNVIDIA RTX A2000, [N/A], 6138, 12\nnot a card\n");
+    CHECK(cards.size() == 2 && cards[0].name == "NVIDIA GeForce RTX 4090" && cards[0].busy_percent == 37 && cards[0].total_bytes == 24564LL * 1048576 && cards[0].used_bytes == 8123LL * 1048576);
+    CHECK(cards.size() == 2 && cards[1].busy_percent == -1);
+    CHECK(gpu::describe(cards[0]) == "37% busy · " + byte_text(8123LL * 1048576) + " of " + byte_text(24564LL * 1048576) + " in use");
+    CHECK(gpu::describe(cards[1]).rfind("use not reported", 0) == 0);
+    CHECK(gpu::parse_nvidia("").empty());
+    // What the kernel publishes for AMD and Intel processors; outputs and other vendors are passed over.
+    Sandbox box;
+    const fs::path drm = box.home / "drm";
+    const auto put = [&](const std::string& file, const std::string& text) {
+        fs::create_directories((drm / file).parent_path());
+        write_file_atomic(drm / file, text);
+    };
+    put("card0/device/vendor", "0x1002\n");
+    put("card0/device/gpu_busy_percent", "12\n");
+    put("card0/device/mem_info_vram_total", "8589934592\n");
+    put("card0/device/mem_info_vram_used", "1073741824\n");
+    put("card0-HDMI-A-1/status", "connected\n");
+    put("card1/device/vendor", "0x8086\n");
+    put("card2/device/vendor", "0x10de\n");
+    const std::vector<GpuAdapter> found = gpu::read_drm(drm);
+    CHECK(found.size() == 2 && found[0].name == "AMD graphics (card0)" && found[0].busy_percent == 12 && found[0].total_bytes == 8589934592LL && found[0].used_bytes == 1073741824LL);
+    CHECK(found.size() == 2 && found[1].name == "Intel graphics (card1)" && found[1].busy_percent == -1 && found[1].total_bytes == 0);
+    CHECK(found.size() == 2 && gpu::describe(found[1]) == "use not reported · shares the computer's memory");
+    CHECK(gpu::read_drm(box.home / "nothing-here").empty());
+}
+
+static void test_generation_settings() {
+    Sandbox box;
+    const ModelEndpoint coder{"http://127.0.0.1:8080/", "coder", ""}, other{"http://127.0.0.1:8080/", "other", ""};
+    const auto refused = [&](const std::string& rest, const std::optional<ModelEndpoint>& endpoint) {
+        try { generation::command(rest, endpoint, box.home); } catch (const Error&) { return true; }
+        return false;
+    };
+    CHECK(refused("", std::nullopt));
+    CHECK(generation::command("", coder, box.home).find("temperature  ·  the server's default") != std::string::npos);
+    CHECK(generation::command("temperature 0.2", coder, box.home) == "Temperature is 0.2 for coder.");
+    CHECK(generation::command("top-k 40", coder, box.home) == "Top K is 40 for coder.");
+    CHECK(generation::command("seed 7", other, box.home) == "Seed is 7 for other.");
+    // Out of range, not a number, a fraction where a whole number is meant, and an unknown name are refused.
+    for (const char* wrong : {"temperature 3", "top_p lots", "top_k 1.5", "warmth 1", "temperature"}) CHECK(refused(wrong, coder));
+    const std::string shown = generation::command("", coder, box.home);
+    CHECK(shown.find("temperature  ·  0.2") != std::string::npos && shown.find("top_k  ·  40") != std::string::npos && shown.find("seed  ·  the server's default") != std::string::npos);
+    // What goes in a request: only what was set, for this connection, with whole numbers as whole numbers.
+    const json body = generation::body(coder, box.home);
+    CHECK(body.size() == 2 && body["temperature"] == 0.2 && body["top_k"].is_number_integer() && body["top_k"] == 40);
+    CHECK(generation::body(other, box.home) == json({{"seed", 7}}));
+    CHECK(generation::command("top_k off", coder, box.home) == "Top K is left to the server's default for coder.");
+    CHECK(!generation::body(coder, box.home).contains("top_k"));
+    CHECK(generation::command("clear", coder, box.home) == "Generation settings for coder are left to the server's defaults.");
+    CHECK(generation::body(coder, box.home).empty() && generation::values(other, box.home).size() == 1);
+}
+
+static void test_tool_groups() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+    ScriptedModel model;
+    model.replies = {call("enable_tools", {{"group", "jobs"}}), call("git_status", {}), call("enable_tools", {{"group", "klingon"}}), say("Done.")};
+    Agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {}).run(session, "Look around.");
+    const auto has = [&](size_t step, const char* name) { return step < model.seen_tools.size() && std::find(model.seen_tools[step].begin(), model.seen_tools[step].end(), name) != model.seen_tools[step].end(); };
+    CHECK(model.seen_tools.size() == 4);
+    // At first the model is sent the everyday tools and enable_tools, and none of a group's tools.
+    CHECK(has(0, "read_file") && has(0, "edit_file") && has(0, "enable_tools") && !has(0, "start_job") && !has(0, "git_status") && !has(0, "repository_map"));
+    // A loaded group's tools are sent from the next step on, and the others still wait.
+    CHECK(has(1, "start_job") && has(1, "terminal_input") && !has(1, "git_status") && has(1, "enable_tools"));
+    // A group's tool called before its group was loaded loads the group rather than being turned away.
+    CHECK(has(2, "git_status") && has(2, "repository_map"));
+    CHECK(session.activities.size() == 3 && session.activities[0].state == "completed" && session.activities[0].result.find("Loaded the jobs tools: start_job") != std::string::npos);
+    CHECK(session.activities.size() == 3 && session.activities[1].state == "completed" && session.activities[2].state == "failed" && session.activities[2].result.find("code, docs, workflows, jobs, mcp") != std::string::npos);
+    CHECK(!session.messages.empty() && session.messages[0].content.find("More tools load on request. Call enable_tools with one of: code for") != std::string::npos);
+    CHECK(tool_groups::group_of("start_job") == "jobs" && tool_groups::group_of("read_file").empty());
+}
+
 static void test_language_servers() {
     Sandbox box;
     fs::remove(box.project / "calc.py");
@@ -2797,7 +2943,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"palette", test_palette}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

@@ -37,6 +37,9 @@ final class AppModel: ObservableObject {
     @Published var liveActivities: [Activity] = []
     @Published var approval: PendingApproval?
     @Published var notice: String?
+    /// The search box over sessions, projects, files, commands and chats, and what it has to choose from.
+    @Published var paletteShown = false
+    var paletteItems: [PaletteItem] = []
 
     /// Which part of the window is showing.
     @Published var pane: Pane = .code
@@ -292,7 +295,7 @@ final class AppModel: ObservableObject {
         }
         // Commands that act on the project or on Mason itself, shared with the command line. What they say is shown as a notice.
         let word = text.split(separator: " ", maxSplits: 1).first.map { $0.lowercased() } ?? ""
-        if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language"].contains(word) {
+        if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language", "/generation", "/notes", "/note"].contains(word) {
             draft = ""
             hostCommand(word, String(text.dropFirst(word.count)).trimmingCharacters(in: .whitespaces), in: current)
             return

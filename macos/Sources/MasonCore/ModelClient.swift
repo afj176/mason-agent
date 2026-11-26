@@ -107,6 +107,8 @@ public final class OpenAIClient: ChatModel {
     public init(_ endpoint: ModelEndpoint) throws {
         self.endpoint = endpoint
         base = try ModelEndpoint.validated(endpoint.url)
+        // The generation settings the user keeps for this connection go with every request, unless a caller sets its own.
+        extraBody = Generation.body(for: endpoint)
     }
 
     /// llama.cpp reports the loaded context size at /props. Other servers do not, and then compaction stays manual.

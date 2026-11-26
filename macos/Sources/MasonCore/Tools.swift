@@ -513,3 +513,46 @@ extension Agent {
         }
     }
 }
+
+// MARK: tools loaded by group
+
+extension Agent {
+    /// Tools the model asks for a group at a time with enable_tools. Everything else is offered from the start.
+    static let toolGroups: [(name: String, summary: String, tools: [String])] = [
+        ("code", "the repository map, a language server's answer about one position, full Git status, and a read-only helper", ["repository_map", "inspect_symbol", "git_status", "delegate_readonly"]),
+        ("docs", "installed documentation", ["read_documentation"]),
+        ("workflows", "the project's named workflows and skills", ["read_skill", "run_workflow"]),
+        ("jobs", "background programs and terminals", ["start_job", "poll_job", "stop_job", "start_terminal", "terminal_input", "terminal_status", "terminal_stop"]),
+        ("mcp", "the user's MCP servers", ["mcp_tools", "mcp_call", "mcp_resources", "mcp_read"]),
+    ]
+
+    static func group(of tool: String) -> String? { toolGroups.first { $0.tools.contains(tool) }?.name }
+
+    /// The groups that have a tool this session may use and are not loaded yet.
+    static func waiting(_ allowed: [ToolSpec], enabled: Set<String>) -> [(name: String, summary: String, tools: [String])] {
+        let names = Set(allowed.map(\.name))
+        return toolGroups.filter { group in !enabled.contains(group.name) && group.tools.contains { names.contains($0) } }
+    }
+
+    /// The enable_tools definition, naming the groups still to load, or nil when there are none.
+    static func loaderTool(for allowed: [ToolSpec], enabled: Set<String>) -> ToolSpec? {
+        let groups = waiting(allowed, enabled: enabled)
+        guard !groups.isEmpty else { return nil }
+        let described = groups.map { "\($0.name) (\($0.summary))" }.joined(separator: "; ")
+        let group: [String: Any] = ["type": "string", "enum": groups.map(\.name)]
+        let parameters: [String: Any] = ["type": "object", "properties": ["group": group], "required": ["group"]]
+        return ToolSpec(name: "enable_tools", description: "Load a group of specialised tools, which can then be called from the next step: \(described).", parameters: parameters)
+    }
+
+    /// What the model is sent for one step: the tools always offered, the groups loaded so far, and enable_tools while a group is still waiting.
+    static func offered(_ allowed: [ToolSpec], enabled: Set<String>) -> [ToolSpec] {
+        var list = allowed.filter { spec in group(of: spec.name).map { enabled.contains($0) } ?? true }
+        if let loader = loaderTool(for: allowed, enabled: enabled) { list.append(loader) }
+        return list
+    }
+
+    static func groupsNote(for allowed: [ToolSpec], enabled: Set<String>) -> String {
+        let groups = waiting(allowed, enabled: enabled)
+        return "More tools load on request. Call enable_tools with one of: " + groups.map { "\($0.name) for \($0.summary)" }.joined(separator: "; ") + "."
+    }
+}

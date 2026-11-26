@@ -171,7 +171,6 @@
         </li>
       </ul>
       <p class="section-lede">All three apps do the same things: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. They work out checks from a request and run them, and build a simple offline store with a built-in component. They have experiments in worktrees, pull request drafting, background tasks that outlive the app, separate reviewer and vision models, pinned project tests, a file viewer and a Website panel, network access you allow per host, project policy with hooks, installable bundles, pictures and documents in chat, and charts for tables in answers.</p>
-      <p class="section-lede"><strong>Where they differ today.</strong> A language server runs inside the sandbox in Auto on macOS and Linux; on Windows it runs with your account, and Mason asks before starting it. Experiments, pull request drafting, background tasks, model roles, project policy, network mode and bundles are in Settings on macOS and Linux, and in the project menu on Windows. Windows only for now: editor evidence from VS Code, project notes and the Ctrl+K palette, GPU telemetry and per-connection generation settings.</p>
       <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, Mason starts a local model, reads a file, asks before editing it, and reports the change">
         <pre><code><span class="t-dim">~/src/shop $</span> mason
   <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
@@ -288,7 +287,7 @@
             </div>
           </div>
           <p class="note"><strong>First launch:</strong> the app is not notarized by Apple, so macOS blocks it the first time. Open <em>System Settings → Privacy &amp; Security</em> and choose <em>Open Anyway</em>. On macOS 14 you can also right-click the file and choose <em>Open</em>.</p>
-          <p class="note"><strong>Checked on a Mac:</strong> the app is built and checked on a Mac for every change. Where it differs from the Windows and Linux apps is listed above.</p>
+          <p class="note"><strong>Checked on a Mac:</strong> the app is built and checked on a Mac for every change.</p>
         </div>
 
         <div class="platform-panel" id="panel-linux" role="tabpanel" aria-labelledby="tab-linux">
@@ -318,7 +317,7 @@ cd mason-agent-*-linux-amd64 &amp;&amp; ./install.sh</code></pre>
               </ul>
             </div>
           </div>
-          <p class="note"><strong>Checked on Ubuntu:</strong> the app is built and checked on Ubuntu 24.04 for every change, and not yet tried on other distributions. Where it differs from the Windows and macOS apps is listed above.</p>
+          <p class="note"><strong>Checked on Ubuntu:</strong> the app is built and checked on Ubuntu 24.04 for every change, and not yet tried on other distributions.</p>
         </div>
 
         <p class="note">SHA-256 checksums are attached to each release if you want to verify a download.</p>

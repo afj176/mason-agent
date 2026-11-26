@@ -10,6 +10,8 @@
 #include <mutex>
 #include <thread>
 
+#include "generation.hpp"
+#include "notes.hpp"
 #include "language.hpp"
 #include "agent.hpp"
 #include "derived.hpp"
@@ -553,6 +555,14 @@ private:
             for (const std::string& line : split(language_servers::command(rest, &workspace_, store_.home()), '\n')) term::line("  " + line);
             return true;
         }
+        if (name == "/notes" || name == "/note") {
+            for (const std::string& line : split(project_notes::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/generation") {
+            for (const std::string& line : split(generation::command(rest, endpoint, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
         if (name == "/policy") {
             for (const std::string& line : split(policies::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
             return true;
@@ -679,6 +689,8 @@ private:
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
             {"/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"},
             {"/languages", "The languages in this project and the language server that checks each; install one (see /languages help)"},
+            {"/notes", "Notes kept for this project and given to the model with each request (see /notes help)"},
+            {"/generation", "Temperature, top P and the like, kept for the model in use (see /generation help)"},
             {"/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"},
             {"/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"},
             {"/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"},

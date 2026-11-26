@@ -6,6 +6,7 @@
 #include "planning.hpp"
 #include "roles.hpp"
 #include "bundles.hpp"
+#include "notes.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -834,7 +835,19 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     }
     offered_names_.clear();
     for (const ToolSpec& tool : offered) offered_names_.push_back(tool.name);
+    // Specialised tools are loaded a group at a time. A group the prompt already points the model at starts loaded.
+    enabled_groups_.clear();
+    if (!mcp::enabled(store_.home()).empty()) enabled_groups_.insert("mcp");
+    if (!skills::list(*workspace, store_.home()).empty()) enabled_groups_.insert("workflows");
     std::string prompt = system_prompt(session);
+    {
+        std::vector<std::string> waiting;
+        for (const tool_groups::Group& group : tool_groups::waiting(offered, enabled_groups_)) waiting.push_back(group.name + " for " + group.summary);
+        if (!waiting.empty()) {
+            offered_names_.push_back("enable_tools");
+            prompt += "\nMore tools load on request. Call enable_tools with one of: " + join(waiting, "; ") + ".";
+        }
+    }
     {
         std::vector<std::string> listed;
         for (const Definition& skill : skills::list(*workspace, store_.home())) listed.push_back(skill.name + " (" + skill.description + ")");
@@ -845,6 +858,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         for (const McpServer& server : mcp::enabled(store_.home())) names.push_back(server.name);
         if (!names.empty()) prompt += "\nThe user registered these MCP servers: " + join(names, ", ") + ". Use mcp_tools to see what one offers before calling it.";
     }
+    if (const std::string notes = project_notes::context(store_.home(), *workspace); !notes.empty()) prompt += "\n" + notes;
     if (std::find(offered_names_.begin(), offered_names_.end(), "verify_acceptance") != offered_names_.end()) {
         prompt += "\nThis project has acceptance scenarios in mason.acceptance.json. Run verify_acceptance after changing a page they cover, and do not edit that file unless asked.";
     }
@@ -900,10 +914,11 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                 if (compaction::compact(session, model_, 6, cancel)) store_.save(session);
                 else session.prompt_tokens = 0;
             }
-            ModelReply reply = model_.complete(session.messages, offered, [this](const std::string& text) { emit_({AgentEvent::Kind::Text, text, {}}); }, cancel);
+            const std::vector<ToolSpec> sent = tool_groups::offered(offered, enabled_groups_);
+            ModelReply reply = model_.complete(session.messages, sent, [this](const std::string& text) { emit_({AgentEvent::Kind::Text, text, {}}); }, cancel);
             // A call the model wrote as text instead of through the tool-call channel is recovered.
             if (reply.tool_calls.empty()) {
-                if (auto written = recover_tool_call(reply.text, offered)) reply.tool_calls.push_back(*written);
+                if (auto written = recover_tool_call(reply.text, sent)) reply.tool_calls.push_back(*written);
             }
             if (reply.prompt_tokens > 0) session.prompt_tokens = reply.prompt_tokens;
             session.messages.push_back({"assistant", reply.text, reply.tool_calls, ""});
@@ -1130,6 +1145,24 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
     const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
     try {
         if (policy_) policy_->check(call.name, text("name").value_or(""));
+        // A tool called before its group was loaded loads the group: the model knew the tool, so it is not turned away.
+        if (const std::string group = tool_groups::group_of(call.name); !group.empty()) enabled_groups_.insert(group);
+        if (call.name == "enable_tools") {
+            const auto name = text("group");
+            std::vector<std::string> names, loaded;
+            const tool_groups::Group* chosen = nullptr;
+            for (const tool_groups::Group& group : tool_groups::all()) {
+                names.push_back(group.name);
+                if (name && group.name == *name) chosen = &group;
+            }
+            if (!chosen) throw Error("enable_tools needs a group: " + join(names, ", ") + ".");
+            for (const std::string& tool : chosen->tools) {
+                if (std::find(offered_names_.begin(), offered_names_.end(), tool) != offered_names_.end()) loaded.push_back(tool);
+            }
+            if (loaded.empty()) throw Error("The " + *name + " tools are not available in this session.");
+            enabled_groups_.insert(*name);
+            return finish("completed", "Loaded the " + *name + " tools: " + join(loaded, ", ") + ". They can be called from the next step.");
+        }
         if (call.name == "list_files") {
             const FileListing listing = workspace.files(text("path").value_or("."), 800);
             return finish("completed", listing.paths.empty() ? "No files." : join(listing.paths, "\n") + (listing.truncated ? "\n[Listing clipped at 800 files.]" : ""));
@@ -1406,3 +1439,55 @@ std::string Agent::language_note(const std::string& path, const Workspace& works
 }
 
 }  // namespace mason
+
+namespace mason::tool_groups {
+
+const std::vector<Group>& all() {
+    static const std::vector<Group> groups = {
+        {"code", "the repository map, a language server's answer about one position, full Git status, and a read-only helper", {"repository_map", "inspect_symbol", "git_status", "delegate_readonly"}},
+        {"docs", "installed documentation", {"read_documentation"}},
+        {"workflows", "the project's named workflows and skills", {"read_skill", "run_workflow"}},
+        {"jobs", "background programs and terminals", {"start_job", "poll_job", "stop_job", "start_terminal", "terminal_input", "terminal_status", "terminal_stop"}},
+        {"mcp", "the user's MCP servers", {"mcp_tools", "mcp_call", "mcp_resources", "mcp_read"}},
+    };
+    return groups;
+}
+
+std::string group_of(const std::string& tool) {
+    for (const Group& group : all()) {
+        if (std::find(group.tools.begin(), group.tools.end(), tool) != group.tools.end()) return group.name;
+    }
+    return "";
+}
+
+std::vector<Group> waiting(const std::vector<ToolSpec>& allowed, const std::set<std::string>& enabled) {
+    std::vector<Group> found;
+    for (const Group& group : all()) {
+        if (enabled.count(group.name)) continue;
+        const bool any = std::any_of(allowed.begin(), allowed.end(), [&](const ToolSpec& tool) { return std::find(group.tools.begin(), group.tools.end(), tool.name) != group.tools.end(); });
+        if (any) found.push_back(group);
+    }
+    return found;
+}
+
+std::vector<ToolSpec> offered(const std::vector<ToolSpec>& allowed, const std::set<std::string>& enabled) {
+    std::vector<ToolSpec> list;
+    for (const ToolSpec& tool : allowed) {
+        const std::string group = group_of(tool.name);
+        if (group.empty() || enabled.count(group)) list.push_back(tool);
+    }
+    const std::vector<Group> left = waiting(allowed, enabled);
+    if (!left.empty()) {
+        std::vector<std::string> described;
+        json names = json::array();
+        for (const Group& group : left) {
+            described.push_back(group.name + " (" + group.summary + ")");
+            names.push_back(group.name);
+        }
+        list.push_back({"enable_tools", "Load a group of specialised tools, which can then be called from the next step: " + join(described, "; ") + ".",
+                        {{"type", "object"}, {"properties", {{"group", {{"type", "string"}, {"enum", names}}}}}, {"required", json::array({"group"})}}});
+    }
+    return list;
+}
+
+}  // namespace mason::tool_groups

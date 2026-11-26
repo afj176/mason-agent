@@ -238,18 +238,6 @@ public sealed partial class MainWindow
             }
             catch (Exception e) { Fail(e); }
         });
-        var editor = SettingsCard("\uE943", "VS Code extension", "Share editor selections, unsaved buffers and diagnostics with Mason.", Button("Show installer", async (_, _) =>
-        {
-            try
-            {
-                var p = Path.Combine(AppContext.BaseDirectory, "integrations", "mason-workspace.vsix");
-                if (!File.Exists(p)) throw new FileNotFoundException("The installer includes the editor extension under integrations.");
-                var folder = await Windows.Storage.StorageFolder.GetFolderFromPathAsync(Path.GetDirectoryName(p)!);
-                var options = new Windows.System.FolderLauncherOptions(); options.ItemsToSelect.Add(await Windows.Storage.StorageFile.GetFileFromPathAsync(p));
-                await Windows.System.Launcher.LaunchFolderAsync(folder, options); Say("In VS Code, choose Extensions: Install from VSIX and select mason-workspace.vsix.", InfoBarSeverity.Informational);
-            }
-            catch (Exception e) { Fail(e); }
-        }));
         Refresh();
 
         // Language servers: which are installed for this project's languages, and installing the ones a language's own tool can fetch.
@@ -288,7 +276,7 @@ public sealed partial class MainWindow
             SettingsGroup("Scheduled runs"), Row(IconButton("\uE710", "Schedule a run", async (_, _) => await AddSchedule(), true)), schedulesHost,
             SettingsGroup("Project policy"), policyForm,
             SettingsGroup("Language servers"), languagesNote, languagesHost,
-            SettingsGroup("Extensions"), new Border { Style = Token("MasonCard"), Child = Stack(bundles, bundleInfo, Row(install, toggleBundle, uninstall)) }, editor);
+            SettingsGroup("Extensions"), new Border { Style = Token("MasonCard"), Child = Stack(bundles, bundleInfo, Row(install, toggleBundle, uninstall)) });
         page.Padding = new Thickness(24, 16, 24, 0);
         return page;
     }

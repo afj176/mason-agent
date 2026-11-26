@@ -993,11 +993,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     else if (!prior.Content.Contains('\r')) content = content.Replace("\r\n", "\n");
                     replacements = [new(prior.Content, content)];
                 }
-                var dirty=session.Turns.LastOrDefault(t=>t.Role=="user")?.Evidence.FirstOrDefault(e=>e.Unsaved && e.Source.Equals(path,StringComparison.OrdinalIgnoreCase));
-                if (session.Permission == CodePermission.ReviewEdits || dirty!=null)
+                if (session.Permission == CodePermission.ReviewEdits)
                 {
                     string diff=editing?string.Join("\n\n",replacements.Select(e=>"Replace exactly:\n"+e.OldText+"\nWith:\n"+e.NewText)):S(a,"content");
-                    await Review(new(tool,(editing?"Edit ":"Create ")+path,dirty==null?diff:"The attached editor buffer has unsaved changes. This edit writes the on-disk file.\n"+dirty.Details+"\n\n"+diff){Subject=path},allowRule:dirty==null);
+                    await Review(new(tool,(editing?"Edit ":"Create ")+path,diff){Subject=path});
                 }
                 ct.ThrowIfCancellationRequested();
                 var change = session.Changes.FirstOrDefault(c => c.Path.Equals(path, StringComparison.OrdinalIgnoreCase) && !c.Restored);

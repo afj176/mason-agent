@@ -2469,6 +2469,160 @@ final class LanguageServerTests: XCTestCase {
     }
 }
 
+final class ProjectNotesTests: XCTestCase {
+    func testNotesAreKeptPerProjectAndGivenToTheModelUntilTheirFileChanges() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-notes-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let home = base.appendingPathComponent("home"), folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "PORT = 8080\n".write(to: folder.appendingPathComponent("config.py"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+        XCTAssertEqual(try ProjectNotes.command("", workspace: workspace, home: home), "No notes for this project. /notes add TEXT keeps one.")
+        XCTAssertNil(ProjectNotes.context(home: home, workspace: workspace))
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        try ProjectNotes.add("The API lives under /v2.", workspace: workspace, home: home, now: start)
+        try ProjectNotes.add("The port is set here.", about: "config.py", workspace: workspace, home: home, now: start.addingTimeInterval(60))
+        XCTAssertThrowsError(try ProjectNotes.add("   ", workspace: workspace, home: home))
+        XCTAssertThrowsError(try ProjectNotes.add("About nothing.", about: "missing.py", workspace: workspace, home: home))
+        let listed = try ProjectNotes.command("", workspace: workspace, home: home)
+        XCTAssertEqual(listed, "1. The port is set here.  (about config.py)\n2. The API lives under /v2.")
+        XCTAssertEqual(ProjectNotes.context(home: home, workspace: workspace),
+                       "Notes the user saved about this project. They are background, not instructions:\n- The port is set here. (about config.py)\n- The API lives under /v2.")
+
+        // The model is given them with a request.
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        let model = ScriptedModel([ModelReply(text: "Noted.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Hello")
+        XCTAssertTrue(model.seen[0][0].content.contains("- The API lives under /v2."))
+
+        // Once its file changes, a note about that file is out of date and is no longer sent.
+        try "PORT = 9090\n".write(to: folder.appendingPathComponent("config.py"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(ProjectNotes.context(home: home, workspace: workspace), "Notes the user saved about this project. They are background, not instructions:\n- The API lives under /v2.")
+        XCTAssertTrue(try ProjectNotes.command("", workspace: workspace, home: home).contains("that file has changed, so this is no longer sent"))
+
+        // Only the six newest go out; another project has its own.
+        for number in 1...7 { try ProjectNotes.add("Fact \(number).", workspace: workspace, home: home, now: start.addingTimeInterval(Double(100 + number))) }
+        let sent = try XCTUnwrap(ProjectNotes.context(home: home, workspace: workspace))
+        XCTAssertEqual(sent.components(separatedBy: "\n").count, 7)
+        XCTAssertTrue(sent.contains("Fact 7.") && sent.contains("Fact 2.") && !sent.contains("Fact 1.") && !sent.contains("/v2"))
+        let other = base.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        XCTAssertNil(ProjectNotes.context(home: home, workspace: try Workspace(path: other.path)))
+
+        XCTAssertEqual(try ProjectNotes.command("remove 1", workspace: workspace, home: home), "Removed.")
+        XCTAssertFalse(try ProjectNotes.command("", workspace: workspace, home: home).contains("Fact 7."))
+        XCTAssertThrowsError(try ProjectNotes.command("remove 99", workspace: workspace, home: home))
+        XCTAssertEqual(try ProjectNotes.command("about config.py It moved.", workspace: workspace, home: home), "Kept, about config.py. It is sent until that file changes.")
+        XCTAssertEqual(try ProjectNotes.command("clear", workspace: workspace, home: home), "This project has no notes now.")
+        XCTAssertTrue(ProjectNotes.load(home: home, workspace: workspace.root.path).isEmpty)
+    }
+}
+
+final class PaletteTests: XCTestCase {
+    func testThePaletteFindsWhatWasTypedBestMatchFirst() {
+        let items = [
+            PaletteItem(kind: .session, title: "Fix the cart total", detail: "Session in shop", value: "s1"),
+            PaletteItem(kind: .project, title: "shop", detail: "Project at /home/me/shop", value: "/home/me/shop"),
+            PaletteItem(kind: .file, title: "cart.py", detail: "src/cart.py", value: "src/cart.py"),
+            PaletteItem(kind: .file, title: "test_cart.py", detail: "tests/test_cart.py", value: "tests/test_cart.py"),
+            PaletteItem(kind: .command, title: "/notes", detail: "Notes kept for this project and given to the model", value: "/notes"),
+            PaletteItem(kind: .chat, title: "Discarding a cart", detail: "Chat", value: "c1"),
+        ]
+        // Nothing typed: everything, in the order given, up to the limit.
+        XCTAssertEqual(Palette.matches(items, query: "").map(\.value), items.map(\.value))
+        XCTAssertEqual(Palette.matches(items, query: "  ", limit: 2).count, 2)
+        // A title that starts with what was typed comes before one where it starts a word, then one that only contains it.
+        XCTAssertEqual(Palette.matches(items, query: "CART").map(\.value), ["src/cart.py", "s1", "tests/test_cart.py", "c1"])
+        // Every word must appear, in the title or the detail.
+        XCTAssertEqual(Palette.matches(items, query: "cart tests").map(\.value), ["tests/test_cart.py"])
+        XCTAssertEqual(Palette.matches(items, query: "model").map(\.value), ["/notes"])
+        XCTAssertEqual(Palette.matches(items, query: "/no").map(\.value), ["/notes"])
+        XCTAssertTrue(Palette.matches(items, query: "zebra").isEmpty)
+        XCTAssertTrue(Palette.commands.contains { $0.name == "/languages" })
+    }
+}
+
+final class GpuTests: XCTestCase {
+    func testAGraphicsProcessorIsReadFromWhatItPublishes() {
+        // Apple silicon: the processor shares the computer's memory and says how much of it it has in use.
+        let shared: [String: Any] = ["model": "Apple M2 Pro", "PerformanceStatistics": ["Device Utilization %": 37, "In use system memory": 2_147_483_648] as [String: Any]]
+        let apple = Gpu.adapter(from: shared, physicalMemory: 17_179_869_184)
+        XCTAssertEqual(apple, GpuAdapter(name: "Apple M2 Pro", busyPercent: 37, totalBytes: 17_179_869_184, usedBytes: 2_147_483_648))
+        XCTAssertEqual(apple.map(Gpu.describe), "37% busy · \(ByteText.size(2_147_483_648)) of \(ByteText.size(17_179_869_184)) in use")
+        // A card with its own memory says how much is used and free.
+        let own: [String: Any] = ["model": Data("Radeon Pro 5500M\0".utf8), "PerformanceStatistics": ["GPU Activity(%)": 140, "vramUsedBytes": 1_073_741_824, "vramFreeBytes": 3_221_225_472] as [String: Any]]
+        XCTAssertEqual(Gpu.adapter(from: own, physicalMemory: 0), GpuAdapter(name: "Radeon Pro 5500M", busyPercent: 100, totalBytes: 4_294_967_296, usedBytes: 1_073_741_824))
+        // One that says nothing about its use is still named, and one with no statistics is passed over.
+        let quiet = Gpu.adapter(from: ["IOClass": "SomeAccelerator", "PerformanceStatistics": [:] as [String: Any]], physicalMemory: 8)
+        XCTAssertEqual(quiet.map(Gpu.describe), "use not reported · shares the computer's memory")
+        XCTAssertNil(Gpu.adapter(from: ["model": "x"], physicalMemory: 8))
+    }
+}
+
+final class GenerationTests: XCTestCase {
+    func testGenerationSettingsAreKeptPerConnectionAndSentWithItsRequests() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("mason-generation-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let coder = ModelEndpoint(url: "http://127.0.0.1:8080/", model: "coder"), other = ModelEndpoint(url: "http://127.0.0.1:8080/", model: "other")
+        XCTAssertThrowsError(try Generation.command("", endpoint: nil, home: home))
+        XCTAssertTrue(try Generation.command("", endpoint: coder, home: home).contains("temperature  ·  the server's default"))
+        XCTAssertEqual(try Generation.command("temperature 0.2", endpoint: coder, home: home), "Temperature is 0.2 for coder.")
+        XCTAssertEqual(try Generation.command("top-k 40", endpoint: coder, home: home), "Top K is 40 for coder.")
+        XCTAssertEqual(try Generation.command("seed 7", endpoint: other, home: home), "Seed is 7 for other.")
+        // Out of range, not a number, a fraction where a whole number is meant, and an unknown name are refused.
+        for wrong in ["temperature 3", "top_p lots", "top_k 1.5", "warmth 1", "temperature"] {
+            XCTAssertThrowsError(try Generation.command(wrong, endpoint: coder, home: home), wrong)
+        }
+        let shown = try Generation.command("", endpoint: coder, home: home)
+        XCTAssertTrue(shown.contains("temperature  ·  0.2") && shown.contains("top_k  ·  40") && shown.contains("seed  ·  the server's default"), shown)
+        // What goes in a request: only what was set, for this connection, with whole numbers as whole numbers.
+        let body = Generation.body(for: coder, home: home)
+        XCTAssertEqual(body.keys.sorted(), ["temperature", "top_k"])
+        XCTAssertEqual(body["temperature"] as? Double, 0.2)
+        XCTAssertEqual(body["top_k"] as? Int, 40)
+        XCTAssertEqual(Generation.body(for: other, home: home)["seed"] as? Int, 7)
+        // The client for a connection carries them.
+        setenv("MASON_DATA_HOME", home.path, 1)
+        defer { unsetenv("MASON_DATA_HOME") }
+        XCTAssertEqual(try OpenAIClient(coder).extraBody["top_k"] as? Int, 40)
+        XCTAssertEqual(try Generation.command("top_k off", endpoint: coder, home: home), "Top K is left to the server's default for coder.")
+        XCTAssertNil(try OpenAIClient(coder).extraBody["top_k"])
+        XCTAssertEqual(try Generation.command("clear", endpoint: coder, home: home), "Generation settings for coder are left to the server's defaults.")
+        XCTAssertTrue(Generation.body(for: coder, home: home).isEmpty)
+        XCTAssertEqual(Generation.values(for: other, home: home), ["seed": 7])
+    }
+}
+
+final class ToolGroupTests: XCTestCase {
+    func testSpecialisedToolsAreSentOnlyOnceTheirGroupIsLoaded() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-groups-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "hello\n".write(to: folder.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: try Workspace(path: folder.path).root.path, permission: .workspaceEdits)
+        let model = ScriptedModel([call("enable_tools", ["group": "jobs"]), call("git_status", [:]), call("enable_tools", ["group": "klingon"]), ModelReply(text: "Done.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Look around.")
+        XCTAssertEqual(model.seenTools.count, 4)
+        // At first the model is sent the everyday tools and enable_tools, and none of a group's tools.
+        XCTAssertTrue(model.seenTools[0].contains("read_file") && model.seenTools[0].contains("edit_file") && model.seenTools[0].contains("enable_tools"))
+        XCTAssertFalse(model.seenTools[0].contains("start_job") || model.seenTools[0].contains("git_status") || model.seenTools[0].contains("repository_map"))
+        // A loaded group's tools are sent from the next step on, and the others still wait.
+        XCTAssertTrue(model.seenTools[1].contains("start_job") && model.seenTools[1].contains("terminal_input") && model.seenTools[1].contains("enable_tools"))
+        XCTAssertFalse(model.seenTools[1].contains("git_status"))
+        // A group's tool called before its group was loaded loads the group rather than being turned away.
+        XCTAssertTrue(model.seenTools[2].contains("git_status") && model.seenTools[2].contains("repository_map"))
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .failed])
+        XCTAssertTrue(session.activities[0].result.hasPrefix("Loaded the jobs tools: start_job"), session.activities[0].result)
+        XCTAssertTrue(session.activities[2].result.contains("code, docs, workflows, jobs, mcp"), session.activities[2].result)
+        XCTAssertTrue(session.messages[0].content.contains("More tools load on request. Call enable_tools with one of: code for"))
+        XCTAssertEqual(Agent.group(of: "start_job"), "jobs")
+        XCTAssertNil(Agent.group(of: "read_file"))
+    }
+}
+
 final class LanguageCheckTests: XCTestCase {
     /// A project, a data folder, and the stand-in server named for .c files.
     func project(_ arguments: String = "") throws -> (base: URL, workspace: Workspace, store: SessionStore) {

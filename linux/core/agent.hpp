@@ -132,6 +132,8 @@ private:
     snapshot::Map snapshot_;
     /// Background programs started during the current request.
     Jobs jobs_;
+    /// The tool groups this request has loaded with enable_tools.
+    std::set<std::string> enabled_groups_;
     /// The language servers this request has started, and what the user said about starting each.
     LanguageSessions languages_;
     std::map<std::string, bool> language_answers_;
@@ -169,5 +171,21 @@ private:
     bool accepting_ = false;
     CancelToken turn_cancel_;
 };
+
+/// Tools the model asks for a group at a time with enable_tools. Everything else is offered from the start, so the
+/// model is not sent every definition with every step.
+namespace tool_groups {
+struct Group {
+    std::string name, summary;
+    std::vector<std::string> tools;
+};
+const std::vector<Group>& all();
+/// The group a tool belongs to, or an empty string for a tool that is always offered.
+std::string group_of(const std::string& tool);
+/// The groups that have a tool this session may use and are not loaded yet.
+std::vector<Group> waiting(const std::vector<ToolSpec>& allowed, const std::set<std::string>& enabled);
+/// What the model is sent for one step: the tools always offered, the groups loaded so far, and enable_tools while a group is still waiting.
+std::vector<ToolSpec> offered(const std::vector<ToolSpec>& allowed, const std::set<std::string>& enabled);
+}  // namespace tool_groups
 
 }  // namespace mason
