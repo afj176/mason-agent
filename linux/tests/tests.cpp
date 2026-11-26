@@ -10,6 +10,7 @@
 
 #include "agent.hpp"
 #include "chat.hpp"
+#include "schedules.hpp"
 #include "models.hpp"
 
 using namespace mason;
@@ -707,11 +708,77 @@ static void test_queue_and_steer() {
     }
 }
 
+static void test_schedules() {
+    setenv("TZ", "UTC", 1);
+    tzset();
+    Sandbox box;
+    box.write("a.py", "x = 1\n");
+    const std::string project = Workspace(box.project.string()).root();
+    const ModelEndpoint endpoint{"http://127.0.0.1:1/", "scripted", ""};
+    auto at = [](const char* text) {
+        std::tm parts{};
+        strptime(text, "%Y-%m-%dT%H:%M:%SZ", &parts);
+        return timegm(&parts);
+    };
+    auto make = [&](Schedule::Cadence cadence, int hour, int minute, int weekday = 1) {
+        Schedule schedule;
+        schedule.cadence = cadence;
+        schedule.hour = hour;
+        schedule.minute = minute;
+        schedule.weekday = weekday;
+        return schedule;
+    };
+    // 2026-11-27 is a Friday.
+    const std::time_t friday = at("2026-11-27T10:30:00Z");
+    CHECK(make(Schedule::Cadence::Hourly, 0, 45).next(friday) == at("2026-11-27T10:45:00Z"));
+    CHECK(make(Schedule::Cadence::Hourly, 0, 15).next(friday) == at("2026-11-27T11:15:00Z"));
+    CHECK(make(Schedule::Cadence::Daily, 9, 0).next(friday) == at("2026-11-28T09:00:00Z"));
+    CHECK(make(Schedule::Cadence::Daily, 18, 0).next(friday) == at("2026-11-27T18:00:00Z"));
+    CHECK(make(Schedule::Cadence::Weekdays, 9, 0).next(friday) == at("2026-11-30T09:00:00Z"));  // the weekend is skipped
+    CHECK(make(Schedule::Cadence::Weekly, 9, 0, 3).next(friday) == at("2026-12-02T09:00:00Z"));  // the next Wednesday
+    CHECK(make(Schedule::Cadence::Weekly, 9, 0, 3).summary() == "Every Wednesday at 09:00" && make(Schedule::Cadence::Hourly, 0, 5).summary() == "Every hour at :05");
+
+    // The /schedule command adds, lists, switches and removes.
+    CHECK(starts_with(schedules::command("", box.home, project, endpoint), "No schedules."));
+    const std::string added = schedules::command("add tidy weekly wed 09:00 auto -- Run the linter -- and fix what it finds", box.home, project, endpoint, friday);
+    CHECK(added.find("every wednesday at 09:00") != std::string::npos && added.find("Auto") != std::string::npos);
+    schedules::command("add report hourly :45 -- Read a.py and report", box.home, project, endpoint, friday);
+    std::vector<Schedule> saved = schedules::load(box.home);
+    CHECK(saved.size() == 2 && saved[0].name == "tidy" && saved[0].prompt == "Run the linter -- and fix what it finds" && saved[0].automatic && !saved[1].automatic);
+    CHECK(saved[1].cadence == Schedule::Cadence::Hourly && saved[1].created == friday);
+    CHECK(schedules::command("list", box.home, project, endpoint, friday).find("report  ·  Every hour at :45  ·  read-only") != std::string::npos);
+    for (const char* bad : {"add tidy daily 09:00 -- again", "add x daily 25:00 -- p", "add x weekly 09:00 -- p", "add x daily 09:00", "add two words daily 09:00 -- p", "remove nothing", "nonsense"}) {
+        CHECK_THROWS(schedules::command(bad, box.home, project, endpoint, friday));
+    }
+    CHECK_THROWS(schedules::command("add x daily 09:00 -- p", box.home, project, std::nullopt));  // a schedule needs a model
+    CHECK(schedules::command("off tidy", box.home, project, endpoint) == "tidy is off.");
+    CHECK(schedules::command("remove tidy", box.home, project, endpoint) == "Removed tidy.");
+
+    // A due schedule runs once, unattended, and records its outcome.
+    CHECK(schedules::due(schedules::load(box.home), at("2026-11-27T10:40:00Z")).empty());
+    const std::vector<Schedule> due = schedules::due(schedules::load(box.home), at("2026-11-27T13:50:00Z"));  // three hours with nothing checking
+    CHECK(due.size() == 1 && due[0].name == "report");
+    SessionStore store(box.home);
+    ScriptedModel model;
+    model.replies = {call("read_file", {{"path", "a.py"}}), call("write_file", {{"path", "a.py"}, {"content", "x = 2\n"}}), say("a.py sets x to 1.")};
+    const std::optional<Session> session = schedules::run(due[0], box.home, store, &model);
+    CHECK(session && session->title == "Scheduled: report" && session->state == "Completed");
+    CHECK(session && session->activities.size() == 2 && session->activities[1].state == "failed");  // a read-only scheduled run cannot edit
+    CHECK(box.read("a.py") == "x = 1\n");
+    const Schedule after = schedules::load(box.home)[0];
+    CHECK(after.last_outcome == "Completed" && session && after.last_session == session->id && after.last_run > 0);
+    CHECK(after.next(after.last_run) > after.last_run);  // the missed hours are not made up
+
+    // A model that is not answering is recorded as skipped, and no session is made.
+    CHECK(!schedules::run(after, box.home, store));
+    CHECK(starts_with(schedules::load(box.home)[0].last_outcome, "Skipped:"));
+}
+
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

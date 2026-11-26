@@ -1,3 +1,4 @@
+import UserNotifications
 import Foundation
 import SwiftUI
 import MasonCore
@@ -75,6 +76,62 @@ final class AppModel: ObservableObject {
             chatSelection = chats.first?.id
         }
         Task { await refreshModels(startLastIfNeeded: true) }
+        // Scheduled requests are checked shortly after launch and then every minute while the app is open.
+        scheduleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in await self?.runDueSchedules() } }
+        Task { try? await Task.sleep(nanoseconds: 8_000_000_000); await runDueSchedules() }
+    }
+
+    // MARK: schedules and notifications
+
+    private var scheduleTimer: Timer?
+    private var schedulesRunning = false
+    @Published var scheduleStatus = ""
+
+    /// Runs every schedule that is due, one after another, each as its own unattended session.
+    func runDueSchedules(only name: String? = nil) async {
+        guard let store, !schedulesRunning else { return }
+        let home = store.folder.deletingLastPathComponent()
+        let all = Schedules.load(home: home)
+        let chosen = name.map { wanted in all.filter { $0.name.lowercased() == wanted.lowercased() } } ?? Schedules.due(all)
+        guard !chosen.isEmpty else { return }
+        schedulesRunning = true
+        for schedule in chosen {
+            scheduleStatus = "Running the schedule \(schedule.name)"
+            await Schedules.run(schedule, home: home, store: store)
+            sessions = store.sessions
+            let outcome = Schedules.load(home: home).first { $0.id == schedule.id }?.lastOutcome ?? "finished"
+            notify("Scheduled: \(schedule.name)", outcome)
+        }
+        scheduleStatus = ""
+        schedulesRunning = false
+    }
+
+    /// "/schedule ..." typed in the request box: list, add, switch or remove a schedule, or run one now.
+    func scheduleCommand(_ arguments: String) {
+        guard let store else { return }
+        let home = store.folder.deletingLastPathComponent()
+        if arguments.lowercased().hasPrefix("run ") {
+            let name = arguments.dropFirst(4).trimmingCharacters(in: .whitespaces)
+            guard Schedules.load(home: home).contains(where: { $0.name.lowercased() == name.lowercased() }) else { notice = "No schedule named \(name)."; return }
+            notice = "Running \(name) now, unattended. Its session appears in the sidebar when it finishes."
+            Task { await runDueSchedules(only: name) }
+            return
+        }
+        do { notice = try Schedules.command(arguments, home: home, workspace: session?.workspace ?? NSHomeDirectory(), endpoint: endpoint) }
+        catch { notice = describe(error) }
+    }
+
+    /// A system notification, shown only while Mason is in the background. It needs the app bundle and the user's permission.
+    func notify(_ title: String, _ body: String) {
+        guard !NSApp.isActive, Bundle.main.bundleIdentifier != nil else { return }
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body.count > 180 ? String(body.prefix(180)) + "…" : body
+            center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+        }
     }
 
     // MARK: chat
@@ -204,6 +261,9 @@ final class AppModel: ObservableObject {
         // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
         if text.lowercased() == "/compact" { draft = ""; compact(); return }
         if text.lowercased() == "/mcp" { draft = ""; showMcpServers(); return }
+        if text.lowercased() == "/schedule" || text.lowercased().hasPrefix("/schedule ") || text.lowercased() == "/schedules" {
+            draft = ""; scheduleCommand(text.split(separator: " ", maxSplits: 1).dropFirst().first.map(String.init) ?? ""); return
+        }
         if text.lowercased() == "/agent" || text.lowercased().hasPrefix("/agent ") { draft = ""; chooseAgent(String(text.dropFirst(6)).trimmingCharacters(in: .whitespaces)); return }
         guard let endpoint, let model = try? OpenAIClient(endpoint) else {
             notice = "No model is running. Open Models to start one, or start your own local server."
@@ -222,6 +282,7 @@ final class AppModel: ObservableObject {
                         guard let self else { continuation.resume(returning: false); return }
                         self.approval = PendingApproval(request: request, answer: continuation)
                         NSApp.requestUserAttention(.informationalRequest)
+                        self.notify("Mason needs your approval", request.title)
                     }
                 }
             }, emit: { [weak self] event in
@@ -279,6 +340,7 @@ final class AppModel: ObservableObject {
     private func finish(_ result: Session) {
         if let pending = approval { pending.answer.resume(returning: false); approval = nil }
         replace(result)
+        notify(result.title, result.state + (result.detail.isEmpty ? "" : ": " + result.detail))
         running = false; liveText = ""; liveStatus = ""; liveActivities = []
         waitingFollowUps = 0
         runTask = nil

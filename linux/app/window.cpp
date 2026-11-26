@@ -272,6 +272,17 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     adw_application_window_set_content(window_, GTK_WIDGET(toasts_));
 
     controller_.changed.connect([this] { refresh(); });
+    // System notifications are for when the window is not the one in use.
+    controller_.notification.connect([this](const std::string& title, const std::string& body) {
+        if (gtk_window_is_active(GTK_WINDOW(window_))) return;
+        GApplication* application = g_application_get_default();
+        if (!application) return;
+        GNotification* notification = g_notification_new(title.c_str());
+        const std::string shown = utf8_length(body) > 180 ? utf8_prefix(body, 180) + "…" : body;
+        g_notification_set_body(notification, shown.c_str());
+        g_application_send_notification(application, nullptr, notification);
+        g_object_unref(notification);
+    });
     controller_.notice.connect([this](const std::string& message) {
         AdwToast* toast = adw_toast_new(message.c_str());
         adw_toast_set_timeout(toast, 6);
