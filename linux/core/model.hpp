@@ -40,6 +40,8 @@ public:
     virtual std::string name() const = 0;
     virtual ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>& tools,
                                 const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) = 0;
+    /// How many tokens the model can take in one request, or 0 when the server does not say. Automatic compaction needs it.
+    virtual int context_window() { return 0; }
 };
 
 struct ModelEndpoint {
@@ -68,6 +70,8 @@ public:
     std::string name() const override { return endpoint_.model; }
     ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>& tools,
                         const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override;
+    /// llama.cpp reports the loaded context size at /props. Other servers do not, and then compaction stays manual.
+    int context_window() override;
     /// Model IDs the server lists, or nothing when it does not answer.
     static std::optional<std::vector<std::string>> models(const std::string& url, const std::string& key = "", double timeout_seconds = 2);
 private:

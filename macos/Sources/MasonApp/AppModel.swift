@@ -115,6 +115,9 @@ final class AppModel: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !running, let current = session, let store else { return }
+        // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
+        if text.lowercased() == "/compact" { draft = ""; compact(); return }
+        if text.lowercased() == "/agent" || text.lowercased().hasPrefix("/agent ") { draft = ""; chooseAgent(String(text.dropFirst(6)).trimmingCharacters(in: .whitespaces)); return }
         guard let endpoint, let model = try? OpenAIClient(endpoint) else {
             notice = "No model is running. Open Models to start one, or start your own local server."
             return
@@ -173,6 +176,41 @@ final class AppModel: ObservableObject {
         }
         approval = nil
         pending.answer.resume(returning: allow)
+    }
+
+    /// Replaces the conversation so far with a summary from the model. The original messages stay in the session.
+    func compact() {
+        guard let current = session, let store, !running else { return }
+        guard current.messages.count > 2 else { notice = "There is nothing to compact yet."; return }
+        guard let endpoint, let client = try? OpenAIClient(endpoint) else { notice = "Compaction needs a running model. Open Models to start one."; return }
+        running = true; liveText = ""; liveStatus = "Compacting the conversation"; liveActivities = []
+        runTask = Task {
+            var working = current
+            do {
+                if try await Compaction.compact(&working, model: client, keep: 0) {
+                    try store.save(working)
+                    replace(working)
+                    notice = "The conversation was replaced by a summary, which goes with your next request. The original messages are kept."
+                } else { notice = "There is nothing to compact yet." }
+            } catch { notice = describe(error) }
+            running = false; liveStatus = ""
+        }
+    }
+
+    /// "/agent" lists the project's custom agents, "/agent NAME" uses one, "/agent none" goes back to the default.
+    func chooseAgent(_ name: String) {
+        guard var current = session, let store, !running else { return }
+        let agents = Customization.agents(home: store.folder.deletingLastPathComponent(), workspace: current.workspace)
+        if name.isEmpty {
+            notice = agents.isEmpty ? "No custom agents. Add a Markdown file to .mason/agents (or .claude/agents) in this project."
+                : "Agents: " + agents.map(\.name).joined(separator: ", ") + ". Type /agent NAME to use one, or /agent none for the default." + (current.agent.map { " Current: \($0)." } ?? "")
+            return
+        }
+        if ["none", "default", "off"].contains(name.lowercased()) { current.agent = nil }
+        else if let agent = agents.first(where: { $0.name.lowercased() == name.lowercased() }) { current.agent = agent.name }
+        else { notice = "No agent named \(name)."; return }
+        save(current)
+        notice = current.agent.map { "Agent: \($0)." } ?? "Default agent."
     }
 
     func undo(redo: Bool = false) {

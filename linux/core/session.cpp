@@ -31,17 +31,25 @@ Permission permission_from_key(const std::string& key) {
     return Permission::ReviewEdits;
 }
 
+static json message_json(const ChatMessage& message) {
+    json item = {{"role", message.role}, {"content", message.content}};
+    if (!message.tool_calls.empty()) {
+        item["toolCalls"] = json::array();
+        for (const ToolCall& call : message.tool_calls) item["toolCalls"].push_back({{"id", call.id}, {"name", call.name}, {"arguments", call.arguments}});
+    }
+    if (!message.tool_call_id.empty()) item["toolCallId"] = message.tool_call_id;
+    return item;
+}
+
+static ChatMessage message_from_json(const json& item) {
+    ChatMessage message{item.value("role", ""), item.value("content", ""), {}, item.value("toolCallId", "")};
+    for (const json& call : item.value("toolCalls", json::array())) message.tool_calls.push_back({call.value("id", ""), call.value("name", ""), call.value("arguments", "{}")});
+    return message;
+}
+
 json to_json(const Session& session) {
     json messages = json::array();
-    for (const ChatMessage& message : session.messages) {
-        json item = {{"role", message.role}, {"content", message.content}};
-        if (!message.tool_calls.empty()) {
-            item["toolCalls"] = json::array();
-            for (const ToolCall& call : message.tool_calls) item["toolCalls"].push_back({{"id", call.id}, {"name", call.name}, {"arguments", call.arguments}});
-        }
-        if (!message.tool_call_id.empty()) item["toolCallId"] = message.tool_call_id;
-        messages.push_back(std::move(item));
-    }
+    for (const ChatMessage& message : session.messages) messages.push_back(message_json(message));
     json activities = json::array();
     for (const Activity& activity : session.activities) {
         activities.push_back({{"id", activity.id}, {"tool", activity.tool}, {"subject", activity.subject}, {"state", activity.state}, {"result", activity.result}});
@@ -52,14 +60,25 @@ json to_json(const Session& session) {
         for (const FileChange& change : turn.changes) {
             json item = {{"path", change.path}, {"after", change.after}};
             if (change.before) item["before"] = *change.before;
+            if (!change.before_blob.empty()) item["beforeBlob"] = change.before_blob;
+            if (!change.after_blob.empty()) item["afterBlob"] = change.after_blob;
+            if (change.after_missing) item["afterMissing"] = true;
+            if (change.by_command) item["byCommand"] = true;
             changes.push_back(std::move(item));
         }
         turns.push_back({{"id", turn.id}, {"request", turn.request}, {"answer", turn.answer}, {"changes", changes}, {"undone", turn.undone}, {"firstActivity", turn.first_activity}});
     }
-    return {{"version", 1}, {"id", session.id}, {"title", session.title}, {"workspace", session.workspace},
-            {"permission", permission_key(session.permission)}, {"askOnly", session.ask_only}, {"state", session.state},
-            {"detail", session.detail}, {"updated", session.updated}, {"messages", messages}, {"activities", activities},
-            {"turns", turns}, {"promptTokens", session.prompt_tokens}, {"pendingNote", session.pending_note}};
+    json result = {{"version", 1}, {"id", session.id}, {"title", session.title}, {"workspace", session.workspace},
+                   {"permission", permission_key(session.permission)}, {"askOnly", session.ask_only}, {"state", session.state},
+                   {"detail", session.detail}, {"updated", session.updated}, {"messages", messages}, {"activities", activities},
+                   {"turns", turns}, {"promptTokens", session.prompt_tokens}, {"pendingNote", session.pending_note}};
+    if (!session.agent.empty()) result["agent"] = session.agent;
+    if (session.compactions > 0) result["compactions"] = session.compactions;
+    if (!session.archived.empty()) {
+        result["archived"] = json::array();
+        for (const ChatMessage& message : session.archived) result["archived"].push_back(message_json(message));
+    }
+    return result;
 }
 
 Session session_from_json(const json& value) {
@@ -74,11 +93,10 @@ Session session_from_json(const json& value) {
     session.updated = value.value("updated", now_iso());
     session.prompt_tokens = value.value("promptTokens", 0);
     session.pending_note = value.value("pendingNote", "");
-    for (const json& item : value.value("messages", json::array())) {
-        ChatMessage message{item.value("role", ""), item.value("content", ""), {}, item.value("toolCallId", "")};
-        for (const json& call : item.value("toolCalls", json::array())) message.tool_calls.push_back({call.value("id", ""), call.value("name", ""), call.value("arguments", "{}")});
-        session.messages.push_back(std::move(message));
-    }
+    session.agent = value.value("agent", "");
+    session.compactions = value.value("compactions", 0);
+    for (const json& item : value.value("messages", json::array())) session.messages.push_back(message_from_json(item));
+    for (const json& item : value.value("archived", json::array())) session.archived.push_back(message_from_json(item));
     for (const json& item : value.value("activities", json::array())) {
         session.activities.push_back({item.value("id", new_id()), item.value("tool", ""), item.value("subject", ""), item.value("state", "completed"), item.value("result", "")});
     }
@@ -92,6 +110,10 @@ Session session_from_json(const json& value) {
         for (const json& change : item.value("changes", json::array())) {
             FileChange entry{change.value("path", ""), std::nullopt, change.value("after", "")};
             if (change.contains("before") && change["before"].is_string()) entry.before = change["before"].get<std::string>();
+            entry.before_blob = change.value("beforeBlob", "");
+            entry.after_blob = change.value("afterBlob", "");
+            entry.after_missing = change.value("afterMissing", false);
+            entry.by_command = change.value("byCommand", false);
             turn.changes.push_back(std::move(entry));
         }
         session.turns.push_back(std::move(turn));

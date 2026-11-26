@@ -24,7 +24,7 @@ Each platform has its own native app and its own engine, written for that system
 | **macOS** | SwiftUI | Swift | macOS sandbox (`sandbox-exec`) | Preview download |
 | **Linux** | GTK 4 and libadwaita | C++ | bubblewrap | Preview download |
 
-The Windows app is the complete one. The macOS and Linux previews cover the core: sessions, reading and searching a project, reviewed edits with diffs and undo, commands with approvals and always-allow rules, the four permission modes, and finding, downloading and running GGUF models with llama.cpp. Verification receipts, browser checks, milestones, MCP servers, custom agents and scheduling are Windows-only for now.
+The Windows app is the complete one. The macOS and Linux previews cover the core: sessions, reading and searching a project, reviewed edits with diffs, undo of everything a request changed (including what its commands created, changed or deleted), commands with approvals and always-allow rules, the four permission modes, conversation compaction, custom agents and slash commands, and finding, downloading and running GGUF models with llama.cpp. Verification receipts, browser checks, milestones, MCP servers, chat and scheduling are Windows-only for now.
 
 Each platform lives in its own folder and builds on its own, with nothing shared but the brand kit, the docs and this README:
 
@@ -92,7 +92,7 @@ Settings, sessions and downloaded models live in `~/.local/share/MasonAgent` (or
 
 ## The mason command line
 
-This section describes `mason` on Windows. On macOS (Swift) and Linux (C++) the same command has the session and model commands below; it does not have `/compact`, `/agent`, `/commands`, `/queue` or the script operations yet, and its `/undo` covers edits only.
+This section describes `mason` on Windows. On macOS (Swift) and Linux (C++) the same command has the session and model commands below; it has `/compact`, `/agent` and `/commands` too, and does not have `/queue` or the script operations yet.
 
 `mason` is the same agent in your terminal. The macOS installer and both Linux packages put it on your PATH. On Windows it arrives with version 2.2.1: the installer can add it to your PATH, and with the portable ZIP you add its `bin` folder yourself.
 
@@ -236,7 +236,9 @@ A SwiftUI app with the engine written in Swift, in [`macos/`](macos), available 
 - **Sessions by project.** Open a folder, ask for a change, and watch each tool call as it finishes. Answers render Markdown and code.
 - **Permissions.** Read-only, Review edits, Workspace edits, or Auto. In Auto, commands run under the macOS sandbox: they can write only inside the project and your temporary folder, cannot read `~/.ssh`, `~/.aws`, `~/.gnupg` or your keychains, and have no network access. Where the sandbox is unavailable, Auto refuses to run commands instead of running them unprotected.
 - **Approvals.** Each edit shows its diff before it is applied. **Always Allow…** saves a rule for that command prefix or folder in the project.
-- **Changes.** One diff per changed file, with undo and redo of the latest request's edits. Files changed by commands are not tracked yet.
+- **Changes.** One diff per changed file, with undo and redo of everything the latest request changed: its edits and whatever its commands created, changed or deleted. A file you changed since is left alone.
+- **Long sessions.** When a llama.cpp model's context is nearly full, Mason replaces the older messages with a summary and keeps the originals; type `/compact` to do it yourself.
+- **Your agents and commands.** Markdown files in `.mason/agents` and `.mason/commands` (also `.claude` and `.opencode`). Type a command's name with a slash, or `/agent NAME` to use an agent.
 - **Models.** Lists running local servers (Mason's own, llama.cpp, LM Studio, Ollama), every GGUF file on the Mac with what the agent can do with it, and Hugging Face search with a verdict on each result. It installs the official llama.cpp build, downloads a build you choose, verifies both against their published SHA-256, and starts the model. A model Mason starts stops when Mason quits.
 
 ## Linux app
@@ -248,7 +250,9 @@ A GTK 4 and libadwaita app with its engine in C++, in [`linux/`](linux), availab
 - **Sessions by project.** A sidebar of projects and sessions, the conversation with each tool call, and answers with Markdown and code blocks.
 - **Permissions.** Read-only, Review edits, Workspace edits, or Auto. In Auto, commands run under [bubblewrap](https://github.com/containers/bubblewrap): the system is read-only, only the project and a private `/tmp` are writable, credential folders such as `~/.ssh` and `~/.aws` are hidden, and there is no network. Where bubblewrap cannot create a sandbox, Auto refuses to run commands instead of running them unprotected.
 - **Approvals.** Each edit shows its diff before it is applied. **Always Allow…** saves a rule for that command prefix or folder in the project.
-- **Changes.** One diff per changed file, with undo and redo of the latest request's edits. Files changed by commands are not tracked yet.
+- **Changes.** One diff per changed file, with undo and redo of everything the latest request changed: its edits and whatever its commands created, changed or deleted. A file you changed since is left alone.
+- **Long sessions.** When a llama.cpp model's context is nearly full, Mason replaces the older messages with a summary and keeps the originals; type `/compact` to do it yourself.
+- **Your agents and commands.** Markdown files in `.mason/agents` and `.mason/commands` (also `.claude` and `.opencode`). Type a command's name with a slash, or `/agent NAME` to use an agent.
 - **Models.** Running local servers, every GGUF file on the computer with what the agent can do with it, and Hugging Face search with a verdict on each result. It installs the official llama.cpp build (Vulkan when a GPU and the Vulkan loader are present, otherwise CPU), downloads a build you choose, verifies both against their published SHA-256, and starts the model. A model Mason starts stops when Mason quits.
 - **`mason` in the terminal.** The same session, approvals and `/models` commands as the other platforms.
 

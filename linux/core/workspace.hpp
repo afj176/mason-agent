@@ -30,6 +30,9 @@ public:
     bool exists(const std::string& relative) const;
     void write(const std::string& relative, const std::string& content) const;
     void remove(const std::string& relative) const;
+    /// A file's bytes, or nothing when it does not exist. Used to compare and restore files of any kind.
+    std::optional<std::string> data(const std::string& relative) const;
+    void write_data(const std::string& relative, const std::string& bytes) const;
     /// Project-relative file paths in a stable order, skipping excluded folders and links.
     FileListing files(const std::string& under = ".", size_t limit = 2000) const;
     /// Case-insensitive text search over the project's UTF-8 files.

@@ -48,6 +48,8 @@ struct Sandbox {
 struct ScriptedModel : ChatModel {
     std::deque<ModelReply> replies;
     std::vector<std::vector<ChatMessage>> seen;
+    int window = 0;
+    int context_window() override { return window; }
     std::string name() const override { return "scripted"; }
     ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>&, const std::function<void(const std::string&)>& on_text, const CancelToken&) override {
         seen.push_back(messages);
@@ -341,10 +343,130 @@ static void test_sha_and_models() {
     CHECK_THROWS(hub_inspect("../etc"));
 }
 
+static void test_undo_of_command_changes() {
+    Sandbox box;
+    box.write("keep.txt", "keep me\n");
+    box.write("node_modules/old.js", "x");
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::WorkspaceEdits);
+    const std::string original = box.read("calc.py");
+    const auto approve = [](const ApprovalRequest&) { return true; };
+    {
+        ScriptedModel model;
+        model.replies = {call("run_shell", {{"command", "printf 'made' > made.txt && printf 'changed' > calc.py && rm keep.txt && printf '\\377\\376\\000x' > image.bin && printf dep > node_modules/dep.js"}}), say("Done.")};
+        Agent(store, model, approve, [](const AgentEvent&) {}).run(session, "Run the script");
+    }
+    std::vector<std::string> paths;
+    for (const FileChange& change : session.turns.back().changes) {
+        paths.push_back(change.path);
+        CHECK(change.by_command);
+        if (change.path == "image.bin") CHECK(change.opaque());   // a binary file is kept as a blob
+        if (change.path == "keep.txt") CHECK(change.deleted());
+        if (change.path == "made.txt") CHECK(change.created() && change.after == "made");
+    }
+    std::sort(paths.begin(), paths.end());
+    CHECK(paths == (std::vector<std::string>{"calc.py", "image.bin", "keep.txt", "made.txt"}));  // dependency folders are not followed
+    CHECK(session.messages[session.messages.size() - 2].content.find("Files changed by this command") != std::string::npos);
+
+    // The changes survive a reload, then undo puts everything back.
+    Session reloaded = SessionStore(box.home).sessions()[0];
+    auto undone = Agent::undo_latest(reloaded, store);
+    CHECK(undone && undone->restored.size() == 4 && undone->skipped.empty());
+    CHECK(box.read("calc.py") == original && box.read("keep.txt") == "keep me\n");
+    CHECK(!fs::exists(box.project / "made.txt") && !fs::exists(box.project / "image.bin"));
+    auto redone = Agent::undo_latest(reloaded, store, true);
+    CHECK(redone && redone->restored.size() == 4);
+    CHECK(box.read("image.bin") == std::string("\xFF\xFE\x00x", 4) && !fs::exists(box.project / "keep.txt"));
+
+    // A file the user changed after the command is left alone.
+    box.write("made.txt", "mine now");
+    auto again = Agent::undo_latest(reloaded, store);
+    CHECK(again && again->skipped == std::vector<std::string>{"made.txt"} && box.read("made.txt") == "mine now");
+
+    // An edit followed by a command on the same file undoes to where the request started.
+    Sandbox second;
+    SessionStore other(second.home);
+    Session mixed = other.create(Workspace(second.project.string()).root(), Permission::WorkspaceEdits);
+    ScriptedModel model;
+    model.replies = {call("write_file", {{"path", "calc.py"}, {"content", "one\n"}}), call("run_shell", {{"command", "printf 'two\\n' >> calc.py"}}), say("Done.")};
+    Agent(other, model, approve, [](const AgentEvent&) {}).run(mixed, "Rewrite it");
+    CHECK(mixed.turns.back().changes.size() == 1 && mixed.turns.back().changes[0].after == "one\ntwo\n");
+    Agent::undo_latest(mixed, other);
+    CHECK(second.read("calc.py") == "def add(a, b):\n    return a - b\n");
+}
+
+static void test_custom_agents_and_commands() {
+    Sandbox box;
+    box.write(".claude/commands/review.md", "---\ndescription: Review one file\n---\nReview $1 for $2. All: $ARGUMENTS");
+    box.write(".claude/commands/tests.md", "Explain the tests.");
+    box.write(".claude/commands/undo.md", "not a command");
+    box.write(".mason/agents/careful.md", "---\nname: careful\ndescription: Slow and careful\n---\nNever guess.");
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::ReadOnly);
+
+    const std::vector<Definition> commands = customization::commands(store.home(), session.workspace);
+    CHECK(commands.size() == 2 && commands[0].name == "review" && commands[1].name == "tests");  // reserved names are skipped
+    CHECK(commands[0].description == "Review one file" && commands[0].source == ".claude/commands/review.md");
+    CHECK(customization::expand(commands, "/review calc.py \"off by one\"") == std::optional<std::string>("Review calc.py for off by one. All: calc.py \"off by one\""));
+    CHECK(customization::expand(commands, "/tests quickly") == std::optional<std::string>("Explain the tests.\n\nquickly"));
+    CHECK(!customization::expand(commands, "/missing") && !customization::expand(commands, "review calc.py"));
+    CHECK(customization::agents(store.home(), session.workspace).size() == 1);
+
+    session.agent = "careful";
+    ScriptedModel model;
+    model.replies = {say("Reviewed.")};
+    Agent(store, model, nullptr, [](const AgentEvent&) {}).run(session, "/review calc.py bugs");
+    const std::string sent = model.seen[0].back().content;
+    CHECK(sent.find("Never guess.") != std::string::npos && sent.find("Review calc.py for bugs.") != std::string::npos);
+    CHECK(session.turns.back().request == "/review calc.py bugs");  // the session shows what was typed
+    CHECK(SessionStore(box.home).sessions()[0].agent == "careful");
+}
+
+static void test_compaction() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::ReadOnly);
+    session.messages = {{"system", "sys", {}, ""}, {"user", "first", {}, ""}, {"assistant", "", {{"a", "read_file", "{\"path\":\"calc.py\"}"}}, ""},
+                        {"tool", "1\tdef add", {}, "a"}, {"assistant", "It subtracts.", {}, ""}, {"user", "second", {}, ""},
+                        {"assistant", "", {{"b", "read_file", "{}"}}, ""}, {"tool", "more", {}, "b"}};
+    CHECK(compaction::cut(session.messages, 1) == 6);  // a tool result stays with the call that asked for it
+    ScriptedModel summariser;
+    summariser.replies = {say("The user asked about calc.py; add subtracts.")};
+    CHECK(compaction::compact(session, summariser, 1));
+    CHECK(session.messages.size() == 4 && session.messages[1].role == "user" && session.messages[2].role == "assistant" && session.messages[3].role == "tool");
+    CHECK(session.messages[1].content.find("add subtracts") != std::string::npos && session.archived.size() == 5);
+    CHECK(summariser.seen[0][1].content.find("calls read_file") != std::string::npos);
+
+    // A manual compaction keeps nothing; the summary travels with the next request.
+    session.messages.push_back({"assistant", "Done.", {}, ""});
+    summariser.replies = {say("All of it.")};
+    CHECK(compaction::compact(session, summariser, 0));
+    CHECK(session.messages.size() == 1 && session.pending_note.find("All of it.") != std::string::npos && session.compactions == 2);
+    store.save(session);
+    CHECK(SessionStore(box.home).sessions()[0].archived.size() == session.archived.size());
+
+    // A run compacts by itself when the context is nearly full.
+    Session busy = store.create(Workspace(box.project.string()).root(), Permission::ReadOnly);
+    ScriptedModel answers;
+    for (int number = 1; number <= 4; number++) answers.replies.push_back(say("Answer."));
+    for (int number = 1; number <= 4; number++) Agent(store, answers, nullptr, [](const AgentEvent&) {}).run(busy, "question " + std::to_string(number));
+    busy.prompt_tokens = 900;
+    CHECK(compaction::needed(busy, 1000) && !compaction::needed(busy, 4000) && !compaction::needed(busy, 0));
+    ScriptedModel model;
+    model.window = 1000;
+    model.replies = {say("Earlier: two questions were answered."), say("Five.")};
+    Agent(store, model, nullptr, [](const AgentEvent&) {}).run(busy, "fifth question");
+    CHECK(busy.state == "Completed" && busy.compactions == 1 && model.seen[1].size() < 10);
+    bool continued = false;
+    for (const ChatMessage& message : model.seen[1]) continued = continued || message.content.find("two questions were answered") != std::string::npos;
+    CHECK(continued && model.seen[1].back().content.find("fifth question") != std::string::npos);
+}
+
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

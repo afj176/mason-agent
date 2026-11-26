@@ -40,6 +40,14 @@ struct FileChange {
     std::string path;
     std::optional<std::string> before;  ///< Empty when the request created the file.
     std::string after;
+    /// Set when a side is binary or too large to keep as text; the content is in the blob store under this SHA-256.
+    std::string before_blob = "", after_blob = "";
+    bool after_missing = false;  ///< A command deleted the file.
+    bool by_command = false;     ///< A command, not an edit tool, made the change.
+
+    bool opaque() const { return !before_blob.empty() || !after_blob.empty(); }
+    bool created() const { return !before && before_blob.empty(); }
+    bool deleted() const { return after_missing; }
 };
 
 struct Turn {
@@ -65,6 +73,11 @@ struct Session {
     int prompt_tokens = 0;
     /// Told to the model with the next request: what the user undid or redid outside the conversation.
     std::string pending_note;
+    /// The custom agent whose instructions frame each request, if one is selected.
+    std::string agent;
+    /// Messages a compaction replaced with a summary, oldest first.
+    std::vector<ChatMessage> archived;
+    int compactions = 0;
 };
 
 json to_json(const Session& session);

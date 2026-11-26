@@ -21,6 +21,7 @@ struct MasonAgentApp: App {
                 Divider()
                 Button("Undo Last Request's Edits") { model.undo() }.keyboardShortcut("z", modifiers: [.command, .option]).disabled(model.running)
                 Button("Redo Last Request's Edits") { model.undo(redo: true) }.keyboardShortcut("z", modifiers: [.command, .option, .shift]).disabled(model.running)
+                Button("Compact Conversation") { model.compact() }.disabled(model.running)
             }
             CommandMenu("Agent") {
                 Button("Send") { model.send() }.keyboardShortcut(.return, modifiers: .command).disabled(model.running)

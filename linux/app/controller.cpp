@@ -141,6 +141,10 @@ void Controller::send(const std::string& text) {
     const std::string input = trim(text);
     const Session* current = session();
     if (input.empty() || running || !current || !store_) return;
+    // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
+    const std::string lowered = to_lower(input);
+    if (lowered == "/compact") { compact(); return; }
+    if (lowered == "/agent" || starts_with(lowered, "/agent ")) { choose_agent(trim(input.substr(6))); return; }
     if (!endpoint) {
         notice.emit("No model is running. Open Models to start one, or start your own local server.");
         return;
@@ -242,6 +246,73 @@ void Controller::answer(bool allow, const std::string& always_prefix) {
     }
     approval_answered_.notify_all();
     changed.emit();
+}
+
+void Controller::compact() {
+    const Session* current = session();
+    if (!current || running || !store_) return;
+    if (current->messages.size() <= 2) { notice.emit("There is nothing to compact yet."); return; }
+    if (!endpoint) { notice.emit("Compaction needs a running model. Open Models to start one."); return; }
+    if (run_thread_.joinable()) run_thread_.join();
+    running = true;
+    live_text.clear();
+    live_status = "Compacting the conversation";
+    live_activities.clear();
+    changed.emit();
+    run_cancel_ = make_cancel();
+    const ModelEndpoint target = *endpoint;
+    const CancelToken cancel = run_cancel_;
+    const std::shared_ptr<bool> alive = alive_;
+    run_thread_ = std::thread([this, working = *current, target, cancel, alive]() mutable {
+        std::string message;
+        bool done = false;
+        try {
+            OpenAIClient model(target);
+            done = compaction::compact(working, model, 0, cancel);
+            if (done) store_->save(working);
+            message = done ? "The conversation was replaced by a summary, which goes with your next request. The original messages are kept." : "There is nothing to compact yet.";
+        } catch (const Cancelled&) {
+            message = "Compaction was stopped. The conversation is unchanged.";
+        } catch (const std::exception& error) {
+            message = error.what();
+        }
+        post([this, working, done, message] {
+            if (done) replace(working);
+            running = false;
+            live_status.clear();
+            changed.emit();
+            notice.emit(message);
+        });
+    });
+}
+
+void Controller::choose_agent(const std::string& name) {
+    const Session* current = session();
+    if (!current || running || !store_) return;
+    const std::vector<Definition> agents = customization::agents(store_->home(), current->workspace);
+    if (name.empty()) {
+        if (agents.empty()) { notice.emit("No custom agents. Add a Markdown file to .mason/agents (or .claude/agents) in this project."); return; }
+        std::vector<std::string> names;
+        for (const Definition& agent : agents) names.push_back(agent.name);
+        notice.emit("Agents: " + join(names, ", ") + ". Type /agent NAME to use one, or /agent none for the default." + (current->agent.empty() ? "" : " Current: " + current->agent + "."));
+        return;
+    }
+    Session updated = *current;
+    const std::string wanted = to_lower(name);
+    if (wanted == "none" || wanted == "default" || wanted == "off") {
+        updated.agent.clear();
+    } else {
+        const auto found = std::find_if(agents.begin(), agents.end(), [&](const Definition& agent) { return to_lower(agent.name) == wanted; });
+        if (found == agents.end()) { notice.emit("No agent named " + name + "."); return; }
+        updated.agent = found->name;
+    }
+    try {
+        store_->save(updated);
+        replace(updated);
+        notice.emit(updated.agent.empty() ? "Default agent." : "Agent: " + updated.agent + ".");
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
 }
 
 void Controller::undo(bool redo) {

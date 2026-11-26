@@ -461,8 +461,9 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
     if (!turn.changes.empty() && !live) {
         auto* chips = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
         for (size_t i = 0; i < turn.changes.size() && i < 6; i++) {
-            const DiffCounts counts = diff_counts(turn.changes[i].before, turn.changes[i].after);
-            auto* chip = Gtk::make_managed<Gtk::Label>(turn.changes[i].path + "  +" + std::to_string(counts.added) + " −" + std::to_string(counts.removed));
+            const FileChange& changed = turn.changes[i];
+            const DiffCounts counts = diff_counts(changed.before, changed.deleted() ? "" : changed.after);
+            auto* chip = Gtk::make_managed<Gtk::Label>(changed.opaque() ? changed.path + "  binary" : changed.path + "  +" + std::to_string(counts.added) + " −" + std::to_string(counts.removed));
             chip->add_css_class("caption");
             chip->add_css_class("dim-label");
             chips->append(*chip);
@@ -625,7 +626,7 @@ void MainWindow::refresh_changes() {
             if (turn.undone) continue;
             for (const FileChange& change : turn.changes) {
                 auto existing = std::find_if(merged.begin(), merged.end(), [&](const FileChange& item) { return item.path == change.path; });
-                if (existing != merged.end()) existing->after = change.after;
+                if (existing != merged.end()) { existing->after = change.after; existing->after_blob = change.after_blob; existing->after_missing = change.after_missing; }
                 else merged.push_back(change);
             }
         }
@@ -654,14 +655,17 @@ void MainWindow::refresh_changes() {
         return;
     }
     for (const FileChange& change : merged) {
-        const DiffCounts counts = diff_counts(change.before, change.after);
+        const std::string after = change.deleted() ? "" : change.after;
+        const DiffCounts counts = diff_counts(change.before, after);
+        const std::string kind = std::string(change.deleted() ? "  deleted" : change.created() ? "  new file" : "") + (change.by_command ? "  by a command" : "");
         auto* title = Gtk::make_managed<Gtk::Label>();
         title->set_xalign(0);
-        title->set_markup("<b>" + escape(change.path) + "</b>  +" + std::to_string(counts.added) + " −" + std::to_string(counts.removed) + (change.before ? "" : "  new file"));
+        title->set_markup("<b>" + escape(change.path) + "</b>" + (change.opaque() ? "  binary or large file" : "  +" + std::to_string(counts.added) + " −" + std::to_string(counts.removed)) + kind);
         changes_.append(*title);
+        if (change.opaque()) continue;  // no text to compare
         auto* lines = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
         lines->add_css_class("code-block");
-        for (const DiffLine& row : visible_rows(diff_lines(change.before, change.after))) {
+        for (const DiffLine& row : visible_rows(diff_lines(change.before, after))) {
             char number[16];
             std::snprintf(number, sizeof number, "%5d ", row.number);
             auto* line = Gtk::make_managed<Gtk::Label>(row.kind == 0 ? "      ⋯" : std::string(number) + row.kind + " " + replace_all(row.text, "\t", "    "));
@@ -679,7 +683,7 @@ void MainWindow::refresh_changes() {
         scroll->set_child(*lines);
         changes_.append(*scroll);
     }
-    auto* note = dim_label("Undo covers files changed by edits. Files created or changed by commands are not tracked yet.");
+    auto* note = dim_label("Undo puts back everything the latest request changed, including files its commands created, changed or deleted.");
     note->add_css_class("caption");
     changes_.append(*note);
 }

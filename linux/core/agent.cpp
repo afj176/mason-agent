@@ -125,7 +125,9 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
     if (!session.messages.empty() && session.messages.front().role == "system") session.messages.front().content = system_prompt(session);
     else session.messages.insert(session.messages.begin(), ChatMessage{"system", system_prompt(session), {}, ""});
     // A note from undo or redo travels with the next request, so the conversation keeps alternating user and assistant turns.
-    session.messages.push_back({"user", (session.pending_note.empty() ? "" : session.pending_note + "\n\n") + input, {}, ""});
+    // A custom command is expanded and the selected agent's instructions are added; the session still shows what was typed.
+    const std::string prepared = customization::prepare(store_.home(), session, input);
+    session.messages.push_back({"user", (session.pending_note.empty() ? "" : session.pending_note + "\n\n") + prepared, {}, ""});
     session.pending_note.clear();
     Turn turn;
     turn.request = input;
@@ -137,8 +139,14 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
 
     try {
         bool finished = false;
+        const int window = model_.context_window();
         for (int step = 0; step < kActionLimit; step++) {
             check_cancel(cancel);
+            if (compaction::needed(session, window)) {
+                emit_({AgentEvent::Kind::Status, "Compacting the conversation", {}});
+                if (compaction::compact(session, model_, 6, cancel)) store_.save(session);
+                else session.prompt_tokens = 0;
+            }
             ModelReply reply = model_.complete(session.messages, tools(), [this](const std::string& text) { emit_({AgentEvent::Kind::Text, text, {}}); }, cancel);
             // A call the model wrote as text instead of through the tool-call channel is recovered.
             if (reply.tool_calls.empty()) {
@@ -275,8 +283,13 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             // Keep the first "before" of each file per request, so undo returns to the state the request started from.
             Turn& turn = session.turns.back();
             auto existing = std::find_if(turn.changes.begin(), turn.changes.end(), [&](const FileChange& change) { return change.path == *path; });
-            if (existing != turn.changes.end()) existing->after = after;
-            else turn.changes.push_back({*path, before, after});
+            if (existing != turn.changes.end()) {
+                existing->after = after;
+                existing->after_blob.clear();
+                existing->after_missing = false;
+            } else {
+                turn.changes.push_back({*path, before, after});
+            }
             const DiffCounts counts = diff_counts(before, after);
             return finish("completed", std::string(before ? "Edited " : "Created ") + *path + " (+" + std::to_string(counts.added) + " −" + std::to_string(counts.removed) + ").");
         }
@@ -292,8 +305,22 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
                 }
             }
             emit_({AgentEvent::Kind::Status, sandboxed ? "Running sandboxed command" : "Running command", {}});
-            const CommandResult result = shell::run(*command, workspace, sandboxed, 120, cancel);
-            return finish(result.exit_code == 0 && !result.timed_out ? "completed" : "failed", "exit " + std::to_string(result.exit_code) + "\n" + result.output);
+            // The project is read before and after, so whatever the command changed can be shown and undone.
+            const snapshot::Map before = snapshot::capture(workspace, snapshot_);
+            CommandResult result;
+            try {
+                result = shell::run(*command, workspace, sandboxed, 120, cancel);
+            } catch (...) {
+                record_command_changes(before, workspace, session);
+                throw;
+            }
+            const std::vector<std::string> changed = record_command_changes(before, workspace, session);
+            std::string output = "exit " + std::to_string(result.exit_code) + "\n" + result.output;
+            if (!changed.empty()) {
+                const std::vector<std::string> shown(changed.begin(), changed.begin() + static_cast<std::ptrdiff_t>(std::min<size_t>(12, changed.size())));
+                output += "\n[Files changed by this command: " + join(shown, ", ") + (changed.size() > 12 ? " and " + std::to_string(changed.size() - 12) + " more" : "") + "]";
+            }
+            return finish(result.exit_code == 0 && !result.timed_out ? "completed" : "failed", output);
         }
         std::vector<std::string> names;
         for (const ToolSpec& tool : tools()) names.push_back(tool.name);
@@ -306,26 +333,75 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
     }
 }
 
+std::vector<std::string> Agent::record_command_changes(const snapshot::Map& before, const Workspace& workspace, Session& session) {
+    snapshot_ = snapshot::capture(workspace, before);
+    const BlobStore blobs(store_.home());
+    // Text is kept in the session like an edit; anything binary or over the text limit goes to the blob store.
+    struct Side { std::optional<std::string> text; std::string blob; bool saved = true; };
+    auto side = [&](const std::shared_ptr<const std::string>& data) {
+        Side result;
+        if (!data) return result;
+        if (data->size() <= Workspace::kMaxFileBytes && is_valid_utf8(*data)) {
+            result.text = *data;
+            return result;
+        }
+        try {
+            result.blob = blobs.put(*data);
+        } catch (const std::exception&) {
+            result.saved = false;  // could not be saved, so it cannot be undone
+        }
+        return result;
+    };
+    Turn& turn = session.turns.back();
+    std::vector<std::string> paths;
+    for (const snapshot::Change& change : snapshot::changes(before, snapshot_)) {
+        const Side now = side(change.after);
+        if (!now.saved) continue;
+        auto existing = std::find_if(turn.changes.begin(), turn.changes.end(), [&](const FileChange& item) { return item.path == change.path; });
+        if (existing != turn.changes.end()) {
+            existing->after = now.text.value_or("");
+            existing->after_blob = now.blob;
+            existing->after_missing = !change.after;
+        } else {
+            const Side old = side(change.before);
+            if (!old.saved) continue;
+            FileChange entry{change.path, old.text, now.text.value_or("")};
+            entry.before_blob = old.blob;
+            entry.after_blob = now.blob;
+            entry.after_missing = !change.after;
+            entry.by_command = true;
+            turn.changes.push_back(std::move(entry));
+        }
+        paths.push_back(change.path);
+    }
+    return paths;
+}
+
 std::optional<UndoResult> Agent::undo_latest(Session& session, SessionStore& store, bool redo) {
     auto found = std::find_if(session.turns.rbegin(), session.turns.rend(), [&](const Turn& turn) { return !turn.changes.empty() && turn.undone == redo; });
     if (found == session.turns.rend()) return std::nullopt;
     const Workspace workspace(session.workspace);
+    const BlobStore blobs(store.home());
     UndoResult result;
     for (const FileChange& change : found->changes) {
-        const std::optional<std::string> expected = redo ? change.before : std::optional<std::string>(change.after);
-        const std::optional<std::string> target = redo ? std::optional<std::string>(change.after) : change.before;
-        std::optional<std::string> current;
+        // Each side is the file's bytes, or nothing when the file did not exist there.
+        std::optional<std::string> before = change.before, after = change.after, current;
+        bool readable = true;
+        if (!change.before_blob.empty()) { before = blobs.get(change.before_blob); readable = readable && before.has_value(); }
+        if (change.after_missing) after.reset();
+        else if (!change.after_blob.empty()) { after = blobs.get(change.after_blob); readable = readable && after.has_value(); }
         try {
-            if (workspace.exists(change.path)) current = workspace.read(change.path);
-        } catch (const Error&) {
+            current = workspace.data(change.path);
+        } catch (const std::exception&) {
+            readable = false;
+        }
+        const std::optional<std::string>& expected = redo ? before : after;
+        const std::optional<std::string>& target = redo ? after : before;
+        if (!readable || current != expected) {
             result.skipped.push_back(change.path);
             continue;
         }
-        if (current != expected) {
-            result.skipped.push_back(change.path);
-            continue;
-        }
-        if (target) workspace.write(change.path, *target);
+        if (target) workspace.write_data(change.path, *target);
         else workspace.remove(change.path);
         result.restored.push_back(change.path);
     }

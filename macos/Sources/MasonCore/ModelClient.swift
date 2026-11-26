@@ -21,6 +21,12 @@ public struct ModelReply {
 public protocol ChatModel {
     var name: String { get }
     func complete(messages: [ChatMessage], tools: [ToolSpec], onText: @escaping (String) -> Void) async throws -> ModelReply
+    /// How many tokens the model can take in one request, when the server says. Automatic compaction needs it.
+    func contextWindow() async -> Int?
+}
+
+extension ChatModel {
+    public func contextWindow() async -> Int? { nil }
 }
 
 public struct ModelEndpoint: Codable, Equatable {
@@ -99,6 +105,21 @@ public final class OpenAIClient: ChatModel {
     public init(_ endpoint: ModelEndpoint) throws {
         self.endpoint = endpoint
         base = try ModelEndpoint.validated(endpoint.url)
+    }
+
+    /// llama.cpp reports the loaded context size at /props. Other servers do not, and then compaction stays manual.
+    public func contextWindow() async -> Int? {
+        var request = URLRequest(url: base.appendingPathComponent("props"))
+        request.timeoutInterval = 3
+        let fetched: Data? = await withCheckedContinuation { continuation in
+            URLSession.shared.dataTask(with: request) { data, response, _ in
+                continuation.resume(returning: (response as? HTTPURLResponse)?.statusCode == 200 ? data : nil)
+            }.resume()
+        }
+        guard let fetched, let object = try? JSONSerialization.jsonObject(with: fetched) as? [String: Any] else { return nil }
+        let settings = object["default_generation_settings"] as? [String: Any]
+        let size = (settings?["n_ctx"] as? Int) ?? (object["n_ctx"] as? Int)
+        return size.flatMap { $0 > 0 ? $0 : nil }
     }
 
     static func wire(_ message: ChatMessage) -> [String: Any] {

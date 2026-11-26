@@ -51,6 +51,7 @@ final class CLI {
     let workspace: Workspace
     var session: Session
     var endpoint: ModelEndpoint?
+    var home: URL { store.folder.deletingLastPathComponent() }
     var endpointName = ""
     var server: ModelServer?
     var listed: [LocalModel] = []
@@ -236,10 +237,13 @@ final class CLI {
         if let changes = turn?.changes, !changes.isEmpty {
             Term.line()
             for change in changes.prefix(30) {
-                let counts = Diff.counts(before: change.before, after: change.after)
-                Term.line("  \(Term.paint(Term.accent, change.before == nil ? "A" : "M")) \(change.path)  \(Term.paint(Term.green, "+\(counts.added)")) \(Term.paint(Term.red, "−\(counts.removed)"))")
+                let mark = Term.paint(Term.accent, change.deleted ? "D" : change.created ? "A" : "M")
+                let source = change.byCommand == true ? Term.paint(Term.dim, "  by a command") : ""
+                if change.isOpaque { Term.line("  \(mark) \(change.path)  \(Term.paint(Term.dim, "binary or large file"))\(source)"); continue }
+                let counts = Diff.counts(before: change.before, after: change.deleted ? "" : change.after)
+                Term.line("  \(mark) \(change.path)  \(Term.paint(Term.green, "+\(counts.added)")) \(Term.paint(Term.red, "−\(counts.removed)"))\(source)")
             }
-            Term.line(Term.paint(Term.dim, "  /diff shows the changes · /undo puts the edited files back"))
+            Term.line(Term.paint(Term.dim, "  /diff shows the changes · /undo puts the files back"))
         }
         Term.line()
         let state: String
@@ -374,7 +378,6 @@ final class CLI {
         case "/undo", "/redo":
             guard let result = try Agent.undoLatest(&session, store: store, redo: name == "/redo") else { Term.line(Term.paint(Term.dim, name == "/undo" ? "  Nothing to undo in this session." : "  Nothing to redo.")); break }
             Term.line(Term.paint(Term.green, "  ✓ \(result.restored.count) file\(result.restored.count == 1 ? "" : "s") \(name == "/undo" ? "put back" : "reapplied")") + (result.skipped.isEmpty ? "" : Term.paint(Term.yellow, "  ·  changed since, left alone: " + result.skipped.joined(separator: ", "))))
-            Term.line(Term.paint(Term.dim, "  Covers files changed by edits. Files created or changed by commands are not tracked yet."))
         case "/rules":
             var rules = ApprovalRules(workspace: session.workspace)
             if rest.lowercased().hasPrefix("revoke"), let number = Int(rest.dropFirst(6).trimmingCharacters(in: .whitespaces)), number >= 1, number <= rules.rules.count {
@@ -385,9 +388,44 @@ final class CLI {
                 for (index, rule) in rules.rules.enumerated() { Term.line("  \(Term.paint(Term.dim, String(index + 1).leftPad(2)))  \(Term.paint(Term.green, "allow"))  \(rule.tool.replacingOccurrences(of: "_", with: " "))  \(Term.paint(Term.cyan, rule.prefix))") }
                 Term.line(Term.paint(Term.dim, "  Remove one with /rules revoke NUMBER. Rules never widen the sandbox."))
             }
+        case "/compact":
+            guard session.messages.count > 2 else { Term.line(Term.paint(Term.dim, "  There is nothing to compact yet.")); break }
+            guard let endpoint, let model = try? OpenAIClient(endpoint) else { throw MasonError("Compaction needs a running model. /models lists the ones on this computer.") }
+            Term.line(Term.paint(Term.dim, "  Compacting the conversation… the original messages are kept."))
+            let before = session.messages.count
+            var working = session
+            guard try await Compaction.compact(&working, model: model, keep: 0) else { Term.line(Term.paint(Term.dim, "  There is nothing to compact yet.")); break }
+            session = working; try store.save(session)
+            Term.line(Term.paint(Term.green, "  ✓ \(before - 1) messages replaced by a summary") + Term.paint(Term.dim, "  ·  it travels with your next request"))
+        case "/agent", "/agents":
+            let agents = Customization.agents(home: home, workspace: session.workspace)
+            if rest.isEmpty {
+                if agents.isEmpty { Term.line(Term.paint(Term.dim, "  No custom agents. Add a Markdown file to .mason/agents (or .claude/agents) in this project.")); break }
+                Term.line()
+                for agent in agents {
+                    let current = agent.name.lowercased() == session.agent?.lowercased()
+                    Term.line("  \(Term.paint(current ? Term.bold : Term.accent, agent.name.padding(toLength: 20, withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, Term.clip(agent.description, max(20, Term.width - 40))))" + (current ? Term.paint(Term.dim, "  ← current") : ""))
+                }
+                Term.line(Term.paint(Term.dim, "  Use one with /agent NAME · /agent none goes back to the default."))
+            } else if ["none", "default", "off"].contains(rest.lowercased()) {
+                session.agent = nil; try store.save(session); Term.line(Term.paint(Term.dim, "  Default agent."))
+            } else {
+                guard let agent = agents.first(where: { $0.name.lowercased() == rest.lowercased() }) else { throw MasonError("No agent named \(rest). /agent lists them.") }
+                session.agent = agent.name; try store.save(session)
+                Term.line("  Agent: " + Term.paint(Term.bold, agent.name) + Term.paint(Term.dim, "  ·  \(agent.source)"))
+            }
+        case "/commands":
+            let commands = Customization.commands(home: home, workspace: session.workspace)
+            if commands.isEmpty { Term.line(Term.paint(Term.dim, "  No custom commands. Add a Markdown file to .mason/commands (or .claude/commands) in this project.")); break }
+            Term.line()
+            for command in commands { Term.line("  \(Term.paint(Term.accent, ("/" + command.name).padding(toLength: 22, withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, Term.clip(command.description, max(20, Term.width - 30))))") }
+            Term.line(Term.paint(Term.dim, "  Run one by typing it, with any arguments after the name."))
         case "/model": try await chooseModel(rest)
         case "/models": try await models(rest)
-        default: Term.line(Term.paint(Term.yellow, "  Unknown command \(name).") + Term.paint(Term.dim, " /help lists them."))
+        default:
+            // A custom command from the project or the data folder runs as a request.
+            if Customization.expand(Customization.commands(home: home, workspace: session.workspace), input) != nil { await send(input) }
+            else { Term.line(Term.paint(Term.yellow, "  Unknown command \(name).") + Term.paint(Term.dim, " /help lists them; /commands lists your own.")) }
         }
         return true
     }
@@ -399,7 +437,10 @@ final class CLI {
             ("/ask · /build", "Answer questions only, or make changes"),
             ("/permission read|review|edits|auto", "What Mason may do without asking (also /review, /edits, /auto)"),
             ("/diff [path]", "Show what this session changed"),
-            ("/undo · /redo", "Put back, or reapply, the files the latest request edited"),
+            ("/undo · /redo", "Put back, or reapply, everything the latest request changed"),
+            ("/compact", "Replace the conversation so far with a summary to free context"),
+            ("/agent [name|none]", "List your custom agents, or use one for this session"),
+            ("/commands", "List your custom slash commands"),
             ("/rules [revoke NUMBER]", "Saved always-allow rules for this project"),
             ("/model [number]", "List running model servers, or switch to one"),
             ("/models", "List the models on this computer and what each is for"),
@@ -426,7 +467,9 @@ final class CLI {
         row("Model", endpoint.map { endpointName + Term.paint(Term.dim, "  " + $0.url) } ?? Term.paint(Term.yellow, "none running"))
         row("Mode", modeName)
         row("Shell", Shell.path + (Shell.sandboxAvailable ? Term.paint(Term.dim, "  ·  sandbox available for Auto") : Term.paint(Term.yellow, "  ·  no sandbox: Auto refuses commands")))
+        if let agent = session.agent { row("Agent", agent) }
         if let tokens = session.promptTokens { row("Context", "\(tokens) tokens in the last request") }
+        if let compactions = session.compactions { row("Compacted", "\(compactions) time\(compactions == 1 ? "" : "s"); \(session.archived?.count ?? 0) messages archived") }
         row("Stored in", store.folder.path)
     }
 
@@ -434,16 +477,19 @@ final class CLI {
         var merged: [String: FileChange] = [:]; var order: [String] = []
         for turn in session.turns where !turn.undone {
             for change in turn.changes where filter.isEmpty || change.path.localizedCaseInsensitiveContains(filter) {
-                if var existing = merged[change.path] { existing.after = change.after; merged[change.path] = existing } else { merged[change.path] = change; order.append(change.path) }
+                if var existing = merged[change.path] { existing.after = change.after; existing.afterBlob = change.afterBlob; existing.afterMissing = change.afterMissing; merged[change.path] = existing } else { merged[change.path] = change; order.append(change.path) }
             }
         }
         guard !order.isEmpty else { Term.line(Term.paint(Term.dim, filter.isEmpty ? "  This session has not changed any files." : "  No changed file matches \(filter).")); return }
         var budget = 400
         for path in order {
             guard let change = merged[path] else { continue }
-            let rows = Diff.lines(before: change.before, after: change.after)
+            if change.isOpaque {
+                Term.line(); Term.line("  " + Term.paint(Term.bold, path) + Term.paint(Term.dim, "  binary or large file, \(change.deleted ? "deleted" : change.created ? "created" : "changed")")); continue
+            }
+            let rows = Diff.lines(before: change.before, after: change.deleted ? "" : change.after)
             Term.line()
-            Term.line("  " + Term.paint(Term.bold, path) + "  " + Term.paint(Term.green, "+\(rows.filter { $0.kind == .added }.count)") + " " + Term.paint(Term.red, "−\(rows.filter { $0.kind == .removed }.count)") + (change.before == nil ? Term.paint(Term.dim, "  new file") : ""))
+            Term.line("  " + Term.paint(Term.bold, path) + "  " + Term.paint(Term.green, "+\(rows.filter { $0.kind == .added }.count)") + " " + Term.paint(Term.red, "−\(rows.filter { $0.kind == .removed }.count)") + (change.deleted ? Term.paint(Term.dim, "  deleted") : change.created ? Term.paint(Term.dim, "  new file") : "") + (change.byCommand == true ? Term.paint(Term.dim, "  by a command") : ""))
             // Two lines of context around each change, with gaps marked.
             var keep = [Bool](repeating: false, count: rows.count)
             for (index, row) in rows.enumerated() where row.kind != .same { for near in max(0, index - 2)...min(rows.count - 1, index + 2) { keep[near] = true } }

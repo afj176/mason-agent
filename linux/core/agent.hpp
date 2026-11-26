@@ -1,5 +1,6 @@
 // The agent loop: ask the model, run the tool it calls, hand the result back, until it answers in text.
 #pragma once
+#include "harness.hpp"
 #include "model.hpp"
 #include "shell.hpp"
 
@@ -50,8 +51,8 @@ public:
     /// Runs one request to completion. The session is saved after every step, so an interruption loses nothing that already happened.
     void run(Session& session, const std::string& request, const CancelToken& cancel = nullptr);
 
-    /// Puts back the files the latest request changed through edit tools. A file changed again since is left alone and reported.
-    /// Files created or changed by commands are not tracked yet. Returns nothing when there is no such request.
+    /// Puts back every file the latest request changed, whether an edit tool or a command changed it. A file changed
+    /// again since is left alone and reported. Returns nothing when there is no such request.
     static std::optional<UndoResult> undo_latest(Session& session, SessionStore& store, bool redo = false);
     /// A tool call without a result would make the next request invalid for the model, so calls that were cut short are closed.
     static void close_open_calls(Session& session);
@@ -59,11 +60,15 @@ public:
 private:
     std::string perform(const ToolCall& call, const Workspace& workspace, Session& session, const CancelToken& cancel);
     bool allowed(const ApprovalRequest& request, Session& session);
+    /// Records what a command created, changed or deleted, and returns the paths.
+    std::vector<std::string> record_command_changes(const snapshot::Map& before, const Workspace& workspace, Session& session);
 
     SessionStore& store_;
     ChatModel& model_;
     Approve approve_;
     Emit emit_;
+    /// The project as last read, so each command only re-reads the files that changed.
+    snapshot::Map snapshot_;
 };
 
 }  // namespace mason

@@ -6,7 +6,9 @@ final class ScriptedModel: ChatModel {
     let name = "scripted"
     var replies: [ModelReply]
     var seen: [[ChatMessage]] = []
+    var window: Int?
     init(_ replies: [ModelReply]) { self.replies = replies }
+    func contextWindow() async -> Int? { window }
     func complete(messages: [ChatMessage], tools: [ToolSpec], onText: @escaping (String) -> Void) async throws -> ModelReply {
         seen.append(messages)
         guard !replies.isEmpty else { throw MasonError("The script ran out of replies.") }
@@ -192,6 +194,130 @@ final class MasonCoreTests: XCTestCase {
         try rules.add(tool: "run_shell", prefix: "echo hello")
         await Agent(store: store, model: ScriptedModel(script), approve: { _ in asked += 1; return true }, emit: { _ in }).run(&session, request: "Again")
         XCTAssertEqual(asked, 1, "the saved rule answers the second prompt")
+    }
+
+    // MARK: undo of what commands change
+
+    func testUndoPutsBackWhatACommandCreatedChangedAndDeleted() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        try "keep me\n".write(to: folder.appendingPathComponent("keep.txt"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("node_modules"), withIntermediateDirectories: true)
+        let original = try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8)
+        let command = "printf 'made' > made.txt && printf 'changed' > calc.py && rm keep.txt && printf '\\377\\376\\000x' > image.bin && printf dep > node_modules/dep.js"
+        let script = [call("run_shell", ["command": command]), ModelReply(text: "Done.")]
+        await Agent(store: store, model: ScriptedModel(script), approve: { _ in true }, emit: { _ in }).run(&session, request: "Run the script")
+
+        let changes = session.turns.last!.changes
+        XCTAssertEqual(changes.map(\.path).sorted(), ["calc.py", "image.bin", "keep.txt", "made.txt"], "dependency folders are not followed")
+        XCTAssertTrue(changes.allSatisfy { $0.byCommand == true })
+        XCTAssertTrue(changes.first { $0.path == "image.bin" }!.isOpaque, "a binary file is kept as a blob")
+        XCTAssertTrue(changes.first { $0.path == "keep.txt" }!.deleted)
+        XCTAssertTrue(session.messages.last { $0.role == "tool" }!.content.contains("Files changed by this command"))
+
+        let undone = try XCTUnwrap(Agent.undoLatest(&session, store: store))
+        XCTAssertEqual(undone.restored.sorted(), ["calc.py", "image.bin", "keep.txt", "made.txt"])
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), original)
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("keep.txt"), encoding: .utf8), "keep me\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("made.txt").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("image.bin").path))
+
+        let redone = try XCTUnwrap(Agent.undoLatest(&session, store: store, redo: true))
+        XCTAssertEqual(redone.restored.count, 4)
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("image.bin")), Data([0xFF, 0xFE, 0x00, 0x78]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("keep.txt").path))
+
+        // A file the user changed after the command is left alone.
+        try "mine now".write(to: folder.appendingPathComponent("made.txt"), atomically: true, encoding: .utf8)
+        let again = try XCTUnwrap(Agent.undoLatest(&session, store: store))
+        XCTAssertEqual(again.skipped, ["made.txt"])
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("made.txt"), encoding: .utf8), "mine now")
+    }
+
+    func testAnEditThenACommandOnTheSameFileUndoesToTheStart() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        let original = try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8)
+        let script = [call("write_file", ["path": "calc.py", "content": "one\n"]), call("run_shell", ["command": "printf 'two\\n' >> calc.py"]), ModelReply(text: "Done.")]
+        await Agent(store: store, model: ScriptedModel(script), approve: { _ in true }, emit: { _ in }).run(&session, request: "Rewrite it")
+        XCTAssertEqual(session.turns.last!.changes.count, 1)
+        XCTAssertEqual(session.turns.last!.changes[0].after, "one\ntwo\n")
+        _ = try Agent.undoLatest(&session, store: store)
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), original)
+    }
+
+    // MARK: custom agents and commands
+
+    func testCustomCommandsExpandAndTheSelectedAgentFramesTheRequest() async throws {
+        var (store, session) = try session(.readOnly)
+        let commands = folder.appendingPathComponent(".claude/commands"), agents = folder.appendingPathComponent(".mason/agents")
+        try FileManager.default.createDirectory(at: commands, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: agents, withIntermediateDirectories: true)
+        try "---\ndescription: Review one file\n---\nReview $1 for $2. All: $ARGUMENTS".write(to: commands.appendingPathComponent("review.md"), atomically: true, encoding: .utf8)
+        try "Explain the tests.".write(to: commands.appendingPathComponent("tests.md"), atomically: true, encoding: .utf8)
+        try "not a command".write(to: commands.appendingPathComponent("undo.md"), atomically: true, encoding: .utf8)
+        try "---\nname: careful\ndescription: Slow and careful\n---\nNever guess.".write(to: agents.appendingPathComponent("careful.md"), atomically: true, encoding: .utf8)
+
+        let found = Customization.commands(home: home, workspace: session.workspace)
+        XCTAssertEqual(found.map(\.name), ["review", "tests"], "reserved names are skipped")
+        XCTAssertEqual(found[0].description, "Review one file")
+        XCTAssertEqual(found[0].source, ".claude/commands/review.md")
+        XCTAssertEqual(Customization.expand(found, "/review calc.py \"off by one\""), "Review calc.py for off by one. All: calc.py \"off by one\"")
+        XCTAssertEqual(Customization.expand(found, "/tests quickly"), "Explain the tests.\n\nquickly")
+        XCTAssertNil(Customization.expand(found, "/missing"))
+        XCTAssertNil(Customization.expand(found, "review calc.py"))
+
+        session.agent = "careful"
+        let model = ScriptedModel([ModelReply(text: "Reviewed.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "/review calc.py bugs")
+        let sent = try XCTUnwrap(model.seen.first?.last?.content)
+        XCTAssertTrue(sent.contains("Never guess.") && sent.contains("Review calc.py for bugs."))
+        XCTAssertEqual(session.turns.last?.request, "/review calc.py bugs", "the session shows what was typed")
+    }
+
+    // MARK: compaction
+
+    func testCompactionReplacesOlderMessagesWithASummaryAndKeepsThem() async throws {
+        var (store, session) = try session(.readOnly)
+        session.messages = [ChatMessage(role: "system", content: "sys"), ChatMessage(role: "user", content: "first"),
+                            ChatMessage(role: "assistant", content: "", toolCalls: [ToolCall(id: "a", name: "read_file", arguments: "{\"path\":\"calc.py\"}")]),
+                            ChatMessage(role: "tool", content: "1\tdef add", toolCallId: "a"), ChatMessage(role: "assistant", content: "It subtracts."),
+                            ChatMessage(role: "user", content: "second"),
+                            ChatMessage(role: "assistant", content: "", toolCalls: [ToolCall(id: "b", name: "read_file", arguments: "{}")]),
+                            ChatMessage(role: "tool", content: "more", toolCallId: "b")]
+        XCTAssertEqual(Compaction.cut(session.messages, keep: 1), 6, "a tool result stays with the call that asked for it")
+        let model = ScriptedModel([ModelReply(text: "The user asked about calc.py; add subtracts.")])
+        let compacted = try await Compaction.compact(&session, model: model, keep: 1)
+        XCTAssertTrue(compacted)
+        XCTAssertEqual(session.messages.map(\.role), ["system", "user", "assistant", "tool"])
+        XCTAssertTrue(session.messages[1].content.contains("add subtracts"))
+        XCTAssertEqual(session.archived?.count, 5)
+        XCTAssertTrue(model.seen[0][1].content.contains("calls read_file"))
+
+        // A manual compaction keeps nothing; the summary travels with the next request.
+        session.messages += [ChatMessage(role: "assistant", content: "Done.")]
+        let again = try await Compaction.compact(&session, model: ScriptedModel([ModelReply(text: "All of it.")]), keep: 0)
+        XCTAssertTrue(again)
+        XCTAssertEqual(session.messages.map(\.role), ["system"])
+        XCTAssertTrue(session.pendingNote?.contains("All of it.") == true)
+        XCTAssertEqual(session.compactions, 2)
+        _ = store
+    }
+
+    func testARunCompactsByItselfWhenTheContextIsNearlyFull() async throws {
+        var (store, session) = try session(.readOnly)
+        let first = ScriptedModel((1...4).map { ModelReply(text: "Answer \($0).") })
+        for number in 1...4 { await Agent(store: store, model: first, approve: { _ in true }, emit: { _ in }).run(&session, request: "question \(number)") }
+        session.promptTokens = 900
+        XCTAssertTrue(Compaction.needed(session, window: 1000))
+        XCTAssertFalse(Compaction.needed(session, window: 4000))
+        XCTAssertFalse(Compaction.needed(session, window: nil))
+        let model = ScriptedModel([ModelReply(text: "Earlier: two questions were answered."), ModelReply(text: "Five.")])
+        model.window = 1000
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "fifth question")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.compactions, 1)
+        XCTAssertTrue(model.seen[1].contains { $0.content.contains("two questions were answered") }, "the model continues from the summary")
+        XCTAssertTrue(model.seen[1].last!.content.contains("fifth question"))
+        XCTAssertLessThan(model.seen[1].count, 10)
     }
 
     func testAStoppedRequestLeavesAConversationTheModelCanContinue() async throws {
