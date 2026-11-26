@@ -81,6 +81,7 @@ namespace compaction {
 /// Compaction starts by itself when the last request used this share of the model's context.
 constexpr double kThreshold = 0.75;
 bool needed(const Session& session, int window);
+bool needed(int prompt_tokens, int window);
 /// Where the kept tail begins when `keep` recent messages stay as they are. A tool result is never separated from
 /// the assistant message that asked for it.
 size_t cut(const std::vector<ChatMessage>& messages, size_t keep);

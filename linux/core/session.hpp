@@ -80,6 +80,8 @@ struct Session {
     int compactions = 0;
 };
 
+json message_json(const ChatMessage& message);
+ChatMessage message_from_json(const json& item);
 json to_json(const Session& session);
 Session session_from_json(const json& value);
 

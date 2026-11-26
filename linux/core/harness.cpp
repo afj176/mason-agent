@@ -258,9 +258,8 @@ std::string transcript(const std::vector<ChatMessage>& messages, size_t from, si
 
 }  // namespace
 
-bool needed(const Session& session, int window) {
-    return window > 0 && session.prompt_tokens > 0 && session.prompt_tokens >= window * kThreshold;
-}
+bool needed(int prompt_tokens, int window) { return window > 0 && prompt_tokens > 0 && prompt_tokens >= window * kThreshold; }
+bool needed(const Session& session, int window) { return needed(session.prompt_tokens, window); }
 
 size_t cut(const std::vector<ChatMessage>& messages, size_t keep) {
     size_t start = messages.size() > keep + 1 ? messages.size() - keep : 1;

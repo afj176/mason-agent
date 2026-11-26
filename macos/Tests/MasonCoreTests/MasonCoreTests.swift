@@ -514,6 +514,69 @@ final class RecoveryTests: XCTestCase {
     }
 }
 
+final class ChatTests: XCTestCase {
+    var home: URL!
+    override func setUpWithError() throws { home = FileManager.default.temporaryDirectory.appendingPathComponent("mason-chat-" + UUID().uuidString) }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: home) }
+
+    func testAChatIsSavedCarriesAttachmentsAndOffersNoTools() async throws {
+        let store = try ChatStore(home: home)
+        var chat = try store.create()
+        let notes = home.appendingPathComponent("notes.txt")
+        try "line one\n```\nfenced\n```".write(to: notes, atomically: true, encoding: .utf8)
+        let attachment = try ChatAttachment(file: notes)
+        let model = ScriptedModel([ModelReply(text: "It has a fenced block."), ModelReply(text: "Second answer.")])
+        var streamed = ""
+        try await Chat.send(&chat, text: "What is in this file?", attachments: [attachment], model: model, store: store) { streamed += $0 }
+        XCTAssertEqual(streamed, "It has a fenced block.")
+        XCTAssertEqual(chat.title, "What is in this file?")
+        XCTAssertEqual(chat.messages.map(\.role), ["system", "user", "assistant"])
+        XCTAssertTrue(chat.messages[1].content.contains("Attached file notes.txt:\n````\nline one"), "a file that contains a fence is wrapped in a longer one")
+        XCTAssertTrue(chat.messages[0].content.contains("no tools"))
+        try await Chat.send(&chat, text: "And again?", model: model, store: store) { _ in }
+        XCTAssertEqual(model.seen[1].map(\.role), ["system", "user", "assistant", "user"])
+
+        let reloaded = try ChatStore(home: home)
+        XCTAssertEqual(reloaded.conversations.count, 1)
+        XCTAssertEqual(reloaded.conversations[0].messages.count, 5)
+        XCTAssertEqual(reloaded.conversations[0].model, "scripted")
+        reloaded.delete(chat.id)
+        XCTAssertTrue(try ChatStore(home: home).conversations.isEmpty)
+    }
+
+    func testAttachmentsMustBeSmallTextAndAFailedRequestKeepsTheQuestion() async throws {
+        let store = try ChatStore(home: home)
+        let binary = home.appendingPathComponent("image.bin"), large = home.appendingPathComponent("large.txt")
+        try Data([0xFF, 0xFE, 0x00, 0x01]).write(to: binary)
+        try String(repeating: "x", count: ChatAttachment.maxBytes + 1).write(to: large, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try ChatAttachment(file: binary))
+        XCTAssertThrowsError(try ChatAttachment(file: large))
+
+        var chat = try store.create()
+        do { try await Chat.send(&chat, text: "Hello?", model: ScriptedModel([]), store: store) { _ in }; XCTFail("a model that fails must be an error") } catch {}
+        XCTAssertEqual(chat.messages.map(\.role), ["system", "user"], "the question is kept")
+        try await Chat.send(&chat, text: "Still there?", model: ScriptedModel([ModelReply(text: "Yes.")]), store: store) { _ in }
+        XCTAssertEqual(chat.messages.map(\.role), ["system", "user", "assistant"], "the next message joins the unanswered one")
+        XCTAssertTrue(chat.messages[1].content.contains("Hello?") && chat.messages[1].content.contains("Still there?"))
+        do { try await Chat.send(&chat, text: "   ", model: ScriptedModel([]), store: store) { _ in }; XCTFail("an empty message must be refused") } catch {}
+    }
+
+    func testALongChatIsCompactedBeforeTheNextAnswer() async throws {
+        let store = try ChatStore(home: home)
+        var chat = try store.create()
+        let model = ScriptedModel((1...4).map { ModelReply(text: "Answer \($0).") })
+        for number in 1...4 { try await Chat.send(&chat, text: "Question \(number)", model: model, store: store) { _ in } }
+        chat.promptTokens = 900
+        let full = ScriptedModel([ModelReply(text: "Earlier: four questions were answered."), ModelReply(text: "Answer 5.")])
+        full.window = 1000
+        try await Chat.send(&chat, text: "Question 5", model: full, store: store) { _ in }
+        XCTAssertEqual(chat.compactions, 1)
+        XCTAssertTrue(full.seen[1].contains { $0.content.contains("four questions were answered") })
+        XCTAssertTrue(full.seen[1].last!.content.contains("Question 5"))
+        XCTAssertFalse(chat.archived?.isEmpty ?? true, "the replaced messages are kept")
+    }
+}
+
 #if os(macOS)
 /// Runs real commands under the Auto sandbox. These only run on a Mac, where sandbox-exec exists.
 final class SandboxTests: XCTestCase {

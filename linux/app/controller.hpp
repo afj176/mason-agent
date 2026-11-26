@@ -1,6 +1,7 @@
 // Everything the window shows, and the background work behind it.
 // State is only read and changed on the GTK main thread. Work runs on other threads and comes back through `post`.
 #pragma once
+#include "chat.hpp"
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -56,6 +57,22 @@ public:
     /// Tells the user which MCP servers are registered and what each may call.
     void show_mcp_servers();
 
+    // ---- chat ----
+    const std::vector<ChatConversation>& chats() const { return chats_; }
+    const ChatConversation* chat() const;
+    std::string chat_selection;
+    bool chat_running = false;
+    std::string chat_live;
+    /// Files waiting to go with the next message.
+    std::vector<ChatAttachment> chat_attachments;
+    void select_chat(const std::string& id);
+    void new_chat();
+    void remove_chat(const std::string& id);
+    void attach_to_chat(const std::string& path);
+    void detach_from_chat(const std::string& name);
+    void send_chat(const std::string& text);
+    void stop_chat();
+
     // ---- models ----
     std::optional<ModelEndpoint> endpoint;
     std::string endpoint_name;
@@ -89,6 +106,10 @@ private:
     void model_task(const std::string& label, std::function<std::function<void()>(const std::function<void(const std::string&)>&, const CancelToken&)> work);
 
     std::unique_ptr<SessionStore> store_;
+    std::unique_ptr<ChatStore> chat_store_;
+    std::vector<ChatConversation> chats_;
+    std::thread chat_thread_;
+    CancelToken chat_cancel_;
     std::vector<Session> sessions_;
     std::shared_ptr<ModelServer> server_;  // shared only so a finished start can be handed from its thread to the main thread
 

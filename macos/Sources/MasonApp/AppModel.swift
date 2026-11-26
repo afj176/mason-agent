@@ -28,6 +28,17 @@ final class AppModel: ObservableObject {
     @Published var approval: PendingApproval?
     @Published var notice: String?
 
+    /// Which part of the window is showing.
+    @Published var pane: Pane = .code
+    @Published var chats: [ChatConversation] = []
+    @Published var chatSelection: UUID?
+    @Published var chatDraft = ""
+    @Published var chatRunning = false
+    @Published var chatLive = ""
+    @Published var chatAttachments: [ChatAttachment] = []
+    private var chatStore: ChatStore?
+    private var chatTask: Task<Void, Never>?
+
     @Published var endpoint: ModelEndpoint?
     @Published var endpointName = ""
     @Published var servers: [(name: String, endpoint: ModelEndpoint)] = []
@@ -54,8 +65,77 @@ final class AppModel: ObservableObject {
         } catch {
             notice = "Mason could not open its data folder: \(describe(error))"
         }
+        if let opened = try? ChatStore() {
+            chatStore = opened
+            chats = opened.conversations
+            chatSelection = chats.first?.id
+        }
         Task { await refreshModels(startLastIfNeeded: true) }
     }
+
+    // MARK: chat
+
+    var chat: ChatConversation? { chats.first { $0.id == chatSelection } }
+
+    func newChat() {
+        guard let chatStore else { return }
+        pane = .chat
+        // Reuse an untouched chat rather than collecting empty ones.
+        if let empty = chats.first(where: { $0.messages.count <= 1 }) { chatSelection = empty.id; return }
+        do { let created = try chatStore.create(); chats = chatStore.conversations; chatSelection = created.id } catch { notice = describe(error) }
+    }
+
+    func deleteChat(_ chat: ChatConversation) {
+        guard !(chatRunning && chat.id == chatSelection) else { notice = "Stop the answer before deleting this chat."; return }
+        chatStore?.delete(chat.id)
+        chats.removeAll { $0.id == chat.id }
+        if chatSelection == chat.id { chatSelection = chats.first?.id }
+    }
+
+    func attachToChat() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        panel.prompt = "Attach"
+        panel.message = "Choose text files to send with your message."
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls where chatAttachments.count < ChatAttachment.maxPerMessage {
+            do {
+                let file = try ChatAttachment(file: url)
+                if !chatAttachments.contains(where: { $0.name == file.name }) { chatAttachments.append(file) }
+            } catch { notice = describe(error) }
+        }
+    }
+
+    func sendChat() {
+        let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !chatRunning, let chatStore, let current = chat, !text.isEmpty || !chatAttachments.isEmpty else { return }
+        guard let endpoint, let client = try? OpenAIClient(endpoint) else {
+            notice = "No model is running. Open Models to start one, or start your own local server."
+            return
+        }
+        let files = chatAttachments
+        chatDraft = ""; chatAttachments = []; chatRunning = true; chatLive = ""
+        chatTask = Task {
+            var working = current
+            do {
+                try await Chat.send(&working, text: text, attachments: files, model: client, store: chatStore) { [weak self] piece in
+                    Task { @MainActor in self?.chatLive += piece }
+                }
+            } catch is CancellationError {
+            } catch {
+                if !Task.isCancelled { notice = describe(error) }
+            }
+            // The store has the conversation as far as it got: with the answer, or with the question alone.
+            chats = chatStore.conversations
+            chatRunning = false; chatLive = ""
+        }
+    }
+
+    func stopChat() { chatTask?.cancel() }
+
+    /// ⌘Return and ⌘. act on whichever pane is showing.
+    func sendCurrent() { if pane == .chat { sendChat() } else { send() } }
+    func stopCurrent() { if pane == .chat { stopChat() } else { stop() } }
 
     func describe(_ error: Error) -> String { (error as? MasonError)?.description ?? error.localizedDescription }
 

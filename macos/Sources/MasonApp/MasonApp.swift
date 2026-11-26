@@ -14,7 +14,8 @@ struct MasonAgentApp: App {
         .defaultSize(width: 1180, height: 760)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Session") { model.newSession() }.keyboardShortcut("n")
+                Button("New Session") { model.pane = .code; model.newSession() }.keyboardShortcut("n")
+                Button("New Chat") { model.newChat() }.keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("Open Project…") { model.openFolder() }.keyboardShortcut("o")
             }
             CommandGroup(after: .undoRedo) {
@@ -23,9 +24,15 @@ struct MasonAgentApp: App {
                 Button("Redo Last Request's Edits") { model.undo(redo: true) }.keyboardShortcut("z", modifiers: [.command, .option, .shift]).disabled(model.running)
                 Button("Compact Conversation") { model.compact() }.disabled(model.running)
             }
+            CommandGroup(after: .sidebar) {
+                Button("Code") { model.pane = .code }.keyboardShortcut("1")
+                Button("Chat") { model.pane = .chat }.keyboardShortcut("2")
+                Button("Models") { model.pane = .models }.keyboardShortcut("3")
+                Divider()
+            }
             CommandMenu("Agent") {
-                Button("Send") { model.send() }.keyboardShortcut(.return, modifiers: .command).disabled(model.running)
-                Button("Stop") { model.stop() }.keyboardShortcut(".", modifiers: .command).disabled(!model.running)
+                Button("Send") { model.sendCurrent() }.keyboardShortcut(.return, modifiers: .command).disabled(model.pane == .chat ? model.chatRunning : model.running)
+                Button("Stop") { model.stopCurrent() }.keyboardShortcut(".", modifiers: .command).disabled(model.pane == .chat ? !model.chatRunning : !model.running)
                 Divider()
                 Picker("Permission", selection: Binding(get: { model.session?.permission ?? .reviewEdits }, set: { model.setPermission($0) })) {
                     Text("Read-Only").tag(Permission.readOnly)
@@ -45,41 +52,43 @@ struct MasonAgentApp: App {
 }
 
 enum Pane: String, CaseIterable, Identifiable {
-    case code = "Code", models = "Models"
+    case code = "Code", chat = "Chat", models = "Models"
     var id: String { rawValue }
 }
 
 struct RootView: View {
     @EnvironmentObject var model: AppModel
-    @State private var pane: Pane = .code
     @State private var showChanges = false
 
     var body: some View {
         NavigationSplitView {
-            Sidebar()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 340)
+            Group {
+                if model.pane == .chat { ChatSidebar() } else { Sidebar() }
+            }
+            .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 340)
         } detail: {
             Group {
-                switch pane {
+                switch model.pane {
                 case .code: SessionView(showChanges: $showChanges)
+                case .chat: ChatView()
                 case .models: ModelsView()
                 }
             }
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Picker("View", selection: $pane) {
+                    Picker("View", selection: $model.pane) {
                         ForEach(Pane.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
-                    .help("Switch between your coding sessions and the models on this Mac")
+                    .help("Switch between coding sessions, chat and the models on this Mac")
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
-                    if pane == .code {
+                    if model.pane == .code {
                         Toggle(isOn: $showChanges) { Label("Changes", systemImage: "plusminus") }
                             .help("Show the files this session changed")
                     }
-                    Button { pane = .models } label: {
+                    Button { model.pane = .models } label: {
                         Label(model.endpoint == nil ? "No model" : model.endpointName, systemImage: model.endpoint == nil ? "exclamationmark.triangle" : "cpu")
                             .labelStyle(.titleAndIcon)
                     }
