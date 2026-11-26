@@ -199,7 +199,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     controls->append(permission_);
     controls->append(model_button_);
     window_button_.set_label("Window");
-    window_button_.add_css_class("chip");
+    window_button_.add_css_class("chip-menu");
     window_button_.set_tooltip_text("Attach a window of another app so Mason can read its controls and, with your approval each time, operate it");
     window_list_.set_margin(8);
     window_popover_.set_child(window_list_);
@@ -248,7 +248,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
 
     changes_.set_margin(12);
     changes_scroll_.set_child(changes_);
-    changes_scroll_.set_size_request(340, -1);
+    changes_scroll_.set_size_request(384, -1);
     changes_scroll_.set_visible(false);
     auto* paned = Gtk::make_managed<Gtk::Paned>(Gtk::Orientation::HORIZONTAL);
     paned->set_start_child(*conversation);
@@ -1116,11 +1116,17 @@ void MainWindow::refresh_changes() {
     clear(changes_);
     auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     auto* heading = panel_switch();
-    auto* undo = Gtk::make_managed<Gtk::Button>("Undo");
-    undo->set_tooltip_text("Put back the files the latest request edited");
+    // Icons keep the bar inside a narrow panel; each has a tooltip and a name for screen readers.
+    auto* undo = Gtk::make_managed<Gtk::Button>();
+    undo->set_icon_name("edit-undo-symbolic");
+    undo->set_tooltip_text("Undo: put back everything the latest request changed");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(undo->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Undo", -1);
     undo->set_sensitive(!controller_.running);
     undo->signal_clicked().connect([this] { controller_.undo(); });
-    auto* redo = Gtk::make_managed<Gtk::Button>("Redo");
+    auto* redo = Gtk::make_managed<Gtk::Button>();
+    redo->set_icon_name("edit-redo-symbolic");
+    redo->set_tooltip_text("Redo: reapply what was undone");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(redo->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Redo", -1);
     redo->set_sensitive(!controller_.running);
     redo->signal_clicked().connect([this] { controller_.undo(true); });
     auto* review = Gtk::make_managed<Gtk::Button>(controller_.reviewing ? "Reviewing…" : "Review");

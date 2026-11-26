@@ -86,6 +86,7 @@ const char* const kWidgets = R"css(
 .welcome-lede { font-size: 1.1em; color: @mason_muted; }
 .diff-added { color: @success_color; background: alpha(@success_bg_color, 0.12); }
 .diff-removed { color: @error_color; background: alpha(@error_bg_color, 0.12); }
+.chip-menu > button { border-radius: 10px; background: alpha(@view_fg_color, 0.07); padding: 4px 10px; min-height: 30px; box-shadow: none; font-weight: 700; }
 .comment-pin { opacity: 0.45; }
 .comment-pin > button { min-height: 0; min-width: 0; padding: 0 3px; -gtk-icon-size: 11px; }
 .comment-pin:hover, .comment-pin:focus-within { opacity: 1; }
