@@ -46,7 +46,11 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      # .NET goes into its own folder, first on PATH. The coding checks snapshot each runtime on PATH for Auto,
+      # within a 40,000-file / 2 GB bound; the runner's shared dotnet folder holds many SDKs and is larger than that.
       - uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}\dotnet
         with:
           dotnet-version: '10.0.x'
 
