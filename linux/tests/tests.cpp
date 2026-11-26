@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "agent.hpp"
+#include "browser.hpp"
 #include "chat.hpp"
 #include "schedules.hpp"
 #include "models.hpp"
@@ -900,10 +901,67 @@ static void test_extra_tools() {
 
         Session reading = store.create(workspace.root(), Permission::ReadOnly);
         reading.ask_only = true;
-        CHECK(names(reading) == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"}));  // no editing, job or workflow tools
+        // check_page is offered wherever a browser is installed, which depends on the computer.
+        std::vector<std::string> offered = names(reading);
+        offered.erase(std::remove(offered.begin(), offered.end(), "check_page"), offered.end());
+        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"}));  // no editing, job or workflow tools
         box.write("mason.workflows.json", "{\"version\": 2}");
         CHECK_THROWS(workflows::load(workspace));
     }
+}
+
+static void test_browser() {
+    Sandbox box;
+    box.write("site/index.html", "<!DOCTYPE html><title>Counter</title><input id=\"name\" placeholder=\"Name\"><button onclick=\"add()\">Add</button><p id=\"out\">Total 0</p>"
+                                 "<script>var n=0;function add(){n++;document.getElementById('out').textContent='Total '+n+' for '+document.getElementById('name').value}</script>");
+    box.write("site/broken.html", "<title>Broken</title><p>Shown</p><script>missing()</script>");
+    box.write("site/app.js", "var x = 1;");
+    box.write("notes.txt", "plain");
+    fs::path outside = box.base / "secret.html";
+    std::ofstream(outside) << "<p>secret</p>";
+    const Workspace workspace(box.project.string());
+
+    // The server sends project files only, and pages record errors from their first script on.
+    const browser::Reply page = browser::respond("/site/index.html?x=1", workspace);
+    CHECK(page.status == 200 && starts_with(page.content_type, "text/html") && page.body.find("<!DOCTYPE html><script>window.__masonErrors") == 0);
+    CHECK(browser::respond("/site/broken.html", workspace).body.find("<script>window.__masonErrors") == 0);
+    CHECK(browser::respond("/site/", workspace).status == 200);
+    CHECK(browser::respond("/site/app.js", workspace).body == "var x = 1;" && starts_with(browser::respond("/site/app.js", workspace).content_type, "text/javascript"));
+    CHECK(browser::respond("/__mason/harness?page=x", workspace).body.find("mason-result") != std::string::npos);
+    CHECK(browser::respond("/../secret.html", workspace).status == 404);
+    CHECK(browser::respond("/%2e%2e/secret.html", workspace).status == 404);
+    CHECK(browser::respond("/site/missing.html", workspace).status == 404);
+
+    if (browser::find().empty()) {
+        std::cout << "  (no browser on this computer: the real-browser part was not run)\n";
+        return;
+    }
+    CHECK_THROWS(browser::run(workspace, "notes.txt"));
+    CHECK_THROWS(browser::run(workspace, "../secret.html"));
+
+    const json steps = json::array({{{"action", "fill"}, {"selector", "#name"}, {"value", "Ada"}}, {{"action", "click"}, {"text", "Add"}}, {{"action", "click"}, {"text", "Add"}},
+                                    {{"action", "expect_text"}, {"text", "Total 2 for Ada"}}, {{"action", "expect_no_text"}, {"text", "Total 0"}}});
+    const browser::Result good = browser::run(workspace, "site/index.html", steps);
+    CHECK(good.passed() && good.title == "Counter" && good.steps.size() == 5 && good.text.find("Total 2 for Ada") != std::string::npos);
+    CHECK(starts_with(browser::report(good, "site/index.html"), "PASSED: site/index.html"));
+
+    const browser::Result missing = browser::run(workspace, "site/index.html", json::array({{{"action", "click"}, {"text", "Remove"}}, {{"action", "expect_text"}, {"text", "never"}}}));
+    CHECK(!missing.passed() && missing.steps.size() == 1 && !missing.steps[0].ok);
+
+    const browser::Result broken = browser::run(workspace, "site/broken.html");
+    CHECK(!broken.passed() && broken.errors.size() == 1 && broken.errors[0].find("missing") != std::string::npos && broken.text.find("Shown") != std::string::npos);
+
+    // The agent asks before opening a page outside Auto, and reports a failing page as failed.
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::ReviewEdits);
+    ScriptedModel model;
+    model.replies = {call("check_page", {{"path", "site/index.html"}, {"steps_json", "[{\"action\":\"click\",\"text\":\"Add\"},{\"action\":\"expect_text\",\"text\":\"Total 1\"}]"}}),
+                     call("check_page", {{"path", "site/broken.html"}, {"steps_json", "[]"}}), say("Checked.")};
+    std::vector<std::string> asked;
+    Agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); return true; }, [](const AgentEvent&) {}).run(session, "Check the pages");
+    CHECK(asked == std::vector<std::string>{"site/index.html", "site/broken.html"});
+    CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && session.activities[1].state == "failed");
+    CHECK(session.activities[1].result.find("Script errors:") != std::string::npos);
 }
 
 static void test_verification() {
@@ -996,7 +1054,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {
