@@ -422,6 +422,8 @@ void Controller::host_command(const std::string& name, const std::string& rest) 
             notice.emit(said);
             // Feedback to act on is put in the request box for the user to send.
             if (!request.empty()) draft_suggested.emit(request);
+            // What the command changed shows on the Settings page at once.
+            changed.emit();
         });
     }).detach();
 }
