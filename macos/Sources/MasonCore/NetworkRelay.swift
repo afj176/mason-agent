@@ -43,6 +43,34 @@ public enum NetworkSettings {
         return object["mode"] as? String == "ask"
     }
 
+    /// Whether this session asks: its own choice when it has made one, otherwise the computer's.
+    public static func asks(_ session: Session, home: URL = DataHome.url) -> Bool { session.network.map { $0 == "ask" } ?? asks(home: home) }
+
+    /// The hosts the user chose to always allow for this project. A rule names one host exactly.
+    public static func alwaysAllowed(home: URL, workspace: String) -> Set<String> {
+        Set(ApprovalRules(home: home, workspace: workspace).rules.filter { $0.tool == "network" }.map { $0.prefix.lowercased() })
+    }
+
+    /// /network in a session: ask and off choose for this session, default goes back to the computer's setting, and
+    /// "computer ask" or "computer off" changes that setting.
+    public static func sessionCommand(_ rest: String, session: inout Session, home: URL = DataHome.url) throws -> String {
+        let words = rest.lowercased().split(separator: " ").map(String.init)
+        switch words.first {
+        case "ask", "off": session.network = words[0]
+        case "default": session.network = nil
+        case "computer": return try command(words.dropFirst().joined(separator: " "), home: home)
+        case nil: break
+        default: return "/network                 What Auto does about the network in this session\n/network ask             Ask before a sandboxed command reaches a host over HTTPS\n/network off             Commands in Auto have no network\n/network default         Follow the computer's setting\n/network computer ask    Change the computer's setting (or: computer off)"
+        }
+        let here = asks(session, home: home)
+        let source = session.network == nil ? "the computer's setting" : "this session's own choice"
+        let allowed = alwaysAllowed(home: home, workspace: session.workspace).sorted()
+        var said = "In Auto, sandboxed commands in this session have no network (\(source))."
+        if here { said = "In Auto, a sandboxed command in this session that needs a host over HTTPS asks first (\(source)). An answer lasts for that request; Always Allow keeps a host for this project." }
+        if !allowed.isEmpty { said += "\nAlways allowed in this project: " + allowed.joined(separator: ", ") }
+        return said
+    }
+
     /// The /network command, shared by the command line and the app.
     public static func command(_ rest: String, home: URL = DataHome.url) throws -> String {
         let word = rest.trimmingCharacters(in: .whitespaces).lowercased()

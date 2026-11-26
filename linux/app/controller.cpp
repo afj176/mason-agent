@@ -3,6 +3,7 @@
 #include "background.hpp"
 #include "bundles.hpp"
 #include "delivery.hpp"
+#include "derived.hpp"
 #include "experiments.hpp"
 #include "network.hpp"
 #include "policy.hpp"
@@ -397,13 +398,29 @@ void Controller::host_command(const std::string& name, const std::string& rest) 
     const bool automatic = current->permission == Permission::Auto && !current->ask_only;
     const std::shared_ptr<bool> alive = alive_;
     // Some of these run git, so they work off the main thread and report back.
-    std::thread([this, alive, name, rest, folder, home, target, automatic] {
+    if (name == "/network") {
+        // The choice is this session's, so it is made here, where the session is kept.
+        Session updated = *current;
+        std::string said;
+        try {
+            said = network_settings::session_command(rest, updated, home);
+            store_->save(updated);
+        } catch (const std::exception& error) {
+            said = error.what();
+        }
+        replace(updated);
+        notice.emit(said);
+        changed.emit();
+        return;
+    }
+    const std::string receipt = derived::passed_receipt(*current);
+    std::thread([this, alive, name, rest, folder, home, target, automatic, receipt] {
         std::string said, request;
         try {
             const Workspace workspace(folder);
             if (name == "/experiment" || name == "/experiments") said = experiments::command(rest, workspace, home);
             else if (name == "/deliver") {
-                const delivery::Said answer = delivery::command(rest, workspace, home);
+                const delivery::Said answer = delivery::command(rest, workspace, home, receipt);
                 said = answer.text;
                 request = answer.request;
             } else if (name == "/task" || name == "/tasks") {
@@ -422,6 +439,8 @@ void Controller::host_command(const std::string& name, const std::string& rest) 
             notice.emit(said);
             // Feedback to act on is put in the request box for the user to send.
             if (!request.empty()) draft_suggested.emit(request);
+            // What the command changed shows on the Settings page at once.
+            changed.emit();
         });
     }).detach();
 }
@@ -603,6 +622,21 @@ const ChatConversation* Controller::chat() const {
 void Controller::select_chat(const std::string& id) {
     if (chat_running || id == chat_selection) return;
     chat_selection = id;
+    changed.emit();
+}
+
+void Controller::configure_chat(const std::string& reasoning, int max_tokens, const std::string& reference) {
+    const ChatConversation* current = chat();
+    if (!current || !chat_store_ || chat_running) return;
+    ChatConversation updated = *current;
+    try {
+        chat::configure(updated, reasoning, max_tokens, reference);
+        chat_store_->save(updated);
+        chats_ = chat_store_->conversations();
+        chat_selection = updated.id;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
     changed.emit();
 }
 

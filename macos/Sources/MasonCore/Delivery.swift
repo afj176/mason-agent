@@ -62,7 +62,8 @@ public enum Delivery {
     }
 
     /// Builds the commit for the chosen hunks on top of `pinned`, the revision the user reviewed against.
-    public static func draft(_ workspace: Workspace, base: String, pinned: String, title: String, selected: Set<String>, home: URL = DataHome.url) async throws -> DeliveryDraft {
+    /// `receipt` is what Mason's own checks found on the latest request; it goes into the description when the draft is the whole change.
+    public static func draft(_ workspace: Workspace, base: String, pinned: String, title: String, selected: Set<String>, receipt: String? = nil, home: URL = DataHome.url) async throws -> DeliveryDraft {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...120).contains(title.count), !title.contains("\n"), (1...128).contains(selected.count) else { throw MasonError("Choose reviewed hunks and a pull request title of up to 120 characters.") }
         let reviewed = try await review(workspace, base: base)
@@ -92,8 +93,13 @@ public enum Delivery {
         let remote = ((try? await Experiments.git(workspace, ["remote", "get-url", "origin"])) ?? "")
         let id = UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
         let whole = patches.count == reviewed.patches.count
-        let body = "## Changes\n\n" + paths.map { "- " + $0 }.joined(separator: "\n") + "\n\n## Verification\n\n"
-            + (whole ? "This is every change in the checkout against \(base). No verification receipt is attached." : "This is a selection of the checkout's changes, which was not verified on its own.")
+        let listed: String = paths.map { "- " + $0 }.joined(separator: "\n")
+        var verification = "This is a selection of the checkout's changes, which was not verified on its own."
+        if whole {
+            verification = "This is every change in the checkout against \(base). No verification receipt is attached."
+            if let receipt { verification = "This is every change in the checkout against \(base). Mason's own checks on the latest request found:\n\n" + String(receipt.prefix(12_000)) }
+        }
+        let body: String = "## Changes\n\n" + listed + "\n\n## Verification\n\n" + verification
         let made = DeliveryDraft(id: id, workspace: realPath(workspace.root.path), base: base, baseCommit: pinned, commit: commit, title: title, body: body,
                                  repository: (try? repository(remote)) ?? "", branch: "mason/review-" + id.prefix(12), paths: paths, url: nil)
         try save(load(home: home).filter { $0.workspace != made.workspace } + [made], home: home)
@@ -190,7 +196,7 @@ public enum Delivery {
         """
 
     /// Returns what to tell the user. For "feedback send" with something to act on, `request` is what to send the model.
-    public static func command(_ rest: String, workspace: Workspace, home: URL = DataHome.url) async throws -> (text: String, request: String?) {
+    public static func command(_ rest: String, workspace: Workspace, receipt: String? = nil, home: URL = DataHome.url) async throws -> (text: String, request: String?) {
         let words = rest.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         func described(_ draft: DeliveryDraft) -> String {
             "\"\(draft.title)\" onto \(draft.base): commit \(draft.commit.prefix(12)), \(draft.paths.count) file\(draft.paths.count == 1 ? "" : "s") (\(draft.paths.prefix(6).joined(separator: ", "))\(draft.paths.count > 6 ? ", …" : ""))"
@@ -211,7 +217,7 @@ public enum Delivery {
             guard words.count >= 4 else { throw MasonError("Use /deliver draft BASE HUNKS TITLE, for example /deliver draft main all Fix the cart total.") }
             let reviewed = try await review(workspace, base: words[1])
             let chosen: Set<String> = words[2].lowercased() == "all" ? Set(reviewed.patches.map(\.hunk.id)) : Set(words[2].split(separator: ",").map(String.init))
-            let made = try await draft(workspace, base: words[1], pinned: reviewed.revision, title: words.dropFirst(3).joined(separator: " "), selected: chosen, home: home)
+            let made = try await draft(workspace, base: words[1], pinned: reviewed.revision, title: words.dropFirst(3).joined(separator: " "), selected: chosen, receipt: receipt, home: home)
             return ("Drafted " + described(made), nil)
         case "publish":
             guard let draft = current(workspace, home: home) else { throw MasonError("No draft. Make one with /deliver draft.") }
@@ -226,5 +232,13 @@ public enum Delivery {
         default:
             return (usage, nil)
         }
+    }
+}
+
+extension Session {
+    /// What Mason's own checks found on the latest request that had any, when they all held: for a pull request's description.
+    public var passedReceipt: String? {
+        guard let receipt = turns.last(where: { !$0.undone && $0.checks != nil })?.checks, receipt.passed, !receipt.results.isEmpty else { return nil }
+        return receipt.report
     }
 }

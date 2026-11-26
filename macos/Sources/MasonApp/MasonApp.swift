@@ -190,8 +190,11 @@ struct SettingsView: View {
             AgentsPane().tabItem { Label("Agents", systemImage: "person.crop.rectangle") }
             McpPane().tabItem { Label("MCP Servers", systemImage: "server.rack") }
             SchedulesPane().tabItem { Label("Schedules", systemImage: "clock") }
+            ProjectPane().tabItem { Label("Project", systemImage: "folder.badge.gearshape") }
+            RolesPane().tabItem { Label("Roles & Network", systemImage: "person.2") }
+            BundlesPane().tabItem { Label("Bundles", systemImage: "shippingbox") }
         }
-        .frame(width: 680, height: 460)
+        .frame(width: 760, height: 520)
     }
 }
 

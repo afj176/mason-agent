@@ -1,6 +1,14 @@
 // The Settings page: saved approvals, agents and commands, MCP servers, and schedules, in one place.
 #include "window.hpp"
 
+#include "background.hpp"
+#include "bundles.hpp"
+#include "delivery.hpp"
+#include "experiments.hpp"
+#include "network.hpp"
+#include "policy.hpp"
+#include "roles.hpp"
+
 namespace mason::app {
 
 namespace {
@@ -92,11 +100,34 @@ void SettingsPage::refresh() {
     const std::vector<Definition> agents = workspace.empty() ? std::vector<Definition>{} : customization::agents(home, workspace);
     const std::vector<Definition> commands = workspace.empty() ? std::vector<Definition>{} : customization::commands(home, workspace);
 
+    const std::optional<ProjectPolicy> policy = workspace.empty() ? std::nullopt : policies::load(home, workspace, true);
+    const ModelRoles chosen_roles = roles::load(home);
+    const bool asks_network = network_settings::asks(home);
+    const std::vector<InstalledBundle> installed = bundles::list(home);
+    std::vector<Experiment> trials;
+    std::optional<DeliveryDraft> draft;
+    std::vector<std::pair<BackgroundTask, TaskStatus>> tasks;
+    if (!workspace.empty()) {
+        try {
+            const Workspace project(workspace);
+            trials = experiments::list(project, home);
+            draft = delivery::current(project, home);
+            tasks = background::all(&project, home);
+            if (tasks.size() > 12) tasks.resize(12);
+        } catch (const std::exception&) {
+        }
+    }
     // The page is rebuilt only when what it lists changes, so typing in an entry is not interrupted.
     const std::optional<EmbeddingSettings> embeddings = semantic::load(home);
     std::string print = workspace + "|" + (session ? session->agent : "") + "|" + problem + "|" + c.mcp_busy;
     print += embeddings ? embeddings->url + embeddings->model + embeddings->rerank_url + embeddings->rerank_model + "|" : "none|";
     for (const auto& rule : rules.rules()) print += rule.tool + rule.prefix + "|";
+    print += policy ? policy->name + (policy->hooks ? "h" : "") + join(policy->disabled_tools, ",") + (policy->workflows ? join(*policy->workflows, ",") : "any") + std::to_string(policy->expires) + "|" : "nopolicy|";
+    print += (chosen_roles.reviewer ? chosen_roles.reviewer->url + chosen_roles.reviewer->model : "") + "|" + (chosen_roles.visual ? chosen_roles.visual->url + chosen_roles.visual->model : "") + "|" + chosen_roles.trace + std::to_string(chosen_roles.limit) + (asks_network ? "|ask|" : "|off|");
+    for (const InstalledBundle& bundle : installed) print += bundle.name + bundle.version + "|";
+    for (const Experiment& trial : trials) print += trial.name + "|";
+    print += draft ? draft->id + draft->url + "|" : "nodraft|";
+    for (const auto& [task, status] : tasks) print += task.id + status.state + (status.approval ? status.approval->id : "") + "|";
     for (const Definition& item : agents) print += item.name + "|";
     for (const Definition& item : commands) print += item.name + "|";
     for (const McpServer& server : servers) print += server.name + server.transport() + (server.enabled ? "1" : "0") + join(server.tools, ",") + "|";
@@ -248,6 +279,118 @@ void SettingsPage::refresh() {
         c.schedule_command("add " + text);
         c.changed.emit();
     });
+
+    // ---- what follows shares its code with the command line: each control runs the command it names ----
+    auto run = [&c](const std::string& name, const std::string& rest) { c.host_command(name, rest); };
+
+    // ---- project policy ----
+    if (session) {
+        AdwPreferencesGroup* policy_group = group(content_, "Project policy", "Limits for this project, kept outside it so nothing in the project can change them.");
+        AdwActionRow* hooks = row(policy_group, "Run the project's hooks", "In Auto, workflows marked afterEdit run after each edit, and ones marked beforeVerify must pass before a request may finish.");
+        toggle(hooks, policy && policy->hooks, "Run the project's hooks", [run](bool on) { run("/policy", on ? "hooks on" : "hooks off"); });
+        row(policy_group, "Tools switched off", policy && !policy->disabled_tools.empty() ? join(policy->disabled_tools, ", ") : "None. Every tool is available.");
+        entry_row(policy_group, "Switch tools off", "run_shell start_job", "Switch Off", [run](const std::string& text) { run("/policy", "disable " + text); });
+        if (policy && !policy->disabled_tools.empty()) entry_row(policy_group, "Switch tools back on", join(policy->disabled_tools, " "), "Switch On", [run](const std::string& text) { run("/policy", "enable " + text); });
+        row(policy_group, "Workflows that may run", policy && policy->workflows ? (policy->workflows->empty() ? std::string("None") : join(*policy->workflows, ", ")) : "Any workflow in mason.workflows.json.");
+        entry_row(policy_group, "Limit workflows", "test lint    (or: any)", "Set", [run](const std::string& text) { run("/policy", "workflows " + text); });
+        if (policy) {
+            AdwActionRow* clear_row = row(policy_group, "Policy " + policy->name, policy->expires != 0 ? "It lapses by itself; see /policy for the date." : "It stays until you remove it.");
+            button(clear_row, "Remove Policy", [run] { run("/policy", "clear"); });
+        }
+    }
+
+    // ---- model roles ----
+    AdwPreferencesGroup* roles_group = group(content_, "Model roles", "Other local models beside the one doing the work. A reviewer reads what a request changed before it may finish, and for the Review button. A visual model looks at pictures of a window.");
+    AdwActionRow* reviewer_row = row(roles_group, "Reviewer", chosen_roles.reviewer ? chosen_roles.reviewer->model + " at " + chosen_roles.reviewer->url : "The model doing the work");
+    if (chosen_roles.reviewer) button(reviewer_row, "Turn Off", [run] { run("/roles", "reviewer off"); });
+    entry_row(roles_group, "Choose a reviewer", "http://127.0.0.1:8081/  MODEL", "Use", [run](const std::string& text) { run("/roles", "reviewer " + text); });
+    AdwActionRow* visual_row = row(roles_group, "Visual model", chosen_roles.visual ? chosen_roles.visual->model + " at " + chosen_roles.visual->url : "The model doing the work");
+    if (chosen_roles.visual) button(visual_row, "Turn Off", [run] { run("/roles", "visual off"); });
+    entry_row(roles_group, "Choose a visual model", "http://127.0.0.1:8082/  MODEL", "Use", [run](const std::string& text) { run("/roles", "visual " + text); });
+    AdwActionRow* trace_row = row(roles_group, "Record every model call", chosen_roles.trace.empty() ? "Off" : "Written to " + chosen_roles.trace);
+    if (!chosen_roles.trace.empty()) button(trace_row, "Turn Off", [run] { run("/roles", "trace off"); });
+    entry_row(roles_group, "Record to a folder", "~/mason-traces    (outside your projects)", "Record", [run](const std::string& text) { run("/roles", "trace " + text); });
+    entry_row(roles_group, "Reviewer calls in one review: " + std::to_string(chosen_roles.limit), "64", "Set", [run](const std::string& text) { run("/roles", "limit " + text); });
+
+    // ---- network ----
+    AdwPreferencesGroup* network_group = group(content_, "Network in Auto", "The setting for this computer; a session can choose its own with /network. Commands in the sandbox have no network unless you allow it.");
+    AdwActionRow* network_row = row(network_group, "Ask when a command needs a host", "A sandboxed command can then ask for one host over HTTPS. Your answer lasts for that request. This computer, your local network and plain HTTP stay out of reach.");
+    toggle(network_row, asks_network, "Ask when a command needs a host", [run](bool on) { run("/network", on ? "computer ask" : "computer off"); });
+
+    // ---- bundles ----
+    AdwPreferencesGroup* bundle_group = group(content_, "Bundles", "Folders of skills and documentation, installed once for every project. A bundle may also name MCP servers; they are added switched off.");
+    if (installed.empty()) row(bundle_group, "No bundles", "A bundle is a folder with bundle.json, skills/NAME/SKILL.md and docs/*.md.");
+    for (const InstalledBundle& bundle : installed) {
+        const std::string name = bundle.name;
+        AdwActionRow* line = row(bundle_group, bundle.name + " " + bundle.version, bundle.description);
+        button(line, "Add Its Servers", [run, name] { run("/bundle", "servers " + name + " add"); });
+        button(line, "Remove", [run, name] { run("/bundle", "remove " + name); });
+    }
+    AdwActionRow* install_row = row(bundle_group, "Install a bundle", "Choose the bundle's folder.");
+    button(install_row, "Choose Folder…", [this, run] {
+        auto dialog = Gtk::FileDialog::create();
+        dialog->set_title("Install a Bundle");
+        auto* window = dynamic_cast<Gtk::Window*>(get_root());
+        if (!window) return;
+        dialog->select_folder(*window, [dialog, run](const Glib::RefPtr<Gio::AsyncResult>& result) {
+            try {
+                if (const auto folder = dialog->select_folder_finish(result)) run("/bundle", "install " + folder->get_path());
+            } catch (const Glib::Error&) {
+                // Cancelled.
+            }
+        });
+    });
+
+    if (!session) return;
+
+    // ---- experiments ----
+    AdwPreferencesGroup* experiment_group = group(content_, "Experiments", "Copies of this project in their own Git worktrees, each started from the project exactly as it stood. Try something there, then bring back the hunks you want.");
+    if (trials.empty()) row(experiment_group, "No experiments", "Name one below to copy the project, uncommitted and untracked files included, into a worktree beside it.");
+    for (const Experiment& trial : trials) {
+        const std::string name = trial.name, path = trial.path;
+        AdwActionRow* line = row(experiment_group, trial.name, trial.path + "\nBranch " + trial.branch);
+        button(line, "What Changed", [run, name] { run("/experiment", "diff " + name); });
+        button(line, "Open Here", [&c, path] { c.new_session(path); });
+        button(line, "Forget", [run, name] { run("/experiment", "forget " + name); });
+    }
+    entry_row(experiment_group, "Start an experiment", "name", "Start", [run](const std::string& text) { run("/experiment", "new " + text); });
+    entry_row(experiment_group, "See one file's hunks", "NAME  PATH", "Show", [run](const std::string& text) { run("/experiment", "diff " + text); });
+    entry_row(experiment_group, "Apply a hunk to this project", "NAME  PATH  ID    (or: all)", "Apply", [run](const std::string& text) { run("/experiment", "apply " + text); });
+
+    // ---- pull request ----
+    AdwPreferencesGroup* delivery_group = group(content_, "Pull request", "One commit made from the hunks you choose, without touching your files, index or branches. Publishing pushes it to a new branch and opens a draft pull request through gh.");
+    if (draft) {
+        AdwActionRow* line = row(delivery_group, draft->title, "Onto " + draft->base + "  ·  commit " + draft->commit.substr(0, 12) + "  ·  " + std::to_string(draft->paths.size()) + (draft->paths.size() == 1 ? " file" : " files") +
+                                                                 (draft->url.empty() ? "\nNot published" : "\n" + draft->url));
+        if (draft->url.empty()) button(line, "Publish", [run] { run("/deliver", "publish"); });
+        else {
+            button(line, "Feedback", [run] { run("/deliver", "feedback"); });
+            button(line, "Send to Mason", [run] { run("/deliver", "feedback send"); });
+        }
+    } else {
+        row(delivery_group, "No draft", "Review against a branch, then draft from the hunks listed.");
+    }
+    entry_row(delivery_group, "Review against a branch", "main", "Review", [run](const std::string& text) { run("/deliver", "review " + text); });
+    entry_row(delivery_group, "Draft a pull request", "main  all  Fix the cart total    (or hunk ids separated by commas)", "Draft", [run](const std::string& text) { run("/deliver", "draft " + text); });
+
+    // ---- background tasks ----
+    AdwPreferencesGroup* task_group = group(content_, "Background tasks", "Requests that keep running after you close Mason. Outside Auto, a task waits here before each edit and command.");
+    if (tasks.empty()) row(task_group, "No background tasks", "Start one below. It uses the model that is running now and this session's permission.");
+    for (const auto& [task, status] : tasks) {
+        const std::string id = task.id;
+        std::string detail = status.state + (status.detail.empty() ? "" : " (" + status.detail + ")");
+        if (status.approval) detail += "\nWaiting on: " + status.approval->title;
+        AdwActionRow* line = row(task_group, utf8_length(task.prompt) > 70 ? utf8_prefix(task.prompt, 70) + "…" : task.prompt, detail);
+        if (status.approval) {
+            button(line, "Allow", [run, id] { run("/task", "allow " + id); });
+            button(line, "Deny", [run, id] { run("/task", "deny " + id); });
+        }
+        button(line, "Show", [run, id] { run("/task", "show " + id); });
+        if (status.active()) button(line, "Stop", [run, id] { run("/task", "cancel " + id); });
+    }
+    entry_row(task_group, "Start a background task", "What to do", "Start", [run](const std::string& text) { run("/task", "start " + text); });
+    AdwActionRow* refresh_row = row(task_group, "Tasks run on their own", "This list is read when the page is opened.");
+    button(refresh_row, "Refresh", [this] { shown_.clear(); refresh(); });
 }
 
 }  // namespace mason::app

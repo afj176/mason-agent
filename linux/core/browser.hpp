@@ -54,7 +54,8 @@ std::string find();
 Reply respond(const std::string& target, const Workspace& workspace);
 /// Loads `page` (a project-relative path to an HTML file) and carries out `steps`, a JSON array of objects such as
 /// {"action": "click", "text": "Add"} or {"action": "fill", "selector": "#name", "value": "Ada"}.
-Result run(const Workspace& workspace, const std::string& page, const json& steps = json::array(), const CancelToken& cancel = nullptr, Backend* backend = nullptr);
+/// `screenshot`, when given, is where a picture of the page is written after the steps.
+Result run(const Workspace& workspace, const std::string& page, const json& steps = json::array(), const CancelToken& cancel = nullptr, Backend* backend = nullptr, const fs::path& screenshot = {});
 /// The result as the model reads it.
 std::string report(const Result& result, const std::string& page);
 

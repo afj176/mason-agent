@@ -69,6 +69,13 @@ private:
     Gtk::Box attachments_{Gtk::Orientation::HORIZONTAL, 6};
     Gtk::TextView draft_;
     Gtk::Button attach_{"Attach…"}, send_{"Send"}, stop_{"Stop"};
+    /// Reasoning level, output limit and pinned reference for the selected chat.
+    Gtk::MenuButton options_;
+    Gtk::Popover options_popover_;
+    Gtk::DropDown options_reasoning_;
+    Gtk::Entry options_limit_;
+    Gtk::TextView options_reference_;
+    std::string options_shown_;
     Gtk::Label model_label_;
     Gtk::Label* live_label_ = nullptr;  ///< Owned by the transcript and reset when it is rebuilt.
     bool updating_ = false;

@@ -67,6 +67,8 @@ const char* const kScript = R"JS((function () {
   window.__masonPicker = { arm: function () { armed = true; }, disarm: function () { armed = false; mark(null); } };
 })();)JS";
 
+const char* const kLoopbackOnly = R"JS([{"trigger":{"url-filter":".*"},"action":{"type":"block"}},{"trigger":{"url-filter":"^https?://(127\\.0\\.0\\.1|localhost|\\[::1\\])([:/]|$)"},"action":{"type":"ignore-previous-rules"}},{"trigger":{"url-filter":"^(about|data|blob):"},"action":{"type":"ignore-previous-rules"}}])JS";
+
 const char* const kArm = "window.__masonPicker && window.__masonPicker.arm();";
 const char* const kDisarm = "window.__masonPicker && window.__masonPicker.disarm();";
 

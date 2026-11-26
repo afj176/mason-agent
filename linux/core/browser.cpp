@@ -337,7 +337,7 @@ Reply respond(const std::string& target, const Workspace& workspace) {
     return {200, kind, *data};
 }
 
-Result run(const Workspace& workspace, const std::string& page, const json& steps, const CancelToken& cancel, Backend* backend) {
+Result run(const Workspace& workspace, const std::string& page, const json& steps, const CancelToken& cancel, Backend* backend, const fs::path& screenshot) {
     const std::string program = find();
     if (program.empty()) {
         throw Error("No Chrome, Chromium, Edge or Brave was found on this computer, so the page cannot be checked. Install one, or set MASON_BROWSER to its program.");
@@ -358,7 +358,10 @@ Result run(const Workspace& workspace, const std::string& page, const json& step
     // No profile, no extensions, no first-run screens, and no name resolves except this computer.
     std::vector<std::string> arguments = {program, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--disable-sync",
                                           "--mute-audio", "--user-data-dir=" + profile.string(), "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1", "--window-size=1320,900",
-                                          "--virtual-time-budget=20000", "--dump-dom", address};
+                                          "--virtual-time-budget=20000"};
+    if (!screenshot.empty()) arguments.push_back("--screenshot=" + screenshot.string());
+    arguments.push_back("--dump-dom");
+    arguments.push_back(address);
     int out[2];
     if (pipe2(out, O_CLOEXEC) != 0) throw Error("The browser could not start.");
     std::vector<char*> argv;

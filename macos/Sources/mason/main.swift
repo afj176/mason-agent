@@ -506,13 +506,14 @@ final class CLI {
         case "/policy":
             for line in try Policies.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/network":
-            for line in try NetworkSettings.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            for line in try NetworkSettings.sessionCommand(rest, session: &session).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            try store.save(session)
         case "/roles", "/role":
             for line in try Roles.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/task", "/tasks":
             for line in try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: session.permission == .auto && !session.askOnly, program: ScriptOperations.ownProgram).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/deliver":
-            let said = try await Delivery.command(rest, workspace: workspace)
+            let said = try await Delivery.command(rest, workspace: workspace, receipt: session.passedReceipt)
             for line in said.text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             if let request = said.request { await send(request) }
         case "/comment", "/comments":

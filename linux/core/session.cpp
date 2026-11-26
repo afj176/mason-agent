@@ -102,6 +102,7 @@ json to_json(const Session& session) {
                    {"detail", session.detail}, {"updated", session.updated}, {"messages", messages}, {"activities", activities},
                    {"turns", turns}, {"promptTokens", session.prompt_tokens}, {"pendingNote", session.pending_note}};
     if (!session.agent.empty()) result["agent"] = session.agent;
+    if (!session.network.empty()) result["network"] = session.network;
     if (session.compactions > 0) result["compactions"] = session.compactions;
     if (!session.pending_input.empty()) {
         result["pendingInput"] = json::array();
@@ -136,6 +137,7 @@ Session session_from_json(const json& value) {
     session.workspace = value.at("workspace").get<std::string>();
     session.permission = permission_from_key(value.value("permission", "reviewEdits"));
     session.ask_only = value.value("askOnly", false);
+    session.network = value.value("network", "");
     session.state = value.value("state", "Ready");
     session.detail = value.value("detail", "");
     session.updated = value.value("updated", now_iso());

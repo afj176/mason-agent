@@ -4,6 +4,9 @@
 #include "browser.hpp"
 
 #include <cmath>
+#include <cstring>
+
+#include <unistd.h>
 #include <cstdio>
 #include <thread>
 
@@ -374,6 +377,23 @@ void MainWindow::build_website() {
     web_view_ = GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW, "user-content-manager", manager, nullptr));
     g_object_unref(manager);
     g_signal_connect(web_view_, "decide-policy", G_CALLBACK(decide), nullptr);
+    // A page here may load only from this computer: its own requests to other hosts are blocked too.
+    {
+        const fs::path folder = fs::temp_directory_path() / ("mason-web-filters-" + std::to_string(getuid()));
+        WebKitUserContentFilterStore* filters = webkit_user_content_filter_store_new(folder.c_str());
+        GBytes* rules = g_bytes_new_static(preview::kLoopbackOnly, std::strlen(preview::kLoopbackOnly));
+        g_object_ref(manager);
+        webkit_user_content_filter_store_save(filters, "mason-loopback-only", rules, nullptr, +[](GObject* source, GAsyncResult* result, gpointer data) {
+            WebKitUserContentManager* content = WEBKIT_USER_CONTENT_MANAGER(data);
+            if (WebKitUserContentFilter* filter = webkit_user_content_filter_store_save_finish(WEBKIT_USER_CONTENT_FILTER_STORE(source), result, nullptr)) {
+                webkit_user_content_manager_add_filter(content, filter);
+                webkit_user_content_filter_unref(filter);
+            }
+            g_object_unref(content);
+            g_object_unref(source);
+        }, manager);
+        g_bytes_unref(rules);
+    }
     gtk_widget_set_vexpand(web_view_, TRUE);
     gtk_widget_set_size_request(web_view_, -1, 520);
     auto* frame = Gtk::make_managed<Gtk::Frame>();

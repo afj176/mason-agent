@@ -41,7 +41,8 @@ std::string repository(const std::string& remote);
 /// Everything the checkout has that the target branch does not, a hunk at a time, and the commit they were read against.
 DeliveryReview review(const Workspace& workspace, const std::string& base);
 /// Builds the commit for the chosen hunks on top of `pinned`, the revision the user reviewed against.
-DeliveryDraft draft(const Workspace& workspace, const std::string& base, const std::string& pinned, const std::string& title, const std::set<std::string>& selected, const fs::path& home);
+/// `receipt` is what Mason's own checks found on the latest request; it goes into the description when the draft is the whole change.
+DeliveryDraft draft(const Workspace& workspace, const std::string& base, const std::string& pinned, const std::string& title, const std::set<std::string>& selected, const fs::path& home, const std::string& receipt = "");
 /// Pushes the draft's commit to its own new branch and opens a draft pull request. Returns the pull request's address.
 std::string publish(const Workspace& workspace, const DeliveryDraft& draft, const fs::path& home);
 /// Failed checks, requested changes and review comments on the draft's pull request.
@@ -55,7 +56,7 @@ struct Said {
     std::string request;  ///< For "feedback send" with something to act on: what to send the model.
 };
 /// The /deliver command, shared by the command line and the app.
-Said command(const std::string& rest, const Workspace& workspace, const fs::path& home);
+Said command(const std::string& rest, const Workspace& workspace, const fs::path& home, const std::string& receipt = "");
 
 }  // namespace delivery
 }  // namespace mason

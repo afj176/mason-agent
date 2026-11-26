@@ -98,6 +98,8 @@ public struct StreamAssembler {
 
 /// An OpenAI-compatible chat completions client (llama.cpp, LM Studio, Ollama and others) with streaming and native tool calls.
 public final class OpenAIClient: ChatModel {
+    /// Extra fields for the request body, set by a caller that wants an output limit or a reasoning level.
+    public var extraBody: [String: Any] = [:]
     public let endpoint: ModelEndpoint
     public var name: String { endpoint.model }
     let base: URL
@@ -140,6 +142,8 @@ public final class OpenAIClient: ChatModel {
             "model": endpoint.model, "stream": true, "stream_options": ["include_usage": true],
             "messages": messages.map(OpenAIClient.wire),
         ]
+        // What a caller asked for beyond the usual: an output limit, a reasoning level.
+        for (name, value) in extraBody { body[name] = value }
         if !tools.isEmpty {
             body["tools"] = tools.map { ["type": "function", "function": ["name": $0.name, "description": $0.description, "parameters": $0.parameters] as [String: Any]] as [String: Any] }
         }

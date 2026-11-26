@@ -45,7 +45,7 @@ std::map<std::string, ProjectWorkflow> load(const Workspace& workspace) {
         if (value.contains("events") && value["events"].is_array()) {
             for (const json& event : value["events"]) {
                 const std::string name = event.is_string() ? event.get<std::string>() : "";
-                if (name != "afterPlan" && name != "afterEdit" && name != "beforeVerify") throw Error("The workflow " + item.key() + " names an event other than afterEdit or beforeVerify.");
+                if (name != "afterPlan" && name != "afterEdit" && name != "beforeVerify") throw Error("The workflow " + item.key() + " names an event other than afterPlan, afterEdit or beforeVerify.");
                 workflow.events.push_back(name);
             }
         }

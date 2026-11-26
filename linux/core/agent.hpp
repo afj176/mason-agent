@@ -63,6 +63,10 @@ public:
     /// Set by an app that can show things to the user: a file at a line ("file") or a project page ("page").
     /// Hooks run only inside the sandbox. Tests on a computer without one turn this off.
     void set_hooks_need_sandbox(bool needed) { hooks_need_sandbox_ = needed; }
+    /// The reviewer that reads a request's changes before it may finish. Normally the model chosen with /roles; a test supplies its own.
+    /// The relay this session's sandboxed commands may use, or nothing when they have no network. For tests.
+    NetworkRelay* relay_for(const Session& session) { return relay(session); }
+    void set_reviewer(ChatModel* reviewer) { reviewer_ = reviewer; }
     void set_presenter(std::function<void(const std::string& kind, const std::string& path, int line)> present) { present_ = std::move(present); }
     /// In Auto, Mason works out checks from the request and runs them itself when the model says it is done.
     bool derives_checks = true;
@@ -130,6 +134,7 @@ private:
     std::vector<std::string> offered_names_;
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     std::optional<std::string> pending_question_;
+    ChatModel* reviewer_ = nullptr;
     /// The project's policy, read when a request starts.
     std::optional<ProjectPolicy> policy_;
     bool hooks_need_sandbox_ = true;

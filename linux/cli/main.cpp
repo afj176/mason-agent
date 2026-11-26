@@ -552,7 +552,8 @@ private:
             return true;
         }
         if (name == "/network") {
-            for (const std::string& line : split(network_settings::command(rest, store_.home()), '\n')) term::line("  " + line);
+            for (const std::string& line : split(network_settings::session_command(rest, session_, store_.home()), '\n')) term::line("  " + line);
+            store_.save(session_);
             return true;
         }
         if (name == "/roles" || name == "/role") {
@@ -565,7 +566,7 @@ private:
             return true;
         }
         if (name == "/deliver") {
-            const delivery::Said said = delivery::command(rest, workspace_, store_.home());
+            const delivery::Said said = delivery::command(rest, workspace_, store_.home(), derived::passed_receipt(session_));
             for (const std::string& line : split(said.text, '\n')) term::line("  " + line);
             if (!said.request.empty()) send(said.request);
             return true;

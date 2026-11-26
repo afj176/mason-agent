@@ -6,6 +6,8 @@ final class ScriptedModel: ChatModel {
     let name = "scripted"
     var replies: [ModelReply]
     var seen: [[ChatMessage]] = []
+    /// The names of the tools offered with each request.
+    var seenTools: [[String]] = []
     var window: Int?
     init(_ replies: [ModelReply]) { self.replies = replies }
     func contextWindow() async -> Int? { window }
@@ -14,6 +16,7 @@ final class ScriptedModel: ChatModel {
     var delay: UInt64 = 0
     func complete(messages: [ChatMessage], tools: [ToolSpec], onText: @escaping (String) -> Void) async throws -> ModelReply {
         seen.append(messages)
+        seenTools.append(tools.map(\.name))
         onRequest?(seen.count)
         if delay > 0 { try await Task.sleep(nanoseconds: delay) }
         guard !replies.isEmpty else { throw MasonError("The script ran out of replies.") }
@@ -801,6 +804,16 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(prompts[1].contains("did not work"), "a failed step is reported back")
         XCTAssertTrue(prompts[3].contains("1 tea in the cart for Ada."), "the model sees what its steps really led to")
 
+        // An independent check reads the page afresh, with a picture, and an answer it does not support is not counted as done.
+        let claims = ScriptedModel([ModelReply(text: #"{"action": "done", "answer": "The cart holds three teas."}"#)])
+        let judge = ScriptedModel([ModelReply(text: #"{"supported": false, "reason": "The page says nothing is in the cart."}"#)])
+        let checked = try await Browse.run(workspace, page: "index.html", task: "Say what is in the cart.", model: claims, reviewer: judge, picture: true)
+        XCTAssertFalse(checked.completed)
+        XCTAssertEqual(checked.supported, false)
+        XCTAssertEqual(checked.review, "The page says nothing is in the cart.")
+        XCTAssertTrue(judge.seen.first?.last?.content.contains("Nothing in the cart.") ?? false, "the checker is shown the page as it is")
+        XCTAssertTrue(judge.seen.first?.last?.images?.first?.hasPrefix("data:image/png;base64,iVBOR") ?? false, "and a picture of it")
+
         var lines: [String] = []
         let code = await ScriptOperations.run(["browse", "--workspace", folder.path, "--prompt", "Is there a checkout?"], model: ScriptedModel([ModelReply(text: #"{"action": "fail", "answer": "There is no checkout on this page."}"#)])) { lines.append($0) }
         XCTAssertEqual(code, 2)
@@ -842,6 +855,151 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(Tables.find(in: "| just | one row |\nno rule").isEmpty)
         let prose = Tables.prose(answer)
         XCTAssertTrue(prose.contains("Here are the sales.") && !prose.contains("| Jan |") && prose.contains("| a | b |"), "the table's own lines are left out of the prose, and code is kept: " + prose)
+    }
+
+    func testTheReviewerTakesPartInARequestAndADecisionCanBeComparedLater() async throws {
+        _ = try Roles.command("reviewer http://127.0.0.1:9 judge", home: home)
+        XCTAssertNotNil(Roles.load(home: home).reviewer)
+        // The reviewer here is the agent's own scripted model: the chosen endpoint has nothing listening, so the role falls back to it only when the client cannot be made. The request shows the order of calls.
+        let trace = home.appendingPathComponent("traces")
+        let recorded = RoleModel(ScriptedModel([call("read_file", ["path": "calc.py"])]), role: "implementer", trace: trace)
+        _ = try await recorded.complete(messages: [ChatMessage(role: "user", content: "Look at calc.py")], tools: Agent.tools) { _ in }
+        let file = trace.appendingPathComponent(try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: trace.path).first))
+        let same = try await Roles.compare(trace: file, model: ScriptedModel([call("read_file", ["path": "calc.py"])]))
+        XCTAssertEqual(same["same"] as? Bool, true)
+        let other = ScriptedModel([call("list_files", ["path": "."])])
+        let different = try await Roles.compare(trace: file, model: other)
+        XCTAssertEqual(different["same"] as? Bool, false)
+        XCTAssertEqual(different["sameTools"] as? Bool, false)
+        XCTAssertTrue(other.seenTools.first?.contains("read_file") ?? false, "the other model is offered the tools the first one had")
+        var lines: [String] = []
+        let code = await ScriptOperations.run(["compare-decision", "--trace", file.path], model: ScriptedModel([call("read_file", ["path": "calc.py"])])) { lines.append($0) }
+        XCTAssertEqual(code, 0)
+        XCTAssertTrue(lines.joined().contains("\"same\":true"), lines.joined())
+    }
+
+    func testAChosenReviewerReadsTheChangesBeforeARequestFinishes() async throws {
+        var (store, session) = try session(.auto)
+        let worker = ScriptedModel([
+            call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a * b\n"]),
+            ModelReply(text: "Done."),
+            call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a + b\n"]),
+            ModelReply(text: "Fixed after review."),
+        ])
+        let judge = ScriptedModel([ModelReply(text: #"[{"path": "calc.py", "line": 2, "evidence": "return a * b", "problem": "It multiplies instead of adding."}]"#)])
+        let agent = Agent(store: store, model: worker, approve: { _ in true }, emit: { _ in })
+        agent.derivesChecks = false
+        agent.reviewer = judge
+        await agent.run(&session, request: "Make add return the sum")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.turns.last?.answer, "Fixed after review.")
+        XCTAssertEqual(judge.seen.count, 1, "the reviewer reads the changes once, not after every repair")
+        XCTAssertTrue(session.messages.contains { $0.role == "user" && $0.content.contains("A separate reviewer read your changes") && $0.content.contains("calc.py:2") && $0.content.contains("It multiplies instead of adding.") })
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a + b\n")
+
+        // Outside Auto, and without a reviewer, a request finishes as before.
+        var (store2, plain) = try self.session(.workspaceEdits)
+        let quiet = Agent(store: store2, model: ScriptedModel([call("write_file", ["path": "notes.txt", "content": "x"]), ModelReply(text: "Done.")]), approve: { _ in true }, emit: { _ in })
+        quiet.reviewer = ScriptedModel([])
+        await quiet.run(&plain, request: "Write a note")
+        XCTAssertEqual(plain.state, "Completed")
+        XCTAssertEqual(plain.turns.last?.answer, "Done.")
+    }
+
+    func testProbesGoBeyondAPinnedTestAndAnAfterPlanHookRunsFirst() async throws {
+        func put(_ name: String, _ text: String) throws {
+            let file = folder.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try put("mason.workflows.json", #"{"version": 1, "workflows": {"test": {"executable": "sh", "arguments": ["-c", "echo 'ok 1 - joins'"]}, "note": {"executable": "sh", "arguments": ["-c", "echo planned >> plan.log; exit 1"], "events": ["afterPlan"]}}}"#)
+        try put("join.cjs", "exports.join = function (a, b) { return a + '-' + b; };\n")
+        try put("join.test.cjs", "const { join } = require('./join.cjs');\nconsole.log(join('x', \"y\") === 'x-y' ? 'ok 1 - joins' : 'not ok 1 - joins');\n")
+        try put(".mason/tests.json", #"[{"requirement": "Join two words", "workflow": "test", "format": "tap", "test": "joins", "testFiles": ["join.test.cjs"], "inputs": ["join.cjs"], "argumentOrder": "interchangeable", "roundTrip": {"module": "join.cjs", "encode": "join", "decode": "join", "alphabet": "ab"}}]"#)
+        let workspace = try Workspace(path: folder.path)
+        let test = try XCTUnwrap(try ProjectTests.load(workspace).first)
+        XCTAssertEqual(ProjectTests.example(test, workspace: workspace), ["join.cjs", "join", "\"x\"", "\"y\""], "the example is taken from the test's own call")
+        let plan = await Derived.prepare("Join two words", workspace: workspace, model: nil)
+        XCTAssertEqual(ProjectTests.value(plan.checks[0], "argumentOrder"), ["join.cjs", "join", "\"x\"", "\"y\""])
+        let result = try await Derived.verify(plan, workspace: workspace)[0]
+        let node = (try? await Shell.run("command -v node", in: workspace, sandboxed: false))?.exitCode == 0
+        if node {
+            XCTAssertEqual(result.state, "failed", "the test passes, but join is not the same with its arguments exchanged: " + result.detail)
+            XCTAssertTrue(result.detail.contains("argument order: join(\"x\", \"y\") gives \"x-y\" but exchanged it gives \"y-x\""), result.detail)
+            XCTAssertTrue(result.detail.contains("round trip:"), result.detail)
+        } else {
+            XCTAssertTrue(result.detail.contains("not run"), result.detail)
+        }
+
+        // afterPlan runs once, before the model is asked, and its failure is told to the model.
+        _ = try Policies.command("hooks on", workspace: workspace, home: home)
+        var (store, session) = try session(.auto)
+        let model = ScriptedModel([ModelReply(text: "Nothing to do.")])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        agent.hooksNeedSandbox = false
+        agent.derivesChecks = false
+        await agent.run(&session, request: "Look around")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("plan.log"), encoding: .utf8), "planned\n")
+        XCTAssertTrue(model.seen.first?.last?.content.contains("The project's afterPlan hook failed before work began") ?? false)
+    }
+
+    func testNetworkIsChosenPerSessionAndAHostCanBeAlwaysAllowed() async throws {
+        var (store, session) = try session(.auto)
+        XCTAssertFalse(NetworkSettings.asks(session, home: home))
+        XCTAssertTrue(try NetworkSettings.sessionCommand("ask", session: &session, home: home).contains("this session's own choice"))
+        XCTAssertTrue(NetworkSettings.asks(session, home: home) && !NetworkSettings.asks(home: home), "one session asking does not change the computer's setting")
+        _ = try NetworkSettings.sessionCommand("computer ask", session: &session, home: home)
+        _ = try NetworkSettings.sessionCommand("off", session: &session, home: home)
+        XCTAssertFalse(NetworkSettings.asks(session, home: home), "a session can stay offline while the computer's setting asks")
+        _ = try NetworkSettings.sessionCommand("default", session: &session, home: home)
+        XCTAssertTrue(NetworkSettings.asks(session, home: home))
+        try store.save(session)
+        XCTAssertNil(try SessionStore(home: home).sessions.first { $0.id == session.id }?.network)
+
+        var rules = ApprovalRules(home: home, workspace: session.workspace)
+        try rules.add(tool: "network", prefix: "registry.npmjs.org")
+        XCTAssertEqual(NetworkSettings.alwaysAllowed(home: home, workspace: session.workspace), ["registry.npmjs.org"])
+        var asked: [String] = []
+        let agent = Agent(store: store, model: ScriptedModel([]), approve: { asked.append($0.subject); return false }, emit: { _ in })
+        let relay = try XCTUnwrap(agent.relay(session))
+        defer { relay.stop() }
+        func status(_ host: String) -> String {
+            let descriptor = NetworkRelay.connected(to: ([127, 0, 0, 1], relay.port))!
+            defer { close(descriptor) }
+            NetworkRelay.send(descriptor, Array("CONNECT \(host):443 HTTP/1.1\r\n\r\n".utf8))
+            var timeout = timeval(tv_sec: 20, tv_usec: 0)
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            var buffer = [UInt8](repeating: 0, count: 256)
+            let count = recv(descriptor, &buffer, buffer.count, 0)
+            return String(decoding: buffer[0..<max(0, count)], as: UTF8.self)
+        }
+        XCTAssertTrue(status("registry.npmjs.org.evil.example").hasPrefix("HTTP/1.1 403"), "a longer name that starts the same is not the allowed host")
+        XCTAssertEqual(asked, ["registry.npmjs.org.evil.example"], "it was asked about, and refused")
+        _ = status("registry.npmjs.org")
+        XCTAssertEqual(asked, ["registry.npmjs.org.evil.example"], "the always-allowed host was not asked about")
+        XCTAssertTrue(SitePreview.loopbackOnly.contains("ignore-previous-rules") && (try? JSONSerialization.jsonObject(with: Data(SitePreview.loopbackOnly.utf8))) != nil)
+    }
+
+    func testAChatCarriesItsReasoningLevelOutputLimitAndPinnedReference() async throws {
+        let chats = try ChatStore(home: home)
+        var conversation = try chats.create()
+        XCTAssertTrue(Chat.extraBody(conversation).isEmpty, "nothing is added unless the user asked for it")
+        try Chat.configure(&conversation, reasoning: "low", maxTokens: 900, reference: "Refunds are allowed within 30 days.")
+        let body = Chat.extraBody(conversation)
+        XCTAssertEqual(body["max_tokens"] as? Int, 900)
+        XCTAssertEqual(body["thinking_budget_tokens"] as? Int, 512)
+        XCTAssertEqual((body["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"], true)
+        let model = ScriptedModel([ModelReply(text: "Within 30 days."), ModelReply(text: "Still 30 days.")])
+        try await Chat.send(&conversation, text: "When can I get a refund?", model: model, store: chats) { _ in }
+        XCTAssertTrue(model.seen[0].first?.content.contains("Refunds are allowed within 30 days.") ?? false, "the reference goes with the message")
+        try Chat.configure(&conversation, reasoning: "off", maxTokens: 0, reference: "")
+        XCTAssertEqual(Chat.extraBody(conversation)["reasoning_effort"] as? String, "none")
+        XCTAssertNil(Chat.extraBody(conversation)["max_tokens"])
+        try await Chat.send(&conversation, text: "And now?", model: model, store: chats) { _ in }
+        XCTAssertFalse(model.seen[1].first?.content.contains("Refunds are allowed") ?? true, "a removed reference is no longer sent")
+        XCTAssertThrowsError(try Chat.configure(&conversation, reasoning: "extreme", maxTokens: 0, reference: ""))
+        XCTAssertThrowsError(try Chat.configure(&conversation, reasoning: "default", maxTokens: 3, reference: ""))
+        XCTAssertEqual(try ChatStore(home: home).conversations.first?.reasoning, "off", "the choice is kept with the conversation")
     }
 
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {

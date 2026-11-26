@@ -371,6 +371,8 @@ ModelReply OpenAIClient::complete(const std::vector<ChatMessage>& messages, cons
         wire.push_back(std::move(item));
     }
     json body = {{"model", endpoint_.model}, {"stream", true}, {"stream_options", {{"include_usage", true}}}, {"messages", wire}};
+    // What a caller asked for beyond the usual: an output limit, a reasoning level.
+    for (auto field = extra_body_.begin(); field != extra_body_.end(); ++field) body[field.key()] = field.value();
     if (!tools.empty()) {
         body["tools"] = json::array();
         for (const ToolSpec& tool : tools) {

@@ -16,6 +16,8 @@ namespace preview {
 /// warnings, and waits to be armed; once armed, the next click picks an element instead of using it, and the pick is
 /// posted to the app as JSON through the message handler named "mason".
 extern const char* const kScript;
+/// Content rules for the Website panel's web view: nothing is loaded from anywhere but this computer.
+extern const char* const kLoopbackOnly;
 /// Run in the page when the user chooses to pick an element.
 extern const char* const kArm;
 extern const char* const kDisarm;

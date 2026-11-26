@@ -6,6 +6,7 @@
 
 #include <cctype>
 #include <chrono>
+#include <regex>
 #include <set>
 
 namespace mason::project_tests {
@@ -95,6 +96,46 @@ std::vector<std::string> value(const DerivedCheck& check, const std::string& key
     return {};
 }
 
+const char* const kRoundTripScript = R"JS(var p=require('path'),m=require(p.resolve(process.argv[1])),enc=m[process.argv[2]],dec=m[process.argv[3]],alpha=Array.from(process.argv[4]);
+if(typeof enc!=='function'||typeof dec!=='function'||!alpha.length){console.log('MASON-PROBE fail the module does not export both functions');process.exit(0);}
+var seed=12345;function next(){seed=(seed*1103515245+12345)&0x7fffffff;return seed;}
+var cases=[''];for(var i=0;i<63;i++){var n=next()%24,s='';for(var j=0;j<n;j++)s+=alpha[next()%alpha.length];cases.push(s);}
+for(var k=0;k<cases.length;k++){var c=cases[k],out;try{out=dec(enc(c));}catch(e){console.log('MASON-PROBE fail '+JSON.stringify(c)+' threw '+String(e&&e.message));process.exit(0);}
+if(out!==c){console.log('MASON-PROBE fail '+JSON.stringify(c)+' came back as '+JSON.stringify(out));process.exit(0);}}
+console.log('MASON-PROBE pass '+cases.length+' strings came back unchanged');)JS";
+const char* const kOrderScript = R"JS(var p=require('path'),f=require(p.resolve(process.argv[1]))[process.argv[2]],a=JSON.parse(process.argv[3]),b=JSON.parse(process.argv[4]);
+if(typeof f!=='function'){console.log('MASON-PROBE fail the module does not export '+process.argv[2]);process.exit(0);}
+var x,y;try{x=f(a,b);y=f(b,a);}catch(e){console.log('MASON-PROBE fail it threw '+String(e&&e.message));process.exit(0);}
+try{require('assert').deepStrictEqual(y,x);console.log('MASON-PROBE pass the same result with the arguments exchanged ('+JSON.stringify(x)+')');}
+catch(e){console.log('MASON-PROBE fail '+process.argv[2]+'('+process.argv[3]+', '+process.argv[4]+') gives '+JSON.stringify(x)+' but exchanged it gives '+JSON.stringify(y));})JS";
+
+struct Probe {
+    bool ran = false, passed = false;
+    std::string text;
+};
+
+/// Runs one probe with Node.js.
+Probe probe(const char* script, const std::vector<std::string>& arguments, const Workspace& workspace, bool sandboxed, const CancelToken& cancel) {
+    std::string command = "node -e " + shell::quote(script);
+    for (const std::string& argument : arguments) command += " " + shell::quote(argument);
+    Probe found;
+    try {
+        const CommandResult result = shell::run(command, workspace, sandboxed, 30, cancel);
+        for (const std::string& line : split(result.output, '\n', false)) {
+            if (line.rfind("MASON-PROBE ", 0) != 0) continue;
+            const std::string said = line.substr(12);
+            found.ran = true;
+            found.passed = said.rfind("pass ", 0) == 0;
+            found.text = said.size() > 5 ? said.substr(5) : said;
+            break;
+        }
+    } catch (const Cancelled&) {
+        throw;
+    } catch (const std::exception&) {
+    }
+    return found;
+}
+
 struct Ran {
     std::optional<std::string> outcome;
     int exit_code = 0;
@@ -139,6 +180,14 @@ std::vector<ProjectTest> load(const Workspace& workspace) {
     for (const json& item : listed) {
         if (!item.is_object()) throw invalid;
         ProjectTest test{text_of(item, "requirement"), text_of(item, "workflow"), to_lower(text_of(item, "format")), text_of(item, "report"), text_of(item, "test"), list_of(item, "testFiles"), list_of(item, "inputs")};
+        if (const json* trip = field(item, "roundTrip"); trip && trip->is_object()) {
+            test.round_trip = {text_of(*trip, "module"), text_of(*trip, "encode"), text_of(*trip, "decode"), text_of(*trip, "alphabet")};
+            if (test.round_trip[0].empty() || test.round_trip[1].empty() || test.round_trip[2].empty() || test.round_trip[3].empty() || !inside(test.round_trip[0])) {
+                throw Error(std::string(kManifest) + ": roundTrip needs module, encode, decode and alphabet.");
+            }
+        }
+        test.argument_order = to_lower(text_of(item, "argumentOrder"));
+        if (!test.argument_order.empty() && test.argument_order != "ordered" && test.argument_order != "interchangeable") throw Error(std::string(kManifest) + ": argumentOrder is ordered or interchangeable.");
         const bool needs_report = test.format == "junit" || test.format == "trx";
         if (test.requirement.empty() || test.test.empty() || utf8_length(test.test) > 400 || !formats.count(test.format) || test.test_files.empty() || test.test_files.size() > 16 || test.inputs.empty() ||
             test.inputs.size() > 32 || (needs_report && test.report.empty())) {
@@ -154,6 +203,42 @@ std::vector<ProjectTest> load(const Workspace& workspace) {
         tests.push_back(std::move(test));
     }
     return tests;
+}
+
+std::vector<std::string> example(const ProjectTest& test, const Workspace& workspace) {
+    if (test.inputs.size() != 1) return {};
+    const std::string kind = to_lower(fs::path(test.inputs[0]).extension().string());
+    if (kind != ".cjs" && kind != ".js") return {};
+    std::string module;
+    try {
+        module = workspace.read(test.inputs[0]);
+    } catch (const std::exception&) {
+        return {};
+    }
+    std::set<std::string> names;
+    static const std::regex exported(R"RX(\bexports\.([A-Za-z_$][\w$]*)\s*=)RX");
+    for (std::sregex_iterator it(module.begin(), module.end(), exported), end; it != end; ++it) names.insert((*it)[1].str());
+    if (names.size() != 1) return {};
+    const std::string name = *names.begin();
+    const std::string literal = R"RX((-?\d+(?:\.\d+)?|"[^"\\]*"|'[^'\\]*'))RX";
+    std::string escaped;
+    for (char c : name) escaped += c == '$' ? std::string("\\$") : std::string(1, c);
+    const std::regex call("\\b" + escaped + "\\(\\s*" + literal + "\\s*,\\s*" + literal + "\\s*\\)");
+    auto as_json = [](const std::string& text) {
+        if (text.empty() || text[0] != '\'') return text;
+        return "\"" + replace_all(text.substr(1, text.size() - 2), "\"", "\\\"") + "\"";
+    };
+    for (const std::string& path : test.test_files) {
+        std::string source;
+        try {
+            source = workspace.read(path);
+        } catch (const std::exception&) {
+            continue;
+        }
+        std::smatch found;
+        if (std::regex_search(source, found, call)) return {test.inputs[0], name, as_json(found[1].str()), as_json(found[2].str())};
+    }
+    return {};
 }
 
 std::optional<ProjectTest> bound(const std::string& unit, const std::vector<ProjectTest>& tests) {
@@ -278,6 +363,19 @@ DerivedCheck check(const ProjectTest& test, int unit, const Workspace& workspace
     std::vector<std::string> files = {"files"};
     files.insert(files.end(), test.test_files.begin(), test.test_files.end());
     made.steps = {{"format", test.format}, {"report", test.report}, files, {"pin", pin(test.test_files, test.workflow, workspace)}, {"baseline", baseline}};
+    if (!test.round_trip.empty()) {
+        std::vector<std::string> step = {"roundTrip"};
+        step.insert(step.end(), test.round_trip.begin(), test.round_trip.end());
+        made.steps.push_back(step);
+    }
+    if (test.argument_order == "interchangeable") {
+        const std::vector<std::string> found = example(test, workspace);
+        if (!found.empty()) {
+            std::vector<std::string> step = {"argumentOrder"};
+            step.insert(step.end(), found.begin(), found.end());
+            made.steps.push_back(step);
+        }
+    }
     return made;
 }
 
@@ -295,8 +393,23 @@ DerivedResult verify(const DerivedCheck& check, const Workspace& workspace, bool
         const Ran ran = run(check.target, check.path, first("format"), first("report"), workspace, shell::sandbox_available(), cancel);
         const std::string story = "baseline: " + (first("baseline").empty() ? std::string("not run") : first("baseline")) + "; now: " + ran.outcome.value_or("not reported") + " (the workflow " + check.path + " exited " +
                                   std::to_string(ran.exit_code) + ")";
-        const bool passed = ran.outcome && *ran.outcome == "passed";
-        return DerivedResult{check, passed ? "passed" : "failed", passed ? story : story + "\n" + ran.diagnostics};
+        if (!ran.outcome || *ran.outcome != "passed") return DerivedResult{check, "failed", story + "\n" + ran.diagnostics};
+        // The test passes. The probes the project asked for go further than its examples.
+        std::string detail = story;
+        bool broken = false;
+        const std::vector<std::tuple<std::string, const char*, std::string>> probes = {{"roundTrip", kRoundTripScript, "round trip"}, {"argumentOrder", kOrderScript, "argument order"}};
+        for (const auto& [key, script, label] : probes) {
+            const std::vector<std::string> arguments = value(check, key);
+            if (arguments.empty()) continue;
+            const Probe outcome = probe(script, arguments, workspace, shell::sandbox_available(), cancel);
+            if (outcome.ran) {
+                detail += "\n" + label + ": " + outcome.text;
+                broken = broken || !outcome.passed;
+            } else {
+                detail += "\n" + label + ": not run (Node.js was not found, or the module could not be loaded)";
+            }
+        }
+        return DerivedResult{check, broken ? "failed" : "passed", detail};
     } catch (const Cancelled&) {
         throw;
     } catch (const std::exception& error) {

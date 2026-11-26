@@ -126,6 +126,8 @@ public:
     std::vector<ChatAttachment> chat_attachments;
     void select_chat(const std::string& id);
     void new_chat();
+    /// Sets the selected chat's reasoning level ("default" for the server's own), output limit (0 for none) and pinned reference.
+    void configure_chat(const std::string& reasoning, int max_tokens, const std::string& reference);
     void remove_chat(const std::string& id);
     void attach_to_chat(const std::string& path);
     void detach_from_chat(const std::string& name);

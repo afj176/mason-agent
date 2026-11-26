@@ -1444,6 +1444,14 @@ static void test_extra_tools() {
             CHECK(model.seen[1].back().content.find("did not work") != std::string::npos);  // a failed step is reported back
             CHECK(model.seen[3].back().content.find("1 tea in the cart for Ada.") != std::string::npos);  // the model sees what its steps really led to
         }
+        // An independent check reads the page afresh, with a picture, and an answer it does not support is not counted as done.
+        ScriptedModel claims, judge;
+        claims.replies = {say(R"J({"action": "done", "answer": "The cart holds three teas."})J")};
+        judge.replies = {say(R"J({"supported": false, "reason": "The page says nothing is in the cart."})J")};
+        const BrowseOutcome checked = browse::run(workspace, "index.html", "Say what is in the cart.", claims, 12, nullptr, &judge, true);
+        CHECK(!checked.completed && checked.reviewed && !checked.supported && checked.review == "The page says nothing is in the cart.");
+        CHECK(judge.seen.size() == 1 && judge.seen[0].back().content.find("Nothing in the cart.") != std::string::npos);  // the checker is shown the page as it is
+        CHECK(judge.seen.size() == 1 && judge.seen[0].back().images.size() == 1 && judge.seen[0].back().images[0].rfind("data:image/png;base64,iVBOR", 0) == 0);  // and a picture of it
         std::vector<json> events;
         ScriptedModel refusing;
         refusing.replies = {say(R"J({"action": "fail", "answer": "There is no checkout on this page."})J")};
@@ -1496,6 +1504,144 @@ static void test_extra_tools() {
         CHECK(tables::find("| just | one row |\nno rule").empty());
         const std::string prose = tables::prose(answer);
         CHECK(prose.find("Here are the sales.") != std::string::npos && prose.find("| Jan |") == std::string::npos && prose.find("| a | b |") != std::string::npos);  // the table's own lines are left out, and code is kept
+    }
+
+    // A decision can be compared later, and the reviewer takes part in a request.
+    {
+        Sandbox box;
+        const fs::path trace = box.home / "traces";
+        ScriptedModel first;
+        first.replies = {call("read_file", {{"path", "calc.py"}})};
+        RoleModel recorded(first, "implementer", 0, trace);
+        recorded.complete({ChatMessage{"user", "Look at calc.py", {}, ""}}, Agent::tools(), [](const std::string&) {}, nullptr);
+        fs::path file;
+        for (const auto& entry : fs::directory_iterator(trace)) file = entry.path();
+        ScriptedModel again;
+        again.replies = {call("read_file", {{"path", "calc.py"}})};
+        CHECK(roles::compare(file, again)["same"] == true);
+        ScriptedModel other;
+        other.replies = {call("list_files", {{"path", "."}})};
+        const json different = roles::compare(file, other);
+        CHECK(different["same"] == false && different["sameTools"] == false);
+        std::vector<json> events;
+        ScriptedModel third;
+        third.replies = {call("read_file", {{"path", "calc.py"}})};
+        CHECK(script::run({"compare-decision", "--trace", file.string()}, [&](const std::string& line) { events.push_back(json::parse(line)); }, &third) == 0);
+        CHECK(events.size() == 1 && events[0]["data"]["same"] == true);
+    }
+
+    // A chosen reviewer reads the changes before a request finishes.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+        ScriptedModel worker, judge;
+        worker.replies = {call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a * b\n"}}), say("Done."), call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Fixed after review.")};
+        judge.replies = {say(R"J([{"path": "calc.py", "line": 2, "evidence": "return a * b", "problem": "It multiplies instead of adding."}])J")};
+        Agent agent(store, worker, [](const ApprovalRequest&) { return true; }, quiet);
+        agent.derives_checks = false;
+        agent.set_reviewer(&judge);
+        agent.run(session, "Make add return the sum");
+        CHECK(session.state == "Completed" && session.turns.back().answer == "Fixed after review.");
+        CHECK(judge.seen.size() == 1);  // the reviewer reads the changes once, not after every repair
+        bool told = false;
+        for (const ChatMessage& message : session.messages) told = told || (message.role == "user" && message.content.find("A separate reviewer read your changes") != std::string::npos && message.content.find("calc.py:2") != std::string::npos);
+        CHECK(told);
+        CHECK(box.read("calc.py") == "def add(a, b):\n    return a + b\n");
+    }
+
+    // Probes go beyond a pinned test, and an afterPlan hook runs first.
+    {
+        Sandbox box;
+        box.write("mason.workflows.json", R"J({"version": 1, "workflows": {"test": {"executable": "sh", "arguments": ["-c", "echo 'ok 1 - joins'"]}, "note": {"executable": "sh", "arguments": ["-c", "echo planned >> plan.log; exit 1"], "events": ["afterPlan"]}}})J");
+        box.write("join.cjs", "exports.join = function (a, b) { return a + '-' + b; };\n");
+        box.write("join.test.cjs", "const { join } = require('./join.cjs');\nconsole.log(join('x', \"y\") === 'x-y' ? 'ok 1 - joins' : 'not ok 1 - joins');\n");
+        fs::create_directories(box.project / ".mason");
+        box.write(".mason/tests.json", R"J([{"requirement": "Join two words", "workflow": "test", "format": "tap", "test": "joins", "testFiles": ["join.test.cjs"], "inputs": ["join.cjs"], "argumentOrder": "interchangeable", "roundTrip": {"module": "join.cjs", "encode": "join", "decode": "join", "alphabet": "ab"}}])J");
+        const Workspace workspace(box.project.string());
+        const std::vector<ProjectTest> listed = project_tests::load(workspace);
+        CHECK(listed.size() == 1);
+        if (listed.size() == 1) CHECK(project_tests::example(listed[0], workspace) == (std::vector<std::string>{"join.cjs", "join", "\"x\"", "\"y\""}));  // the example is taken from the test's own call
+        const DerivedPlan plan = derived::prepare("Join two words", workspace, nullptr);
+        CHECK(plan.checks.size() == 1);
+        if (plan.checks.size() == 1) {
+            const DerivedResult result = derived::verify(plan, workspace)[0];
+            if (shell::run("command -v node", workspace, false, 10).exit_code == 0) {
+                CHECK(result.state == "failed" && result.detail.find("argument order: join(\"x\", \"y\") gives \"x-y\" but exchanged it gives \"y-x\"") != std::string::npos && result.detail.find("round trip:") != std::string::npos);
+            } else {
+                CHECK(result.detail.find("not run") != std::string::npos);
+            }
+        }
+        // afterPlan runs once, before the model is asked, and its failure is told to the model.
+        policies::command("hooks on", workspace, box.home);
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::Auto);
+        ScriptedModel model;
+        model.replies = {say("Nothing to do.")};
+        Agent agent(store, model, [](const ApprovalRequest&) { return true; }, quiet);
+        agent.set_hooks_need_sandbox(false);
+        agent.derives_checks = false;
+        agent.run(session, "Look around");
+        CHECK(box.read("plan.log") == "planned\n");
+        CHECK(!model.seen.empty() && model.seen[0].back().content.find("The project's afterPlan hook failed before work began") != std::string::npos);
+    }
+
+    // Network is chosen per session, and a host can be always allowed.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+        CHECK(!network_settings::asks(session, box.home));
+        CHECK(network_settings::session_command("ask", session, box.home).find("this session's own choice") != std::string::npos);
+        CHECK(network_settings::asks(session, box.home) && !network_settings::asks(box.home));  // one session asking does not change the computer's setting
+        network_settings::session_command("computer ask", session, box.home);
+        network_settings::session_command("off", session, box.home);
+        CHECK(!network_settings::asks(session, box.home));  // a session can stay offline while the computer's setting asks
+        network_settings::session_command("default", session, box.home);
+        CHECK(network_settings::asks(session, box.home));
+        store.save(session);
+        ApprovalRules rules(box.home, session.workspace);
+        rules.add("network", "registry.npmjs.org");
+        CHECK(network_settings::always_allowed(box.home, session.workspace) == std::set<std::string>{"registry.npmjs.org"});
+        std::vector<std::string> asked;
+        ScriptedModel model;
+        Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); return false; }, quiet);
+        NetworkRelay* relay = agent.relay_for(session);
+        CHECK(relay != nullptr);
+        if (relay && shell::run("command -v python3", Workspace(box.project.string()), false, 10).exit_code == 0) {
+            box.write("ask.py", "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.settimeout(20)\ns.connect(sys.argv[1])\ns.sendall(('CONNECT '+sys.argv[2]+':443 HTTP/1.1\\r\\n\\r\\n').encode())\ntry:\n  print(s.recv(64).decode('latin-1'))\nexcept Exception:\n  print('no answer')\n");
+            const Workspace workspace(box.project.string());
+            const std::string longer = shell::run("python3 ask.py " + shell::quote(relay->socket_path().string()) + " registry.npmjs.org.evil.example", workspace, false, 40).output;
+            CHECK(longer.rfind("HTTP/1.1 403", 0) == 0);  // a longer name that starts the same is not the allowed host
+            CHECK(asked == std::vector<std::string>{"registry.npmjs.org.evil.example"});
+            shell::run("python3 ask.py " + shell::quote(relay->socket_path().string()) + " registry.npmjs.org", workspace, false, 40);
+            CHECK(asked == std::vector<std::string>{"registry.npmjs.org.evil.example"});  // the always-allowed host was not asked about
+        }
+        CHECK(json::parse(preview::kLoopbackOnly, nullptr, false).is_array());
+    }
+
+    // A chat carries its reasoning level, output limit and pinned reference.
+    {
+        Sandbox box;
+        ChatStore chats(box.home);
+        ChatConversation conversation = chats.create();
+        CHECK(chat::extra_body(conversation).empty());  // nothing is added unless the user asked for it
+        chat::configure(conversation, "low", 900, "Refunds are allowed within 30 days.");
+        const json body = chat::extra_body(conversation);
+        CHECK(body["max_tokens"] == 900 && body["thinking_budget_tokens"] == 512 && body["chat_template_kwargs"]["enable_thinking"] == true);
+        ScriptedModel model;
+        model.replies = {say("Within 30 days."), say("Still 30 days.")};
+        chat::send(conversation, "When can I get a refund?", {}, model, chats, [](const std::string&) {}, nullptr);
+        CHECK(model.seen[0].front().content.find("Refunds are allowed within 30 days.") != std::string::npos);  // the reference goes with the message
+        chat::configure(conversation, "off", 0, "");
+        CHECK(chat::extra_body(conversation)["reasoning_effort"] == "none" && !chat::extra_body(conversation).contains("max_tokens"));
+        chat::send(conversation, "And now?", {}, model, chats, [](const std::string&) {}, nullptr);
+        CHECK(model.seen[1].front().content.find("Refunds are allowed") == std::string::npos);  // a removed reference is no longer sent
+        bool refused = false;
+        try { chat::configure(conversation, "extreme", 0, ""); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+        ChatStore again(box.home);
+        CHECK(!again.conversations().empty() && again.conversations()[0].reasoning == "off");  // the choice is kept with the conversation
     }
 
     // A job runs in the background and stops when the request ends.

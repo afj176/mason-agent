@@ -17,7 +17,7 @@
 namespace mason::script {
 
 const std::set<std::string>& names() {
-    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree", "review", "serve", "browse", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"};
+    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree", "review", "serve", "browse", "compare-decision", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"};
     return all;
 }
 
@@ -27,6 +27,7 @@ const char* const kUsage =
     "mason review --workspace PATH --endpoint URL --model ID --prompt TEXT --path FILE\n"
     "mason browse --workspace PATH --endpoint URL --model ID --prompt TEXT [--page index.html]\n"
     "mason serve --workspace PATH --workflow NAME --port PORT [--page PATH]\n"
+    "mason compare-decision --trace FILE --endpoint URL --model ID\n"
     "mason map --workspace PATH --query NAME\n"
     "mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics\n"
     "mason git-status --workspace PATH\n"
@@ -42,6 +43,7 @@ const char* const kUsage =
     "  Each exec keeps its own journal, or the one in --profile.\n"
     "  review has the model read one file against what it was meant to do; it exits 2 when it finds something.\n"
     "  browse has the model carry out a task on a project page in a real browser, one step at a time; it exits 2 when the task was not done.\n"
+    "  compare-decision puts one recorded model call (a file from a trace folder) to another model and prints both answers.\n"
     "  serve starts the workflow with your account, waits for the port, fetches the page, and stops the server.\n"
     "  A task runs in the background and keeps going after this command returns. Without --auto it waits for\n"
     "  task-allow before each edit and command; task-show prints the approval it is waiting on.\n";
@@ -71,6 +73,15 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
             if (digits.empty() || digits.size() > 9 || digits.find_first_not_of("0123456789") != std::string::npos || std::stoi(digits) < 1) throw Error("--line and --column are numbers from 1.");
             return std::stoi(digits);
         };
+        if (operation == "compare-decision") {
+            std::unique_ptr<OpenAIClient> owned;
+            if (!model) {
+                owned = std::make_unique<OpenAIClient>(ModelEndpoint{validated_endpoint(get("endpoint")), get("model"), ""});
+                model = owned.get();
+            }
+            event("decision.comparison", roles::compare(get("trace"), *model, cancel));
+            return 0;
+        }
         if (operation.rfind("task-", 0) == 0) {
             const fs::path home = values.count("task-home") ? fs::path(values["task-home"]) : data_home();
             if (operation == "task-run") {
@@ -176,8 +187,18 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
                 owned = std::make_unique<OpenAIClient>(ModelEndpoint{validated_endpoint(get("endpoint")), get("model"), ""});
                 model = owned.get();
             }
-            const BrowseOutcome outcome = browse::run(workspace, values.count("page") ? values["page"] : "index.html", prompt, *model, 12, cancel);
-            event("browser.result", {{"completed", outcome.completed}, {"answer", outcome.answer}, {"steps", outcome.steps}, {"errors", outcome.errors}, {"turns", outcome.turns}});
+            // The answer is checked independently: by the visual model with a picture of the page when one is chosen,
+            // otherwise by the reviewer (or the same model) from what the page shows.
+            const ModelRoles chosen_roles = roles::load(data_home());
+            std::unique_ptr<OpenAIClient> visual;
+            if (owned && chosen_roles.visual) visual = std::make_unique<OpenAIClient>(*chosen_roles.visual);
+            const std::unique_ptr<RoleModel> reviewer = roles::reviewer(*model, &workspace, data_home());
+            ChatModel* checker = values.count("no-review") ? nullptr : visual ? static_cast<ChatModel*>(visual.get()) : reviewer.get();
+            const BrowseOutcome outcome = browse::run(workspace, values.count("page") ? values["page"] : "index.html", prompt, *model, 12, cancel, checker, visual != nullptr);
+            json data = {{"completed", outcome.completed}, {"answer", outcome.answer}, {"steps", outcome.steps}, {"errors", outcome.errors}, {"turns", outcome.turns}};
+            if (outcome.reviewed) data["supported"] = outcome.supported;
+            if (!outcome.review.empty()) data["review"] = outcome.review;
+            event("browser.result", data);
             return outcome.completed ? 0 : 2;
         }
         if (operation == "serve") {

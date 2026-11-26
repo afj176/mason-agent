@@ -59,7 +59,7 @@ extension RepositoryMap {
 /// one `{"type": ..., "data": ...}` object per line, and returns the exit code: 0 completed, 2 ran and did not
 /// complete, 1 error.
 public enum ScriptOperations {
-    public static let names: Set<String> = ["exec", "map", "symbol", "git-status", "worktree", "review", "serve", "browse", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"]
+    public static let names: Set<String> = ["exec", "map", "symbol", "git-status", "worktree", "review", "serve", "browse", "compare-decision", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"]
 
     /// The path of the running mason, which is what a background task's worker is started from.
     public static var ownProgram: String { (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "mason")).resolvingSymlinksInPath().path }
@@ -70,6 +70,7 @@ public enum ScriptOperations {
         mason review --workspace PATH --endpoint URL --model ID --prompt TEXT --path FILE
         mason browse --workspace PATH --endpoint URL --model ID --prompt TEXT [--page index.html]
         mason serve --workspace PATH --workflow NAME --port PORT [--page PATH]
+        mason compare-decision --trace FILE --endpoint URL --model ID
         mason map --workspace PATH --query NAME
         mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics
         mason git-status --workspace PATH
@@ -85,6 +86,7 @@ public enum ScriptOperations {
           Each exec keeps its own journal, or the one in --profile.
           review has the model read one file against what it was meant to do; it exits 2 when it finds something.
           browse has the model carry out a task on a project page in a real browser, one step at a time; it exits 2 when the task was not done.
+          compare-decision puts one recorded model call (a file from a trace folder) to another model and prints both answers.
           serve starts the workflow with your account, waits for the port, fetches the page, and stops the server.
           A task runs in the background and keeps going after this command returns. Without --auto it waits for
           task-allow before each edit and command; task-show prints the approval it is waiting on.
@@ -108,6 +110,12 @@ public enum ScriptOperations {
             func get(_ name: String) throws -> String {
                 guard let value = values[name] else { throw MasonError("--\(name) is required.") }
                 return value
+            }
+            if operation == "compare-decision" {
+                let chosen: ChatModel
+                if let model { chosen = model } else { chosen = try OpenAIClient(ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model"))) }
+                event("decision.comparison", try await Roles.compare(trace: URL(fileURLWithPath: try get("trace")), model: chosen))
+                return 0
             }
             if operation.hasPrefix("task-") {
                 let home = values["task-home"].map { URL(fileURLWithPath: $0) } ?? DataHome.url
@@ -165,8 +173,16 @@ public enum ScriptOperations {
                 let prompt = try values["prompt-file"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? get("prompt")
                 let chosen: ChatModel
                 if let model { chosen = model } else { chosen = try OpenAIClient(ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model"))) }
-                let outcome = try await Browse.run(workspace, page: values["page"] ?? "index.html", task: prompt, model: chosen)
-                event("browser.result", ["completed": outcome.completed, "answer": outcome.answer, "steps": outcome.steps, "errors": outcome.errors, "turns": outcome.turns])
+                // The answer is checked independently: by the visual model with a picture of the page when one is chosen,
+                // otherwise by the reviewer (or the same model) from what the page shows.
+                let roles = Roles.load()
+                let visual = model == nil ? roles.visual.flatMap { try? OpenAIClient($0) } : nil
+                let checker: ChatModel? = values["no-review"] != nil ? nil : (visual ?? Roles.reviewer(main: chosen, workspace: workspace))
+                let outcome = try await Browse.run(workspace, page: values["page"] ?? "index.html", task: prompt, model: chosen, reviewer: checker, picture: visual != nil)
+                var data: [String: Any] = ["completed": outcome.completed, "answer": outcome.answer, "steps": outcome.steps, "errors": outcome.errors, "turns": outcome.turns]
+                if let supported = outcome.supported { data["supported"] = supported }
+                if !outcome.review.isEmpty { data["review"] = outcome.review }
+                event("browser.result", data)
                 return outcome.completed ? 0 : 2
 
             case "serve":

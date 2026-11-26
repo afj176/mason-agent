@@ -146,6 +146,8 @@ struct Session {
     std::string workspace;
     Permission permission = Permission::ReviewEdits;
     bool ask_only = false;
+    /// What Auto does about the network in this session: "ask", "off", or empty to follow the computer's setting.
+    std::string network = "";
     std::string state = "Ready";
     std::string detail;
     std::string updated = now_iso();

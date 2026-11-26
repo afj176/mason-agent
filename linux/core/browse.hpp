@@ -14,10 +14,16 @@ struct BrowseOutcome {
     json steps = json::array();        ///< The steps that were carried out, in order.
     std::vector<std::string> errors;   ///< Script errors the page raised on the last load.
     int turns = 0;
+    bool reviewed = false;             ///< Whether an independent check gave a verdict.
+    bool supported = false;            ///< Its verdict, when it gave one.
+    std::string review;
 };
 
 namespace browse {
-BrowseOutcome run(const Workspace& workspace, const std::string& page, const std::string& task, ChatModel& model, int limit = 12, const CancelToken& cancel = nullptr);
+/// `reviewer`, when given, checks a finished task independently: the page is loaded afresh with the same steps and it
+/// is asked whether what the page shows supports the answer (with a picture of the page when `picture` is set). An
+/// answer it does not find supported is not counted as done.
+BrowseOutcome run(const Workspace& workspace, const std::string& page, const std::string& task, ChatModel& model, int limit = 12, const CancelToken& cancel = nullptr, ChatModel* reviewer = nullptr, bool picture = false);
 }
 
 }  // namespace mason
