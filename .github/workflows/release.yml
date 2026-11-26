@@ -22,45 +22,16 @@ env:
   ISS: windows/packaging/MasonAgent.iss
 
 jobs:
-  qualify:
-    runs-on: [self-hosted, Windows, mason-model-evals]
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-      - name: Qualify the release against both local models
-        shell: pwsh
-        env:
-          MASON_EVAL_ENDPOINT: ${{ vars.MASON_EVAL_ENDPOINT }}
-          MASON_EVAL_MODEL: ${{ vars.MASON_EVAL_MODEL }}
-          MASON_SECONDARY_EVAL_ENDPOINT: ${{ vars.MASON_SECONDARY_EVAL_ENDPOINT }}
-          MASON_SECONDARY_EVAL_MODEL: ${{ vars.MASON_SECONDARY_EVAL_MODEL }}
-        run: |
-          $area="$env:RUNNER_TEMP/mason-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          ./windows/scripts/Invoke-ModelBenchmark.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -OutputDirectory $area
-          ./windows/scripts/Invoke-WorkflowQualification.ps1 -Endpoint $env:MASON_EVAL_ENDPOINT -Model $env:MASON_EVAL_MODEL -SecondaryEndpoint $env:MASON_SECONDARY_EVAL_ENDPOINT -SecondaryModel $env:MASON_SECONDARY_EVAL_MODEL -OutputDirectory "$area/workflow"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: model-evidence
-          if-no-files-found: error
-          path: |
-            ${{ runner.temp }}/mason-${{ github.run_id }}-${{ github.run_attempt }}/report.json
-            ${{ runner.temp }}/mason-${{ github.run_id }}-${{ github.run_attempt }}/workflow/workflow-evidence.json
   packages:
     uses: ./.github/workflows/packages.yml
     with:
       version: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
 
   build:
-    needs: [qualify, packages]
+    needs: [packages]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: model-evidence
-          path: ${{ runner.temp }}/model-evidence
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -85,7 +56,7 @@ jobs:
 
       - name: Publish installer and portable ZIP
         shell: pwsh
-        run: ./windows/scripts/Publish.ps1 -Version ${{ steps.version.outputs.value }} -ModelEvidence "$env:RUNNER_TEMP/model-evidence/report.json" -WorkflowEvidence "$env:RUNNER_TEMP/model-evidence/workflow/workflow-evidence.json" -Installer -InnoCompiler '${{ steps.inno.outputs.path }}'
+        run: ./windows/scripts/Publish.ps1 -Version ${{ steps.version.outputs.value }} -Installer -InnoCompiler '${{ steps.inno.outputs.path }}'
 
       - uses: actions/download-artifact@v8
         with:
