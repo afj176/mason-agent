@@ -22,7 +22,16 @@ jobs:
         run: swift --version
       - name: Test
         working-directory: macos
-        run: swift test
+        # A test that hangs would otherwise run until the job's limit with nothing in the log. After six minutes the
+        # stuck test's stacks are printed and the run is stopped, which fails the step.
+        run: |
+          swift test &
+          tests=$!
+          ( sleep 360; echo "::error::The tests ran for six minutes. Sampling them, then stopping them."; sample xctest 2 2>/dev/null | grep -v "^ *$" | head -220; pkill -9 xctest ) &
+          watchdog=$!
+          wait $tests; status=$?
+          kill $watchdog 2>/dev/null || true
+          exit $status
       - name: Build the app, zip and installer
         working-directory: macos
         run: Scripts/build-app.sh
