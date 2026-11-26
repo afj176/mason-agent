@@ -127,7 +127,7 @@ internal static class CodeBrowserVerification
                 var path = scope.Resolve(Uri.UnescapeDataString(uri.AbsolutePath.TrimStart('/')));
                 if (!Types.TryGetValue(Path.GetExtension(path), out var type)) throw new InvalidDataException("Unsupported browser asset type.");
                 var relative=scope.Relative(path);
-                using Stream input = candidate!=null && relative.Equals(candidate.Path,OperatingSystem.IsWindows()?StringComparison.OrdinalIgnoreCase:StringComparison.Ordinal)
+                using Stream input = candidate!=null && relative.Equals(candidate.Path,StringComparison.OrdinalIgnoreCase)
                     ? new MemoryStream(candidate.Content,false) : File.OpenRead(path);
                 if (input.Length > 4*1024*1024 || Interlocked.Add(ref served, input.Length) > 16*1024*1024)
                     throw new InvalidDataException("Page exceeded the verification asset budget.");

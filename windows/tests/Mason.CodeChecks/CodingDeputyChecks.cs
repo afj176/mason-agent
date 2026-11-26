@@ -29,6 +29,14 @@ static class CodingDeputyChecks
     check(commandCoordinationRejected,"the direct command launcher independently protects host coordination files before ACL propagation");
     var hostRoot=Path.Combine(root,"host-containing-project");Directory.CreateDirectory(hostRoot);
     check(CodeSandbox.ContainsHost(hostRoot,Path.Combine(hostRoot,"app"))&&!CodeSandbox.ContainsHost(hostRoot,hostRoot+"-other/app"),"protected host-root checks distinguish descendants from prefix collisions");
+    var deepTop=Path.Combine(hostRoot,"long-path-segment-0123456789");var deepRoot=deepTop;while(deepRoot.Length<300)deepRoot=Path.Combine(deepRoot,"long-path-segment-0123456789");Directory.CreateDirectory(deepRoot);
+    try
+    {
+        check(CodeSandbox.ContainsHost(hostRoot,deepRoot)&&!CodeSandbox.ContainsHost(deepRoot,hostRoot)&&CodeSandbox.ContainsHost(deepRoot,Path.Combine(deepRoot,"missing","app")),"protected host-root checks resolve existing directories past MAX_PATH");
+        check(CodeSandbox.RuntimeWorkspaceIdentity(deepRoot)==CodeSandbox.RuntimeWorkspaceIdentity(Path.Combine(deepRoot,".")),"runtime workspace identity opens directories past MAX_PATH");
+    }
+    finally { Directory.Delete(deepTop,true); }
+    check(!Directory.Exists(deepTop),"the MAX_PATH fixture leaves no deep folders behind");
     if(OperatingSystem.IsWindows())
     {
         bool hostRejected=false;

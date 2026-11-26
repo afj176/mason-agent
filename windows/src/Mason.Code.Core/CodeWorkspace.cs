@@ -28,7 +28,7 @@ public sealed class CodeWorkspace
     // Earlier builds named the scratch folder ".dbcowboy-sandbox". Nothing is created there any more, but a leftover one stays excluded so it is never treated as project content.
     internal const string LegacySandboxFolder = ".dbcowboy-sandbox";
     static readonly HashSet<string> Excluded = new(StringComparer.OrdinalIgnoreCase) { SandboxFolder, LegacySandboxFolder, ".git", ".svn", ".hg", ".aws", ".ssh", ".azure", "node_modules", "bin", "obj", "vendor", ".venv", "venv", "dist", "artifacts", ".cache", "__pycache__" };
-    readonly StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    readonly StringComparison comparison = StringComparison.OrdinalIgnoreCase;
     public string Root { get; }
     public CodeWorkspace(string root)
     {
@@ -50,7 +50,7 @@ public sealed class CodeWorkspace
         {
             if ((File.Exists(part) || Directory.Exists(part)) && (File.GetAttributes(part) & FileAttributes.ReparsePoint) != 0)
                 throw new UnauthorizedAccessException("Workspace file tools do not traverse links or junctions: " + part);
-            if (OperatingSystem.IsWindows() && File.Exists(part))
+            if (File.Exists(part))
             {
                 using var file = File.OpenHandle(part, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 if (!GetFileInformationByHandle(file.DangerousGetHandle(), out var information)) throw new System.ComponentModel.Win32Exception();

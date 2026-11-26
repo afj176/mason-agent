@@ -5,6 +5,9 @@ using System.Text.Json;
 using Mason;
 using Mason.Code;
 
+// Checks for the Windows engine; they run on Windows alone.
+[assembly: System.Runtime.Versioning.SupportedOSPlatform("windows")]
+
 if(args.Length==3 && args[0]=="--maintenance-oracle"){
     var ws=new CodeWorkspace(args[1]);
     var marker="oracle-finished-"+Guid.NewGuid().ToString("N");

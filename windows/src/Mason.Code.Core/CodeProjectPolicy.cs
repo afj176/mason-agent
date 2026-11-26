@@ -26,7 +26,6 @@ public sealed record CodeProjectPolicy(string Name,string Workspace,string[] Dis
     }
     public static void Set(string host,string workspace,CodeProjectPolicy? policy)
     {
-        if(!OperatingSystem.IsWindows())throw new PlatformNotSupportedException();
         string path=Location(host,workspace);
         if(CodeSandbox.ContainsHost(workspace,path))throw new InvalidOperationException("Store policies outside the project.");
         if(policy==null){if(File.Exists(path))File.Delete(path);return;}

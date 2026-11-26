@@ -60,7 +60,6 @@ public sealed class LocalTasks
 
     public Guid Start(string executable, string workspace, string prompt, string endpoint, string model, CodePermission permission, Guid? modelLifetime = null, TerminalLaunch? terminal = null, TaskModelOptions? models = null)
     {
-        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         if (!Path.IsPathFullyQualified(executable) || !File.Exists(executable)) throw new FileNotFoundException("The installed mason CLI is required.",executable);
         var scope = new CodeWorkspace(workspace);
         if (CodeSandbox.ContainsHost(scope.Root,root) || CodeSandbox.ContainsHost(root,scope.Root)) throw new ArgumentException("Task storage and workspace must be separate.");
