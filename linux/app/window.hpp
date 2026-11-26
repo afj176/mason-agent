@@ -4,7 +4,10 @@
 #include <gtkmm.h>
 
 #include "controller.hpp"
+#include "browser.hpp"
+#include "chat.hpp"
 #include "derived.hpp"
+#include "preview.hpp"
 #include "style.hpp"
 
 namespace mason::app {
@@ -19,6 +22,8 @@ void clear(Gtk::Box& box);
 Gtk::Label* dim_label(const std::string& text);
 /// A model's answer: prose with headings, bullets and inline code, and fenced code as scrollable blocks.
 Gtk::Widget* answer_view(const std::string& text);
+/// A table from an answer: its cells in a grid, and its numeric columns as bars against the first column.
+Gtk::Widget* table_card(const TableData& table);
 
 /// The Models page: running servers, the llama.cpp runtime, local model files and Hugging Face.
 class ModelsPage : public Gtk::ScrolledWindow {
@@ -117,8 +122,31 @@ private:
     void choose_export(const std::string& id, const std::string& title, bool sanitize);
     void choose_import(const std::string& workspace);
     std::string comments_shown_;
-    /// The side panel shows the changes or the plan.
-    bool plan_shown_ = false, adding_milestone_ = false;
+    /// The side panel shows the changes, the plan, the project's files or its pages.
+    std::string panel_ = "changes";
+    bool adding_milestone_ = false;
+    /// The Files panel: the list, or one file being read.
+    std::string file_open_;
+    int file_line_ = 1;
+    void refresh_files();
+    void show_file(const std::string& path, int line);
+    /// The Website panel. Its widgets are kept while the panel is hidden, so the page stays loaded.
+    Gtk::Box website_{Gtk::Orientation::VERTICAL, 8};
+    bool website_built_ = false;
+    Gtk::Entry web_address_, web_workflow_, web_port_;
+    Gtk::Button web_pick_, web_verify_, web_add_, web_server_;
+    Gtk::Label web_note_;
+    GtkWidget* web_view_ = nullptr;
+    std::unique_ptr<browser::PageServer> pages_;
+    std::string pages_root_;  ///< The project the page server is for.
+    std::string web_page_;    ///< The project page shown, or empty for a server's address.
+    std::shared_ptr<preview::DevServer> dev_server_;
+    std::optional<PreviewPick> picked_;
+    void build_website();
+    void refresh_website();
+    void show_page(const std::string& page);
+    void open_address(const std::string& address);
+    void element_picked(const std::string& message);
     std::string observing_;  ///< The milestone whose observation is being written.
     void refresh_plan();
     Gtk::Widget* panel_switch();

@@ -124,6 +124,10 @@ public final class OpenAIClient: ChatModel {
 
     static func wire(_ message: ChatMessage) -> [String: Any] {
         var object: [String: Any] = ["role": message.role, "content": message.content]
+        if let images = message.images, !images.isEmpty {
+            // Text and pictures travel as parts of one message.
+            object["content"] = [["type": "text", "text": message.content] as [String: Any]] + images.map { ["type": "image_url", "image_url": ["url": $0]] as [String: Any] }
+        }
         if let calls = message.toolCalls, !calls.isEmpty {
             object["tool_calls"] = calls.map { ["id": $0.id, "type": "function", "function": ["name": $0.name, "arguments": $0.arguments]] as [String: Any] }
         }

@@ -1,4 +1,13 @@
 #include "controller.hpp"
+#include "roles.hpp"
+#include "background.hpp"
+#include "bundles.hpp"
+#include "delivery.hpp"
+#include "experiments.hpp"
+#include "network.hpp"
+#include "policy.hpp"
+
+#include <set>
 
 #include <algorithm>
 #include <chrono>
@@ -208,12 +217,14 @@ void Controller::review_changes() {
     plan_cancel_ = make_cancel();
     changed.emit();
     const std::shared_ptr<bool> alive = alive_;
-    plan_thread_ = std::thread([this, alive, working = *current, target = *endpoint, cancel = plan_cancel_] {
+    plan_thread_ = std::thread([this, alive, working = *current, target = *endpoint, cancel = plan_cancel_, home = store_->home()] {
         ReviewFindings found;
         std::string problem;
         try {
             OpenAIClient model(target);
-            found = review::findings(working, Workspace(working.workspace), model, cancel);
+            const Workspace folder(working.workspace);
+            const std::unique_ptr<RoleModel> reviewer = roles::reviewer(model, &folder, home);
+            found = review::findings(working, folder, *reviewer, cancel);
         } catch (const Cancelled&) {
             problem = "The review was stopped.";
         } catch (const std::exception& error) {
@@ -377,6 +388,44 @@ void Controller::set_permission(Permission permission) {
 
 // ---- running a request -----------------------------------------------------------------------------------------
 
+void Controller::host_command(const std::string& name, const std::string& rest) {
+    const Session* current = session();
+    if (!current || !store_) return;
+    const std::string folder = current->workspace;
+    const fs::path home = store_->home();
+    const std::optional<ModelEndpoint> target = endpoint;
+    const bool automatic = current->permission == Permission::Auto && !current->ask_only;
+    const std::shared_ptr<bool> alive = alive_;
+    // Some of these run git, so they work off the main thread and report back.
+    std::thread([this, alive, name, rest, folder, home, target, automatic] {
+        std::string said, request;
+        try {
+            const Workspace workspace(folder);
+            if (name == "/experiment" || name == "/experiments") said = experiments::command(rest, workspace, home);
+            else if (name == "/deliver") {
+                const delivery::Said answer = delivery::command(rest, workspace, home);
+                said = answer.text;
+                request = answer.request;
+            } else if (name == "/task" || name == "/tasks") {
+                // The mason command line tool beside this program is what runs a background task.
+                const fs::path program = fs::path(background::own_program()).parent_path() / "mason";
+                said = background::command(rest, workspace, target, automatic, program.string(), home);
+            } else if (name == "/roles" || name == "/role") said = roles::command(rest, home);
+            else if (name == "/policy") said = policies::command(rest, workspace, home);
+            else if (name == "/bundle" || name == "/bundles") said = bundles::command(rest, home);
+            else said = network_settings::command(rest, home);
+        } catch (const std::exception& error) {
+            said = error.what();
+        }
+        post([this, alive, said, request] {
+            if (!*alive) return;
+            notice.emit(said);
+            // Feedback to act on is put in the request box for the user to send.
+            if (!request.empty()) draft_suggested.emit(request);
+        });
+    }).detach();
+}
+
 void Controller::send(const std::string& text) {
     const std::string input = trim(text);
     const Session* current = session();
@@ -390,6 +439,13 @@ void Controller::send(const std::string& text) {
         const size_t space = input.find(' ');
         schedule_command(space == std::string::npos ? "" : trim(input.substr(space)));
         return;
+    }
+    {
+        // Commands that act on the project or on Mason itself, shared with the command line.
+        const size_t space = input.find(' ');
+        const std::string word = lowered.substr(0, space);
+        static const std::set<std::string> hosted = {"/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles"};
+        if (hosted.count(word)) { host_command(word, space == std::string::npos ? "" : trim(input.substr(space))); return; }
     }
     if (lowered == "/agent" || starts_with(lowered, "/agent ")) { choose_agent(trim(input.substr(6))); return; }
     if (!endpoint) {
@@ -466,6 +522,7 @@ void Controller::send(const std::string& text) {
                         }
                     });
                 });
+            agent.set_presenter([this](const std::string& kind, const std::string& path, int line) { post([this, kind, path, line] { present.emit(kind, path, line); }); });
             { std::lock_guard<std::mutex> guard(agent_lock_); active_agent_ = &agent; }
             agent.run(working, input, cancel);
             { std::lock_guard<std::mutex> guard(agent_lock_); active_agent_ = nullptr; }

@@ -22,6 +22,15 @@ final class AppModel: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var selection: UUID?
     @Published var draft = ""
+    /// What the side panel shows: changes, plan, files or website.
+    @Published var panel = "changes"
+    /// The file being read in the Files panel, and the line the model pointed at.
+    @Published var fileShown: String?
+    @Published var fileLine = 1
+    /// A page the model asked to show; the Website panel opens it and clears this.
+    @Published var pageShown: String?
+    /// The Website panel's web view, kept so its page stays loaded while another panel is shown.
+    lazy var website = WebsiteState()
     @Published var running = false
     @Published var liveText = ""
     @Published var liveStatus = ""
@@ -271,6 +280,13 @@ final class AppModel: ObservableObject {
         if text.lowercased() == "/schedule" || text.lowercased().hasPrefix("/schedule ") || text.lowercased() == "/schedules" {
             draft = ""; scheduleCommand(text.split(separator: " ", maxSplits: 1).dropFirst().first.map(String.init) ?? ""); return
         }
+        // Commands that act on the project or on Mason itself, shared with the command line. What they say is shown as a notice.
+        let word = text.split(separator: " ", maxSplits: 1).first.map { $0.lowercased() } ?? ""
+        if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles"].contains(word) {
+            draft = ""
+            hostCommand(word, String(text.dropFirst(word.count)).trimmingCharacters(in: .whitespaces), in: current)
+            return
+        }
         if text.lowercased() == "/agent" || text.lowercased().hasPrefix("/agent ") { draft = ""; chooseAgent(String(text.dropFirst(6)).trimmingCharacters(in: .whitespaces)); return }
         guard let endpoint, let model = try? OpenAIClient(endpoint) else {
             notice = "No model is running. Open Models to start one, or start your own local server."
@@ -295,6 +311,13 @@ final class AppModel: ObservableObject {
             }, emit: { [weak self] event in
                 Task { @MainActor in self?.receive(event) }
             })
+            // The model may show the user a file at a line, or one of the project's pages.
+            agent.present = { [weak self] kind, path, line in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if kind == "page" { self.pageShown = path; self.panel = "website" } else { self.fileLine = line; self.fileShown = path; self.panel = "files" }
+                }
+            }
             self.activeAgent = agent
             var working = current
             await agent.run(&working, request: text)

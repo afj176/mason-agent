@@ -217,8 +217,9 @@ struct ProgramLink : Link {
 
 }  // namespace
 
-std::vector<McpServer> all(const fs::path& home) {
-    const fs::path path = file(home);
+std::vector<McpServer> all(const fs::path& home) { return read_list(file(home)); }
+
+std::vector<McpServer> read_list(const fs::path& path) {
     std::error_code failure;
     if (!fs::exists(path, failure)) return {};
     if (fs::file_size(path, failure) > 32768) throw Error("The MCP configuration is larger than 32 KiB.");

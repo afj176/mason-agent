@@ -197,7 +197,7 @@ extension Agent {
         if let problem = desktop.unavailable() { throw MasonError(problem) }
         if call.name == "desktop_visual" {
             guard let task = (arguments["task"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !task.isEmpty, task.count <= 2000 else { throw MasonError("desktop_visual needs a task of up to 2,000 characters.") }
-            guard let seer = vision ?? (model as? OpenAIClient).map({ ModelVision($0.endpoint) }) else { throw MasonError("No vision model is available to look at the window.") }
+            guard let seer = vision ?? (Roles.load(home: home).visual ?? Roles.endpoint(of: model)).map({ ModelVision($0) }) else { throw MasonError("No vision model is available to look at the window.") }
             guard let frame = try await desktop.frame(window) else { throw MasonError("This computer cannot take a picture of that window.") }
             emit(.status("Looking at \(window.app)"))
             let decision = try await seer.see(task: task, frame: frame)

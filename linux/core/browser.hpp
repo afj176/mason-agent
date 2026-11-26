@@ -58,5 +58,19 @@ Result run(const Workspace& workspace, const std::string& page, const json& step
 /// The result as the model reads it.
 std::string report(const Result& result, const std::string& page);
 
+/// Serves the project's files on 127.0.0.1 for as long as it is kept, for the Website tab.
+class PageServer {
+public:
+    explicit PageServer(const Workspace& workspace);
+    ~PageServer();
+    int port() const;
+    /// The address of a project page, given its path relative to the project.
+    std::string address_of(const std::string& page) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 }  // namespace browser
 }  // namespace mason

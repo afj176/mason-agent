@@ -3,6 +3,8 @@
 #include "desktop.hpp"
 #include "harness.hpp"
 #include "mcp.hpp"
+#include "network.hpp"
+#include "policy.hpp"
 #include "tools.hpp"
 #include "model.hpp"
 #include "semantic.hpp"
@@ -57,7 +59,11 @@ public:
     /// Offered only when the user has registered an MCP server, so sessions without one keep a short tool list.
     static const std::vector<ToolSpec>& mcp_tools();
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
-    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false);
+    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false, bool presents = false, const fs::path& home = data_home());
+    /// Set by an app that can show things to the user: a file at a line ("file") or a project page ("page").
+    /// Hooks run only inside the sandbox. Tests on a computer without one turn this off.
+    void set_hooks_need_sandbox(bool needed) { hooks_need_sandbox_ = needed; }
+    void set_presenter(std::function<void(const std::string& kind, const std::string& path, int line)> present) { present_ = std::move(present); }
     /// In Auto, Mason works out checks from the request and runs them itself when the model says it is done.
     bool derives_checks = true;
     /// What reads and operates the attached window. Left unset, it is this computer's accessibility interface.
@@ -124,6 +130,17 @@ private:
     std::vector<std::string> offered_names_;
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     std::optional<std::string> pending_question_;
+    /// The project's policy, read when a request starts.
+    std::optional<ProjectPolicy> policy_;
+    bool hooks_need_sandbox_ = true;
+    /// Runs the project's workflows marked for an event, when the user's policy turns hooks on, and only in Auto.
+    /// Returns what failed, or an empty string.
+    std::string run_hooks(const std::string& event, const Workspace& workspace, const Session& session, const CancelToken& cancel);
+    /// The relay this request's sandboxed commands may reach hosts through, once one has been needed.
+    std::unique_ptr<NetworkRelay> network_;
+    NetworkRelay* relay(const Session& session);
+    std::string network_note(size_t since);
+    std::function<void(const std::string&, const std::string&, int)> present_;
     std::optional<std::string> last_search_;  // this request's latest search_files text, which search_next continues
     std::shared_ptr<SemanticModels> semantic_;
     std::shared_ptr<DesktopAutomation> desktop_;

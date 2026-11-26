@@ -378,6 +378,472 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(code, 1, "the journal may not be inside the project")
     }
 
+    func testAnExperimentStartsFromTheProjectAsItStandsAndAHunkComesBack() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let made = try await Shell.run("git init -q . && git add . && git -c user.name=t -c user.email=t@t.invalid commit -qm start", in: workspace, sandboxed: false)
+        try XCTSkipIf(made.exitCode != 0, "git is not available: " + made.output)
+        // An uncommitted edit and an untracked file: the experiment starts with both.
+        try "def add(a, b):\n    return a - b\n\n\ndef twice(a):\n    return a * 2\n".write(to: folder.appendingPathComponent("calc.py"), atomically: true, encoding: .utf8)
+        try "draft\n".write(to: folder.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let said = try await Experiments.command("new try", workspace: workspace, home: home)
+        let experiment = try XCTUnwrap(Experiments.list(workspace, home: home).first)
+        defer { try? FileManager.default.removeItem(atPath: experiment.path) }
+        XCTAssertTrue(said.contains(experiment.path) && experiment.branch == "mason/try", said)
+        XCTAssertEqual(try String(contentsOfFile: experiment.path + "/notes.txt", encoding: .utf8), "draft\n")
+        XCTAssertTrue(try String(contentsOfFile: experiment.path + "/calc.py", encoding: .utf8).contains("twice"))
+        let nothing = try await Experiments.changed(experiment)
+        XCTAssertEqual(nothing, [], "a new experiment has changed nothing")
+        let index = try await Shell.run("git status --porcelain", in: workspace, sandboxed: false).output
+        XCTAssertTrue(index.contains(" M calc.py") && index.contains("?? notes.txt"), "the project's own index is untouched: " + index)
+
+        try "def add(a, b):\n    return a + b\n\n\ndef twice(a):\n    return a * 2\n".write(toFile: experiment.path + "/calc.py", atomically: true, encoding: .utf8)
+        let changed = try await Experiments.changed(experiment)
+        XCTAssertEqual(changed, ["calc.py"])
+        let hunks = try await Experiments.hunks(experiment, path: "calc.py")
+        XCTAssertEqual(hunks.count, 1)
+        _ = try await Experiments.command("apply try calc.py \(hunks[0].id)", workspace: workspace, home: home)
+        XCTAssertTrue(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8).hasPrefix("def add(a, b):\n    return a + b\n"), "the hunk is in the project")
+        do { try await Experiments.apply(experiment, path: "calc.py", hunk: hunks[0].id); XCTFail("a hunk that no longer fits is refused") } catch {}
+        do { try await Experiments.apply(experiment, path: "calc.py", hunk: "00000000"); XCTFail("an unknown hunk is refused") } catch {}
+        do { _ = try await Experiments.createWorktree(workspace, destination: folder.appendingPathComponent("inside").path, branch: "x"); XCTFail("a worktree inside the project is refused") } catch {}
+    }
+
+    func testADeliveryIsOneCommitOfChosenHunksAndLeavesTheCheckoutAlone() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let lines = (1...30).map { "line \($0)" }
+        try (lines.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
+        let made = try await Shell.run("git init -q . && git symbolic-ref HEAD refs/heads/main && git config user.name t && git config user.email t@t.invalid && git add . && git commit -qm start && git remote add origin git@github.com:someone/shop.git", in: workspace, sandboxed: false)
+        try XCTSkipIf(made.exitCode != 0, "git is not available: " + made.output)
+        var edited = lines; edited[1] = "line two"; edited[27] = "line twenty-eight"
+        try (edited.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
+        let head = try await Shell.run("git rev-parse HEAD", in: workspace, sandboxed: false).output
+
+        let reviewed = try await Delivery.review(workspace, base: "main")
+        XCTAssertEqual(reviewed.patches.map(\.path), ["big.txt", "big.txt"], "two separate hunks")
+        let draft = try await Delivery.draft(workspace, base: "main", pinned: reviewed.revision, title: "Spell out two", selected: [reviewed.patches[0].hunk.id], home: home)
+        XCTAssertEqual(draft.repository, "someone/shop")
+        XCTAssertTrue(draft.branch.hasPrefix("mason/review-") && draft.url == nil && draft.paths == ["big.txt"])
+        let shown = try await Shell.run("git show \(draft.commit):big.txt && git log -1 --format=%s%n%an \(draft.commit)", in: workspace, sandboxed: false).output
+        XCTAssertTrue(shown.contains("line two\n") && shown.contains("line 28\n") && !shown.contains("twenty-eight"), "only the chosen hunk is in the commit")
+        XCTAssertTrue(shown.contains("Spell out two\nt\n"), "the commit carries the user's name: " + shown)
+        let after = try await Shell.run("git rev-parse HEAD && git status --porcelain", in: workspace, sandboxed: false).output
+        XCTAssertTrue(after.hasPrefix(head) && after.contains(" M big.txt"), "the branch, the index and the files are as they were: " + after)
+        XCTAssertEqual(Delivery.current(workspace, home: home), draft)
+        let all = try await Delivery.command("draft main all Both lines", workspace: workspace, home: home)
+        XCTAssertTrue(all.text.contains("\"Both lines\" onto main") && all.text.contains("someone/shop"), all.text)
+        do { _ = try await Delivery.draft(workspace, base: "main", pinned: String(repeating: "0", count: 40), title: "x", selected: ["a"], home: home); XCTFail("a base that moved is refused") } catch {}
+        do { _ = try await Delivery.feedback(workspace, draft); XCTFail("feedback needs a published draft") } catch {}
+
+        XCTAssertEqual(try Delivery.repository("https://github.com/Owner/Repo.git"), "Owner/Repo")
+        XCTAssertThrowsError(try Delivery.repository("https://example.com/owner/repo.git"))
+        let state = #"{"url":"https://github.com/someone/shop/pull/7","headRefOid":"abc","statusCheckRollup":[{"name":"build","conclusion":"FAILURE","detailsUrl":"https://ci/1"},{"name":"lint","conclusion":"SUCCESS"},{"context":"deploy","state":"ERROR"}],"reviews":[{"state":"CHANGES_REQUESTED","body":"Rename it."},{"state":"APPROVED","body":"ok"}]}"#
+        let feedback = try Delivery.parseFeedback(state: state, comments: #"[{"path":"big.txt","line":2,"body":"Why two?"}]"#)
+        XCTAssertEqual(feedback.observations, ["CI · build · FAILURE · https://ci/1", "CI · deploy · ERROR · ", "Review · Rename it.", "big.txt:2 · Why two?"])
+        XCTAssertEqual(feedback.head, "abc")
+    }
+
+    func testABackgroundTaskWaitsForItsApprovalAndCanBeCancelled() async throws {
+        let workspace = try Workspace(path: folder.path)
+        func record(_ id: String) throws {
+            try FileManager.default.createDirectory(at: BackgroundTasks.folder(id, home), withIntermediateDirectories: true)
+            BackgroundTasks.write(BackgroundTask(id: id, workspace: realPath(folder.path), prompt: "Fix add", endpoint: ModelEndpoint(url: "http://127.0.0.1:1", model: "m"), auto: false, created: Date()), BackgroundTasks.folder(id, home).appendingPathComponent("request.json"))
+            BackgroundTasks.write(TaskStatus(state: "Starting", detail: "", pid: 0, started: Date()), BackgroundTasks.folder(id, home).appendingPathComponent("status.json"))
+        }
+        func waiting(_ id: String) async throws -> TaskStatus {
+            var state = try BackgroundTasks.status(id, home: home)
+            for _ in 0..<100 where state.state != "Waiting for approval" { try await Task.sleep(nanoseconds: 100_000_000); state = try BackgroundTasks.status(id, home: home) }
+            return state
+        }
+        // The worker runs here in the test; a real one is the same code in its own process.
+        let first = "aaaaaaaa0001"
+        try record(first)
+        let fix = ScriptedModel([call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a + b\n"]), ModelReply(text: "Fixed add.")])
+        async let finished = BackgroundTasks.work(first, home: home, model: fix)
+        let asked = try await waiting(first)
+        XCTAssertEqual(asked.state, "Waiting for approval")
+        XCTAssertEqual(asked.approval?.tool, "write_file")
+        XCTAssertThrowsError(try BackgroundTasks.decide(first, request: "not-this-one", allow: true, home: home), "an answer for another approval is refused")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a - b\n", "nothing is written while it waits")
+        let listed = try BackgroundTasks.command("", workspace: workspace, endpoint: nil, auto: false, program: "/bin/sh", home: home)
+        XCTAssertTrue(listed.contains(first) && listed.contains("waiting on:"), listed)
+        _ = try BackgroundTasks.command("allow \(first)", workspace: workspace, endpoint: nil, auto: false, program: "/bin/sh", home: home)
+        let code = await finished
+        XCTAssertEqual(code, 0)
+        XCTAssertEqual(try BackgroundTasks.status(first, home: home).state, "Completed")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a + b\n")
+        let shown = try BackgroundTasks.command("show \(first)", workspace: workspace, endpoint: nil, auto: false, program: "/bin/sh", home: home)
+        XCTAssertTrue(shown.contains("Fixed add.") && shown.contains("write_file calc.py"), shown)
+
+        let second = "aaaaaaaa0002"
+        try record(second)
+        async let stopped = BackgroundTasks.work(second, home: home, model: ScriptedModel([call("run_shell", ["command": "touch made"]), ModelReply(text: "Done.")]))
+        _ = try await waiting(second)
+        try BackgroundTasks.cancel(second, home: home)
+        let ended = await stopped
+        XCTAssertEqual(ended, 2)
+        XCTAssertEqual(try BackgroundTasks.status(second, home: home).state, "Cancelled")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("made").path), "a cancelled task's pending command never ran")
+        XCTAssertThrowsError(try BackgroundTasks.status("../../etc", home: home), "an id is never a path")
+    }
+
+    func testARoleCountsItsCallsWritesATraceAndIsChosenByCommand() async throws {
+        let trace = home.appendingPathComponent("traces")
+        let limited = RoleModel(ScriptedModel([ModelReply(text: "one"), ModelReply(text: "two"), ModelReply(text: "three")]), role: "reviewer", limit: 2, trace: trace)
+        let first = try await limited.complete(messages: [ChatMessage(role: "user", content: "Look")], tools: []) { _ in }
+        _ = try await limited.complete(messages: [ChatMessage(role: "user", content: "Again")], tools: []) { _ in }
+        XCTAssertEqual(first.text, "one")
+        do { _ = try await limited.complete(messages: [], tools: []) { _ in }; XCTFail("the third call is past the limit") } catch {}
+        let written = try FileManager.default.contentsOfDirectory(atPath: trace.path).sorted()
+        XCTAssertEqual(written.count, 2)
+        let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: trace.appendingPathComponent(written[0]))) as? [String: Any])
+        XCTAssertEqual(record["role"] as? String, "reviewer")
+        XCTAssertEqual((record["reply"] as? [String: Any])?["text"] as? String, "one")
+        XCTAssertEqual(((record["messages"] as? [[String: Any]])?.first)?["content"] as? String, "Look")
+
+        XCTAssertTrue(try Roles.command("", home: home).contains("reviewer  the model doing the work"))
+        XCTAssertTrue(try Roles.command("reviewer http://127.0.0.1:8081 judge", home: home).contains("judge at http://127.0.0.1:8081"))
+        XCTAssertThrowsError(try Roles.command("visual http://example.com seer", home: home), "a role's model is on this computer, like any other")
+        _ = try Roles.command("limit 3", home: home)
+        _ = try Roles.command("trace \(trace.path)", home: home)
+        let roles = Roles.load(home: home)
+        XCTAssertEqual(roles.reviewer?.model, "judge")
+        XCTAssertEqual(roles.limit, 3)
+        let workspace = try Workspace(path: folder.path)
+        let main = ScriptedModel([ModelReply(text: "from the main model")])
+        XCTAssertEqual(Roles.reviewer(main: main, workspace: workspace, home: home).name, "judge", "the chosen reviewer reviews")
+        XCTAssertTrue(Roles.implementer(main, workspace: workspace, home: home) is RoleModel, "with tracing on, the working model is written down")
+        _ = try Roles.command("trace \(folder.appendingPathComponent("t").path)", home: home)
+        XCTAssertFalse(Roles.implementer(main, workspace: workspace, home: home) is RoleModel, "a trace folder inside the project is not used")
+        _ = try Roles.command("reviewer off", home: home)
+        _ = try Roles.command("trace off", home: home)
+        let fallback = Roles.reviewer(main: main, workspace: workspace, home: home)
+        let answer = try await fallback.complete(messages: [], tools: []) { _ in }
+        XCTAssertEqual(answer.text, "from the main model", "without a reviewer the main model reviews")
+    }
+
+    func testAProjectsOwnTestIsPinnedAndIsTheEvidenceForItsRequirement() async throws {
+        func put(_ name: String, _ text: String) throws {
+            let file = folder.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try put("mason.workflows.json", #"{"version": 1, "workflows": {"test": {"executable": "sh", "arguments": ["run-tests.sh"]}}}"#)
+        try put("run-tests.sh", "if grep -q 'a + b' calc.py; then echo 'ok 1 - adds'; else echo 'not ok 1 - adds'; fi\necho 'ok 2 - other'\n")
+        try put(".mason/tests.json", #"[{"requirement": "Make add return the sum", "workflow": "test", "format": "tap", "report": "", "test": "adds", "testFiles": ["run-tests.sh"], "inputs": ["calc.py"]}]"#)
+        let workspace = try Workspace(path: folder.path)
+        XCTAssertEqual(try ProjectTests.load(workspace).map(\.test), ["adds"])
+
+        let plan = await Derived.prepare("Make add return the sum.", workspace: workspace, model: nil)
+        XCTAssertEqual(plan.checks.map(\.kind), ["project_test"])
+        XCTAssertEqual(ProjectTests.value(plan.checks[0], "baseline"), ["failed"], "the baseline is run before any work")
+        var results = try await Derived.verify(plan, workspace: workspace)
+        XCTAssertEqual(results[0].state, "failed")
+        XCTAssertTrue(results[0].detail.contains("baseline: failed; now: failed"), results[0].detail)
+        try put("calc.py", "def add(a, b):\n    return a + b\n")
+        results = try await Derived.verify(plan, workspace: workspace)
+        XCTAssertEqual(results[0].state, "passed", results[0].detail)
+        XCTAssertTrue(results[0].detail.contains("baseline: failed; now: passed"), results[0].detail)
+        // Making the test itself say yes is not passing it.
+        try put("calc.py", "def add(a, b):\n    return a - b\n")
+        try put("run-tests.sh", "echo 'ok 1 - adds'\n")
+        results = try await Derived.verify(plan, workspace: workspace)
+        XCTAssertEqual(results[0].state, "failed")
+        XCTAssertTrue(results[0].detail.contains("pinned"), results[0].detail)
+        let other = await Derived.prepare("Rename the function.", workspace: workspace, model: nil)
+        XCTAssertFalse(other.checks.contains { $0.kind == "project_test" }, "only the stated requirement is bound")
+        try put(".mason/tests.json", #"[{"requirement": "x", "workflow": "missing", "format": "tap", "test": "t", "testFiles": ["a"], "inputs": ["b"]}]"#)
+        XCTAssertThrowsError(try ProjectTests.load(workspace), "a test must name a workflow the project has")
+
+        let junit = #"<testsuite><testcase classname="Price" name="discount"/><testcase classname="Price" name="tax &amp; total"><failure message="no"/></testcase><testcase name="later"><skipped/></testcase></testsuite>"#
+        XCTAssertEqual(ProjectTests.outcomes(format: "junit", text: junit), ["discount": "passed", "Price.discount": "passed", "tax & total": "failed", "Price.tax & total": "failed", "later": "skipped"])
+        XCTAssertEqual(ProjectTests.outcomes(format: "trx", text: #"<UnitTestResult testName="Adds" outcome="Passed" /><UnitTestResult testName="Subtracts" outcome="Failed">"#), ["Adds": "passed", "Subtracts": "failed"])
+        XCTAssertEqual(ProjectTests.outcomes(format: "go-json", text: "{\"Action\":\"run\",\"Test\":\"TestAdd\"}\n{\"Action\":\"pass\",\"Test\":\"TestAdd\"}\n{\"Action\":\"fail\",\"Test\":\"TestSub\"}\n{\"Action\":\"pass\"}"), ["TestAdd": "passed", "TestSub": "failed"])
+        let flutter = "{\"type\":\"testStart\",\"test\":{\"id\":1,\"name\":\"adds\"}}\n{\"type\":\"testDone\",\"testID\":1,\"result\":\"success\",\"skipped\":false}\n{\"type\":\"testStart\",\"test\":{\"id\":2,\"name\":\"draws\"}}\n{\"type\":\"testDone\",\"testID\":2,\"result\":\"failure\"}"
+        XCTAssertEqual(ProjectTests.outcomes(format: "flutter-json", text: flutter), ["adds": "passed", "draws": "failed"])
+        let tap = ProjectTests.outcomes(format: "tap", text: "TAP version 13\n    ok 1 - inner\nok 1 - suite discount\nnot ok 2 - tax\nok 3 - later # SKIP not yet\nok 4 - tax\n")
+        XCTAssertEqual(tap, ["inner": "passed", "suite discount": "passed", "tax": "failed", "later": "skipped"])
+        XCTAssertEqual(ProjectTests.outcome(of: "discount", in: tap), "passed", "a name is found at the end of a longer one")
+        XCTAssertNil(ProjectTests.outcome(of: "missing", in: tap))
+    }
+
+    func testTheWebsiteTabsPiecesAndTheToolsThatShowThingsToTheUser() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try "<!doctype html><title>Shop</title><h1>Shop</h1><button id=\"add\">Add</button>".write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let preview = try PagePreview(workspace: workspace)
+        XCTAssertTrue(SitePreview.listening(preview.port), "the project's pages are served on this computer")
+        XCTAssertEqual(preview.address(of: "sub dir/index.html"), "http://127.0.0.1:\(preview.port)/sub%20dir/index.html")
+        let served = try String(contentsOf: try XCTUnwrap(URL(string: preview.address(of: "index.html"))), encoding: .utf8)
+        XCTAssertTrue(served.contains("<h1>Shop</h1>"), served)
+        preview.stop()
+
+        let message = ##"{"selector":"#add","kind":"button","label":"Add","html":"<button id=\"add\">Add</button>","console":["error: boom (app.js:3)"]}"##
+        let pick = try XCTUnwrap(SitePreview.pick(from: message, page: "index.html"))
+        XCTAssertEqual(pick.selector, "#add")
+        let note = SitePreview.evidence(pick)
+        XCTAssertTrue(note.contains("selector: `#add`") && note.contains("label: “Add”") && note.contains("error: boom (app.js:3)"), note)
+        XCTAssertNil(SitePreview.pick(from: "{\"kind\":\"button\"}", page: "index.html"), "a message without a selector is not a pick")
+        XCTAssertTrue(SitePreview.script.contains("messageHandlers.mason.postMessage") && SitePreview.script.hasPrefix("(function () {"))
+
+        try #"{"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "echo starting; exit 3"]}}}"#.write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        do { _ = try await SitePreview.DevServer(workspace: workspace, workflow: "dev", port: 18473); XCTFail("a workflow that ends is not a server") }
+        catch { XCTAssertTrue("\(error)".contains("ended before anything listened"), "\(error)") }
+        do { _ = try await SitePreview.DevServer(workspace: workspace, workflow: "none", port: 18473); XCTFail("an unknown workflow is refused") } catch {}
+
+        var (store, session) = try session(.workspaceEdits)
+        var shown: [String] = []
+        let script = [call("open_file", ["path": "calc.py", "line": "2"]), call("open_preview", ["path": "index.html"]), call("open_preview", ["path": "calc.py"]), ModelReply(text: "Look there.")]
+        let agent = Agent(store: store, model: ScriptedModel(script), approve: { _ in true }, emit: { _ in })
+        agent.present = { kind, path, line in shown.append("\(kind) \(path) \(line)") }
+        await agent.run(&session, request: "Show me")
+        XCTAssertEqual(shown, ["file calc.py 2", "page index.html 1"], "a file and a page are shown; a page must be HTML")
+        XCTAssertFalse(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "open_file" }, "without an app that can show things, the tools are not offered")
+    }
+
+    func testTheNetworkRelayTunnelsOnlyWhatTheUserAllowed() async throws {
+        XCTAssertEqual(try NetworkPolicy.host("Registry.NPMJS.org", port: 443), "registry.npmjs.org")
+        for (host, port) in [("registry.npmjs.org", 80), ("localhost", 443), ("printer.local", 443), ("10.0.0.5", 443), ("intranet", 443), ("a..b.com", 443), ("-bad.example.com", 443), ("db.internal", 443)] {
+            XCTAssertThrowsError(try NetworkPolicy.host(host, port: port), "\(host):\(port) is not relayed")
+        }
+        for address: [UInt8] in [[8, 8, 8, 8], [93, 184, 216, 34], [0x26, 0x06, 0x47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]] { XCTAssertTrue(NetworkPolicy.isPublic(address), "\(address)") }
+        let mapped: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1]
+        for address: [UInt8] in [[127, 0, 0, 1], [10, 1, 2, 3], [192, 168, 1, 1], [172, 20, 0, 1], [169, 254, 169, 254], [100, 64, 0, 1], [224, 0, 0, 1], [0, 0, 0, 0], mapped,
+                                 [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]] {
+            XCTAssertFalse(NetworkPolicy.isPublic(address), "\(address) is not on the public internet")
+        }
+        XCTAssertTrue(try NetworkSettings.command("", home: home).contains("no network"))
+        XCTAssertTrue(try NetworkSettings.command("ask", home: home).contains("asks first"))
+        XCTAssertTrue(NetworkSettings.asks(home: home))
+        XCTAssertTrue(SandboxProfile.profile(workspace: "/w", scratch: "/s", relay: 4321).hasSuffix("(deny network*)\n(allow network-outbound (remote tcp \"localhost:4321\"))"))
+        XCTAssertTrue(SandboxProfile.profile(workspace: "/w", scratch: "/s").hasSuffix("(deny network*)"), "without the relay the sandbox has no network at all")
+
+        // A stand-in for a site: the project's page server on this computer. The test's resolver points names at it.
+        try "<h1>upstream</h1>".write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let site = try PagePreview(workspace: try Workspace(path: folder.path))
+        defer { site.stop() }
+        var asked: [String] = []
+        let lock = NSLock()
+        let relay = try NetworkRelay(approve: { host in lock.lock(); asked.append(host); lock.unlock(); return host != "denied.example.com" },
+                                     resolve: { _ in [([127, 0, 0, 1], site.port)] }, publicOnly: false)
+        defer { relay.stop() }
+        func exchange(_ request: String, then follow: String? = nil) -> String {
+            let descriptor = NetworkRelay.connected(to: ([127, 0, 0, 1], relay.port))!
+            defer { close(descriptor) }
+            NetworkRelay.send(descriptor, Array(request.utf8))
+            var received = [UInt8](), buffer = [UInt8](repeating: 0, count: 4096)
+            var timeout = timeval(tv_sec: 5, tv_usec: 0)
+            setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            var sentFollow = follow == nil
+            while true {
+                let count = recv(descriptor, &buffer, buffer.count, 0)
+                if count <= 0 { break }
+                received.append(contentsOf: buffer[0..<count])
+                if !sentFollow, NetworkRelay.ends(received) { NetworkRelay.send(descriptor, Array(follow!.utf8)); sentFollow = true }
+                if String(decoding: received, as: UTF8.self).contains("</h1>") { break }
+            }
+            return String(decoding: received, as: UTF8.self)
+        }
+        let through = exchange("CONNECT files.example.com:443 HTTP/1.1\r\nHost: files.example.com:443\r\n\r\n", then: "GET /index.html HTTP/1.1\r\nHost: files.example.com\r\nConnection: close\r\n\r\n")
+        XCTAssertTrue(through.hasPrefix("HTTP/1.1 200 Connection established") && through.contains("<h1>upstream</h1>"), "an allowed host is tunnelled: " + through.prefix(200))
+        _ = exchange("CONNECT files.example.com:443 HTTP/1.1\r\n\r\n", then: "GET /index.html HTTP/1.1\r\nConnection: close\r\n\r\n")
+        XCTAssertTrue(exchange("CONNECT denied.example.com:443 HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 403"), "a host the user refused is not reached")
+        XCTAssertTrue(exchange("CONNECT localhost:443 HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 403"), "this computer is never a destination")
+        XCTAssertTrue(exchange("CONNECT files.example.com:22 HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 403"), "only port 443")
+        XCTAssertTrue(exchange("GET http://files.example.com/ HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 405"), "plain HTTP is not relayed")
+        XCTAssertEqual(asked, ["files.example.com", "denied.example.com"], "each host is asked about once, and a refused destination never")
+        XCTAssertTrue(relay.receipts.contains { $0.hasPrefix("allowed: files.example.com") } && relay.receipts.contains("denied by you: denied.example.com"), "\(relay.receipts)")
+
+        // The same relay with its real rule refuses a name that resolves to this computer.
+        let strict = try NetworkRelay(approve: { _ in true }, resolve: { _ in [([127, 0, 0, 1], site.port)] })
+        defer { strict.stop() }
+        let descriptor = try XCTUnwrap(NetworkRelay.connected(to: ([127, 0, 0, 1], strict.port)))
+        NetworkRelay.send(descriptor, Array("CONNECT rebind.example.com:443 HTTP/1.1\r\n\r\n".utf8))
+        var buffer = [UInt8](repeating: 0, count: 512)
+        let count = recv(descriptor, &buffer, buffer.count, 0)
+        close(descriptor)
+        XCTAssertTrue(String(decoding: buffer[0..<max(0, count)], as: UTF8.self).hasPrefix("HTTP/1.1 502"), "a public name that points at a private address is not connected to")
+    }
+
+    func testAPolicySwitchesToolsOffAndHooksGateTheWork() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try #"{"version": 1, "workflows": {"lint": {"executable": "sh", "arguments": ["-c", "! grep -q TODO calc.py"], "events": ["afterEdit"]}, "gate": {"executable": "sh", "arguments": ["-c", "grep -q 'a + b' calc.py"], "beforeVerify": true}, "deploy": {"executable": "sh", "arguments": ["-c", "touch deployed"]}}}"#
+            .write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(try ProjectWorkflows.load(workspace).workflows["gate"]?.events, ["beforeVerify"])
+        XCTAssertTrue(try Policies.command("", workspace: workspace, home: home).contains("no policy"))
+        _ = try Policies.command("disable run_shell start_job", workspace: workspace, home: home)
+        _ = try Policies.command("workflows lint gate", workspace: workspace, home: home)
+        let described = try Policies.command("hooks on", workspace: workspace, home: home)
+        XCTAssertTrue(described.contains("tools off   run_shell, start_job") && described.contains("workflows   gate, lint") && described.contains("hooks       on"), described)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".mason/policy.json").path), "the policy is not kept in the project")
+
+        var (store, session) = try session(.auto)
+        let model = ScriptedModel([
+            call("run_shell", ["command": "touch made"]),
+            call("run_workflow", ["name": "deploy"]),
+            call("write_file", ["path": "calc.py", "content": "# TODO\ndef add(a, b):\n    return a - b\n"]),
+            ModelReply(text: "Done."),
+            call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a + b\n"]),
+            ModelReply(text: "Fixed."),
+        ])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        agent.hooksNeedSandbox = false
+        agent.derivesChecks = false
+        await agent.run(&session, request: "Fix add")
+        XCTAssertFalse(model.seen.first?.contains { $0.role == "system" && $0.content.contains("run_shell") } ?? false)
+        XCTAssertTrue(session.activities[0].result.contains("does not allow run_shell"), session.activities[0].result)
+        XCTAssertTrue(session.activities[1].result.contains("does not allow the workflow deploy"), session.activities[1].result)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("made").path) || FileManager.default.fileExists(atPath: folder.appendingPathComponent("deployed").path))
+        let afterEdit = session.messages.first { $0.role == "tool" && $0.content.contains("The hook lint (afterEdit) failed") }
+        XCTAssertNotNil(afterEdit, "an afterEdit hook's failure is on the edit's result")
+        XCTAssertTrue(session.messages.contains { $0.role == "user" && $0.content.contains("The hook gate (beforeVerify) failed") }, "a failed gate goes back to the model")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.turns.last?.answer, "Fixed.")
+
+        // A gate that keeps failing blocks completion.
+        var (store2, stuck) = try self.session(.auto)
+        let giving = Agent(store: store2, model: ScriptedModel([call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a - b\n"]), ModelReply(text: "Done."), ModelReply(text: "Done."), ModelReply(text: "Done."), ModelReply(text: "Done.")]), approve: { _ in true }, emit: { _ in })
+        giving.hooksNeedSandbox = false
+        giving.derivesChecks = false
+        await giving.run(&stuck, request: "Fix add")
+        XCTAssertEqual(stuck.state, "Stopped")
+        XCTAssertTrue(stuck.detail.contains("hook still fails"), stuck.detail)
+
+        _ = try Policies.command("clear", workspace: workspace, home: home)
+        XCTAssertNil(Policies.load(home: home, workspace: folder.path))
+        var lapsed = ProjectPolicy(name: "old", workspace: realPath(folder.path), disabledTools: ["read_file"], workflows: nil, expires: Date().addingTimeInterval(-60), hooks: false)
+        try Policies.set(lapsed, home: home, workspace: folder.path)
+        XCTAssertNil(Policies.load(home: home, workspace: folder.path), "a lapsed policy is not in force")
+        lapsed.expires = nil
+        try Policies.set(lapsed, home: home, workspace: folder.path)
+        XCTAssertThrowsError(try Policies.load(home: home, workspace: folder.path)?.check("read_file"))
+    }
+
+    func testScriptsCanReviewAFileAndServeAProject() async throws {
+        var lines: [String] = []
+        func events() -> [[String: Any]] { lines.compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } }
+        let finding = ModelReply(text: #"[{"path": "calc.py", "line": 2, "evidence": "return a - b", "problem": "It subtracts."}, {"path": "calc.py", "line": 1, "evidence": "not on that line", "problem": "Made up."}]"#)
+        var code = await ScriptOperations.run(["review", "--workspace", folder.path, "--prompt", "add returns the sum", "--path", "calc.py"], model: ScriptedModel([finding])) { lines.append($0) }
+        XCTAssertEqual(code, 2, "a finding is exit 2: " + lines.joined())
+        let result = events().first?["data"] as? [String: Any]
+        XCTAssertEqual((result?["findings"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(((result?["findings"] as? [[String: Any]])?.first)?["line"] as? Int, 2)
+        XCTAssertEqual(result?["dropped"] as? Int, 1, "a finding that does not quote its line is not reported as fact")
+        lines = []
+        code = await ScriptOperations.run(["review", "--workspace", folder.path, "--prompt", "x", "--path", "calc.py"], model: ScriptedModel([ModelReply(text: "[]")])) { lines.append($0) }
+        XCTAssertEqual(code, 0)
+
+        try #"{"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "exit 3"]}}}"#.write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        lines = []
+        code = await ScriptOperations.run(["serve", "--workspace", folder.path, "--workflow", "dev", "--port", "18474"]) { lines.append($0) }
+        XCTAssertEqual(code, 1)
+        XCTAssertTrue(((events().first?["data"] as? [String: Any])?["message"] as? String ?? "").contains("ended before anything listened"))
+    }
+
+    func testABundleBringsSkillsAndDocumentationToEveryProject() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let source = home.appendingPathComponent("shop-kit")
+        func put(_ name: String, _ text: String, under root: URL) throws {
+            let file = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try put("bundle.json", #"{"name": "shop-kit", "version": "1.2.0", "description": "How the shop team works"}"#, under: source)
+        try put("skills/release/SKILL.md", "---\ndescription: How to release the shop\n---\nRun the release checklist.\n", under: source)
+        try put("docs/payments.md", "# Payments\nCards are charged at dispatch.\n\n## Refunds\nA refund is allowed within 30 days of delivery.\n\n## Fraud\nOrders over 500 are held.\n", under: source)
+        try put("run.sh", "echo not copied\n", under: source)
+        try put("mcp.json", #"[{"Name": "shop-docs", "Endpoint": "http://127.0.0.1:8088/mcp", "Tools": ["search_docs"]}]"#, under: source)
+        let data = home.appendingPathComponent("data")
+        XCTAssertTrue(try Bundles.command("", home: data).contains("No bundles"))
+        let installed = try Bundles.command("install \(source.path)", home: data)
+        XCTAssertTrue(installed.contains("Installed shop-kit 1.2.0: 2 files") && installed.contains("names 1 MCP server (shop-docs)"), installed)
+        XCTAssertTrue(Mcp.enabled(home: data).isEmpty, "installing a bundle puts no server into use")
+        XCTAssertTrue(try Bundles.command("servers shop-kit", home: data).contains("shop-docs  ·  http://127.0.0.1:8088/mcp  ·  tools: search_docs"))
+        XCTAssertTrue(try Bundles.command("servers shop-kit add", home: data).contains("Added, switched off: shop-docs"))
+        XCTAssertEqual(try Mcp.all(home: data).map(\.name), ["shop-docs"])
+        XCTAssertTrue(Mcp.enabled(home: data).isEmpty, "an added server waits to be switched on")
+        XCTAssertTrue(try Bundles.command("servers shop-kit add", home: data).contains("already in your list"))
+        XCTAssertEqual(Bundles.list(home: data).map(\.name), ["shop-kit"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: data.appendingPathComponent("bundles/shop-kit/run.sh").path), "only skills and docs are copied")
+        XCTAssertEqual(Skills.list(workspace, home: data).map(\.name), ["release"])
+        XCTAssertTrue(Agent.extraTools(session: Session(workspace: folder.path), workspace: workspace, home: data).contains { $0.name == "read_documentation" })
+        XCTAssertFalse(Agent.extraTools(session: Session(workspace: folder.path), workspace: workspace, home: home.appendingPathComponent("empty")).contains { $0.name == "read_documentation" }, "with nothing to read, the tool is not offered")
+
+        let found = Bundles.read("when is a refund allowed", home: data, workspace: workspace)
+        XCTAssertTrue(found.hasPrefix("[shop-kit 1.2.0/docs/payments.md:4]\n## Refunds\nA refund is allowed within 30 days"), found)
+        try put(".mason/docs/notes.md", "# Local notes\nRefunds over 100 need a manager.\n", under: folder)
+        XCTAssertTrue(Bundles.read("refund manager", home: data, workspace: workspace).hasPrefix("[.mason/docs/notes.md:1]"), "the project's own docs are read too")
+        XCTAssertTrue(Bundles.read("kubernetes", home: data, workspace: workspace).contains("does not mention"))
+
+        // A file that is really a link to somewhere else is not taken.
+        try FileManager.default.createSymbolicLink(atPath: source.appendingPathComponent("docs/secrets.md").path, withDestinationPath: "/etc/hosts")
+        XCTAssertThrowsError(try Bundles.install(from: source.path, home: data))
+        XCTAssertThrowsError(try Bundles.install(from: folder.path, home: data), "a folder without bundle.json is not a bundle")
+        _ = try Bundles.command("remove shop-kit", home: data)
+        XCTAssertTrue(Bundles.list(home: data).isEmpty)
+    }
+
+    func testAModelCarriesOutATaskOnAPageOneStepAtATime() async throws {
+        try XCTSkipIf(BrowserCheck.findBrowser() == nil, "no browser on this computer")
+        try "<!doctype html><title>Shop</title><h1>Corner Shop</h1><p id=\"status\">Nothing in the cart.</p><input id=\"name\" placeholder=\"Name\"><button id=\"add\" onclick=\"document.getElementById('status').textContent = '1 tea in the cart for ' + document.getElementById('name').value + '.'\">Add tea</button>"
+            .write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+        let model = ScriptedModel([
+            ModelReply(text: ##"{"action": "click", "selector": "#missing"}"##),
+            ModelReply(text: ##"{"action": "fill", "selector": "#name", "value": "Ada"}"##),
+            ModelReply(text: "I will press it now: {\"action\": \"click\", \"selector\": \"#add\"}"),
+            ModelReply(text: #"{"action": "done", "answer": "The cart shows 1 tea for Ada."}"#),
+        ])
+        let outcome = try await Browse.run(workspace, page: "index.html", task: "Add a tea for Ada and say what the cart shows.", model: model)
+        XCTAssertTrue(outcome.completed)
+        XCTAssertEqual(outcome.answer, "The cart shows 1 tea for Ada.")
+        XCTAssertEqual(outcome.steps.count, 2, "the step that did not work was taken back")
+        let prompts = model.seen.map { $0.last?.content ?? "" }
+        XCTAssertTrue(prompts[0].contains("Nothing in the cart.") && prompts[0].contains("#add"), "the model is shown the page and its controls")
+        XCTAssertTrue(prompts[1].contains("did not work"), "a failed step is reported back")
+        XCTAssertTrue(prompts[3].contains("1 tea in the cart for Ada."), "the model sees what its steps really led to")
+
+        var lines: [String] = []
+        let code = await ScriptOperations.run(["browse", "--workspace", folder.path, "--prompt", "Is there a checkout?"], model: ScriptedModel([ModelReply(text: #"{"action": "fail", "answer": "There is no checkout on this page."}"#)])) { lines.append($0) }
+        XCTAssertEqual(code, 2)
+        XCTAssertTrue(lines.joined().contains("There is no checkout on this page."))
+    }
+
+    func testChatAttachesPicturesAndTheTextOfDocuments() async throws {
+        let png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0])
+        try png.write(to: folder.appendingPathComponent("shot.png"))
+        let picture = try ChatAttachment(file: folder.appendingPathComponent("shot.png"))
+        XCTAssertEqual(picture.image, "data:image/png;base64," + png.base64EncodedString())
+        XCTAssertEqual(ChatAttachment.wordText(xml: #"<w:document><w:body><w:p><w:r><w:t>Terms &amp; conditions</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">Net </w:t><w:tab/><w:t>30 days</w:t></w:r></w:p></w:body></w:document>"#), "Terms & conditions\nNet \t30 days\n")
+        try Data([0, 1, 2, 3]).write(to: folder.appendingPathComponent("blob.bin"))
+        XCTAssertThrowsError(try ChatAttachment(file: folder.appendingPathComponent("blob.bin")), "a file that is neither text, a picture nor a document is refused")
+
+        let chats = try ChatStore(home: home)
+        var conversation = try chats.create()
+        let model = ScriptedModel([ModelReply(text: "A screenshot.")])
+        try await Chat.send(&conversation, text: "What is this?", attachments: [picture, ChatAttachment(name: "notes.txt", content: "hello")], model: model, store: chats) { _ in }
+        let sent = try XCTUnwrap(conversation.messages.first { $0.role == "user" })
+        XCTAssertEqual(sent.images?.count, 1)
+        XCTAssertTrue(sent.content.contains("Attached picture: shot.png") && sent.content.contains("Attached file notes.txt"), sent.content)
+        XCTAssertEqual(model.seen.first?.last?.images?.count, 1, "the picture goes to the model with the message")
+        let again = try ChatStore(home: home)
+        XCTAssertEqual(again.conversations.first?.messages.first { $0.role == "user" }?.images?.count, 1, "and is kept with the conversation")
+    }
+
+    func testATableInAnAnswerBecomesAGridAndAChart() {
+        let answer = "Here are the sales.\n\n| Month | Units | Revenue | Note |\n|:--|--:|--:|---|\n| Jan | 1,200 | $3,400.50 | slow |\n| Feb | 950 | $2,100 | |\n| Mar | 1,410 | $4,020 | best |\n\nAnd in code:\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n"
+        let tables = Tables.find(in: answer)
+        XCTAssertEqual(tables.count, 1, "a table inside a code block is left alone")
+        XCTAssertEqual(tables[0].headers, ["Month", "Units", "Revenue", "Note"])
+        XCTAssertEqual(tables[0].labels, ["Jan", "Feb", "Mar"])
+        XCTAssertEqual(tables[0].series.map(\.name), ["Units", "Revenue"], "only columns that are all numbers are charted")
+        XCTAssertEqual(tables[0].series[0].values, [1200, 950, 1410])
+        XCTAssertEqual(tables[0].series[1].values, [3400.5, 2100, 4020])
+        XCTAssertEqual(Tables.number("-12.5%"), -12.5)
+        XCTAssertNil(Tables.number("12 apples"))
+        XCTAssertTrue(Tables.find(in: "| just | one row |\nno rule").isEmpty)
+        let prose = Tables.prose(answer)
+        XCTAssertTrue(prose.contains("Here are the sales.") && !prose.contains("| Jan |") && prose.contains("| a | b |"), "the table's own lines are left out of the prose, and code is kept: " + prose)
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

@@ -34,6 +34,8 @@ public:
     sigc::signal<void()> changed;
     /// A short message for the user (a toast).
     sigc::signal<void(const std::string&)> notice;
+    /// The model asks to show the user a file at a line ("file") or one of the project's pages ("page").
+    sigc::signal<void(const std::string& kind, const std::string& path, int line)> present;
 
     // ---- sessions ----
     const std::vector<Session>& sessions() const { return sessions_; }
@@ -65,6 +67,11 @@ public:
     void compact();
     /// "" lists the project's custom agents, a name uses one, "none" goes back to the default.
     void choose_agent(const std::string& name);
+    /// Runs one of the commands the app shares with the command line (/experiment, /deliver, /task, /roles, /policy,
+    /// /network) and shows what it says.
+    void host_command(const std::string& name, const std::string& rest);
+    /// Emitted when a command hands back text to put in the request box.
+    sigc::signal<void(const std::string&)> draft_suggested;
     /// Tells the user which MCP servers are registered and what each may call.
     void show_mcp_servers();
     /// Mason's data folder, or an empty path when it could not be opened.

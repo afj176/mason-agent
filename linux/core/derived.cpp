@@ -1,4 +1,5 @@
 #include "derived.hpp"
+#include "project_tests.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -167,6 +168,7 @@ std::string description(const DerivedCheck& check) {
     if (check.kind == "browser_heading") return check.path + " shows a heading that reads “" + check.expected + "”";
     if (check.kind == "browser_text") return check.path + " shows “" + check.expected + "”";
     if (check.kind == "browser_click") return "in " + check.path + ", clicking “" + check.target + "” makes “" + check.expected + "” appear";
+    if (check.kind == "project_test") return "the project's test “" + check.target + "” passes when the workflow " + check.path + " runs (its test files are pinned: they must stay as they are)";
     return check.path + ": " + check.feature;
 }
 
@@ -242,7 +244,7 @@ std::vector<std::string> units(const std::string& request) {
     return found;
 }
 
-DerivedPlan prepare(const std::string& request, const Workspace& workspace, ChatModel* model, const CancelToken& cancel) {
+DerivedPlan prepare(const std::string& request, const Workspace& workspace, ChatModel* model, const CancelToken& cancel, bool require_sandbox) {
     DerivedPlan plan;
     // A contract given with the request belongs to this request: its scenarios are the checks.
     const size_t fence = request.find("```mason.acceptance.json");
@@ -265,9 +267,27 @@ DerivedPlan prepare(const std::string& request, const Workspace& workspace, Chat
     }
     plan.units = units(request);
     if (plan.units.size() > 64) plan.units.resize(64);
+    // A requirement the project names a test for is checked by that test. A request that is one such requirement as a
+    // whole stays whole.
+    std::vector<ProjectTest> named;
+    try {
+        named = project_tests::load(workspace);
+    } catch (const std::exception&) {
+    }
+    bool some_unit = false;
+    for (const std::string& unit : plan.units) some_unit = some_unit || project_tests::bound(unit, named).has_value();
+    if (!some_unit && project_tests::bound(request, named)) plan.units = {trim(request)};
     if (plan.units.empty() || plan.units.size() > 32) return plan;
+    std::set<int> tested;
+    for (size_t i = 0; i < plan.units.size(); i++) {
+        if (const auto test = project_tests::bound(plan.units[i], named)) {
+            plan.checks.push_back(project_tests::check(*test, static_cast<int>(i) + 1, workspace, require_sandbox, cancel));
+            tested.insert(static_cast<int>(i) + 1);
+        }
+    }
     const std::vector<std::string> pages = pages_in(request);
     for (size_t i = 0; i < plan.units.size(); i++) {
+        if (tested.count(static_cast<int>(i) + 1)) continue;
         if (auto check = explicit_check(plan.units[i], static_cast<int>(i) + 1, pages)) plan.checks.push_back(*check);
     }
     const std::vector<std::string> open = plan.unverified();
@@ -306,6 +326,10 @@ std::vector<DerivedResult> verify(const DerivedPlan& plan, const Workspace& work
     std::vector<DerivedResult> results;
     for (const DerivedCheck& check : plan.checks) {
         check_cancel(cancel);
+        if (check.kind == "project_test") {
+            results.push_back(project_tests::verify(check, workspace, require_sandbox, cancel));
+            continue;
+        }
         if (check.kind == "document_text") {
             std::optional<std::string> content;
             try {

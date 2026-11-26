@@ -47,12 +47,16 @@ json message_json(const ChatMessage& message) {
         for (const ToolCall& call : message.tool_calls) item["toolCalls"].push_back({{"id", call.id}, {"name", call.name}, {"arguments", call.arguments}});
     }
     if (!message.tool_call_id.empty()) item["toolCallId"] = message.tool_call_id;
+    if (!message.images.empty()) item["images"] = message.images;
     return item;
 }
 
 ChatMessage message_from_json(const json& item) {
     ChatMessage message{item.value("role", ""), item.value("content", ""), {}, item.value("toolCallId", "")};
     for (const json& call : item.value("toolCalls", json::array())) message.tool_calls.push_back({call.value("id", ""), call.value("name", ""), call.value("arguments", "{}")});
+    for (const json& image : item.value("images", json::array())) {
+        if (image.is_string()) message.images.push_back(image.get<std::string>());
+    }
     return message;
 }
 

@@ -4,6 +4,8 @@
 #include "derived.hpp"
 #include "navigation.hpp"
 #include "planning.hpp"
+#include "roles.hpp"
+#include "bundles.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -157,7 +159,9 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_desktop(const 
         if (task.empty() || utf8_length(task) > 2000) throw Error("desktop_visual needs a task of up to 2,000 characters.");
         std::shared_ptr<DesktopVision> seer = vision_;
         if (!seer) {
-            if (const auto* client = dynamic_cast<OpenAIClient*>(&model_)) seer = std::make_shared<ModelVision>(client->endpoint());
+            // The model chosen for pictures, or else the one doing the work.
+            const std::optional<ModelEndpoint> chosen = roles::load(store_.home()).visual;
+            if (const std::optional<ModelEndpoint> endpoint = chosen ? chosen : roles::endpoint_of(model_)) seer = std::make_shared<ModelVision>(*endpoint);
         }
         if (!seer) throw Error("No vision model is available to look at the window.");
         const std::optional<DesktopFrame> frame = automation->frame(window);
@@ -212,7 +216,7 @@ std::shared_ptr<SemanticModels> Agent::semantic_models() const {
     return nullptr;
 }
 
-std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace, bool semantic) {
+std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace, bool semantic, bool presents, const fs::path& home) {
     auto schema = [](json properties, std::vector<std::string> required) {
         return json{{"type", "object"}, {"properties", std::move(properties)}, {"required", std::move(required)}, {"additionalProperties", false}};
     };
@@ -235,6 +239,11 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
         list.push_back({"inspect_symbol", "Ask a language service about one position in a source file: where the name there is defined, where it is used, or the file's diagnostics. It answers for Python, JavaScript and TypeScript, and for C#, Swift, C, C++, Go and Rust when that language's server is installed. line and column are 1-based.",
                         schema({{"path", text}, {"line", {{"type", "integer"}, {"minimum", 1}}}, {"column", {{"type", "integer"}, {"minimum", 1}}}, {"mode", {{"type", "string"}, {"enum", {"definitions", "references", "diagnostics"}}}}},
                                {"path", "line", "column", "mode"})});
+    }
+    if (presents) {
+        list.push_back({"open_file", "Show the user one of the project's files in the app's file viewer, at a line. Use it to point at the code you are talking about. It does not read the file for you.",
+                        schema({{"path", text}, {"line", {{"type", "integer"}, {"minimum", 1}}}}, {"path", "line"})});
+        list.push_back({"open_preview", "Show the user one of the project's HTML pages in the app's Website tab, so they can look at it and pick elements to tell you about.", schema({{"path", text}}, {"path"})});
     }
     const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
     if (!read_only) {
@@ -274,13 +283,14 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
         list.push_back({"verify_acceptance", "Run the project's acceptance scenarios from mason.acceptance.json in a real browser, at a phone width and a desktop width, and report which requirements hold. Run it after changing a page the scenarios cover.",
                         schema(json::object(), {})});
     }
-    if (!skills::list(workspace).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
+    if (bundles::has_documents(home, workspace)) list.push_back({"read_documentation", "Look something up in the documentation that comes with this project (.mason/docs) and with the bundles the user installed. Give a few words; it returns the sections that mention them, each with where it came from, so you can cite it.", schema({{"query", text}}, {"query"})});
+    if (!skills::list(workspace, home).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
     return list;
 }
 
 std::vector<ToolSpec> Agent::offered_tools(const Session& session, const Workspace& workspace) const {
     std::vector<ToolSpec> offered = tools();
-    const std::vector<ToolSpec> extra = extra_tools(session, workspace, semantic_models() != nullptr);
+    const std::vector<ToolSpec> extra = extra_tools(session, workspace, semantic_models() != nullptr, static_cast<bool>(present_), store_.home());
     offered.insert(offered.end(), extra.begin(), extra.end());
     const std::vector<ToolSpec> window = desktop_tools(session, desktop_automation() != nullptr);
     offered.insert(offered.end(), window.begin(), window.end());
@@ -333,6 +343,20 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         const std::string query = trim(text("query").value_or(""));
         if (!query.empty()) return Outcome{"completed", repository_map::report(repository_map::query(workspace, query, text("path").value_or("."), 32, cancel), query)};
         return Outcome{"completed", repository_map::outline(workspace, text("path").value_or("."))};
+    }
+    if (call.name == "open_file" || call.name == "open_preview") {
+        if (!present_) throw Error("Nothing here can show that to the user.");
+        const std::string path = text("path").value_or("");
+        if (path.empty() || !workspace.exists(path)) throw Error((path.empty() ? std::string("That") : path) + " is not a file in the project.");
+        if (call.name == "open_preview") {
+            const std::string kind = to_lower(fs::path(path).extension().string());
+            if (kind != ".html" && kind != ".htm") throw Error("open_preview shows an HTML page of the project.");
+            present_("page", path, 1);
+            return Outcome{"completed", "Showing " + path + " to the user in the Website tab."};
+        }
+        const int line = std::max(1, number("line").value_or(1));
+        present_("file", path, line);
+        return Outcome{"completed", "Showing " + path + " at line " + std::to_string(line) + " to the user."};
     }
     if (call.name == "ask_user") {
         const std::string question = trim(text("question").value_or(""));
@@ -536,8 +560,11 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         emit_({AgentEvent::Kind::Status, call.name == "run_command" ? "Running the command" : "Running the workflow", {}});
         const snapshot::Map before = snapshot::capture(workspace, snapshot_);
         CommandResult result;
+        NetworkRelay* through = sandboxed ? relay(session) : nullptr;
+        const size_t heard = through ? through->receipts().size() : 0;
         try {
-            result = shell::run(command, workspace, sandboxed, 120, cancel);
+            result = shell::run(command, workspace, sandboxed, 120, cancel, nullptr, -1, through);
+            result.output += network_note(heard);
         } catch (...) {
             record_command_changes(before, workspace, session);
             throw;
@@ -562,8 +589,9 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         const bool eof = arguments.contains("eof") && ((arguments["eof"].is_boolean() && arguments["eof"].get<bool>()) || (arguments["eof"].is_string() && arguments["eof"].get<std::string>() == "true"));
         return Outcome{"completed", jobs_.send(*id, text("text").value_or(""), eof)};
     }
+    if (call.name == "read_documentation") return Outcome{"completed", bundles::read(text("query").value_or(""), store_.home(), workspace)};
     if (call.name == "read_skill") {
-        const std::vector<Definition> known = skills::list(workspace);
+        const std::vector<Definition> known = skills::list(workspace, store_.home());
         const std::string wanted = to_lower(text("name").value_or(""));
         for (const Definition& skill : known) {
             if (to_lower(skill.name) == wanted) return Outcome{"completed", "Skill " + skill.name + " (" + skill.source + "):\n" + skill.body};
@@ -718,6 +746,7 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
         if (!continuing) {
             // Whatever the request left running in the background ends with it.
             jobs_.stop_all();
+            network_.reset();
             return;
         }
         emit_({AgentEvent::Kind::FollowUp, input, {}, std::make_shared<const Session>(session)});
@@ -794,13 +823,19 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     }
     session.comments.clear();
     if (session.title == "New session") session.title = utf8_length(input) > 55 ? utf8_prefix(input, 55) + "…" : input;
-    const std::vector<ToolSpec> offered = offered_tools(session, *workspace);
+    policy_ = policies::load(store_.home(), workspace->root());
+    std::vector<ToolSpec> offered = offered_tools(session, *workspace);
+    // A tool the user's policy switches off is not offered at all.
+    if (policy_) {
+        offered.erase(std::remove_if(offered.begin(), offered.end(), [&](const ToolSpec& tool) { return std::find(policy_->disabled_tools.begin(), policy_->disabled_tools.end(), tool.name) != policy_->disabled_tools.end(); }),
+                      offered.end());
+    }
     offered_names_.clear();
     for (const ToolSpec& tool : offered) offered_names_.push_back(tool.name);
     std::string prompt = system_prompt(session);
     {
         std::vector<std::string> listed;
-        for (const Definition& skill : skills::list(*workspace)) listed.push_back(skill.name + " (" + skill.description + ")");
+        for (const Definition& skill : skills::list(*workspace, store_.home())) listed.push_back(skill.name + " (" + skill.description + ")");
         if (!listed.empty()) prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + join(listed, "; ") + ".";
     }
     {
@@ -833,6 +868,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         bool finished = false, asked = false, baseline_taken = false;
         std::optional<CommandResult> baseline;
         int repairs = 0;
+        std::string blocked;
         static const std::set<std::string> changing = {"edit_file", "write_file", "apply_edits", "run_shell", "run_command", "run_workflow", "start_job", "start_terminal"};
         pending_question_.reset();
         // In Auto, Mason works out what it can check for itself before the work starts.
@@ -844,7 +880,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                 store_.save(session);
                 return;
             }
-            DerivedPlan made = derived::prepare(input, *workspace, &model_, cancel);
+            DerivedPlan made = derived::prepare(input, *workspace, &model_, cancel, true);
             if (!made.checks.empty()) {
                 session.messages.back().content += "\n\n" + made.brief();
                 plan = std::move(made);
@@ -867,6 +903,18 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
             session.messages.push_back({"assistant", reply.text, reply.tool_calls, ""});
             if (reply.tool_calls.empty()) {
                 session.turns.back().answer = reply.text;
+                // The project's own gate comes first: a beforeVerify hook that fails goes back to the model, and blocks completion if it keeps failing.
+                const std::string gate = run_hooks("beforeVerify", *workspace, session, cancel);
+                if (!gate.empty()) {
+                    if (repairs < kRepairLimit) {
+                        repairs++;
+                        session.messages.push_back({"user", "Before finishing, Mason ran the project's hooks and this failed:\n" + gate + "\nFix it, then answer again.", {}, ""});
+                        store_.save(session);
+                        continue;
+                    }
+                    blocked = "The project's hook still fails, so this is not finished.\n" + gate;
+                    break;
+                }
                 // The model says it is done. If the project can be verified and files changed, Mason checks for itself.
                 if (auto receipt = verify(*workspace, session, baseline, repairs, cancel)) {
                     session.turns.back().verification = receipt;
@@ -904,7 +952,12 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                     baseline_taken = true;
                     baseline = verify_run(*workspace, session, cancel);
                 }
-                const std::string result = perform(call, *workspace, session, cancel);
+                std::string result = perform(call, *workspace, session, cancel);
+                // After an edit, the project's afterEdit hooks say at once whether it broke something.
+                if ((call.name == "edit_file" || call.name == "write_file" || call.name == "apply_edits") && result.rfind("Error:", 0) != 0) {
+                    const std::string failure = run_hooks("afterEdit", *workspace, session, cancel);
+                    if (!failure.empty()) result += "\n[" + failure + "]";
+                }
                 session.messages.push_back({"tool", result, {}, call.id});
                 store_.save(session);
                 if (pending_question_) break;
@@ -918,7 +971,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
             }
         }
         session.state = asked ? "Needs your answer" : finished ? "Completed" : "Stopped";
-        session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : "Stopped after " + std::to_string(kActionLimit) + " steps. Send another message to continue.";
+        session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : !blocked.empty() ? utf8_prefix(blocked, 600) : "Stopped after " + std::to_string(kActionLimit) + " steps. Send another message to continue.";
     } catch (const Cancelled&) {
         session.state = "Stopped";
         session.detail = "Stopped. Completed edits are kept.";
@@ -946,6 +999,59 @@ void Agent::close_open_calls(Session& session) {
             insert_at++;
         }
     }
+}
+
+std::string Agent::run_hooks(const std::string& event, const Workspace& workspace, const Session& session, const CancelToken& cancel) {
+    if (!policy_ || !policy_->hooks || session.permission != Permission::Auto || session.ask_only || (hooks_need_sandbox_ && !shell::sandbox_available())) return "";
+    std::map<std::string, ProjectWorkflow> found;
+    try {
+        found = workflows::load(workspace);
+    } catch (const std::exception&) {
+        return "";
+    }
+    std::string failures;
+    for (const auto& [name, workflow] : found) {
+        if (std::find(workflow.events.begin(), workflow.events.end(), event) == workflow.events.end()) continue;
+        try {
+            policy_->check("run_workflow", name);
+        } catch (const Error&) {
+            continue;
+        }
+        emit_({AgentEvent::Kind::Status, "Running the " + name + " hook", {}});
+        try {
+            const CommandResult result = shell::run(workflows::command_line(workflow), workspace, hooks_need_sandbox_, 120, cancel);
+            if (result.exit_code != 0 || result.timed_out) {
+                failures += (failures.empty() ? "" : "\n") + ("The hook " + name + " (" + event + ") failed with exit " + std::to_string(result.exit_code) + ":\n" + (utf8_length(result.output) > 1500 ? utf8_suffix(result.output, 1500) : result.output));
+            }
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception&) {
+            failures += (failures.empty() ? "" : "\n") + ("The hook " + name + " could not run.");
+        }
+    }
+    return failures;
+}
+
+NetworkRelay* Agent::relay(const Session& session) {
+    if (session.permission != Permission::Auto || session.ask_only || !network_settings::asks(store_.home())) return nullptr;
+    if (!network_) {
+        try {
+            network_ = std::make_unique<NetworkRelay>([this](const std::string& host) {
+                return approve_ && approve_(ApprovalRequest{"network", "Let this request's commands reach " + host + " over HTTPS",
+                                                            "A sandboxed command is trying to connect to " + host + " on port 443. Allowing it lets commands in this request send and receive data there until the request ends. Everything else stays blocked: this computer, your local network and plain HTTP.",
+                                                            host});
+            });
+        } catch (const std::exception&) {
+        }
+    }
+    return network_.get();
+}
+
+std::string Agent::network_note(size_t since) {
+    if (!network_) return "";
+    const std::vector<std::string> all = network_->receipts();
+    if (all.size() <= since) return "";
+    return "\n[Network: " + join(std::vector<std::string>(all.begin() + static_cast<std::ptrdiff_t>(since), all.end()), "; ") + "]";
 }
 
 bool Agent::allowed(const ApprovalRequest& request, Session& session) {
@@ -981,6 +1087,7 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
     };
     const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
     try {
+        if (policy_) policy_->check(call.name, text("name").value_or(""));
         if (call.name == "list_files") {
             const FileListing listing = workspace.files(text("path").value_or("."), 800);
             return finish("completed", listing.paths.empty() ? "No files." : join(listing.paths, "\n") + (listing.truncated ? "\n[Listing clipped at 800 files.]" : ""));
@@ -1075,8 +1182,11 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             // The project is read before and after, so whatever the command changed can be shown and undone.
             const snapshot::Map before = snapshot::capture(workspace, snapshot_);
             CommandResult result;
+            NetworkRelay* through = sandboxed ? relay(session) : nullptr;
+            const size_t heard = through ? through->receipts().size() : 0;
             try {
-                result = shell::run(*command, workspace, sandboxed, 120, cancel);
+                result = shell::run(*command, workspace, sandboxed, 120, cancel, nullptr, -1, through);
+                result.output += network_note(heard);
             } catch (...) {
                 record_command_changes(before, workspace, session);
                 throw;

@@ -26,6 +26,8 @@ struct ChatMessage {
     std::string role, content;
     std::vector<ToolCall> tool_calls;
     std::string tool_call_id;
+    /// Pictures that go with a chat message, each as a data: address. The model receives them beside the text.
+    std::vector<std::string> images = {};
 };
 
 struct Activity {

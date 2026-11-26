@@ -1,5 +1,7 @@
 #include "tools.hpp"
 
+#include "bundles.hpp"
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -40,6 +42,16 @@ std::map<std::string, ProjectWorkflow> load(const Workspace& workspace) {
         if (!valid) throw Error("The workflow " + item.key() + " in mason.workflows.json is not valid.");
         if (value.contains("directory") && value["directory"].is_string()) workflow.directory = value["directory"].get<std::string>();
         if (workflow.directory != ".") workspace.resolve(workflow.directory);
+        if (value.contains("events") && value["events"].is_array()) {
+            for (const json& event : value["events"]) {
+                const std::string name = event.is_string() ? event.get<std::string>() : "";
+                if (name != "afterPlan" && name != "afterEdit" && name != "beforeVerify") throw Error("The workflow " + item.key() + " names an event other than afterEdit or beforeVerify.");
+                workflow.events.push_back(name);
+            }
+        }
+        if (value.contains("beforeVerify") && value["beforeVerify"].is_boolean() && value["beforeVerify"].get<bool>() && std::find(workflow.events.begin(), workflow.events.end(), "beforeVerify") == workflow.events.end()) {
+            workflow.events.push_back("beforeVerify");
+        }
         found[item.key()] = std::move(workflow);
     }
     return found;
@@ -58,7 +70,7 @@ std::string command_line(const ProjectWorkflow& workflow) {
 
 namespace skills {
 
-std::vector<Definition> list(const Workspace& workspace) {
+std::vector<Definition> list(const Workspace& workspace, const fs::path& home) {
     static const std::regex name_pattern("^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$");
     std::map<std::string, Definition> found;
     for (const char* folder : {".mason/skills", ".claude/skills", ".agents/skills"}) {
@@ -76,6 +88,9 @@ std::vector<Definition> list(const Workspace& workspace) {
             } catch (const std::exception&) {
             }
         }
+    }
+    for (const Definition& skill : bundles::skills(home)) {
+        if (!found.count(to_lower(skill.name))) found[to_lower(skill.name)] = skill;
     }
     std::vector<Definition> result;
     for (auto& [key, definition] : found) result.push_back(std::move(definition));

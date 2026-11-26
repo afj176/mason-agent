@@ -1,5 +1,7 @@
 #include "window.hpp"
 
+#include <array>
+
 #include <algorithm>
 
 namespace mason::app {
@@ -248,7 +250,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
 
     changes_.set_margin(12);
     changes_scroll_.set_child(changes_);
-    changes_scroll_.set_size_request(384, -1);
+    changes_scroll_.set_size_request(420, -1);
     changes_scroll_.set_visible(false);
     auto* paned = Gtk::make_managed<Gtk::Paned>(Gtk::Orientation::HORIZONTAL);
     paned->set_start_child(*conversation);
@@ -353,6 +355,11 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     adw_application_window_set_content(window_, GTK_WIDGET(toasts_));
 
     controller_.changed.connect([this] { refresh(); });
+    // The model may show the user a file at a line, or one of the project's pages.
+    controller_.present.connect([this](const std::string& kind, const std::string& path, int line) {
+        if (kind == "page") show_page(path);
+        else show_file(path, line);
+    });
     // System notifications are for when the window is not the one in use.
     controller_.notification.connect([this](const std::string& title, const std::string& body) {
         if (gtk_window_is_active(GTK_WINDOW(window_))) return;
@@ -364,7 +371,17 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         g_application_send_notification(application, nullptr, notification);
         g_object_unref(notification);
     });
+    controller_.draft_suggested.connect([this](const std::string& text) { draft_.get_buffer()->set_text(text); draft_.grab_focus(); });
     controller_.notice.connect([this](const std::string& message) {
+        // Several lines do not fit a toast: a command's answer is shown in a dialog, where it can be read and copied.
+        const size_t first = message.find('\n');
+        if (first != std::string::npos) {
+            auto dialog = Gtk::AlertDialog::create(message.substr(0, first));
+            dialog->set_detail(message.substr(first + 1));
+            dialog->set_modal(true);
+            dialog->show(*Glib::wrap(GTK_WINDOW(window_), true));
+            return;
+        }
         AdwToast* toast = adw_toast_new(message.c_str());
         adw_toast_set_timeout(toast, 6);
         adw_toast_overlay_add_toast(toasts_, toast);
@@ -888,25 +905,34 @@ void MainWindow::refresh_composer() {
     run_queued_.set_label("Run " + std::to_string(queued) + " Queued");
 }
 
-/// Two linked buttons at the top of the side panel: the session's changes, or its plan.
+/// Linked buttons at the top of the side panel: the session's changes, its plan, the project's files, or its pages.
 Gtk::Widget* MainWindow::panel_switch() {
     auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
     box->add_css_class("linked");
     box->set_hexpand(true);
-    auto* changes = Gtk::make_managed<Gtk::ToggleButton>("Changes");
-    auto* plan = Gtk::make_managed<Gtk::ToggleButton>("Plan");
-    plan->set_group(*changes);
-    (plan_shown_ ? plan : changes)->set_active(true);
-    plan->set_tooltip_text("Milestones: the steps of the work, the files each covers and how each is checked");
-    plan->signal_toggled().connect([this, plan] {
-        if (plan->get_active() == plan_shown_) return;
-        plan_shown_ = plan->get_active();
-        changes_shown_.clear();
-        // Rebuilding the panel removes this button, so it happens after the click is over.
-        Glib::signal_idle().connect_once([this] { refresh_changes(); });
-    });
-    box->append(*changes);
-    box->append(*plan);
+    Gtk::ToggleButton* first = nullptr;
+    const std::vector<std::array<std::string, 3>> panels = {
+        {"changes", "Changes", "The files this session changed"},
+        {"plan", "Plan", "Milestones: the steps of the work, the files each covers and how each is checked"},
+        {"files", "Files", "The project's files, to read"},
+        {"website", "Website", "The project's pages: look at one, and pick an element to tell Mason about"},
+    };
+    for (const auto& panel : panels) {
+        const std::string id = panel[0];
+        auto* button = Gtk::make_managed<Gtk::ToggleButton>(panel[1]);
+        if (first) button->set_group(*first);
+        else first = button;
+        button->set_active(panel_ == id);
+        button->set_tooltip_text(panel[2]);
+        button->signal_toggled().connect([this, button, id] {
+            if (!button->get_active() || panel_ == id) return;
+            panel_ = id;
+            changes_shown_.clear();
+            // Rebuilding the panel removes this button, so it happens after the click is over.
+            Glib::signal_idle().connect_once([this] { refresh_changes(); });
+        });
+        box->append(*button);
+    }
     return box;
 }
 
@@ -1115,7 +1141,9 @@ void MainWindow::refresh_changes() {
     if (!changes_toggle_.get_active()) return;
     const Session* session = controller_.session();
     std::vector<FileChange> merged;
-    if (plan_shown_) { refresh_plan(); return; }
+    if (panel_ == "plan") { refresh_plan(); return; }
+    if (panel_ == "files") { refresh_files(); return; }
+    if (panel_ == "website") { refresh_website(); return; }
     std::string fingerprint = std::string(controller_.running ? "run|" : "idle|") + (controller_.reviewing ? "reviewing|" : "");
     if (session) {
         for (const Turn& turn : session->turns) {
@@ -1131,8 +1159,10 @@ void MainWindow::refresh_changes() {
     if (fingerprint == changes_shown_) return;
     changes_shown_ = fingerprint;
     clear(changes_);
+    changes_.append(*panel_switch());
     auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    auto* heading = panel_switch();
+    auto* heading = Gtk::make_managed<Gtk::Label>("");
+    heading->set_hexpand(true);
     // Icons keep the bar inside a narrow panel; each has a tooltip and a name for screen readers.
     auto* undo = Gtk::make_managed<Gtk::Button>();
     undo->set_icon_name("edit-undo-symbolic");

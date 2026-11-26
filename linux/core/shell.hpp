@@ -3,6 +3,10 @@
 #include "workspace.hpp"
 
 namespace mason {
+class NetworkRelay;
+}
+
+namespace mason {
 
 struct CommandResult {
     int exit_code = 0;
@@ -22,14 +26,16 @@ std::string sandbox_tool();
 bool sandbox_available();
 /// The bubblewrap arguments for Auto: the whole system read-only, the project and a private /tmp writable,
 /// credential folders hidden, no network, and everything stopped when Mason exits.
-std::vector<std::string> sandbox_arguments(const std::string& workspace);
+/// `relay_folder`, when given, is also visible inside: it holds the socket of Mason's network relay.
+std::vector<std::string> sandbox_arguments(const std::string& workspace, const std::string& relay_folder = "");
 
 /// Runs one shell command in the project folder and returns its combined output. The command gets no terminal input.
 /// It runs in its own session, so a deadline or a stop ends it together with every program it started.
 /// `on_output` receives the command's output as it arrives, for a caller that wants to show it before the command ends.
+/// `network`, for a sandboxed command, is the relay it may reach hosts through; without it the sandbox has no network.
 /// `input_fd`, when given, becomes the command's standard input and is closed here in every case; without it the command reads nothing.
 CommandResult run(const std::string& command, const Workspace& workspace, bool sandboxed, double timeout_seconds = 120, const CancelToken& cancel = nullptr,
-                  const std::function<void(const char*, size_t)>& on_output = nullptr, int input_fd = -1);
+                  const std::function<void(const char*, size_t)>& on_output = nullptr, int input_fd = -1, const NetworkRelay* network = nullptr);
 
 /// One argument as the shell reads it literally: nothing inside is expanded or interpreted.
 std::string quote(const std::string& argument);

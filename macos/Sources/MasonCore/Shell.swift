@@ -32,9 +32,11 @@ public enum SandboxProfile {
         #endif
     }
 
-    public static func profile(workspace: String, scratch: String, temporary: String? = nil) -> String {
+    /// `relay` is the port of Mason's network relay on this computer: the one thing a command may then connect to.
+    public static func profile(workspace: String, scratch: String, temporary: String? = nil, relay: Int? = nil) -> String {
         let home = NSHomeDirectory()
         let temporaryRule = temporary.map { " (subpath \(quoted($0)))" } ?? ""
+        let relayRule = relay.map { "\n(allow network-outbound (remote tcp \"localhost:\($0)\"))" } ?? ""
         // Later rules win, so the denials for credentials follow the general read allowance.
         return """
         (version 1)
@@ -50,7 +52,7 @@ public enum SandboxProfile {
         (allow file-write* (subpath \(quoted(workspace))) (subpath \(quoted(scratch)))\(temporaryRule))
         (allow file-write* (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty") (regex #"^/dev/ttys[0-9]+$"))
         (allow file-ioctl (literal "/dev/null") (literal "/dev/tty"))
-        (deny network*)
+        (deny network*)\(relayRule)
         """
     }
 }
@@ -97,7 +99,8 @@ public enum Shell {
 
     /// `onOutput` receives the command's output as it arrives, for a caller that wants to show it before the command ends.
     /// `input` becomes the command's standard input; without it the command reads nothing. It is closed here once the command has it.
-    public static func run(_ command: String, in workspace: Workspace, sandboxed: Bool, timeout: TimeInterval = 120, input: FileHandle? = nil, onOutput: (@Sendable (Data) -> Void)? = nil) async throws -> CommandResult {
+    /// `network`, for a sandboxed command, is the relay it may reach hosts through; without it the sandbox has no network.
+    public static func run(_ command: String, in workspace: Workspace, sandboxed: Bool, timeout: TimeInterval = 120, input: FileHandle? = nil, network: NetworkRelay? = nil, onOutput: (@Sendable (Data) -> Void)? = nil) async throws -> CommandResult {
         defer { try? input?.close() }
         guard !command.isEmpty, command.utf8.count <= 8000, !command.contains("\0") else { throw MasonError("Use a shell command of 1–8,000 characters.") }
         if sandboxed, !sandboxAvailable { throw MasonError("The macOS sandbox is unavailable, so Auto cannot run commands here. No unrestricted fallback was run.") }
@@ -111,9 +114,10 @@ public enum Shell {
         let process = Process()
         if sandboxed {
             process.executableURL = URL(fileURLWithPath: SandboxProfile.tool)
-            process.arguments = ["-p", SandboxProfile.profile(workspace: workspace.root.path, scratch: realPath(scratch.path), temporary: SandboxProfile.userTemporaryFolder)] + wrapped
+            process.arguments = ["-p", SandboxProfile.profile(workspace: workspace.root.path, scratch: realPath(scratch.path), temporary: SandboxProfile.userTemporaryFolder, relay: network?.port)] + wrapped
             var environment = ProcessInfo.processInfo.environment
             environment["TMPDIR"] = scratch.path
+            for (name, value) in network?.environment ?? [:] { environment[name] = value }
             process.environment = environment
         } else {
             process.executableURL = URL(fileURLWithPath: bash)

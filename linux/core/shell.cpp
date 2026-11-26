@@ -1,5 +1,7 @@
 #include "shell.hpp"
 
+#include "network.hpp"
+
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -74,7 +76,7 @@ std::string sandbox_tool() {
 
 bool sandbox_available() { return !sandbox_tool().empty(); }
 
-std::vector<std::string> sandbox_arguments(const std::string& workspace) {
+std::vector<std::string> sandbox_arguments(const std::string& workspace, const std::string& relay_folder) {
     std::vector<std::string> arguments = {
         "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/var/tmp",
         "--bind", workspace, workspace, "--unshare-net", "--unshare-ipc", "--unshare-pid", "--die-with-parent", "--new-session"};
@@ -87,6 +89,8 @@ std::vector<std::string> sandbox_arguments(const std::string& workspace) {
         if (fs::is_directory(target, failure)) { arguments.insert(arguments.end(), {"--tmpfs", target.string()}); }
         else if (fs::is_regular_file(target, failure)) { arguments.insert(arguments.end(), {"--ro-bind", "/dev/null", target.string()}); }
     }
+    // The relay's folder comes after the private /tmp, so it shows through when it lives there.
+    if (!relay_folder.empty()) arguments.insert(arguments.end(), {"--ro-bind", relay_folder, relay_folder});
     arguments.insert(arguments.end(), {"--chdir", workspace, "--setenv", "TMPDIR", "/tmp"});
     return arguments;
 }
@@ -101,7 +105,7 @@ std::string quote(const std::string& argument) {
 }
 
 CommandResult run(const std::string& command, const Workspace& workspace, bool sandboxed, double timeout_seconds, const CancelToken& cancel,
-                  const std::function<void(const char*, size_t)>& on_output, int input_fd) {
+                  const std::function<void(const char*, size_t)>& on_output, int input_fd, const NetworkRelay* network) {
     struct Closer {
         int fd;
         ~Closer() { if (fd >= 0) ::close(fd); }
@@ -110,10 +114,10 @@ CommandResult run(const std::string& command, const Workspace& workspace, bool s
     std::vector<std::string> arguments;
     if (sandboxed) {
         if (!sandbox_available()) throw Error("The sandbox (bubblewrap) is unavailable, so Auto cannot run commands here. No unrestricted fallback was run.");
-        arguments = sandbox_arguments(workspace.root());
+        arguments = sandbox_arguments(workspace.root(), network ? network->folder().string() : "");
         arguments.insert(arguments.begin(), sandbox_tool());
     }
-    arguments.insert(arguments.end(), {path(), "-c", command});
+    arguments.insert(arguments.end(), {path(), "-c", sandboxed && network ? network->wrap(command) : command});
 
     int pipe_ends[2];
     if (pipe2(pipe_ends, O_CLOEXEC) != 0) throw Error("The command could not start: no pipe.");

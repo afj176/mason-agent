@@ -19,6 +19,16 @@
 #include "chat.hpp"
 #include "schedules.hpp"
 #include "script.hpp"
+#include "experiments.hpp"
+#include "delivery.hpp"
+#include "background.hpp"
+#include "roles.hpp"
+#include "project_tests.hpp"
+#include "preview.hpp"
+#include "network.hpp"
+#include "bundles.hpp"
+#include "browse.hpp"
+#include "shell.hpp"
 #include "models.hpp"
 
 using namespace mason;
@@ -939,6 +949,553 @@ static void test_extra_tools() {
         CHECK(box.read("calc.py") == "def add(a, b):\n    return a - b\n");  // without --auto the run only reads
         events.clear();
         CHECK(script::run({"exec", "--workspace", root, "--prompt", "x", "--profile", (box.project / "journal").string()}, collect, &model) == 1);  // the journal may not be inside the project
+    }
+
+    // An experiment starts from the project as it stands, and a hunk comes back.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        const CommandResult made = shell::run("git init -q . && git add . && git -c user.name=t -c user.email=t@t.invalid commit -qm start", workspace, false);
+        CHECK(made.exit_code == 0);
+        if (made.exit_code == 0) {
+            // An uncommitted edit and an untracked file: the experiment starts with both.
+            box.write("calc.py", "def add(a, b):\n    return a - b\n\n\ndef twice(a):\n    return a * 2\n");
+            box.write("notes.txt", "draft\n");
+            const std::string said = experiments::command("new try", workspace, box.home);
+            const std::vector<Experiment> mine = experiments::list(workspace, box.home);
+            CHECK(mine.size() == 1);
+            if (mine.size() == 1) {
+                const Experiment experiment = mine[0];
+                CHECK(said.find(experiment.path) != std::string::npos && experiment.branch == "mason/try");
+                CHECK(read_file(fs::path(experiment.path) / "notes.txt") == "draft\n" && read_file(fs::path(experiment.path) / "calc.py").find("twice") != std::string::npos);
+                CHECK(experiments::changed(experiment).empty());  // a new experiment has changed nothing
+                const std::string index = shell::run("git status --porcelain", workspace, false).output;
+                CHECK(index.find(" M calc.py") != std::string::npos && index.find("?? notes.txt") != std::string::npos);  // the project's own index is untouched
+
+                write_file_atomic(fs::path(experiment.path) / "calc.py", "def add(a, b):\n    return a + b\n\n\ndef twice(a):\n    return a * 2\n");
+                CHECK(experiments::changed(experiment) == std::vector<std::string>{"calc.py"});
+                const std::vector<ExperimentHunk> hunks = experiments::hunks(experiment, "calc.py");
+                CHECK(hunks.size() == 1);
+                if (hunks.size() == 1) {
+                    experiments::command("apply try calc.py " + hunks[0].id, workspace, box.home);
+                    CHECK(box.read("calc.py").rfind("def add(a, b):\n    return a + b\n", 0) == 0);  // the hunk is in the project
+                    bool refused = false;
+                    try { experiments::apply(experiment, "calc.py", hunks[0].id); } catch (const Error&) { refused = true; }
+                    CHECK(refused);  // a hunk that no longer fits is refused
+                }
+                bool refused = false;
+                try { experiments::apply(experiment, "calc.py", "00000000"); } catch (const Error&) { refused = true; }
+                CHECK(refused);  // an unknown hunk is refused
+                refused = false;
+                try { experiments::create_worktree(workspace, (box.project / "inside").string(), "x"); } catch (const Error&) { refused = true; }
+                CHECK(refused);  // a worktree inside the project is refused
+            }
+        }
+    }
+
+    // A delivery is one commit of chosen hunks, and leaves the checkout alone.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        std::vector<std::string> lines;
+        for (int i = 1; i <= 30; i++) lines.push_back("line " + std::to_string(i));
+        box.write("big.txt", join(lines, "\n") + "\n");
+        const CommandResult made = shell::run("git init -q . && git symbolic-ref HEAD refs/heads/main && git config user.name t && git config user.email t@t.invalid && git add . && git commit -qm start && git remote add origin git@github.com:someone/shop.git", workspace, false);
+        CHECK(made.exit_code == 0);
+        if (made.exit_code == 0) {
+            lines[1] = "line two";
+            lines[27] = "line twenty-eight";
+            box.write("big.txt", join(lines, "\n") + "\n");
+            const std::string head = trim(shell::run("git rev-parse HEAD", workspace, false).output);
+            const DeliveryReview reviewed = delivery::review(workspace, "main");
+            CHECK(reviewed.patches.size() == 2);  // two separate hunks
+            if (reviewed.patches.size() == 2) {
+                const DeliveryDraft draft = delivery::draft(workspace, "main", reviewed.revision, "Spell out two", {reviewed.patches[0].hunk.id}, box.home);
+                CHECK(draft.repository == "someone/shop" && draft.branch.rfind("mason/review-", 0) == 0 && draft.url.empty() && draft.paths == std::vector<std::string>{"big.txt"});
+                const std::string shown = shell::run("git show " + draft.commit + ":big.txt && git log -1 --format=%s%n%an " + draft.commit, workspace, false).output;
+                CHECK(shown.find("line two\n") != std::string::npos && shown.find("line 28\n") != std::string::npos && shown.find("twenty-eight") == std::string::npos);  // only the chosen hunk
+                CHECK(shown.find("Spell out two\nt\n") != std::string::npos);  // the commit carries the user's name
+                const std::string after = shell::run("git rev-parse HEAD && git status --porcelain", workspace, false).output;
+                CHECK(after.rfind(head, 0) == 0 && after.find(" M big.txt") != std::string::npos);  // the branch, the index and the files are as they were
+                const auto current = delivery::current(workspace, box.home);
+                CHECK(current && current->commit == draft.commit);
+                const delivery::Said all = delivery::command("draft main all Both lines", workspace, box.home);
+                CHECK(all.text.find("\"Both lines\" onto main") != std::string::npos && all.text.find("someone/shop") != std::string::npos);
+                bool refused = false;
+                try { delivery::draft(workspace, "main", std::string(40, '0'), "x", {"a"}, box.home); } catch (const Error&) { refused = true; }
+                CHECK(refused);  // a base that moved is refused
+                refused = false;
+                try { delivery::feedback(workspace, draft); } catch (const Error&) { refused = true; }
+                CHECK(refused);  // feedback needs a published draft
+            }
+        }
+        CHECK(delivery::repository("https://github.com/Owner/Repo.git") == "Owner/Repo");
+        bool refused = false;
+        try { delivery::repository("https://example.com/owner/repo.git"); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+        const DeliveryFeedback feedback = delivery::parse_feedback(
+            R"J({"url":"https://github.com/someone/shop/pull/7","headRefOid":"abc","statusCheckRollup":[{"name":"build","conclusion":"FAILURE","detailsUrl":"https://ci/1"},{"name":"lint","conclusion":"SUCCESS"},{"context":"deploy","state":"ERROR"}],"reviews":[{"state":"CHANGES_REQUESTED","body":"Rename it."},{"state":"APPROVED","body":"ok"}]})J",
+            R"J([{"path":"big.txt","line":2,"body":"Why two?"}])J");
+        CHECK(feedback.observations == (std::vector<std::string>{"CI · build · FAILURE · https://ci/1", "CI · deploy · ERROR · ", "Review · Rename it.", "big.txt:2 · Why two?"}));
+        CHECK(feedback.head == "abc");
+    }
+
+    // A background task waits for its approval, finishes, and can be cancelled.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        const std::string root = fs::weakly_canonical(box.project).string();
+        auto record = [&](const std::string& id) {
+            fs::create_directories(box.home / "background-tasks" / id);
+            write_file_atomic(box.home / "background-tasks" / id / "request.json", json{{"id", id}, {"workspace", root}, {"prompt", "Fix add"}, {"endpoint", {{"url", "http://127.0.0.1:1"}, {"model", "m"}, {"key", ""}}}, {"auto", false}, {"created", 1}}.dump());
+            write_file_atomic(box.home / "background-tasks" / id / "status.json", json{{"state", "Starting"}, {"detail", ""}, {"pid", 0}, {"started", static_cast<long long>(std::time(nullptr))}, {"session", ""}}.dump());
+        };
+        auto waiting = [&](const std::string& id) {
+            TaskStatus state = background::status(id, box.home);
+            for (int i = 0; i < 100 && state.state != "Waiting for approval"; i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                state = background::status(id, box.home);
+            }
+            return state;
+        };
+        // The worker runs here in the test; a real one is the same code in its own process.
+        const std::string first = "aaaaaaaa0001";
+        record(first);
+        ScriptedModel fix;
+        fix.replies = {call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Fixed add.")};
+        int code = -1;
+        std::thread worker([&] { code = background::work(first, box.home, &fix); });
+        const TaskStatus asked = waiting(first);
+        CHECK(asked.state == "Waiting for approval" && asked.approval && asked.approval->tool == "write_file");
+        bool refused = false;
+        try { background::decide(first, "not-this-one", true, box.home); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // an answer for another approval is refused
+        CHECK(box.read("calc.py") == "def add(a, b):\n    return a - b\n");  // nothing is written while it waits
+        const std::string listed = background::command("", workspace, std::nullopt, false, "/bin/sh", box.home);
+        CHECK(listed.find(first) != std::string::npos && listed.find("waiting on:") != std::string::npos);
+        background::command("allow " + first, workspace, std::nullopt, false, "/bin/sh", box.home);
+        worker.join();
+        CHECK(code == 0 && background::status(first, box.home).state == "Completed");
+        CHECK(box.read("calc.py") == "def add(a, b):\n    return a + b\n");
+        const std::string shown = background::command("show " + first, workspace, std::nullopt, false, "/bin/sh", box.home);
+        CHECK(shown.find("Fixed add.") != std::string::npos && shown.find("write_file calc.py") != std::string::npos);
+
+        const std::string second = "aaaaaaaa0002";
+        record(second);
+        ScriptedModel touch;
+        touch.replies = {call("run_shell", {{"command", "touch made"}}), say("Done.")};
+        code = -1;
+        std::thread other([&] { code = background::work(second, box.home, &touch); });
+        waiting(second);
+        background::cancel(second, box.home);
+        other.join();
+        CHECK(code == 2 && background::status(second, box.home).state == "Cancelled");
+        CHECK(!fs::exists(box.project / "made"));  // a cancelled task's pending command never ran
+        refused = false;
+        try { background::status("../../etc", box.home); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // an id is never a path
+    }
+
+    // A role counts its calls, writes a trace, and is chosen by command.
+    {
+        Sandbox box;
+        const fs::path trace = box.home / "traces";
+        ScriptedModel three;
+        three.replies = {say("one"), say("two"), say("three")};
+        RoleModel limited(three, "reviewer", 2, trace);
+        const ModelReply first = limited.complete({ChatMessage{"user", "Look", {}, ""}}, {}, [](const std::string&) {}, nullptr);
+        limited.complete({ChatMessage{"user", "Again", {}, ""}}, {}, [](const std::string&) {}, nullptr);
+        CHECK(first.text == "one");
+        bool refused = false;
+        try { limited.complete({}, {}, [](const std::string&) {}, nullptr); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // the third call is past the limit
+        std::vector<fs::path> written;
+        for (const auto& entry : fs::directory_iterator(trace)) written.push_back(entry.path());
+        std::sort(written.begin(), written.end());
+        CHECK(written.size() == 2);
+        if (written.size() == 2) {
+            const json record = json::parse(read_file(written[0]));
+            CHECK(record["role"] == "reviewer" && record["reply"]["text"] == "one" && record["messages"][0]["content"] == "Look");
+        }
+        CHECK(roles::command("", box.home).find("reviewer  the model doing the work") != std::string::npos);
+        CHECK(roles::command("reviewer http://127.0.0.1:8081 judge", box.home).find("judge at http://127.0.0.1:8081") != std::string::npos);
+        refused = false;
+        try { roles::command("visual http://example.com seer", box.home); } catch (const std::exception&) { refused = true; }
+        CHECK(refused);  // a role's model is on this computer, like any other
+        roles::command("limit 3", box.home);
+        roles::command("trace " + trace.string(), box.home);
+        const ModelRoles chosen = roles::load(box.home);
+        CHECK(chosen.reviewer && chosen.reviewer->model == "judge" && chosen.limit == 3);
+        const Workspace workspace(box.project.string());
+        ScriptedModel main_model;
+        main_model.replies = {say("from the main model")};
+        CHECK(roles::reviewer(main_model, &workspace, box.home)->name() == "judge");  // the chosen reviewer reviews
+        CHECK(roles::implementer(main_model, &workspace, box.home) != nullptr);  // with tracing on, the working model is written down
+        roles::command("trace " + (box.project / "t").string(), box.home);
+        CHECK(roles::implementer(main_model, &workspace, box.home) == nullptr);  // a trace folder inside the project is not used
+        roles::command("reviewer off", box.home);
+        roles::command("trace off", box.home);
+        CHECK(roles::reviewer(main_model, &workspace, box.home)->complete({}, {}, [](const std::string&) {}, nullptr).text == "from the main model");  // without a reviewer the main model reviews
+    }
+
+    // A project's own test is pinned and is the evidence for its requirement.
+    {
+        Sandbox box;
+        box.write("mason.workflows.json", R"({"version": 1, "workflows": {"test": {"executable": "sh", "arguments": ["run-tests.sh"]}}})");
+        box.write("run-tests.sh", "if grep -q 'a + b' calc.py; then echo 'ok 1 - adds'; else echo 'not ok 1 - adds'; fi\necho 'ok 2 - other'\n");
+        fs::create_directories(box.project / ".mason");
+        box.write(".mason/tests.json", R"([{"requirement": "Make add return the sum", "workflow": "test", "format": "tap", "report": "", "test": "adds", "testFiles": ["run-tests.sh"], "inputs": ["calc.py"]}])");
+        const Workspace workspace(box.project.string());
+        CHECK(project_tests::load(workspace).size() == 1 && project_tests::load(workspace)[0].test == "adds");
+
+        const DerivedPlan plan = derived::prepare("Make add return the sum.", workspace, nullptr);
+        CHECK(plan.checks.size() == 1 && plan.checks[0].kind == "project_test");
+        if (plan.checks.size() == 1) {
+            bool baseline_failed = false;
+            for (const auto& step : plan.checks[0].steps) baseline_failed = baseline_failed || step == std::vector<std::string>{"baseline", "failed"};
+            CHECK(baseline_failed);  // the baseline is run before any work
+            std::vector<DerivedResult> results = derived::verify(plan, workspace);
+            CHECK(results[0].state == "failed" && results[0].detail.find("baseline: failed; now: failed") != std::string::npos);
+            box.write("calc.py", "def add(a, b):\n    return a + b\n");
+            results = derived::verify(plan, workspace);
+            CHECK(results[0].state == "passed" && results[0].detail.find("baseline: failed; now: passed") != std::string::npos);
+            // Making the test itself say yes is not passing it.
+            box.write("calc.py", "def add(a, b):\n    return a - b\n");
+            box.write("run-tests.sh", "echo 'ok 1 - adds'\n");
+            results = derived::verify(plan, workspace);
+            CHECK(results[0].state == "failed" && results[0].detail.find("pinned") != std::string::npos);
+        }
+        bool bound_other = false;
+        for (const DerivedCheck& check : derived::prepare("Rename the function.", workspace, nullptr).checks) bound_other = bound_other || check.kind == "project_test";
+        CHECK(!bound_other);  // only the stated requirement is bound
+        box.write(".mason/tests.json", R"([{"requirement": "x", "workflow": "missing", "format": "tap", "test": "t", "testFiles": ["a"], "inputs": ["b"]}])");
+        bool refused = false;
+        try { project_tests::load(workspace); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // a test must name a workflow the project has
+
+        using Outcomes = std::map<std::string, std::string>;
+        CHECK(project_tests::outcomes("junit", R"(<testsuite><testcase classname="Price" name="discount"/><testcase classname="Price" name="tax &amp; total"><failure message="no"/></testcase><testcase name="later"><skipped/></testcase></testsuite>)") ==
+              (Outcomes{{"discount", "passed"}, {"Price.discount", "passed"}, {"tax & total", "failed"}, {"Price.tax & total", "failed"}, {"later", "skipped"}}));
+        CHECK(project_tests::outcomes("trx", R"(<UnitTestResult testName="Adds" outcome="Passed" /><UnitTestResult testName="Subtracts" outcome="Failed">)") == (Outcomes{{"Adds", "passed"}, {"Subtracts", "failed"}}));
+        CHECK(project_tests::outcomes("go-json", "{\"Action\":\"run\",\"Test\":\"TestAdd\"}\n{\"Action\":\"pass\",\"Test\":\"TestAdd\"}\n{\"Action\":\"fail\",\"Test\":\"TestSub\"}\n{\"Action\":\"pass\"}") ==
+              (Outcomes{{"TestAdd", "passed"}, {"TestSub", "failed"}}));
+        CHECK(project_tests::outcomes("flutter-json", "{\"type\":\"testStart\",\"test\":{\"id\":1,\"name\":\"adds\"}}\n{\"type\":\"testDone\",\"testID\":1,\"result\":\"success\",\"skipped\":false}\n{\"type\":\"testStart\",\"test\":{\"id\":2,\"name\":\"draws\"}}\n{\"type\":\"testDone\",\"testID\":2,\"result\":\"failure\"}") ==
+              (Outcomes{{"adds", "passed"}, {"draws", "failed"}}));
+        const Outcomes tap = project_tests::outcomes("tap", "TAP version 13\n    ok 1 - inner\nok 1 - suite discount\nnot ok 2 - tax\nok 3 - later # SKIP not yet\nok 4 - tax\n");
+        CHECK(tap == (Outcomes{{"inner", "passed"}, {"suite discount", "passed"}, {"tax", "failed"}, {"later", "skipped"}}));
+        CHECK(project_tests::outcome_of("discount", tap) == std::optional<std::string>("passed"));  // a name is found at the end of a longer one
+        CHECK(!project_tests::outcome_of("missing", tap));
+    }
+
+    // The Website tab's pieces, and the tools that show things to the user.
+    {
+        Sandbox box;
+        box.write("index.html", "<!doctype html><title>Shop</title><h1>Shop</h1><button id=\"add\">Add</button>");
+        const Workspace workspace(box.project.string());
+        {
+            const browser::PageServer pages(workspace);
+            CHECK(preview::listening(pages.port()));  // the project's pages are served on this computer
+            CHECK(pages.address_of("sub dir/index.html") == "http://127.0.0.1:" + std::to_string(pages.port()) + "/sub%20dir/index.html");
+        }
+        const auto pick = preview::pick(R"J({"selector":"#add","kind":"button","label":"Add","html":"<button id=\"add\">Add</button>","console":["error: boom (app.js:3)"]})J", "index.html");
+        CHECK(pick && pick->selector == "#add");
+        if (pick) {
+            const std::string note = preview::evidence(*pick);
+            CHECK(note.find("selector: `#add`") != std::string::npos && note.find("label: “Add”") != std::string::npos && note.find("error: boom (app.js:3)") != std::string::npos);
+        }
+        CHECK(!preview::pick(R"({"kind":"button"})", "index.html"));  // a message without a selector is not a pick
+        const std::string script = preview::kScript;
+        CHECK(script.find("messageHandlers.mason.postMessage") != std::string::npos && script.rfind("(function () {", 0) == 0);
+
+        box.write("mason.workflows.json", R"J({"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "echo starting; exit 3"]}}})J");
+        std::string problem;
+        try { preview::DevServer server(workspace, "dev", 18473); } catch (const Error& error) { problem = error.what(); }
+        CHECK(problem.find("ended before anything listened") != std::string::npos);  // a workflow that ends is not a server
+        problem.clear();
+        try { preview::DevServer server(workspace, "none", 18473); } catch (const Error& error) { problem = error.what(); }
+        CHECK(!problem.empty());  // an unknown workflow is refused
+
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+        std::vector<std::string> shown;
+        ScriptedModel model;
+        model.replies = {call("open_file", {{"path", "calc.py"}, {"line", 2}}), call("open_preview", {{"path", "index.html"}}), call("open_preview", {{"path", "calc.py"}}), say("Look there.")};
+        Agent agent(store, model, [](const ApprovalRequest&) { return true; }, quiet);
+        agent.set_presenter([&](const std::string& kind, const std::string& path, int line) { shown.push_back(kind + " " + path + " " + std::to_string(line)); });
+        agent.run(session, "Show me");
+        CHECK(shown == (std::vector<std::string>{"file calc.py 2", "page index.html 1"}));  // a file and a page are shown; a page must be HTML
+        bool offered = false;
+        for (const ToolSpec& tool : Agent::extra_tools(session, workspace)) offered = offered || tool.name == "open_file";
+        CHECK(!offered);  // without an app that can show things, the tools are not offered
+    }
+
+    // The network relay tunnels only what the user allowed.
+    {
+        Sandbox box;
+        CHECK(network_policy::host("Registry.NPMJS.org", 443) == "registry.npmjs.org");
+        for (const auto& [host, port] : std::vector<std::pair<std::string, int>>{{"registry.npmjs.org", 80}, {"localhost", 443}, {"printer.local", 443}, {"10.0.0.5", 443}, {"intranet", 443}, {"a..b.com", 443}, {"-bad.example.com", 443}, {"db.internal", 443}}) {
+            bool refused = false;
+            try { network_policy::host(host, port); } catch (const Error&) { refused = true; }
+            CHECK(refused);
+        }
+        CHECK(network_policy::is_public({8, 8, 8, 8}) && network_policy::is_public({93, 184, 216, 34}) && network_policy::is_public({0x26, 0x06, 0x47, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}));
+        for (const std::vector<uint8_t>& address : std::vector<std::vector<uint8_t>>{{127, 0, 0, 1}, {10, 1, 2, 3}, {192, 168, 1, 1}, {172, 20, 0, 1}, {169, 254, 169, 254}, {100, 64, 0, 1}, {224, 0, 0, 1}, {0, 0, 0, 0},
+                                                                                     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1}, {0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+                                                                                     {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}) {
+            CHECK(!network_policy::is_public(address));  // not on the public internet
+        }
+        CHECK(network_settings::command("", box.home).find("no network") != std::string::npos);
+        CHECK(network_settings::command("ask", box.home).find("asks first") != std::string::npos && network_settings::asks(box.home));
+
+        // A stand-in for a site: the project's page server on this computer. The test's resolver points names at it.
+        box.write("index.html", "<h1>upstream</h1>");
+        const Workspace workspace(box.project.string());
+        const browser::PageServer site(workspace);
+        std::vector<std::string> asked;
+        std::mutex lock;
+        NetworkRelay relay([&](const std::string& host) { std::lock_guard<std::mutex> guard(lock); asked.push_back(host); return host != "denied.example.com"; },
+                           [&](const std::string&) { return std::vector<RelayAddress>{{{127, 0, 0, 1}, site.port()}}; }, false);
+        // A command outside any sandbox speaks to the relay's socket the way the forwarder does.
+        auto exchange = [&](NetworkRelay& through, const std::string& request) {
+            box.write("request.txt", request);
+            const std::string script = "import socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.settimeout(5)\ns.connect(sys.argv[1])\ns.sendall(open('request.txt','rb').read())\nd=b''\ntry:\n  while True:\n    c=s.recv(4096)\n    if not c: break\n    d+=c\n    if b'</h1>' in d: break\nexcept Exception: pass\nsys.stdout.write(d.decode('latin-1'))\n";
+            box.write("exchange.py", script);
+            return shell::run("python3 exchange.py " + shell::quote(through.socket_path().string()), workspace, false, 30).output;
+        };
+        const bool python = shell::run("command -v python3", workspace, false, 10).exit_code == 0;
+        if (python) {
+            const std::string through = exchange(relay, "CONNECT files.example.com:443 HTTP/1.1\r\nHost: files.example.com:443\r\n\r\nGET /index.html HTTP/1.1\r\nHost: files.example.com\r\nConnection: close\r\n\r\n");
+            CHECK(through.rfind("HTTP/1.1 200 Connection established", 0) == 0 && through.find("<h1>upstream</h1>") != std::string::npos);  // an allowed host is tunnelled
+            exchange(relay, "CONNECT files.example.com:443 HTTP/1.1\r\n\r\nGET /index.html HTTP/1.1\r\nConnection: close\r\n\r\n");
+            CHECK(exchange(relay, "CONNECT denied.example.com:443 HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 403", 0) == 0);  // a host the user refused is not reached
+            CHECK(exchange(relay, "CONNECT localhost:443 HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 403", 0) == 0);  // this computer is never a destination
+            CHECK(exchange(relay, "CONNECT files.example.com:22 HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 403", 0) == 0);  // only port 443
+            CHECK(exchange(relay, "GET http://files.example.com/ HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 405", 0) == 0);  // plain HTTP is not relayed
+            CHECK(asked == (std::vector<std::string>{"files.example.com", "denied.example.com"}));  // each host is asked about once, and a refused destination never
+            const std::vector<std::string> receipts = relay.receipts();
+            CHECK(std::any_of(receipts.begin(), receipts.end(), [](const std::string& line) { return line.rfind("allowed: files.example.com", 0) == 0; }) &&
+                  std::find(receipts.begin(), receipts.end(), "denied by you: denied.example.com") != receipts.end());
+            // The same relay with its real rule refuses a name that resolves to this computer.
+            NetworkRelay strict([](const std::string&) { return true; }, [&](const std::string&) { return std::vector<RelayAddress>{{{127, 0, 0, 1}, site.port()}}; });
+            CHECK(exchange(strict, "CONNECT rebind.example.com:443 HTTP/1.1\r\n\r\n").rfind("HTTP/1.1 502", 0) == 0);
+
+            // From inside the sandbox, the relay is the one thing a command can reach.
+            if (shell::sandbox_available()) {
+                box.write("inside.py", "import socket\ns=socket.create_connection(('127.0.0.1', 3128), timeout=5)\ns.sendall(b'CONNECT files.example.com:443 HTTP/1.1\\r\\n\\r\\nGET /index.html HTTP/1.1\\r\\nConnection: close\\r\\n\\r\\n')\nd=b''\ntry:\n  while b'</h1>' not in d:\n    c=s.recv(4096)\n    if not c: break\n    d+=c\nexcept Exception: pass\nprint(d.decode('latin-1'))\ntry:\n  socket.create_connection(('1.1.1.1', 443), timeout=3)\n  print('DIRECT REACHED')\nexcept Exception as e:\n  print('direct refused')\n");
+                const CommandResult inside = shell::run("python3 inside.py; echo proxy=$HTTPS_PROXY", workspace, true, 60, nullptr, nullptr, -1, &relay);
+                CHECK(inside.output.find("<h1>upstream</h1>") != std::string::npos);  // through the relay
+                CHECK(inside.output.find("direct refused") != std::string::npos && inside.output.find("DIRECT REACHED") == std::string::npos);  // and nothing else
+                CHECK(inside.output.find("proxy=http://127.0.0.1:3128") != std::string::npos);
+                const CommandResult offline = shell::run("python3 inside.py", workspace, true, 60);
+                CHECK(offline.output.find("<h1>upstream</h1>") == std::string::npos);  // without the relay the sandbox has no network at all
+            }
+        }
+    }
+
+    // A policy switches tools off, and hooks gate the work.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        box.write("mason.workflows.json", R"J({"version": 1, "workflows": {"lint": {"executable": "sh", "arguments": ["-c", "! grep -q TODO calc.py"], "events": ["afterEdit"]}, "gate": {"executable": "sh", "arguments": ["-c", "grep -q 'a + b' calc.py"], "beforeVerify": true}, "deploy": {"executable": "sh", "arguments": ["-c", "touch deployed"]}}})J");
+        CHECK(workflows::load(workspace)["gate"].events == std::vector<std::string>{"beforeVerify"});
+        CHECK(policies::command("", workspace, box.home).find("no policy") != std::string::npos);
+        policies::command("disable run_shell start_job", workspace, box.home);
+        policies::command("workflows lint gate", workspace, box.home);
+        const std::string described = policies::command("hooks on", workspace, box.home);
+        CHECK(described.find("tools off   run_shell, start_job") != std::string::npos && described.find("workflows   gate, lint") != std::string::npos && described.find("hooks       on") != std::string::npos);
+        {
+            SessionStore store(box.home);
+            Session session = store.create(workspace.root(), Permission::Auto);
+            ScriptedModel model;
+            model.replies = {call("run_shell", {{"command", "touch made"}}), call("run_workflow", {{"name", "deploy"}}), call("write_file", {{"path", "calc.py"}, {"content", "# TODO\ndef add(a, b):\n    return a - b\n"}}), say("Done."),
+                             call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Fixed.")};
+            Agent agent(store, model, [](const ApprovalRequest&) { return true; }, quiet);
+            agent.set_hooks_need_sandbox(false);
+            agent.derives_checks = false;
+            agent.run(session, "Fix add");
+            CHECK(session.activities.size() >= 2 && session.activities[0].result.find("does not allow run_shell") != std::string::npos && session.activities[1].result.find("does not allow the workflow deploy") != std::string::npos);
+            CHECK(!fs::exists(box.project / "made") && !fs::exists(box.project / "deployed"));
+            bool after_edit = false, gate = false;
+            for (const ChatMessage& message : session.messages) {
+                after_edit = after_edit || (message.role == "tool" && message.content.find("The hook lint (afterEdit) failed") != std::string::npos);
+                gate = gate || (message.role == "user" && message.content.find("The hook gate (beforeVerify) failed") != std::string::npos);
+            }
+            CHECK(after_edit);  // an afterEdit hook's failure is on the edit's result
+            CHECK(gate);        // a failed gate goes back to the model
+            CHECK(session.state == "Completed" && session.turns.back().answer == "Fixed.");
+        }
+        {
+            // A gate that keeps failing blocks completion.
+            SessionStore store(box.home);
+            Session stuck = store.create(workspace.root(), Permission::Auto);
+            ScriptedModel model;
+            model.replies = {call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a - b\n"}}), say("Done."), say("Done."), say("Done."), say("Done.")};
+            Agent agent(store, model, [](const ApprovalRequest&) { return true; }, quiet);
+            agent.set_hooks_need_sandbox(false);
+            agent.derives_checks = false;
+            agent.run(stuck, "Fix add");
+            CHECK(stuck.state == "Stopped" && stuck.detail.find("hook still fails") != std::string::npos);
+        }
+        policies::command("clear", workspace, box.home);
+        CHECK(!policies::load(box.home, workspace.root()));
+        ProjectPolicy lapsed{"old", fs::weakly_canonical(box.project).string(), {"read_file"}, std::nullopt, std::time(nullptr) - 60, false};
+        policies::set(lapsed, box.home, workspace.root());
+        CHECK(!policies::load(box.home, workspace.root()));  // a lapsed policy is not in force
+        lapsed.expires = 0;
+        policies::set(lapsed, box.home, workspace.root());
+        bool refused = false;
+        try { policies::load(box.home, workspace.root())->check("read_file"); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+    }
+
+    // Scripts can review a file and serve a project.
+    {
+        Sandbox box;
+        const std::string root = box.project.string();
+        std::vector<json> events;
+        const auto collect = [&](const std::string& line) { events.push_back(json::parse(line)); };
+        ScriptedModel finding;
+        finding.replies = {say(R"J([{"path": "calc.py", "line": 2, "evidence": "return a - b", "problem": "It subtracts."}, {"path": "calc.py", "line": 1, "evidence": "not on that line", "problem": "Made up."}])J")};
+        CHECK(script::run({"review", "--workspace", root, "--prompt", "add returns the sum", "--path", "calc.py"}, collect, &finding) == 2);  // a finding is exit 2
+        CHECK(events.size() == 1 && events[0]["data"]["findings"].size() == 1 && events[0]["data"]["findings"][0]["line"] == 2 && events[0]["data"]["dropped"] == 1);
+        events.clear();
+        ScriptedModel nothing;
+        nothing.replies = {say("[]")};
+        CHECK(script::run({"review", "--workspace", root, "--prompt", "x", "--path", "calc.py"}, collect, &nothing) == 0);
+        box.write("mason.workflows.json", R"J({"version": 1, "workflows": {"dev": {"executable": "sh", "arguments": ["-c", "exit 3"]}, "site": {"executable": "python3", "arguments": ["-m", "http.server", "18475", "--bind", "127.0.0.1"]}}})J");
+        events.clear();
+        CHECK(script::run({"serve", "--workspace", root, "--workflow", "dev", "--port", "18474"}, collect) == 1);
+        CHECK(events.size() == 1 && events[0]["data"]["message"].get<std::string>().find("ended before anything listened") != std::string::npos);
+        if (shell::run("command -v python3", Workspace(root), false, 10).exit_code == 0) {
+            box.write("index.html", "<!doctype html><title>Served Shop</title><h1>Shop</h1>");
+            events.clear();
+            CHECK(script::run({"serve", "--workspace", root, "--workflow", "site", "--port", "18475", "--page", "index.html"}, collect) == 0);
+            CHECK(events.size() == 3 && events[0]["type"] == "server.ready" && events[1]["data"]["title"] == "Served Shop");
+            CHECK(!preview::listening(18475));  // the server is stopped afterwards
+        }
+    }
+
+    // A bundle brings skills and documentation to every project.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        const fs::path source = box.base / "shop-kit", data = box.base / "data";
+        auto put = [](const fs::path& file, const std::string& text) {
+            fs::create_directories(file.parent_path());
+            write_file_atomic(file, text);
+        };
+        put(source / "bundle.json", R"({"name": "shop-kit", "version": "1.2.0", "description": "How the shop team works"})");
+        put(source / "skills/release/SKILL.md", "---\ndescription: How to release the shop\n---\nRun the release checklist.\n");
+        put(source / "docs/payments.md", "# Payments\nCards are charged at dispatch.\n\n## Refunds\nA refund is allowed within 30 days of delivery.\n\n## Fraud\nOrders over 500 are held.\n");
+        put(source / "run.sh", "echo not copied\n");
+        put(source / "mcp.json", R"([{"Name": "shop-docs", "Endpoint": "http://127.0.0.1:8088/mcp", "Tools": ["search_docs"]}])");
+        CHECK(bundles::command("", data).find("No bundles") != std::string::npos);
+        const std::string installed = bundles::command("install " + source.string(), data);
+        CHECK(installed.find("Installed shop-kit 1.2.0: 2 files") != std::string::npos && installed.find("names 1 MCP server (shop-docs)") != std::string::npos);
+        CHECK(mcp::enabled(data).empty());  // installing a bundle puts no server into use
+        CHECK(bundles::command("servers shop-kit", data).find("shop-docs  ·  http://127.0.0.1:8088/mcp  ·  tools: search_docs") != std::string::npos);
+        CHECK(bundles::command("servers shop-kit add", data).find("Added, switched off: shop-docs") != std::string::npos);
+        CHECK(mcp::all(data).size() == 1 && mcp::all(data)[0].name == "shop-docs" && mcp::enabled(data).empty());  // an added server waits to be switched on
+        CHECK(bundles::command("servers shop-kit add", data).find("already in your list") != std::string::npos);
+        CHECK(bundles::list(data).size() == 1 && bundles::list(data)[0].name == "shop-kit");
+        CHECK(!fs::exists(data / "bundles/shop-kit/run.sh"));  // only skills and docs are copied
+        const std::vector<Definition> known = skills::list(workspace, data);
+        CHECK(known.size() == 1 && known[0].name == "release");
+        Session session;
+        session.workspace = workspace.root();
+        auto offers = [&](const fs::path& home) {
+            for (const ToolSpec& tool : Agent::extra_tools(session, workspace, false, false, home)) {
+                if (tool.name == "read_documentation") return true;
+            }
+            return false;
+        };
+        CHECK(offers(data) && !offers(box.base / "empty"));  // with nothing to read, the tool is not offered
+        const std::string found = bundles::read("when is a refund allowed", data, workspace);
+        CHECK(found.rfind("[shop-kit 1.2.0/docs/payments.md:4]\n## Refunds\nA refund is allowed within 30 days", 0) == 0);
+        put(box.project / ".mason/docs/notes.md", "# Local notes\nRefunds over 100 need a manager.\n");
+        CHECK(bundles::read("refund manager", data, workspace).rfind("[.mason/docs/notes.md:1]", 0) == 0);  // the project's own docs are read too
+        CHECK(bundles::read("kubernetes", data, workspace).find("does not mention") != std::string::npos);
+        // A file that is really a link to somewhere else is not taken.
+        fs::create_symlink("/etc/hosts", source / "docs/secrets.md");
+        bool refused = false;
+        try { bundles::install(source.string(), data); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+        refused = false;
+        try { bundles::install(box.project.string(), data); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // a folder without bundle.json is not a bundle
+        bundles::command("remove shop-kit", data);
+        CHECK(bundles::list(data).empty());
+    }
+
+    // A model carries out a task on a page, one step at a time.
+    if (!browser::find().empty()) {
+        Sandbox box;
+        box.write("index.html", "<!doctype html><title>Shop</title><h1>Corner Shop</h1><p id=\"status\">Nothing in the cart.</p><input id=\"name\" placeholder=\"Name\"><button id=\"add\" onclick=\"document.getElementById('status').textContent = '1 tea in the cart for ' + document.getElementById('name').value + '.'\">Add tea</button>");
+        const Workspace workspace(box.project.string());
+        ScriptedModel model;
+        model.replies = {say(R"J({"action": "click", "selector": "#missing"})J"), say(R"J({"action": "fill", "selector": "#name", "value": "Ada"})J"),
+                         say("I will press it now: {\"action\": \"click\", \"selector\": \"#add\"}"), say(R"J({"action": "done", "answer": "The cart shows 1 tea for Ada."})J")};
+        const BrowseOutcome outcome = browse::run(workspace, "index.html", "Add a tea for Ada and say what the cart shows.", model);
+        CHECK(outcome.completed && outcome.answer == "The cart shows 1 tea for Ada.");
+        CHECK(outcome.steps.size() == 2);  // the step that did not work was taken back
+        CHECK(model.seen.size() == 4);
+        if (model.seen.size() == 4) {
+            CHECK(model.seen[0].back().content.find("Nothing in the cart.") != std::string::npos && model.seen[0].back().content.find("#add") != std::string::npos);  // the model is shown the page and its controls
+            CHECK(model.seen[1].back().content.find("did not work") != std::string::npos);  // a failed step is reported back
+            CHECK(model.seen[3].back().content.find("1 tea in the cart for Ada.") != std::string::npos);  // the model sees what its steps really led to
+        }
+        std::vector<json> events;
+        ScriptedModel refusing;
+        refusing.replies = {say(R"J({"action": "fail", "answer": "There is no checkout on this page."})J")};
+        CHECK(script::run({"browse", "--workspace", box.project.string(), "--prompt", "Is there a checkout?"}, [&](const std::string& line) { events.push_back(json::parse(line)); }, &refusing) == 2);
+        CHECK(events.size() == 1 && events[0]["data"]["answer"] == "There is no checkout on this page.");
+    }
+
+    // Chat attaches pictures and the text of documents.
+    {
+        Sandbox box;
+        const std::string png("\x89PNG\r\n\x1a\n\0\0\0\0", 12);
+        write_file_atomic(box.project / "shot.png", png);
+        const ChatAttachment picture = ChatAttachment::from_file(box.project / "shot.png");
+        CHECK(picture.image == "data:image/png;base64,iVBORw0KGgoAAAAA");
+        CHECK(ChatAttachment::word_text(R"(<w:document><w:body><w:p><w:r><w:t>Terms &amp; conditions</w:t></w:r></w:p><w:p><w:r><w:t xml:space="preserve">Net </w:t><w:tab/><w:t>30 days</w:t></w:r></w:p></w:body></w:document>)") == "Terms & conditions\nNet \t30 days\n");
+        write_file_atomic(box.project / "blob.bin", std::string("\0\1\2\3", 4));
+        bool refused = false;
+        try { ChatAttachment::from_file(box.project / "blob.bin"); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // a file that is neither text, a picture nor a document is refused
+        ChatStore chats(box.home);
+        ChatConversation conversation = chats.create();
+        ScriptedModel model;
+        model.replies = {say("A screenshot.")};
+        chat::send(conversation, "What is this?", {picture, ChatAttachment{"notes.txt", "hello", ""}}, model, chats, [](const std::string&) {}, nullptr);
+        const ChatMessage* sent = nullptr;
+        for (const ChatMessage& message : conversation.messages) {
+            if (message.role == "user") sent = &message;
+        }
+        CHECK(sent && sent->images.size() == 1 && sent->content.find("Attached picture: shot.png") != std::string::npos && sent->content.find("Attached file notes.txt") != std::string::npos);
+        CHECK(!model.seen.empty() && model.seen[0].back().images.size() == 1);  // the picture goes to the model with the message
+        ChatStore again(box.home);
+        bool kept = false;
+        for (const ChatConversation& saved : again.conversations()) {
+            for (const ChatMessage& message : saved.messages) kept = kept || message.images.size() == 1;
+        }
+        CHECK(kept);  // and is kept with the conversation
+    }
+
+    // A table in an answer becomes a grid and a chart.
+    {
+        const std::string answer = "Here are the sales.\n\n| Month | Units | Revenue | Note |\n|:--|--:|--:|---|\n| Jan | 1,200 | $3,400.50 | slow |\n| Feb | 950 | $2,100 | |\n| Mar | 1,410 | $4,020 | best |\n\nAnd in code:\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n";
+        const std::vector<TableData> found = tables::find(answer);
+        CHECK(found.size() == 1);  // a table inside a code block is left alone
+        if (found.size() == 1) {
+            CHECK(found[0].headers == (std::vector<std::string>{"Month", "Units", "Revenue", "Note"}) && found[0].rows.size() == 3);
+            CHECK(found[0].series.size() == 2 && found[0].series[0].name == "Units" && found[0].series[1].name == "Revenue");  // only columns that are all numbers are charted
+            if (found[0].series.size() == 2) CHECK(found[0].series[0].values == (std::vector<double>{1200, 950, 1410}) && found[0].series[1].values == (std::vector<double>{3400.5, 2100, 4020}));
+        }
+        CHECK(tables::number("-12.5%") == std::optional<double>(-12.5) && !tables::number("12 apples"));
+        CHECK(tables::find("| just | one row |\nno rule").empty());
+        const std::string prose = tables::prose(answer);
+        CHECK(prose.find("Here are the sales.") != std::string::npos && prose.find("| Jan |") == std::string::npos && prose.find("| a | b |") != std::string::npos);  // the table's own lines are left out, and code is kept
     }
 
     // A job runs in the background and stops when the request ends.
@@ -1983,7 +2540,9 @@ static void test_verification() {
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    // Inside the sandbox this program is started as the forwarder to Mason's network relay.
+    if (const auto forwarded = mason::network::maybe_forward(argc, argv)) return *forwarded;
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},

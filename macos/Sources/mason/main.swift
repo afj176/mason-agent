@@ -209,7 +209,7 @@ final class CLI {
         }
         let feed = RunFeed(), box = Box(session), started = Date()
         let firstActivity = session.activities.count, turnsBefore = session.turns.count
-        let agent = Agent(store: store, model: model, approve: { request in await withCheckedContinuation { feed.ask(request, $0) } }, emit: feed.push)
+        let agent = Agent(store: store, model: Roles.implementer(model, workspace: workspace), approve: { request in await withCheckedContinuation { feed.ask(request, $0) } }, emit: feed.push)
         let task = Task { var working = box.value; await agent.run(&working, request: input); box.value = working; feed.done = true }
         current.value = task
         Term.line()
@@ -499,6 +499,22 @@ final class CLI {
             } else {
                 for line in try Schedules.command(rest, home: home, workspace: workspace.root.path, endpoint: endpoint).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             }
+        case "/experiment", "/experiments":
+            for line in try await Experiments.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/bundle", "/bundles":
+            for line in try Bundles.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/policy":
+            for line in try Policies.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/network":
+            for line in try NetworkSettings.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/roles", "/role":
+            for line in try Roles.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/task", "/tasks":
+            for line in try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: session.permission == .auto && !session.askOnly, program: ScriptOperations.ownProgram).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/deliver":
+            let said = try await Delivery.command(rest, workspace: workspace)
+            for line in said.text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            if let request = said.request { await send(request) }
         case "/comment", "/comments":
             if rest.lowercased() == "send" {
                 if (session.comments ?? []).isEmpty { Term.line(Term.paint(Term.dim, "  No comments are waiting.")) } else { await send(" ") }
@@ -531,7 +547,7 @@ final class CLI {
         case "/review":
             guard let endpoint, let model = try? OpenAIClient(endpoint) else { throw MasonError("No model is running. /models lists the ones on this computer.") }
             let current = session, folder = workspace
-            let found = try await busy("Reviewing what this session changed") { _ in try await Review.findings(current, workspace: folder, model: model) }
+            let found = try await busy("Reviewing what this session changed") { _ in try await Review.findings(current, workspace: folder, model: Roles.reviewer(main: model, workspace: folder)) }
             session.comments = Array(((session.comments ?? []) + found.comments).prefix(Review.limit))
             if session.comments?.isEmpty == true { session.comments = nil }
             try store.save(session)
@@ -590,6 +606,13 @@ final class CLI {
             ("/commands", "List your custom slash commands"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"),
+            ("/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"),
+            ("/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"),
+            ("/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"),
+            ("/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"),
+            ("/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"),
+            ("/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"),
             ("/review", "Have the model read what this session changed and pin what it finds as comments"),
             ("/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"),
             ("/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"),

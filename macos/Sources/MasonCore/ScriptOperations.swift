@@ -59,17 +59,35 @@ extension RepositoryMap {
 /// one `{"type": ..., "data": ...}` object per line, and returns the exit code: 0 completed, 2 ran and did not
 /// complete, 1 error.
 public enum ScriptOperations {
-    public static let names: Set<String> = ["exec", "map", "symbol", "git-status"]
+    public static let names: Set<String> = ["exec", "map", "symbol", "git-status", "worktree", "review", "serve", "browse", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"]
+
+    /// The path of the running mason, which is what a background task's worker is started from.
+    public static var ownProgram: String { (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "mason")).resolvingSymlinksInPath().path }
 
     public static let usage = """
         mason exec --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto] [--profile PATH] [--resume SESSION_ID]
+                   [--visual-model ID [--visual-endpoint URL]] [--trace-dir FOLDER]
+        mason review --workspace PATH --endpoint URL --model ID --prompt TEXT --path FILE
+        mason browse --workspace PATH --endpoint URL --model ID --prompt TEXT [--page index.html]
+        mason serve --workspace PATH --workflow NAME --port PORT [--page PATH]
         mason map --workspace PATH --query NAME
         mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics
         mason git-status --workspace PATH
+        mason worktree --workspace PATH --destination NEW_PATH --branch NEW_BRANCH
+        mason task-start --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto]
+        mason task-list [--workspace PATH]
+        mason task-show --id TASK_ID
+        mason task-allow|task-deny --id TASK_ID --request APPROVAL_ID
+        mason task-cancel --id TASK_ID
           For scripts: one operation, printed as JSON Lines, then exit. 0 means it completed, 2 that it ran and did not, 1 an error.
           exec only reads unless you pass --auto, which lets it edit files and run commands in the sandbox. Nothing is ever asked:
           an approval it would need is reported and declined. --prompt-file PATH reads the request from a file.
           Each exec keeps its own journal, or the one in --profile.
+          review has the model read one file against what it was meant to do; it exits 2 when it finds something.
+          browse has the model carry out a task on a project page in a real browser, one step at a time; it exits 2 when the task was not done.
+          serve starts the workflow with your account, waits for the port, fetches the page, and stops the server.
+          A task runs in the background and keeps going after this command returns. Without --auto it waits for
+          task-allow before each edit and command; task-show prints the approval it is waiting on.
         """
 
     /// `model` replaces the endpoint in tests. `write` receives each line.
@@ -91,6 +109,34 @@ public enum ScriptOperations {
                 guard let value = values[name] else { throw MasonError("--\(name) is required.") }
                 return value
             }
+            if operation.hasPrefix("task-") {
+                let home = values["task-home"].map { URL(fileURLWithPath: $0) } ?? DataHome.url
+                switch operation {
+                case "task-run":
+                    BackgroundTasks.detach()
+                    return await BackgroundTasks.work(try get("id"), home: home, model: model)
+                case "task-start":
+                    let prompt = try values["prompt-file"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? get("prompt")
+                    let endpoint = ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model"))
+                    event("task.started", ["id": try BackgroundTasks.start(program: ownProgram, workspace: try Workspace(path: try get("workspace")), prompt: prompt, endpoint: endpoint, auto: auto, home: home)])
+                case "task-list":
+                    let found = BackgroundTasks.all(workspace: try values["workspace"].map { try Workspace(path: $0) }, home: home)
+                    event("tasks", ["tasks": found.map { ["id": $0.task.id, "workspace": $0.task.workspace, "prompt": $0.task.prompt, "state": $0.status.state, "detail": $0.status.detail] }])
+                case "task-show":
+                    let id = try get("id"), state = try BackgroundTasks.status(id, home: home)
+                    var data: [String: Any] = ["id": id, "state": state.state, "detail": state.detail, "session": state.session ?? "",
+                                               "events": try BackgroundTasks.tail(id, home: home).compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) }]
+                    if let approval = state.approval { data["approval"] = ["id": approval.id, "tool": approval.tool, "title": approval.title, "detail": approval.detail, "subject": approval.subject] }
+                    event("task", data)
+                case "task-allow", "task-deny":
+                    try BackgroundTasks.decide(try get("id"), request: try get("request"), allow: operation == "task-allow", home: home)
+                    event("task.decision", ["id": try get("id"), "request": try get("request"), "allowed": operation == "task-allow"])
+                default:
+                    try BackgroundTasks.cancel(try get("id"), home: home)
+                    event("task.cancel", ["id": try get("id")])
+                }
+                return 0
+            }
             let workspace = try Workspace(path: try get("workspace"))
             switch operation {
             case "map":
@@ -98,6 +144,51 @@ public enum ScriptOperations {
                 let result = try RepositoryMap.query(workspace, query)
                 event("map.result", ["query": query, "files": result.files, "partial": result.partial,
                                      "matches": result.matches.map { ["path": $0.path, "line": $0.line, "kind": $0.kind, "name": $0.name, "text": $0.text] as [String: Any] }])
+                return 0
+
+            case "review":
+                let prompt = try values["prompt-file"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? get("prompt")
+                let path = try get("path")
+                guard workspace.exists(path) else { throw MasonError("\(path) is not a file in the project.") }
+                let chosen: ChatModel
+                if let model { chosen = model } else { chosen = try OpenAIClient(ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model"))) }
+                // The review pass reads what a session changed; here that is the one file, against the stated intent.
+                var reading = Session(workspace: workspace.root.path)
+                var turn = Turn(request: prompt)
+                turn.changes = [FileChange(path: path, before: nil, after: try workspace.read(path))]
+                reading.turns = [turn]
+                let found = try await Review.findings(reading, workspace: workspace, model: Roles.reviewer(main: chosen, workspace: workspace))
+                event("review.result", ["path": path, "dropped": found.dropped, "findings": found.comments.map { ["line": $0.line, "quote": $0.quote, "problem": $0.note] as [String: Any] }])
+                return found.comments.isEmpty ? 0 : 2
+
+            case "browse":
+                let prompt = try values["prompt-file"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? get("prompt")
+                let chosen: ChatModel
+                if let model { chosen = model } else { chosen = try OpenAIClient(ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model"))) }
+                let outcome = try await Browse.run(workspace, page: values["page"] ?? "index.html", task: prompt, model: chosen)
+                event("browser.result", ["completed": outcome.completed, "answer": outcome.answer, "steps": outcome.steps, "errors": outcome.errors, "turns": outcome.turns])
+                return outcome.completed ? 0 : 2
+
+            case "serve":
+                let name = try get("workflow")
+                guard let port = Int(try get("port")) else { throw MasonError("--port is a number.") }
+                let server = try await SitePreview.DevServer(workspace: workspace, workflow: name, port: port)
+                event("server.ready", ["workflow": name, "port": port, "address": server.address])
+                let address = server.address + (values["page"] ?? "")
+                var page: [String: Any] = ["address": address]
+                if let url = URL(string: address), let body = try? String(contentsOf: url, encoding: .utf8) {
+                    page["bytes"] = body.utf8.count
+                    page["title"] = Rx.first("<title[^>]*>([^<]*)</title>", in: body, options: [.caseInsensitive])?[1].trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                } else {
+                    page["error"] = "The server listened, but the page could not be fetched."
+                }
+                event("page.result", page)
+                event("server.output", ["output": await server.output()])
+                await server.stop()
+                return page["error"] == nil ? 0 : 2
+
+            case "worktree":
+                event("worktree.created", ["path": try await Experiments.createWorktree(workspace, destination: try get("destination"), branch: try get("branch"))])
                 return 0
 
             case "git-status":
@@ -150,7 +241,14 @@ public enum ScriptOperations {
                 }
                 session.askOnly = !auto
                 event("run.started", ["id": session.id.uuidString, "workspace": workspace.root.path, "profile": profile.path, "model": values["model"] ?? "", "mode": auto ? "build" : "ask"])
-                let agent = Agent(store: store, model: chosen, approve: { request in
+                var working = Roles.implementer(chosen, workspace: workspace)
+                if let folder = values["trace-dir"] {
+                    let place = URL(fileURLWithPath: folder).standardizedFileURL
+                    try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+                    guard !(realPath(place.path) + "/").hasPrefix(realPath(workspace.root.path) + "/") else { throw MasonError("Keep decision traces outside the project.") }
+                    working = RoleModel(chosen, role: "implementer", trace: place)
+                }
+                let agent = Agent(store: store, model: working, approve: { request in
                     event("approval.required", ["tool": request.tool, "title": request.title, "subject": request.subject])
                     return false
                 }, emit: { change in
@@ -158,6 +256,9 @@ public enum ScriptOperations {
                         event("tool.result", ["tool": activity.tool, "subject": activity.subject, "state": "\(activity.state)", "result": activity.result])
                     }
                 })
+                if let visual = values["visual-model"] {
+                    agent.vision = ModelVision(ModelEndpoint(url: try ModelEndpoint.validated(try values["visual-endpoint"] ?? get("endpoint")).absoluteString, model: visual))
+                }
                 await agent.run(&session, request: prompt)
                 event("run.finished", ["id": session.id.uuidString, "state": session.state, "detail": session.detail, "answer": session.turns.last?.answer ?? ""])
                 return session.state == "Completed" ? 0 : 2

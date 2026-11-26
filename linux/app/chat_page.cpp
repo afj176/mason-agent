@@ -236,7 +236,9 @@ void ChatPage::refresh() {
                     transcript_.append(*message_body(*wrapped(shown(message.content))));
                 } else if (message.role == "assistant") {
                     transcript_.append(*speaker(true));
-                    transcript_.append(*message_body(*answer_view(message.content)));
+                    transcript_.append(*message_body(*answer_view(tables::prose(message.content))));
+                    // A table in the answer is laid out as a grid, with a chart of each numeric column.
+                    for (const TableData& table : tables::find(message.content)) transcript_.append(*message_body(*table_card(table)));
                 }
             }
         }

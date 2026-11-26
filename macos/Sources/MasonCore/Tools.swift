@@ -3,7 +3,13 @@ import Foundation
 /// Named commands a project defines in `mason.workflows.json`, such as its tests or its linter:
 /// `{"version": 1, "workflows": {"test": {"executable": "python3", "arguments": ["-m", "unittest"], "directory": "."}}}`
 public struct ProjectWorkflows {
-    public struct Workflow: Equatable { public let executable: String; public let arguments: [String]; public let directory: String }
+    public struct Workflow: Equatable {
+        public let executable: String
+        public let arguments: [String]
+        public let directory: String
+        /// When the workflow runs by itself as a hook: afterEdit, beforeVerify. (afterPlan is accepted and not used here.)
+        public var events: [String] = []
+    }
     public let workflows: [String: Workflow]
 
     public static func load(_ workspace: Workspace) throws -> ProjectWorkflows {
@@ -21,7 +27,10 @@ public struct ProjectWorkflows {
             }
             let directory = item["directory"] as? String ?? "."
             if directory != "." { _ = try workspace.resolve(directory) }
-            found[name] = Workflow(executable: executable, arguments: arguments, directory: directory)
+            var events = item["events"] as? [String] ?? []
+            if item["beforeVerify"] as? Bool == true, !events.contains("beforeVerify") { events.append("beforeVerify") }
+            guard events.allSatisfy({ ["afterPlan", "afterEdit", "beforeVerify"].contains($0) }) else { throw MasonError("The workflow \(name) names an event other than afterEdit or beforeVerify.") }
+            found[name] = Workflow(executable: executable, arguments: arguments, directory: directory, events: events)
         }
         return ProjectWorkflows(workflows: found)
     }
@@ -41,7 +50,8 @@ public struct ProjectWorkflows {
 public enum Skills {
     static let folders = [".mason/skills", ".claude/skills", ".agents/skills"]
 
-    public static func list(_ workspace: Workspace) -> [Definition] {
+    /// The project's skills, then those of installed bundles. A project skill wins over a bundle's of the same name.
+    public static func list(_ workspace: Workspace, home: URL = DataHome.url) -> [Definition] {
         var found: [String: Definition] = [:]
         for folder in folders {
             let root = workspace.root.appendingPathComponent(folder)
@@ -53,6 +63,7 @@ public enum Skills {
                 found[name.lowercased()] = Customization.parse(name: name, text: text, source: relative)
             }
         }
+        for skill in Bundles.skills(home: home) where found[skill.name.lowercased()] == nil { found[skill.name.lowercased()] = skill }
         return found.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
 }
@@ -218,7 +229,7 @@ final class Jobs: @unchecked Sendable {
 
 extension Agent {
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
-    static func extraTools(session: Session, workspace: Workspace, semantic: Bool = false) -> [ToolSpec] {
+    static func extraTools(session: Session, workspace: Workspace, semantic: Bool = false, presents: Bool = false, home: URL = DataHome.url) -> [ToolSpec] {
         func schema(_ properties: [String: Any], required: [String]) -> [String: Any] {
             ["type": "object", "properties": properties, "required": required, "additionalProperties": false]
         }
@@ -239,6 +250,12 @@ extension Agent {
         if SymbolService.available || LanguageServers.available {
             tools.append(ToolSpec(name: "inspect_symbol", description: "Ask a language service about one position in a source file: where the name there is defined, where it is used, or the file's diagnostics. It answers for Python, JavaScript and TypeScript, and for C#, Swift, C, C++, Go and Rust when that language's server is installed. line and column are 1-based.",
                                   parameters: schema(["path": text, "line": ["type": "integer", "minimum": 1], "column": ["type": "integer", "minimum": 1], "mode": ["type": "string", "enum": ["definitions", "references", "diagnostics"]]], required: ["path", "line", "column", "mode"])))
+        }
+        if presents {
+            tools.append(ToolSpec(name: "open_file", description: "Show the user one of the project's files in the app's file viewer, at a line. Use it to point at the code you are talking about. It does not read the file for you.",
+                                  parameters: schema(["path": text, "line": ["type": "integer", "minimum": 1]], required: ["path", "line"])))
+            tools.append(ToolSpec(name: "open_preview", description: "Show the user one of the project's HTML pages in the app's Website tab, so they can look at it and pick elements to tell you about.",
+                                  parameters: schema(["path": text], required: ["path"])))
         }
         let readOnly = session.askOnly || session.permission == .readOnly
         if !readOnly {
@@ -275,7 +292,10 @@ extension Agent {
             tools.append(ToolSpec(name: "verify_acceptance", description: "Run the project's acceptance scenarios from mason.acceptance.json in a real browser, at a phone width and a desktop width, and report which requirements hold. Run it after changing a page the scenarios cover.",
                                   parameters: schema([:], required: [])))
         }
-        if !Skills.list(workspace).isEmpty {
+        if Bundles.hasDocuments(home: home, workspace: workspace) {
+            tools.append(ToolSpec(name: "read_documentation", description: "Look something up in the documentation that comes with this project (.mason/docs) and with the bundles the user installed. Give a few words; it returns the sections that mention them, each with where it came from, so you can cite it.", parameters: schema(["query": text], required: ["query"])))
+        }
+        if !Skills.list(workspace, home: home).isEmpty {
             tools.append(ToolSpec(name: "read_skill", description: "Read the project's instructions for one kind of work, by skill name.", parameters: schema(["name": text], required: ["name"])))
         }
         return tools
@@ -303,6 +323,18 @@ extension Agent {
                 return (.completed, RepositoryMap.report(try RepositoryMap.query(workspace, query, under: text("path") ?? "."), query: query))
             }
             return (.completed, try RepositoryMap.outline(workspace, under: text("path") ?? "."))
+
+        case "open_file", "open_preview":
+            guard let present else { throw MasonError("Nothing here can show that to the user.") }
+            guard let path = text("path"), workspace.exists(path) else { throw MasonError("\(text("path") ?? "That") is not a file in the project.") }
+            if call.name == "open_preview" {
+                guard ["html", "htm"].contains((path as NSString).pathExtension.lowercased()) else { throw MasonError("open_preview shows an HTML page of the project.") }
+                present("page", path, 1)
+                return (.completed, "Showing \(path) to the user in the Website tab.")
+            }
+            let line = max(1, number("line") ?? 1)
+            present("file", path, line)
+            return (.completed, "Showing \(path) at line \(line) to the user.")
 
         case "ask_user":
             guard let question = text("question")?.trimmingCharacters(in: .whitespacesAndNewlines), !question.isEmpty, question.count <= 2000 else { throw MasonError("ask_user needs a question of up to 2,000 characters.") }
@@ -449,10 +481,11 @@ extension Agent {
             emit(.status(call.name == "run_command" ? "Running the command" : "Running the workflow"))
             let before = Snapshot.capture(workspace, previous: snapshot)
             let result: CommandResult
-            do { result = try await Shell.run(command, in: workspace, sandboxed: sandboxed) }
+            let through = sandboxed ? relay(session) : nil, heard = through?.receipts.count ?? 0
+            do { result = try await Shell.run(command, in: workspace, sandboxed: sandboxed, network: through) }
             catch { _ = recordCommandChanges(since: before.entries, in: workspace, session: &session); throw error }
             let changed = recordCommandChanges(since: before.entries, in: workspace, session: &session)
-            let output = "exit \(result.exitCode)\n" + result.output + (changed.isEmpty ? "" : "\n[Files changed by this \(call.name == "run_command" ? "command" : "workflow"): " + changed.prefix(12).joined(separator: ", ") + "]")
+            let output = "exit \(result.exitCode)\n" + result.output + networkNote(since: heard) + (changed.isEmpty ? "" : "\n[Files changed by this \(call.name == "run_command" ? "command" : "workflow"): " + changed.prefix(12).joined(separator: ", ") + "]")
             return (result.exitCode == 0 && !result.timedOut ? .completed : .failed, output)
 
         case "poll_job", "stop_job", "terminal_status", "terminal_stop":
@@ -465,8 +498,11 @@ extension Agent {
             let eof = (arguments["eof"] as? Bool) ?? ((arguments["eof"] as? String) == "true")
             return (.completed, try jobs.send(id, text: text("text") ?? "", eof: eof))
 
+        case "read_documentation":
+            return (.completed, Bundles.read(text("query") ?? "", home: home, workspace: workspace))
+
         case "read_skill":
-            let skills = Skills.list(workspace)
+            let skills = Skills.list(workspace, home: home)
             guard let name = text("name"), let skill = skills.first(where: { $0.name.lowercased() == name.lowercased() }) else {
                 throw MasonError("No skill named \(text("name") ?? ""). Skills: " + skills.map(\.name).joined(separator: ", "))
             }

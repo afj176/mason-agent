@@ -356,6 +356,11 @@ ModelReply OpenAIClient::complete(const std::vector<ChatMessage>& messages, cons
     json wire = json::array();
     for (const ChatMessage& message : messages) {
         json item = {{"role", message.role}, {"content", message.content}};
+        if (!message.images.empty()) {
+            // Text and pictures travel as parts of one message.
+            item["content"] = json::array({{{"type", "text"}, {"text", message.content}}});
+            for (const std::string& image : message.images) item["content"].push_back({{"type", "image_url"}, {"image_url", {{"url", image}}}});
+        }
         if (!message.tool_calls.empty()) {
             item["tool_calls"] = json::array();
             for (const ToolCall& call : message.tool_calls) {

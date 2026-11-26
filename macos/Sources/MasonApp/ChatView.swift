@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 import MasonCore
 
 /// The chats in the sidebar while the Chat pane is showing.
@@ -48,7 +49,11 @@ struct ChatView: View {
                                     Text(ChatView.shown(message.content)).textSelection(.enabled).messageBody()
                                 } else if message.role == "assistant" {
                                     Speaker(mason: true)
-                                    MarkdownText(text: message.content).textSelection(.enabled).messageBody()
+                                    MarkdownText(text: Tables.prose(message.content)).textSelection(.enabled).messageBody()
+                                    // A table in the answer is laid out as a grid, with a chart of each numeric column.
+                                    ForEach(Array(Tables.find(in: message.content).enumerated()), id: \.offset) { _, table in
+                                        TableCard(table: table).messageBody()
+                                    }
                                 }
                             }
                             if model.chatRunning {
@@ -154,5 +159,50 @@ struct ChatView: View {
             try? await Task.sleep(nanoseconds: 200_000_000)
             focused = true
         }
+    }
+}
+
+/// A table from an answer: its cells in a grid, and its numeric columns as bars against the first column.
+struct TableCard: View {
+    let table: TableData
+
+    struct Point: Identifiable {
+        let id: Int
+        let label: String
+        let series: String
+        let value: Double
+    }
+
+    var points: [Point] {
+        var made: [Point] = []
+        for series in table.series {
+            for (index, value) in series.values.enumerated() { made.append(Point(id: made.count, label: table.labels[index], series: series.name, value: value)) }
+        }
+        return made
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView(.horizontal) {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                    GridRow { ForEach(Array(table.headers.enumerated()), id: \.offset) { _, header in Text(header).font(.callout.weight(.semibold)) } }
+                    Divider()
+                    ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                        GridRow { ForEach(Array(row.enumerated()), id: \.offset) { _, cell in Text(cell).font(.callout).textSelection(.enabled) } }
+                    }
+                }
+            }
+            // Each numeric column has its own chart, so columns on different scales can both be read.
+            ForEach(Array(table.series.enumerated()), id: \.offset) { _, series in
+                Text(series.name).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Chart(points.filter { $0.series == series.name }) { point in
+                    BarMark(x: .value(table.headers.first ?? "", point.label), y: .value(series.name, point.value))
+                }
+                .frame(height: 150)
+                .accessibilityLabel("Chart of " + series.name)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
     }
 }

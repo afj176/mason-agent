@@ -17,6 +17,11 @@
 #include "planning.hpp"
 #include "schedules.hpp"
 #include "script.hpp"
+#include "experiments.hpp"
+#include "delivery.hpp"
+#include "background.hpp"
+#include "roles.hpp"
+#include "bundles.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
 
@@ -222,7 +227,9 @@ private:
         const CancelToken cancel = make_cancel();
         const size_t first_activity = session_.activities.size(), turns_before = session_.turns.size();
         const auto started = std::chrono::steady_clock::now();
-        Agent agent(store_, model, [&](const ApprovalRequest& request) { return feed.ask(request); }, [&](const AgentEvent& event) { feed.push(event); });
+        // With tracing on, every call to the model is written down.
+        const std::unique_ptr<RoleModel> traced = roles::implementer(model, &workspace_, store_.home());
+        Agent agent(store_, traced ? static_cast<ChatModel&>(*traced) : model, [&](const ApprovalRequest& request) { return feed.ask(request); }, [&](const AgentEvent& event) { feed.push(event); });
         std::thread worker([&] {
             agent.run(session_, input, cancel);
             std::lock_guard<std::mutex> guard(feed.lock);
@@ -532,6 +539,37 @@ private:
             }
             return true;
         }
+        if (name == "/experiment" || name == "/experiments") {
+            for (const std::string& line : split(experiments::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/bundle" || name == "/bundles") {
+            for (const std::string& line : split(bundles::command(rest, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/policy") {
+            for (const std::string& line : split(policies::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/network") {
+            for (const std::string& line : split(network_settings::command(rest, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/roles" || name == "/role") {
+            for (const std::string& line : split(roles::command(rest, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/task" || name == "/tasks") {
+            const std::string said = background::command(rest, workspace_, endpoint, session_.permission == Permission::Auto && !session_.ask_only, background::own_program(), store_.home());
+            for (const std::string& line : split(said, '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/deliver") {
+            const delivery::Said said = delivery::command(rest, workspace_, store_.home());
+            for (const std::string& line : split(said.text, '\n')) term::line("  " + line);
+            if (!said.request.empty()) send(said.request);
+            return true;
+        }
         if (name == "/comment" || name == "/comments") {
             if (to_lower(rest) == "send") {
                 if (session_.comments.empty()) term::line(paint(term::dim, "  No comments are waiting."));
@@ -561,7 +599,8 @@ private:
         if (name == "/review") {
             if (!endpoint) throw Error("No model is running. /models lists the ones on this computer.");
             OpenAIClient model(*endpoint);
-            const ReviewFindings found = busy<ReviewFindings>("Reviewing what this session changed", [&](const auto&, const CancelToken& cancel) { return review::findings(session_, workspace_, model, cancel); });
+            const std::unique_ptr<RoleModel> reviewer = roles::reviewer(model, &workspace_, store_.home());
+            const ReviewFindings found = busy<ReviewFindings>("Reviewing what this session changed", [&](const auto&, const CancelToken& cancel) { return review::findings(session_, workspace_, *reviewer, cancel); });
             for (const ReviewComment& item : found.comments) {
                 if (session_.comments.size() < review::kLimit) session_.comments.push_back(item);
             }
@@ -631,6 +670,13 @@ private:
             {"/commands", "List your custom slash commands"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"},
+            {"/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"},
+            {"/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"},
+            {"/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"},
+            {"/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"},
+            {"/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"},
+            {"/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"},
             {"/review", "Have the model read what this session changed and pin what it finds as comments"},
             {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},
             {"/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"},
@@ -1191,6 +1237,8 @@ const char* const kUsage =
 }  // namespace
 
 int main(int argc, char** argv) {
+    // Inside the sandbox this program is started as the forwarder to Mason's network relay.
+    if (const auto forwarded = network::maybe_forward(argc, argv)) return *forwarded;
     std::vector<std::string> arguments(argv + 1, argv + argc);
     if (!arguments.empty() && arguments[0] == "chat") arguments.erase(arguments.begin());
     // A script operation prints JSON Lines and exits; everything else opens the interactive session.
