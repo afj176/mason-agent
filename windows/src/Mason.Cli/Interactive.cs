@@ -146,7 +146,7 @@ internal sealed partial class Interactive
         var text = new StringBuilder();
         while (true)
         {
-            Term.Line();
+            Term.Line(text.Length == 0 ? ModelStatusLine() ?? "" : "");
             Term.Write(text.Length == 0 ? Term.Paint(Term.Dim, ModeName().Split(" · ")[^1] + " ") + Term.Paint(Term.Accent + Term.Bold, "› ") : Term.Paint(Term.Dim, "  … "));
             var line = Console.ReadLine();
             if (line == null)

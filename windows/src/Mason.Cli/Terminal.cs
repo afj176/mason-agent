@@ -10,6 +10,8 @@ internal static class Term
     static readonly object Gate = new();
     static string status = "";
     public static bool Styled { get; private set; }
+    /// <summary>The console understands escape sequences (cursor movement), whether or not NO_COLOR turned colour off.</summary>
+    public static bool Ansi { get; private set; }
     public static bool Interactive => !Console.IsInputRedirected && !Console.IsOutputRedirected;
     public static int Width { get { try { return Math.Clamp(Console.WindowWidth, 40, 200); } catch (IOException) { return 100; } } }
 
@@ -17,13 +19,14 @@ internal static class Term
     {
         Console.OutputEncoding = new UTF8Encoding(false);
         if (!Console.IsInputRedirected) Console.InputEncoding = Encoding.UTF8;
-        Styled = !Console.IsOutputRedirected && Environment.GetEnvironmentVariable("NO_COLOR") is null or "";
-        if (Styled && OperatingSystem.IsWindows())
+        Ansi = !Console.IsOutputRedirected;
+        if (Ansi && OperatingSystem.IsWindows())
         {
             // Older console hosts only interpret escape sequences after this mode is set.
             var handle = GetStdHandle(-11);
-            Styled = GetConsoleMode(handle, out var mode) && (((mode & 4) != 0) || SetConsoleMode(handle, mode | 4));
+            Ansi = GetConsoleMode(handle, out var mode) && (((mode & 4) != 0) || SetConsoleMode(handle, mode | 4));
         }
+        Styled = Ansi && Environment.GetEnvironmentVariable("NO_COLOR") is null or "";
     }
 
     public const string Reset = "\x1b[0m", Bold = "\x1b[1m", Dim = "\x1b[2m", Italic = "\x1b[3m";
@@ -48,7 +51,7 @@ internal static class Term
     /// <summary>Replaces the transient status line. An empty value removes it. Ignored when output is not a terminal.</summary>
     public static void Status(string text)
     {
-        if (!Styled) return;
+        if (!Ansi) return;
         lock (Gate)
         {
             text = Clip(text.ReplaceLineEndings(" "), Width - 1);
@@ -56,8 +59,25 @@ internal static class Term
             Erase(); status = text; Draw();
         }
     }
+    /// <summary>Draws a block of lines, replacing the block of <paramref name="previous"/> lines drawn just above. Returns its height. Needs <see cref="Ansi"/>.</summary>
+    public static int Block(IReadOnlyList<string> lines, int previous)
+    {
+        lock (Gate)
+        {
+            Erase();
+            var output = Console.Out;
+            if (previous > 0) output.Write($"\x1b[{previous}A");
+            foreach (var line in lines) { output.Write("\r\x1b[2K"); output.WriteLine(line); }
+            for (int i = lines.Count; i < previous; i++) output.Write("\r\x1b[2K\n");
+            if (previous > lines.Count) output.Write($"\x1b[{previous - lines.Count}A");
+            output.Flush();
+            Draw();
+            return lines.Count;
+        }
+    }
+    public const string Selected = "\x1b[48;2;195;194;255m\x1b[38;2;23;26;43m\x1b[1m";
     static void Erase() { if (status.Length > 0) Console.Out.Write("\r\x1b[2K"); }
-    static void Draw() { if (status.Length > 0) { Console.Out.Write(Dim + status + Reset); Console.Out.Flush(); } }
+    static void Draw() { if (status.Length > 0) { Console.Out.Write(Styled ? Dim + status + Reset : status); Console.Out.Flush(); } }
 
     /// <summary>Clips to a display width, counting each UTF-16 unit as one column (sufficient for status and summaries).</summary>
     public static string Clip(string text, int width) => width < 2 || text.Length <= width ? text : text[..(width - 1)] + "…";
