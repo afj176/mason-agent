@@ -414,7 +414,7 @@ struct NotesSection: View {
     func run(_ rest: String) { model.runControl("/notes", rest, then: load) }
     func remove(_ note: ProjectNote) {
         guard let session = model.session else { return }
-        do { try ProjectNotes.remove(note.id, workspace: session.workspace, home: home) } catch { model.notice = describe(error) }
+        do { try ProjectNotes.remove(note.id, workspace: session.workspace, home: home) } catch { model.notice = model.describe(error) }
         load()
     }
 }
