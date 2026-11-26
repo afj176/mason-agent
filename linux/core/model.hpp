@@ -75,6 +75,8 @@ public:
     explicit OpenAIClient(ModelEndpoint endpoint);
     std::string name() const override { return endpoint_.model; }
     const ModelEndpoint& endpoint() const { return endpoint_; }
+    /// Extra fields for the request body, set by a caller that wants an output limit or a reasoning level.
+    void set_extra_body(json fields) { extra_body_ = std::move(fields); }
     ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>& tools,
                         const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override;
     /// llama.cpp reports the loaded context size at /props. Other servers do not, and then compaction stays manual.
@@ -84,6 +86,7 @@ public:
 private:
     ModelEndpoint endpoint_;
     std::string base_;
+    json extra_body_ = json::object();
 };
 
 /// Some local models write a tool call as text (fenced JSON, or inside <tool_call> tags) instead of using the server's

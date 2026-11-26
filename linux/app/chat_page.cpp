@@ -91,7 +91,7 @@ ChatPage::ChatPage(Controller& controller) : Gtk::Box(Gtk::Orientation::HORIZONT
     draft_scroll->set_max_content_height(150);
     draft_scroll->set_propagate_natural_height(true);
 
-    attach_.set_tooltip_text("Attach text files to this message (up to 5, 256 KiB each)");
+    attach_.set_tooltip_text("Attach text files, pictures, PDFs or Word documents to this message (up to 5)");
     attach_.signal_clicked().connect([this] { choose_files(); });
     send_.set_label("");
     send_.set_icon_name("go-up-symbolic");
@@ -113,6 +113,47 @@ ChatPage::ChatPage(Controller& controller) : Gtk::Box(Gtk::Orientation::HORIZONT
     model_label_.set_xalign(0);
     auto* buttons = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
     buttons->append(attach_);
+    // Options for this chat: how much the model thinks, how long an answer may be, and a reference it always has.
+    options_.set_label("Options");
+    options_.add_css_class("chip");
+    options_.set_tooltip_text("This chat's reasoning level, answer length and pinned reference");
+    auto* panel = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+    panel->set_margin(12);
+    panel->set_size_request(380, -1);
+    auto* reasoning_label = Gtk::make_managed<Gtk::Label>("Reasoning");
+    reasoning_label->set_xalign(0);
+    options_reasoning_.set_model(Gtk::StringList::create({"Server's default", "Off", "Low", "Medium", "High"}));
+    gtk_accessible_update_property(GTK_ACCESSIBLE(options_reasoning_.gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Reasoning", -1);
+    auto* limit_label = Gtk::make_managed<Gtk::Label>("Most tokens in one answer");
+    limit_label->set_xalign(0);
+    options_limit_.set_placeholder_text("Left to the server");
+    auto* reference_label = Gtk::make_managed<Gtk::Label>("Reference: text the model is given with every message");
+    reference_label->set_xalign(0);
+    reference_label->set_wrap(true);
+    options_reference_.set_wrap_mode(Gtk::WrapMode::WORD_CHAR);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(options_reference_.gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Reference", -1);
+    auto* reference_scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
+    reference_scroll->set_min_content_height(140);
+    reference_scroll->add_css_class("card");
+    reference_scroll->set_child(options_reference_);
+    auto* apply = Gtk::make_managed<Gtk::Button>("Apply");
+    apply->add_css_class("suggested-action");
+    apply->set_halign(Gtk::Align::END);
+    apply->signal_clicked().connect([this] {
+        static const char* levels[] = {"default", "off", "low", "medium", "high"};
+        const std::string digits = trim(options_limit_.get_text());
+        if (!digits.empty() && (digits.size() > 7 || digits.find_first_not_of("0123456789") != std::string::npos)) {
+            controller_.notice.emit("An answer's limit is a number of tokens, or empty.");
+            return;
+        }
+        options_popover_.popdown();
+        options_shown_.clear();
+        controller_.configure_chat(levels[std::min<guint>(4, options_reasoning_.get_selected())], digits.empty() ? 0 : std::stoi(digits), options_reference_.get_buffer()->get_text());
+    });
+    for (Gtk::Widget* widget : std::vector<Gtk::Widget*>{reasoning_label, &options_reasoning_, limit_label, &options_limit_, reference_label, reference_scroll, apply}) panel->append(*widget);
+    options_popover_.set_child(*panel);
+    options_.set_popover(options_popover_);
+    buttons->append(options_);
     buttons->append(model_label_);
     buttons->append(stop_);
     buttons->append(send_);
@@ -156,6 +197,20 @@ void ChatPage::refresh_buttons() {
     stop_.set_visible(running);
     send_.set_sensitive(has_chat && (!trim(draft_.get_buffer()->get_text()).empty() || !controller_.chat_attachments.empty()));
     attach_.set_sensitive(has_chat && !running && controller_.chat_attachments.size() < ChatAttachment::kMaxPerMessage);
+    options_.set_sensitive(has_chat && !running);
+    if (const ChatConversation* current = controller_.chat()) {
+        // The popover shows the selected chat's own settings; it is filled when the chat or its settings change, not while typing.
+        const std::string print = current->id + "|" + current->reasoning + "|" + std::to_string(current->max_tokens) + "|" + std::to_string(current->reference.size());
+        if (print != options_shown_) {
+            options_shown_ = print;
+            const std::string& level = current->reasoning;
+            options_reasoning_.set_selected(level == "off" ? 1 : level == "low" ? 2 : level == "medium" ? 3 : level == "high" ? 4 : 0);
+            options_limit_.set_text(current->max_tokens > 0 ? std::to_string(current->max_tokens) : "");
+            options_reference_.get_buffer()->set_text(current->reference);
+            const bool set = !level.empty() || current->max_tokens > 0 || !current->reference.empty();
+            options_.set_label(set ? "Options •" : "Options");
+        }
+    }
     draft_.set_sensitive(has_chat);
     model_label_.set_text(controller_.endpoint ? controller_.endpoint_name : "No model is running");
 }

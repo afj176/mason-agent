@@ -1612,6 +1612,30 @@ static void test_extra_tools() {
         CHECK(json::parse(preview::kLoopbackOnly, nullptr, false).is_array());
     }
 
+    // A chat carries its reasoning level, output limit and pinned reference.
+    {
+        Sandbox box;
+        ChatStore chats(box.home);
+        ChatConversation conversation = chats.create();
+        CHECK(chat::extra_body(conversation).empty());  // nothing is added unless the user asked for it
+        chat::configure(conversation, "low", 900, "Refunds are allowed within 30 days.");
+        const json body = chat::extra_body(conversation);
+        CHECK(body["max_tokens"] == 900 && body["thinking_budget_tokens"] == 512 && body["chat_template_kwargs"]["enable_thinking"] == true);
+        ScriptedModel model;
+        model.replies = {say("Within 30 days."), say("Still 30 days.")};
+        chat::send(conversation, "When can I get a refund?", {}, model, chats, [](const std::string&) {}, nullptr);
+        CHECK(model.seen[0].front().content.find("Refunds are allowed within 30 days.") != std::string::npos);  // the reference goes with the message
+        chat::configure(conversation, "off", 0, "");
+        CHECK(chat::extra_body(conversation)["reasoning_effort"] == "none" && !chat::extra_body(conversation).contains("max_tokens"));
+        chat::send(conversation, "And now?", {}, model, chats, [](const std::string&) {}, nullptr);
+        CHECK(model.seen[1].front().content.find("Refunds are allowed") == std::string::npos);  // a removed reference is no longer sent
+        bool refused = false;
+        try { chat::configure(conversation, "extreme", 0, ""); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+        ChatStore again(box.home);
+        CHECK(!again.conversations().empty() && again.conversations()[0].reasoning == "off");  // the choice is kept with the conversation
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;

@@ -13,6 +13,9 @@ struct ChatConversation {
     std::string updated = now_iso();
     std::vector<ChatMessage> messages;
     std::string model;                  ///< The model that answered last, for display.
+    std::string reasoning;              ///< off, low, medium or high; empty leaves it to the server.
+    int max_tokens = 0;                 ///< The most tokens one answer may take; 0 leaves it to the server.
+    std::string reference;              ///< Text the user pinned; the model is given it with every message.
     int prompt_tokens = 0;
     std::vector<ChatMessage> archived;  ///< Messages a compaction replaced with a summary, oldest first.
     int compactions = 0;
@@ -70,6 +73,12 @@ std::string prose(const std::string& text);
 
 namespace chat {
 
+constexpr size_t kMaxReference = 100000;
+/// The request fields for a conversation's output limit and reasoning level. The reasoning fields are the ones
+/// llama.cpp reads; another server may ignore them.
+json extra_body(const ChatConversation& conversation);
+/// Sets a conversation's reasoning level ("default" clears it), output limit (0 clears it) and pinned reference.
+void configure(ChatConversation& conversation, const std::string& reasoning, int max_tokens, const std::string& reference);
 /// The text sent for one message: what was typed, followed by each attached file in a fenced block.
 std::string compose(const std::string& text, const std::vector<ChatAttachment>& attachments);
 /// Sends one message and appends the answer. The conversation is saved before the model is asked and again after,

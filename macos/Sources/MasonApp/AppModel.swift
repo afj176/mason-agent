@@ -168,6 +168,16 @@ final class AppModel: ObservableObject {
         if chatSelection == chat.id { chatSelection = chats.first?.id }
     }
 
+    /// Sets the selected chat's reasoning level ("default" for the server's own), output limit (0 for none) and pinned reference.
+    func configureChat(reasoning: String, maxTokens: Int, reference: String) {
+        guard var current = chat, let chatStore, !chatRunning else { return }
+        do {
+            try Chat.configure(&current, reasoning: reasoning, maxTokens: maxTokens, reference: reference)
+            try chatStore.save(current)
+            chats = chatStore.conversations
+        } catch { notice = describe(error) }
+    }
+
     func attachToChat() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true

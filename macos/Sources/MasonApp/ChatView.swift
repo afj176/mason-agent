@@ -130,7 +130,8 @@ struct ChatView: View {
             HStack {
                 Button { model.attachToChat() } label: { Label("Attach", systemImage: "paperclip") }
                     .disabled(model.chatRunning || model.chatAttachments.count >= ChatAttachment.maxPerMessage)
-                    .help("Attach text files to this message (up to 5, 256 KiB each)")
+                    .help("Attach text files, pictures, PDFs or Word documents to this message (up to 5)")
+                if let chat = model.chat { ChatOptionsButton(chat: chat).disabled(model.chatRunning) }
                 Text(model.endpoint == nil ? "No model is running" : model.endpointName).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if model.chatRunning {
@@ -204,5 +205,56 @@ struct TableCard: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.08)))
+    }
+}
+
+/// This chat's reasoning level, answer length and pinned reference, in a popover.
+struct ChatOptionsButton: View {
+    @EnvironmentObject var model: AppModel
+    let chat: ChatConversation
+    @State private var shown = false
+    @State private var reasoning = "default"
+    @State private var limit = ""
+    @State private var reference = ""
+
+    var isSet: Bool { chat.reasoning != nil || chat.maxTokens != nil || chat.reference != nil }
+
+    var body: some View {
+        Button { load(); shown = true } label: { Label(isSet ? "Options •" : "Options", systemImage: "slider.horizontal.3") }
+            .help("This chat's reasoning level, answer length and pinned reference")
+            .popover(isPresented: $shown) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Picker("Reasoning", selection: $reasoning) {
+                        Text("Server's default").tag("default")
+                        Text("Off").tag("off")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                    }
+                    TextField("Most tokens in one answer (left to the server)", text: $limit).textFieldStyle(.roundedBorder)
+                    Text("Reference: text the model is given with every message").font(.caption).foregroundStyle(.secondary)
+                    TextEditor(text: $reference).font(.callout).frame(height: 150)
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+                        .accessibilityLabel("Reference")
+                    HStack {
+                        Spacer()
+                        Button("Apply") {
+                            let typed = limit.trimmingCharacters(in: .whitespaces)
+                            guard typed.isEmpty || Int(typed) != nil else { model.notice = "An answer's limit is a number of tokens, or empty."; return }
+                            model.configureChat(reasoning: reasoning, maxTokens: Int(typed) ?? 0, reference: reference)
+                            shown = false
+                        }
+                        .keyboardShortcut(.defaultAction)
+                    }
+                }
+                .padding(14)
+                .frame(width: 380)
+            }
+    }
+
+    func load() {
+        reasoning = chat.reasoning ?? "default"
+        limit = chat.maxTokens.map(String.init) ?? ""
+        reference = chat.reference ?? ""
     }
 }

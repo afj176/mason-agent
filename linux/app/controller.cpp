@@ -625,6 +625,21 @@ void Controller::select_chat(const std::string& id) {
     changed.emit();
 }
 
+void Controller::configure_chat(const std::string& reasoning, int max_tokens, const std::string& reference) {
+    const ChatConversation* current = chat();
+    if (!current || !chat_store_ || chat_running) return;
+    ChatConversation updated = *current;
+    try {
+        chat::configure(updated, reasoning, max_tokens, reference);
+        chat_store_->save(updated);
+        chats_ = chat_store_->conversations();
+        chat_selection = updated.id;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
+}
+
 void Controller::new_chat() {
     if (!chat_store_ || chat_running) return;
     // Reuse an untouched chat rather than collecting empty ones.

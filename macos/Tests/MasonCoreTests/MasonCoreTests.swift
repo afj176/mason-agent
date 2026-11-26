@@ -970,6 +970,28 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(SitePreview.loopbackOnly.contains("ignore-previous-rules") && (try? JSONSerialization.jsonObject(with: Data(SitePreview.loopbackOnly.utf8))) != nil)
     }
 
+    func testAChatCarriesItsReasoningLevelOutputLimitAndPinnedReference() async throws {
+        let chats = try ChatStore(home: home)
+        var conversation = try chats.create()
+        XCTAssertTrue(Chat.extraBody(conversation).isEmpty, "nothing is added unless the user asked for it")
+        try Chat.configure(&conversation, reasoning: "low", maxTokens: 900, reference: "Refunds are allowed within 30 days.")
+        let body = Chat.extraBody(conversation)
+        XCTAssertEqual(body["max_tokens"] as? Int, 900)
+        XCTAssertEqual(body["thinking_budget_tokens"] as? Int, 512)
+        XCTAssertEqual((body["chat_template_kwargs"] as? [String: Bool])?["enable_thinking"], true)
+        let model = ScriptedModel([ModelReply(text: "Within 30 days."), ModelReply(text: "Still 30 days.")])
+        try await Chat.send(&conversation, text: "When can I get a refund?", model: model, store: chats) { _ in }
+        XCTAssertTrue(model.seen[0].first?.content.contains("Refunds are allowed within 30 days.") ?? false, "the reference goes with the message")
+        try Chat.configure(&conversation, reasoning: "off", maxTokens: 0, reference: "")
+        XCTAssertEqual(Chat.extraBody(conversation)["reasoning_effort"] as? String, "none")
+        XCTAssertNil(Chat.extraBody(conversation)["max_tokens"])
+        try await Chat.send(&conversation, text: "And now?", model: model, store: chats) { _ in }
+        XCTAssertFalse(model.seen[1].first?.content.contains("Refunds are allowed") ?? true, "a removed reference is no longer sent")
+        XCTAssertThrowsError(try Chat.configure(&conversation, reasoning: "extreme", maxTokens: 0, reference: ""))
+        XCTAssertThrowsError(try Chat.configure(&conversation, reasoning: "default", maxTokens: 3, reference: ""))
+        XCTAssertEqual(try ChatStore(home: home).conversations.first?.reasoning, "off", "the choice is kept with the conversation")
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []
