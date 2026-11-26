@@ -813,6 +813,7 @@ final class BrowserTests: XCTestCase {
         ])
         XCTAssertTrue(result.passed, BrowserCheck.report(result, page: "index.html"))
         XCTAssertEqual(result.title, "Cart")
+        XCTAssertTrue(result.controls.count >= 2 && result.controls.allSatisfy { $0.components(separatedBy: " | ").count == 3 }, "\(result.controls)")
         XCTAssertTrue(result.text.contains("Wrench") && result.text.contains("Hammer"))
         XCTAssertEqual(result.steps.count, 8)
 
@@ -981,6 +982,477 @@ final class ChatTests: XCTestCase {
         XCTAssertTrue(full.seen[1].contains { $0.content.contains("four questions were answered") })
         XCTAssertTrue(full.seen[1].last!.content.contains("Question 5"))
         XCTAssertFalse(chat.archived?.isEmpty ?? true, "the replaced messages are kept")
+    }
+}
+
+/// Embeds text as counts of a few known words, so ranking is predictable.
+struct WordModels: SemanticModels {
+    static let words = ["invoice", "total", "tax", "login", "password", "color"]
+    let identity = "words"
+    var canRerank = false
+    var calls = Counter()
+    final class Counter { var texts = 0 }
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        calls.texts += texts.count
+        return texts.map { text in WordModels.words.map { word in Float(text.lowercased().components(separatedBy: word).count - 1) } + [0.01] }
+    }
+    func rerank(_ query: String, documents: [String]) async throws -> [Double] { documents.map { $0.contains("File: auth.py") ? 9 : 0 } }
+}
+
+final class PlanningTests: XCTestCase {
+    var folder: URL!
+    var home: URL!
+
+    override func setUpWithError() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-plan-" + UUID().uuidString)
+        folder = base.appendingPathComponent("project"); home = base.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try write("calc.py", "def add(a, b):\n    return a - b\n")
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder.deletingLastPathComponent()) }
+    func write(_ name: String, _ text: String) throws { try text.write(to: folder.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+
+    func testCommentsTravelWithTheNextRequestWhileTheirFilesAreUnchanged() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        XCTAssertThrowsError(try Review.comment(workspace, path: "calc.py", line: 3, note: "x"))
+        XCTAssertThrowsError(try Review.comment(workspace, path: "calc.py", line: 1, note: "  "))
+        let comment = try Review.comment(workspace, path: "calc.py", line: 2, note: "This subtracts.")
+        XCTAssertEqual(comment.quote, "    return a - b")
+        let removed = try Review.comment(workspace, path: "calc.py", line: 7, note: "Why was this removed?", removed: "old()")
+        XCTAssertEqual(removed.location, "calc.py · original line 7")
+        session.comments = [comment, removed]
+
+        let model = ScriptedModel([ModelReply(text: "Fixed."), ModelReply(text: "Again.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Fix it")
+        let sent = model.seen[0].last!.content
+        XCTAssertTrue(sent.hasPrefix("Fix it\ncalc.py · updated line 2 (return a - b) — This subtracts.\ncalc.py · original line 7 (old()) — Why was this removed?"), sent)
+        XCTAssertNil(session.comments, "sent comments are not sent twice")
+        XCTAssertEqual(session.turns[0].request, sent)
+
+        // Comments alone are a request; a comment on a file that changed since is refused, and kept.
+        session.comments = [try Review.comment(workspace, path: "calc.py", line: 1, note: "Rename it.")]
+        try write("calc.py", "def add(a, b):\n    return a + b\n")
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "")
+        XCTAssertEqual(session.state, "Failed")
+        XCTAssertTrue(session.detail.contains("changed since the comment was written"), session.detail)
+        XCTAssertEqual(session.comments?.count, 1)
+        session.comments = [try Review.comment(workspace, path: "calc.py", line: 1, note: "Rename it.")]
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: " ")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertTrue(model.seen[1].last!.content.hasPrefix("Address these review comments.\ncalc.py · updated line 1"))
+    }
+
+    func testMilestonesFollowTheFilesTheyCover() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try write("mason.workflows.json", #"{"version": 1, "workflows": {"tests": {"executable": "sh", "arguments": ["-c", "grep -q 'a + b' calc.py"]}}}"#)
+        var plan: [Milestone] = []
+        XCTAssertThrowsError(try Milestones.put(workspace, current: plan, item: Milestone(title: "", files: ["calc.py"])))
+        XCTAssertThrowsError(try Milestones.put(workspace, current: plan, item: Milestone(title: "Outside", files: ["../x"])))
+        var first = Milestone(title: "Add works", decision: "Use +", files: ["./calc.py"], workflow: "tests")
+        plan = try Milestones.put(workspace, current: plan, item: first)
+        XCTAssertEqual(plan[0].files, ["calc.py"])
+        let second = Milestone(title: "Docs", files: ["calc.py"], dependsOn: [first.id])
+        plan = try Milestones.put(workspace, current: plan, item: second)
+        first.dependsOn = [second.id]
+        XCTAssertThrowsError(try Milestones.put(workspace, current: plan, item: first), "a circle is refused")
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.ready, .blocked])
+        XCTAssertTrue(Milestones.context(workspace, plan: plan).contains("Next: Add works"))
+
+        // The workflow fails until the file is right, and Mason only runs it when it may.
+        await XCTAssertThrowsErrorAsync(try await Milestones.check(workspace, item: plan[0], plan: plan, runWorkflow: (false, false), observation: ""))
+        await XCTAssertThrowsErrorAsync(try await Milestones.check(workspace, item: plan[0], plan: plan, runWorkflow: (true, false), observation: ""))
+        await XCTAssertThrowsErrorAsync(try await Milestones.check(workspace, item: plan[1], plan: plan, runWorkflow: (true, false), observation: "Looks right"), "blocked by its prerequisite")
+        try write("calc.py", "def add(a, b):\n    return a + b\n")
+        plan[0].receipt = try await Milestones.check(workspace, item: plan[0], plan: plan, runWorkflow: (true, false), observation: "")
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.verified, .ready])
+        await XCTAssertThrowsErrorAsync(try await Milestones.check(workspace, item: plan[1], plan: plan, runWorkflow: (true, false), observation: ""), "a manual check needs an observation")
+        plan[1].receipt = try await Milestones.check(workspace, item: plan[1], plan: plan, runWorkflow: (false, false), observation: "Read the docstring.")
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.verified, .reviewed])
+
+        // Changing a covered file asks for both to be looked at again.
+        try write("calc.py", "def add(a, b):\n    return a + b  # sum\n")
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.recheck, .blocked])
+        plan = Milestones.remove(plan[0].id, from: plan)
+        XCTAssertEqual(plan.count, 1)
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.ready])
+
+        // The model is told the plan.
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .readOnly)
+        session.milestones = plan
+        let model = ScriptedModel([ModelReply(text: "Ok.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "What is next?")
+        XCTAssertTrue(model.seen[0][0].content.contains("The user's saved milestones") && model.seen[0][0].content.contains("- Docs [Ready]"))
+        XCTAssertEqual(try SessionStore(home: home).sessions.first?.milestones?.first?.title, "Docs", "the plan is saved with the session")
+    }
+
+    func testTheTypedFormsOfCommentsMilestonesAndEmbeddings() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .reviewEdits)
+        XCTAssertTrue(try Review.command("", workspace: workspace, session: &session).hasPrefix("No comments are waiting."))
+        XCTAssertThrowsError(try Review.command("calc.py nothing", workspace: workspace, session: &session))
+        XCTAssertEqual(try Review.command("calc.py:2 Use plus here.", workspace: workspace, session: &session), "Noted on calc.py · updated line 2: return a - b")
+        XCTAssertTrue(try Review.command("", workspace: workspace, session: &session).hasPrefix("1. calc.py · updated line 2 — Use plus here."))
+        XCTAssertEqual(try Review.command("remove 1", workspace: workspace, session: &session), "Dropped the comment on calc.py · updated line 2.")
+        XCTAssertNil(session.comments)
+
+        try write("mason.workflows.json", #"{"version": 1, "workflows": {"tests": {"executable": "sh", "arguments": ["-c", "true"]}}}"#)
+        var said = try await Milestones.command("add Add works | calc.py | workflow tests | decision Use plus", workspace: workspace, session: &session, home: home)
+        XCTAssertEqual(said, "Added milestone 1: Add works")
+        said = try await Milestones.command("add Documented | calc.py | after 1", workspace: workspace, session: &session, home: home)
+        await XCTAssertThrowsErrorAsync(try await Milestones.command("add Bad | calc.py | workflow missing", workspace: workspace, session: &session, home: home))
+        said = try await Milestones.command("", workspace: workspace, session: &session, home: home)
+        XCTAssertTrue(said.contains("1. [Ready] Add works  ·  calc.py  ·  workflow tests") && said.contains("2. [Blocked] Documented  ·  calc.py  ·  after 1"), said)
+        await XCTAssertThrowsErrorAsync(try await Milestones.command("check 1", workspace: workspace, session: &session, home: home), "outside Auto a workflow needs a saved rule")
+        session.permission = .auto
+        if Shell.sandboxAvailable {
+            said = try await Milestones.command("check 1", workspace: workspace, session: &session, home: home)
+            XCTAssertEqual(said, "Add works: Verified.")
+            said = try await Milestones.command("check 2 Read it through.", workspace: workspace, session: &session, home: home)
+            XCTAssertEqual(said, "Documented: Reviewed.")
+        }
+        said = try await Milestones.command("remove 1", workspace: workspace, session: &session, home: home)
+        XCTAssertEqual(session.milestones?.map(\.title), ["Documented"])
+        XCTAssertEqual(session.milestones?.first?.dependsOn, [])
+
+        said = try await EmbeddingSettings.command("", home: home)
+        XCTAssertTrue(said.hasPrefix("Code search by meaning is off"))
+        await XCTAssertThrowsErrorAsync(try await EmbeddingSettings.command("http://example.com/ m", home: home), "only servers on this computer")
+        said = try await EmbeddingSettings.command("http://127.0.0.1:9/ embed", home: home)
+        said = try await EmbeddingSettings.command("rerank http://127.0.0.1:9/ ranker", home: home)
+        XCTAssertEqual(EmbeddingSettings.load(home: home), EmbeddingSettings(url: "http://127.0.0.1:9/", model: "embed", rerankUrl: "http://127.0.0.1:9/", rerankModel: "ranker"))
+        await XCTAssertThrowsErrorAsync(try await EmbeddingSettings.command("test", home: home), "nothing answers on that port")
+        said = try await EmbeddingSettings.command("off", home: home)
+        XCTAssertNil(EmbeddingSettings.load(home: home))
+    }
+
+    func testCodeIsFoundByMeaningWithEachPassageEmbeddedOnce() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try write("billing.py", "def invoice_total(items):\n    # the invoice total with tax\n    return sum(items) * 1.2\n")
+        try write("auth.py", "def login(user, password):\n    # check the password for a login\n    return user == 'ada'\n")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("node_modules/x"), withIntermediateDirectories: true)
+        try write("node_modules/x/invoice.js", "function invoice() { return 'invoice invoice invoice total total'; }\n")
+        try write("logo.png", "invoice total invoice total invoice total")
+        let models = WordModels()
+        let result = try await SemanticSearch.search(workspace, models: models, query: "where is the invoice total and tax worked out")
+        XCTAssertEqual(result.hits.first?.path, "billing.py")
+        XCTAssertEqual(result.hits.first?.startLine, 1)
+        XCTAssertFalse(result.hits.contains { $0.path.contains("node_modules") || $0.path.hasSuffix(".png") })
+        XCTAssertEqual(result.files, 3)
+        XCTAssertTrue(result.report.contains("billing.py lines 1–") && result.report.contains("invoice_total"), result.report)
+        let first = models.calls.texts
+        _ = try await SemanticSearch.search(workspace, models: models, query: "login")
+        XCTAssertEqual(models.calls.texts, first + 1, "only the new question is embedded the second time")
+        var reranking = models
+        reranking.canRerank = true
+        let reordered = try await SemanticSearch.search(workspace, models: reranking, query: "invoice total")
+        XCTAssertTrue(reordered.reranked)
+        XCTAssertEqual(reordered.hits.first?.path, "auth.py", "the reranker's order wins")
+        XCTAssertEqual(SemanticSearch.chunks(path: "a.py", content: (1...100).map { "line number \($0)" }.joined(separator: "\n")).map(\.start), [1, 33, 65])
+
+        // The tool is offered only when an embeddings server is chosen, and the agent can call it.
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .readOnly)
+        XCTAssertFalse(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "semantic_search" })
+        XCTAssertNil(EmbeddingSettings.load(home: home))
+        XCTAssertThrowsError(try EmbeddingSettings.save(EmbeddingSettings(url: "ftp://x", model: "m"), home: home))
+        try EmbeddingSettings.save(EmbeddingSettings(url: "http://127.0.0.1:9/", model: "embed"), home: home)
+        XCTAssertEqual(EmbeddingSettings.load(home: home)?.model, "embed")
+        try EmbeddingSettings.save(nil, home: home)
+        XCTAssertNil(EmbeddingSettings.load(home: home))
+        let model = ScriptedModel([call("semantic_search", ["query": "invoice total", "path": "."]), ModelReply(text: "Found.")])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        agent.semantic = models
+        await agent.run(&session, request: "Where are totals?")
+        XCTAssertEqual(session.activities.first?.state, .completed)
+        XCTAssertTrue(session.activities.first?.result.contains("billing.py lines") ?? false)
+    }
+}
+
+func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async throws -> T, _ message: String = "", file: StaticString = #filePath, line: UInt = #line) async {
+    do { _ = try await expression(); XCTFail("expected an error. " + message, file: file, line: line) } catch {}
+}
+
+/// A window with a text field, a button and a label that shows what was last saved.
+final class FakeDesktop: DesktopAutomation {
+    var trusted = true
+    var field = "", saved = ""
+    var acted: [String] = []
+    let window = DesktopWindow(pid: 42, app: "Notes", title: "Shopping")
+    func unavailable() -> String? { trusted ? nil : "Mason needs the Accessibility permission." }
+    func windows() throws -> [DesktopWindow] { [DesktopWindow(pid: 43, app: "Calculator", title: "Calculator"), window] }
+    func observe(_ window: DesktopWindow) throws -> [DesktopControl] {
+        [DesktopControl(id: "c1", role: "textfield", name: "Item", value: field, canSet: true), DesktopControl(id: "c2", role: "button", name: "Save", canPress: true),
+         DesktopControl(id: "c3", role: "statictext", name: "", value: saved.isEmpty ? "Nothing saved" : "Saved " + saved)]
+    }
+    func act(_ window: DesktopWindow, control: String, operation: String, value: String) throws {
+        acted.append("\(operation) \(control) \(value)")
+        if control == "c1" { field = value } else { saved = field }
+    }
+}
+
+final class DesktopTests: XCTestCase {
+    func testAnAttachedWindowIsReadAndOperatedWithApprovalEachTime() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-desk-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base.appendingPathComponent("project"), withIntermediateDirectories: true)
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: try Workspace(path: base.appendingPathComponent("project").path).root.path, permission: .auto)
+        let desktop = FakeDesktop()
+
+        // Attaching is the user's act; without a window the tools are not offered.
+        XCTAssertTrue(Agent.desktopTools(for: session, available: true).isEmpty)
+        XCTAssertTrue(try Desktop.command("", session: &session, desktop: desktop).hasPrefix("1. Calculator\n2. Notes — Shopping\nAttach one with /window NUMBER."))
+        XCTAssertThrowsError(try Desktop.command("9", session: &session, desktop: desktop))
+        XCTAssertTrue(try Desktop.command("2", session: &session, desktop: desktop).hasPrefix("Attached Notes — Shopping."))
+        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe", "desktop_act"])
+        XCTAssertTrue(Agent.desktopTools(for: session, available: false).isEmpty)
+        desktop.trusted = false
+        XCTAssertThrowsError(try Desktop.command("", session: &session, desktop: desktop), "a missing permission is said plainly")
+        desktop.trusted = true
+
+        func act(_ operation: String, _ id: String, _ value: String) -> ModelReply { call("desktop_act", ["operation": operation, "id": id, "value": value]) }
+        let model = ScriptedModel([act("set", "c1", "Milk"), call("desktop_observe", [:]), act("set", "c1", "Milk"), act("invoke", "c2", ""), act("invoke", "c3", ""), act("invoke", "c2", ""), ModelReply(text: "Saved.")])
+        var asked: [String] = [], answers = [true, true, false]
+        let agent = Agent(store: store, model: model, approve: { asked.append($0.title); return answers.removeFirst() }, emit: { _ in })
+        agent.desktop = desktop
+        await agent.run(&session, request: "Add milk to the list")
+        XCTAssertTrue(model.seen[0][0].content.contains("The user attached a window of another app: Notes — Shopping."))
+        XCTAssertEqual(session.activities.map(\.state), [.failed, .completed, .completed, .completed, .failed, .denied], "an action needs an observation first, a control that accepts it, and the user's yes")
+        XCTAssertTrue(session.activities[1].result.contains("c1 · textfield · Item  [set]") && session.activities[1].result.contains("c2 · button · Save  [invoke]"), session.activities[1].result)
+        XCTAssertEqual(asked, ["Set textfield “Item” to “Milk” in Notes — Shopping", "Press button “Save” in Notes — Shopping", "Press button “Save” in Notes — Shopping"], "it asks every time, even in Auto")
+        XCTAssertEqual(desktop.acted, ["set c1 Milk", "invoke c2 "])
+        XCTAssertTrue(session.activities[3].result.contains("c3 · statictext = Saved Milk"), "each action returns a fresh observation")
+
+        // A read-only session may look but not touch.
+        session.permission = .readOnly; session.askOnly = true
+        XCTAssertEqual(Agent.desktopTools(for: session, available: true).map(\.name), ["desktop_observe"])
+        XCTAssertEqual(try Desktop.command("off", session: &session, desktop: desktop), "No window is attached to this session.")
+        XCTAssertNil(session.desktop)
+    }
+}
+
+final class AcceptanceTests: XCTestCase {
+    var folder: URL!
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-accept-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // A small shop: three products, ten percent off at three units, and an order number that survives a reload.
+        try """
+        <!doctype html><title>Shop</title><ul aria-label="Products"><li>Wrench</li><li>Hammer</li><li>Saw</li></ul>
+        <input id="qty" value="1"><p id="total">Total: $10.00</p><button id="checkout">Check out</button><p id="order"></p>
+        <script>
+        var qty = document.getElementById('qty'), total = document.getElementById('total'), order = document.getElementById('order');
+        qty.addEventListener('input', function () { var n = Number(qty.value) || 0, sum = n * 10; if (n >= 3) sum = sum * 0.9; total.textContent = 'Total: $' + sum.toFixed(2); });
+        order.textContent = localStorage.getItem('order') || '';
+        document.getElementById('checkout').onclick = function () { var id = 'ORD-' + (Number(localStorage.getItem('count') || 0) + 1); localStorage.setItem('count', id.slice(4)); localStorage.setItem('order', id); order.textContent = id; };
+        </script>
+        """.write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    func contract(discount: String = "27.00") -> String {
+        """
+        {"Version": 1, "Scenarios": [
+          {"Id": "products", "Requirement": "List three distinct products", "Page": "index.html", "Steps": [{"Op": "count_distinct", "Target": "ul[aria-label='Products'] li", "Value": "3"}]},
+          {"Id": "discount", "Requirement": "Ten percent off at three units", "Page": "index.html",
+           "Steps": [{"Op": "fill", "Target": "#qty", "Value": "3"}, {"Op": "money", "Target": "#total", "Value": "\(discount)"}, {"Op": "fill", "Target": "#qty", "Value": "2"}, {"Op": "money", "Target": "#total", "Value": "20.00"}]},
+          {"Id": "order", "Requirement": "Checkout makes an order number that survives a reload", "Page": "index.html",
+           "Steps": [{"Op": "empty", "Target": "#order", "Value": ""}, {"Op": "click", "Target": "#checkout", "Value": ""}, {"Op": "capture", "Target": "#order", "Value": "ORD-"},
+                     {"Op": "reload", "Target": "", "Value": ""}, {"Op": "same", "Target": "#order", "Value": ""}, {"Op": "click", "Target": "#checkout"}, {"Op": "new_id", "Target": "#order", "Value": "ORD-"}]}
+        ]}
+        """
+    }
+
+    func testAContractIsCheckedBeforeItIsRun() throws {
+        let workspace = try Workspace(path: folder.path)
+        let parsed = try Acceptance.parse(workspace, contract())
+        XCTAssertEqual(parsed.scenarios.map(\.id), ["products", "discount", "order"])
+        XCTAssertEqual(parsed.scenarios[2].steps.count, 7)
+        XCTAssertNil(parsed.application)
+        func refused(_ source: String, _ why: String) { XCTAssertThrowsError(try Acceptance.parse(workspace, source), why) }
+        refused(##"{"Version": 2, "Scenarios": []}"##, "only version 1")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "click", "Target": "#x"}]}]}"##, "a scenario must end with an assertion")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "same", "Target": "#x"}]}]}"##, "nothing was captured to compare")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "../x.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]}"##, "the page must be in the project")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "hover", "Target": "#x"}, {"Op": "text", "Target": "#x", "Value": "y"}]}]}"##, "an unknown step")
+        refused(##"{"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "money", "Target": "#x", "Value": "ten"}]}]}"##, "an amount must be a number")
+        let twice = ##"{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}"##
+        refused("{\"Version\": 1, \"Scenarios\": [\(twice), \(twice)]}", "ids must be unique")
+    }
+
+    func testScenariosRunInARealBrowserAtBothWidths() async throws {
+        guard BrowserCheck.findBrowser() != nil else { throw XCTSkip("No Chromium-family browser on this computer.") }
+        let workspace = try Workspace(path: folder.path)
+        let passed = try await Acceptance.run(workspace, try Acceptance.parse(workspace, contract()))
+        XCTAssertEqual(passed.map(\.passed), [true, true, true], Acceptance.receipt(passed))
+        XCTAssertTrue(Acceptance.receipt(passed).hasPrefix("3 of 3 acceptance scenarios passed, each at 390px and 1280px."))
+        XCTAssertTrue(passed[1].detail.contains("money #total = Total: $27.00"), "\(passed[1].detail)")
+        XCTAssertTrue(passed[2].detail.contains("new_id #order = ORD-2"), "\(passed[2].detail)")
+
+        let failed = try await Acceptance.run(workspace, try Acceptance.parse(workspace, contract(discount: "30.00")))
+        XCTAssertEqual(failed.map(\.passed), [true, false, true])
+        XCTAssertEqual(failed[1].detail, ["at 390px, step 2, money #total: expected '30.00', observed 'Total: $27.00' (1 visible)"])
+
+        // The agent runs them as a tool, asking first outside Auto.
+        try contract().write(to: folder.appendingPathComponent(Acceptance.filename), atomically: true, encoding: .utf8)
+        let store = try SessionStore(home: folder.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .reviewEdits)
+        XCTAssertTrue(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "verify_acceptance" })
+        let model = ScriptedModel([call("verify_acceptance", [:]), ModelReply(text: "All three hold.")])
+        var asked: [String] = []
+        await Agent(store: store, model: model, approve: { asked.append($0.subject); return true }, emit: { _ in }).run(&session, request: "Check the shop")
+        XCTAssertEqual(asked, ["mason.acceptance.json"])
+        XCTAssertEqual(session.activities.first?.state, .completed)
+        XCTAssertTrue(session.activities.first?.result.contains("PASSED order — Checkout makes an order number that survives a reload (index.html)") ?? false)
+        XCTAssertTrue(model.seen[0][0].content.contains("acceptance scenarios in mason.acceptance.json"))
+    }
+
+    func testAnApplicationContractSaysWhereItRuns() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let source = ##"{"Version": 1, "Application": "store:application", "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]}"##
+        do { _ = try await Acceptance.run(workspace, try Acceptance.parse(workspace, source)); XCTFail("expected an error") }
+        catch { XCTAssertTrue("\(error)".contains("on Windows only for now"), "\(error)") }
+    }
+
+    func testAReviewKeepsOnlyFindingsThatQuoteTheLineTheyName() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try "def add(a, b):\n    return a - b\n".write(to: folder.appendingPathComponent("calc.py"), atomically: true, encoding: .utf8)
+        let store = try SessionStore(home: folder.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        do { _ = try await Review.findings(session, workspace: workspace, model: ScriptedModel([])); XCTFail("nothing was changed yet") } catch {}
+        var turn = Turn(request: "Add an add function")
+        turn.changes = [FileChange(path: "calc.py", before: nil, after: "def add(a, b):\n    return a - b\n")]
+        session.turns = [turn]
+        let answer = """
+        Here is what I found:
+        [{"path": "calc.py", "line": 2, "evidence": "return a - b", "problem": "It subtracts instead of adding."},
+         {"path": "calc.py", "line": 1, "evidence": "return a - b", "problem": "Quoted from the wrong line."},
+         {"path": "other.py", "line": 1, "evidence": "x", "problem": "A file that was not changed."}]
+        """
+        let model = ScriptedModel([ModelReply(text: answer), ModelReply(text: "[]")])
+        let found = try await Review.findings(session, workspace: workspace, model: model)
+        XCTAssertEqual(found.comments.map(\.location), ["calc.py · updated line 2"])
+        XCTAssertEqual(found.comments[0].note, "It subtracts instead of adding.")
+        XCTAssertEqual(found.dropped, 2)
+        XCTAssertTrue(model.seen[0][1].content.contains("2\t    return a - b"), "the model reads numbered lines")
+        XCTAssertTrue(Review.summary(found).hasPrefix("The review found 1 thing in calc.py:\ncalc.py · updated line 2 — It subtracts instead of adding.\n2 findings were left out"))
+        XCTAssertNoThrow(try Review.validate(workspace, comments: found.comments), "a finding is a comment that can be sent")
+        let nothing = try await Review.findings(session, workspace: workspace, model: model)
+        XCTAssertEqual(Review.summary(nothing), "The review of calc.py found nothing to report.")
+    }
+}
+
+final class SessionTransferTests: XCTestCase {
+    func testASessionIsForkedExportedAndImported() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-transfer-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let workspace = try Workspace(path: folder.path)
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .auto)
+        let model = ScriptedModel([call("write_file", ["path": "a.txt", "content": "one\n"]), ModelReply(text: "Made a."),
+                                   call("write_file", ["path": "b.txt", "content": "two\n"]), ModelReply(text: "Made b with api_key = hunter2secret."),
+                                   call("write_file", ["path": "a.txt", "content": "changed\n"]), ModelReply(text: "Changed a.")])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        await agent.run(&session, request: "Make a")
+        await agent.run(&session, request: "Make b in \(workspace.root.path)")
+        await agent.run(&session, request: "Change a")
+        XCTAssertEqual(session.turns.count, 3)
+
+        // A fork holds the conversation before the request, and can put the files back as they were then.
+        XCTAssertThrowsError(try SessionTransfer.fork(&session, store: store, turn: 7, restoreFiles: false))
+        let plain = try SessionTransfer.fork(&session, store: store, turn: 2, restoreFiles: false)
+        XCTAssertEqual(plain.session.turns.map(\.request), ["Make a", "Make b in \(workspace.root.path)"])
+        XCTAssertEqual(plain.request, "Change a")
+        XCTAssertEqual(plain.session.messages.last?.content, "Made b with api_key = hunter2secret.")
+        XCTAssertEqual(plain.session.activities.count, 2)
+        XCTAssertEqual(plain.session.permission, .reviewEdits, "a fork does not start in Auto")
+        XCTAssertTrue(plain.session.title.hasSuffix(" · fork"))
+        XCTAssertEqual(try workspace.read("a.txt"), "changed\n", "files are left alone unless asked")
+
+        try "edited by hand\n".write(to: folder.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        let restored = try SessionTransfer.fork(&session, store: store, turn: 1, restoreFiles: true)
+        XCTAssertEqual(restored.session.turns.map(\.request), ["Make a"])
+        XCTAssertEqual(try workspace.read("a.txt"), "one\n", "the later change to a.txt was undone")
+        XCTAssertEqual(restored.restored, ["a.txt"])
+        XCTAssertEqual(restored.skipped, ["b.txt"], "a file changed since is left alone and reported")
+        XCTAssertTrue(restored.session.detail.contains("changed since and left alone: b.txt"), restored.session.detail)
+        XCTAssertEqual(session.turns.map(\.undone), [false, true, true])
+
+        // An export can leave out the project's path, likely secrets and file contents.
+        let full = String(decoding: try SessionTransfer.export(session, sanitize: false), as: UTF8.self)
+        XCTAssertTrue(full.contains("hunter2secret") && full.contains(workspace.root.path.replacingOccurrences(of: "/", with: "\\/")))
+        let clean = String(decoding: try SessionTransfer.export(session, sanitize: true), as: UTF8.self)
+        XCTAssertFalse(clean.contains("hunter2secret") || clean.contains(folder.lastPathComponent + "\\/") || clean.contains("changed\\n"), clean)
+        XCTAssertTrue(clean.contains("<redacted>") && clean.contains("<workspace>"))
+
+        let other = base.appendingPathComponent("elsewhere")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let imported = try SessionTransfer.importSession(Data(clean.utf8), store: store, workspace: try Workspace(path: other.path).root.path)
+        XCTAssertNotEqual(imported.id, session.id)
+        XCTAssertEqual(imported.turns.map(\.answer), ["Made a.", "Made b with api_key = <redacted>", "Changed a."])
+        XCTAssertTrue(imported.turns.allSatisfy { $0.changes.isEmpty && !$0.undone })
+        XCTAssertTrue(imported.title.hasSuffix(" · imported") && imported.detail.hasPrefix("Imported a sanitized session."))
+        XCTAssertThrowsError(try SessionTransfer.importSession(Data("{}".utf8), store: store, workspace: workspace.root.path))
+        XCTAssertEqual(try SessionStore(home: base.appendingPathComponent("home")).sessions.count, 4, "the original, two forks and the import")
+    }
+}
+
+final class TransformersTests: XCTestCase {
+    /// A stand-in for Python: it writes the status file the real server writes, then serves the stub model.
+    func testAFolderOfTransformersWeightsIsListedCheckedAndServed() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-tf-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("hub/models--acme--tiny-coder/snapshots/abc"), scripts = base.appendingPathComponent("scripts")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        for name in ["config.json", "tokenizer_config.json", "tokenizer.json"] { try "{}".write(to: folder.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+        try Data(count: 4096).write(to: folder.appendingPathComponent("model.safetensors"))
+        try "# stand-in".write(to: scripts.appendingPathComponent("Serve-Transformers.py"), atomically: true, encoding: .utf8)
+        let stub = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("stub-model.py").path
+        let python = base.appendingPathComponent("fake-python")
+        try """
+        #!/bin/sh
+        while [ $# -gt 0 ]; do case "$1" in --model-id) id="$2"; shift;; --port) port="$2"; shift;; --manifest) manifest="$2"; shift;; --model-dir) dir="$2"; shift;; --check-only) check=1;; esac; shift; done
+        if [ -f "$dir/broken" ]; then printf '{"status": "Tokenizer files are missing. Use the complete local model folder.", "error": true}' > "$manifest"; exit 1; fi
+        printf '{"status": "Setup ready.", "contextTokens": 2048}' > "$manifest"
+        [ -n "$check" ] && exit 0
+        STUB_NAME="$id" exec python3 '\(stub)' "$port"
+        """.write(to: python, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+        setenv("MASON_TRANSFORMERS_DIR", scripts.path, 1); setenv("MASON_PYTHON", python.path, 1); setenv("MASON_DATA_HOME", base.appendingPathComponent("home").path, 1)
+        defer { unsetenv("MASON_TRANSFORMERS_DIR"); unsetenv("MASON_PYTHON"); unsetenv("MASON_DATA_HOME") }
+
+        let listed = ModelLibrary.scan([("Hugging Face cache", base.appendingPathComponent("hub"))])
+        XCTAssertEqual(listed.map(\.name), ["acme/tiny-coder"])
+        let model = listed[0]
+        XCTAssertTrue(model.transformers && model.startable)
+        XCTAssertEqual(model.bytes, 4096)
+        XCTAssertEqual(model.verdict, "Coding agent · Transformers weights · runs through Python with PyTorch")
+        XCTAssertThrowsError(try TransformersRuntime.model(at: base.path), "a folder without weights is not a model")
+        XCTAssertEqual(try TransformersRuntime.model(at: folder.path).name, "acme/tiny-coder")
+
+        let checked = try await TransformersRuntime.check(model)
+        XCTAssertTrue(checked.hasPrefix("Setup ready. Context: 2048 tokens."), checked)
+
+        let server = try await ModelServer.start(model, runtime: "", progress: { _ in })
+        XCTAssertEqual(server.context, 2048, "the context the server settled on")
+        let names = await OpenAIClient.models(at: server.endpoint.url)
+        XCTAssertEqual(names, [server.endpoint.model])
+        server.stop()
+        for _ in 0..<40 where await OpenAIClient.models(at: server.endpoint.url, timeout: 0.3) != nil { try await Task.sleep(nanoseconds: 200_000_000) }
+        let after = await OpenAIClient.models(at: server.endpoint.url, timeout: 0.3)
+        XCTAssertNil(after, "stopping ends the Python process")
+
+        // What the Python program reports is what the user is told.
+        try "".write(to: folder.appendingPathComponent("broken"), atomically: true, encoding: .utf8)
+        do { _ = try await ModelServer.start(model, runtime: "", progress: { _ in }); XCTFail("expected an error") }
+        catch { XCTAssertEqual("\(error)", "Tokenizer files are missing. Use the complete local model folder.") }
     }
 }
 

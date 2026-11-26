@@ -488,6 +488,72 @@ final class CLI {
             } else {
                 for line in try Schedules.command(rest, home: home, workspace: workspace.root.path, endpoint: endpoint).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             }
+        case "/comment", "/comments":
+            if rest.lowercased() == "send" {
+                if (session.comments ?? []).isEmpty { Term.line(Term.paint(Term.dim, "  No comments are waiting.")) } else { await send(" ") }
+            } else {
+                for line in try Review.command(rest, workspace: workspace, session: &session).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+                try store.save(session)
+            }
+        case "/milestone", "/milestones":
+            // A check can run a workflow, so it shows progress and can be stopped.
+            var changed = session
+            let text: String
+            if rest.lowercased().hasPrefix("check") {
+                let before = session, folder = workspace, data = home
+                let outcome: (String, Session) = try await busy("Checking the milestone") { _ in
+                    var copy = before
+                    let said = try await Milestones.command(rest, workspace: folder, session: &copy, home: data)
+                    return (said, copy)
+                }
+                text = outcome.0; changed = outcome.1
+            } else {
+                text = try await Milestones.command(rest, workspace: workspace, session: &changed, home: home)
+            }
+            session = changed
+            for line in text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            try store.save(session)
+        case "/accept", "/acceptance":
+            let folder = workspace
+            let results = try await busy("Running the acceptance scenarios") { progress in try await Acceptance.run(folder, try Acceptance.read(folder), progress: progress) }
+            for line in Acceptance.receipt(results).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/review":
+            guard let endpoint, let model = try? OpenAIClient(endpoint) else { throw MasonError("No model is running. /models lists the ones on this computer.") }
+            let current = session, folder = workspace
+            let found = try await busy("Reviewing what this session changed") { _ in try await Review.findings(current, workspace: folder, model: model) }
+            session.comments = Array(((session.comments ?? []) + found.comments).prefix(Review.limit))
+            if session.comments?.isEmpty == true { session.comments = nil }
+            try store.save(session)
+            for line in Review.summary(found).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/fork":
+            let words = rest.split(separator: " ").map(String.init)
+            guard let number = words.first.flatMap({ Int($0) }) else {
+                for (index, turn) in session.turns.enumerated() { Term.line("  \(Term.paint(Term.dim, String(index + 1).leftPad(2)))  \(Term.clip(turn.request.replacingOccurrences(of: "\n", with: " "), max(20, Term.width - 8)))") }
+                for line in SessionTransfer.help.split(separator: "\n") { Term.line(Term.paint(Term.dim, "  " + line)) }
+                break
+            }
+            let made = try SessionTransfer.fork(&session, store: store, turn: number - 1, restoreFiles: words.dropFirst().first?.lowercased() == "files")
+            session = made.session
+            Term.line("  " + session.detail)
+            Term.line(Term.paint(Term.dim, "  The request was: ") + made.request)
+        case "/export":
+            let words = rest.split(separator: " ").map(String.init)
+            guard let name = words.first else { throw MasonError("Use /export FILE, or /export FILE sanitized.") }
+            let sanitized = words.dropFirst().first?.lowercased() == "sanitized"
+            let file = URL(fileURLWithPath: (name as NSString).expandingTildeInPath, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)).standardizedFileURL
+            try SessionTransfer.export(session, sanitize: sanitized).write(to: file, options: .atomic)
+            Term.line("  Saved \(sanitized ? "a sanitized copy of " : "")this session to \(file.path)")
+        case "/import":
+            guard !rest.isEmpty else { throw MasonError("Use /import FILE.") }
+            let file = URL(fileURLWithPath: (rest as NSString).expandingTildeInPath, relativeTo: URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+            guard let data = try? Data(contentsOf: file) else { throw MasonError("\(file.path) could not be read.") }
+            session = try SessionTransfer.importSession(data, store: store, workspace: workspace.root.path)
+            Term.line("  " + session.detail + Term.paint(Term.dim, "  ·  \(session.turns.count) requests"))
+        case "/window", "/windows":
+            for line in try Desktop.command(rest, session: &session).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            try store.save(session)
+        case "/embeddings":
+            for line in try await EmbeddingSettings.command(rest, home: home).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/mcp": try await mcp(rest)
         case "/model": try await chooseModel(rest)
         case "/models": try await models(rest)
@@ -511,6 +577,14 @@ final class CLI {
             ("/queue", "Run the messages you queued, after a stop or a failure"),
             ("/agent [name|none]", "List your custom agents, or use one for this session"),
             ("/commands", "List your custom slash commands"),
+            ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
+            ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/review", "Have the model read what this session changed and pin what it finds as comments"),
+            ("/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"),
+            ("/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"),
+            ("/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"),
+            ("/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"),
+            ("/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"),
             ("/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"),
             ("/mcp", "List your MCP servers and the tools Mason may call"),
             ("/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"),
@@ -521,6 +595,8 @@ final class CLI {
             ("/models", "List the models on this computer and what each is for"),
             ("/models start NUMBER|NAME", "Start a coding model here (add cpu, or a context size)"),
             ("/models stop", "Stop the model this session started"),
+            ("/models start FOLDER", "Serve a folder of Transformers weights through Python (PyTorch)"),
+            ("/models check NUMBER|FOLDER · python [PATH]", "Check a Transformers folder; choose the Python that serves them"),
             ("/models search TEXT", "Search Hugging Face"),
             ("/models download REPO [BUILD]", "List a repository's builds, or download one"),
             ("/models setup", "Suggest coding models that fit this Mac and download one"),
@@ -696,6 +772,21 @@ final class CLI {
             running.stop(); server = nil
             if endpoint?.url == running.endpoint.url { endpoint = nil }
             Term.line(Term.paint(Term.dim, "  Stopped \(running.model.name)."))
+        case "python":
+            var preferences = Preferences.load()
+            if !argument.isEmpty {
+                let path = (argument as NSString).expandingTildeInPath
+                guard FileManager.default.isExecutableFile(atPath: path) else { throw MasonError("\(path) is not a program.") }
+                preferences.python = path; preferences.save()
+            }
+            Term.line(Term.paint(Term.dim, "  Transformers models run with ") + (TransformersRuntime.python() ?? Term.paint(Term.yellow, "no python3 found")) + Term.paint(Term.dim, "  ·  it needs PyTorch and Transformers installed"))
+        case "check":
+            if listed.isEmpty { listed = ModelLibrary.scan() }
+            let model: LocalModel
+            if let number = Int(argument), number >= 1, number <= listed.count { model = listed[number - 1] } else { model = try TransformersRuntime.model(at: argument) }
+            guard model.transformers else { throw MasonError("\(model.name) is a GGUF file; /models check is for Transformers folders.") }
+            let said = try await busy("Checking \(model.name)") { _ in try await TransformersRuntime.check(model) }
+            Term.line(Term.paint(Term.green, "  ✓ ") + said)
         case "search": try await search(argument)
         case "download": try await download(argument)
         case "setup": try await setup()
@@ -733,6 +824,7 @@ final class CLI {
         if listed.isEmpty { listed = ModelLibrary.scan() }
         let model: LocalModel
         if let number = Int(wanted), number >= 1, number <= listed.count { model = listed[number - 1] }
+        else if wanted.hasPrefix("/") || wanted.hasPrefix("~") { model = try TransformersRuntime.model(at: wanted) }
         else if let match = listed.first(where: { $0.startable && $0.name.localizedCaseInsensitiveContains(wanted) }) { model = match }
         else { throw MasonError("No model on this computer matches \"\(wanted)\". /models lists them.") }
         guard model.startable else { throw MasonError("\(model.name) cannot be started here: \(model.verdict).") }
@@ -741,7 +833,8 @@ final class CLI {
 
     /// Starts a model with llama.cpp and makes it this session's model.
     func start(_ model: LocalModel, context: Int? = nil, cpuOnly: Bool = false) async throws -> Bool {
-        var runtime = LlamaRuntime.find()
+        // Transformers weights run through Python, not llama.cpp.
+        var runtime = model.transformers ? "" : LlamaRuntime.find()
         if runtime == nil {
             Term.line(Term.paint(Term.yellow, "  llama.cpp is not installed yet; it runs GGUF models."))
             runtime = try await installRuntime(force: false)

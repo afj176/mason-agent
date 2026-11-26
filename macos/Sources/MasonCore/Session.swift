@@ -141,6 +141,12 @@ public struct Session: Codable, Identifiable {
     public var compactions: Int?
     /// Follow-ups waiting their turn, oldest first. "/queue" resumes them after a stop.
     public var pendingInput: [FollowUp]?
+    /// Comments on lines of the project, sent with the next request.
+    public var comments: [ReviewComment]?
+    /// The saved plan, if the user made one.
+    public var milestones: [Milestone]?
+    /// The window of another app the user attached, which Mason may read and, with approval, operate.
+    public var desktop: DesktopWindow?
     public init(workspace: String) { self.workspace = workspace }
 }
 

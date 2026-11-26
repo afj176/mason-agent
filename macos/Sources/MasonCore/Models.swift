@@ -11,10 +11,15 @@ public struct LocalModel: Equatable, Identifiable {
     public let path: String
     public let bytes: Int64
     public let source: String
+    /// True for a folder of Transformers weights rather than a GGUF file.
+    public let transformers: Bool
     public var id: String { path }
-    public init(name: String, path: String, bytes: Int64, source: String) { self.name = name; self.path = path; self.bytes = bytes; self.source = source }
+    public init(name: String, path: String, bytes: Int64, source: String, transformers: Bool = false) {
+        self.name = name; self.path = path; self.bytes = bytes; self.source = source; self.transformers = transformers
+    }
 
     public var role: Role {
+        if transformers { return .coding }
         let lower = name.lowercased()
         if lower.hasPrefix("mmproj") || lower.contains("-mmproj") { return .projector }
         if lower.contains("rerank") { return .reranker }
@@ -25,6 +30,7 @@ public struct LocalModel: Equatable, Identifiable {
     }
     /// What the agent can do with this file, in plain words. Every file is listed with one of these; none are hidden.
     public var verdict: String {
+        if transformers { return "Coding agent · Transformers weights · runs through Python with PyTorch" }
         switch role {
         case .coding: return "Coding agent · runs in llama.cpp as a chat model"
         case .vision: return "Coding agent · vision · runs in llama.cpp with its projector"
@@ -77,6 +83,12 @@ public enum ModelLibrary {
                 if file.lastPathComponent.range(of: #"-0000[2-9]-of-\d{5}\.gguf$"#, options: .regularExpression) != nil { continue }
                 found[real.path] = LocalModel(name: file.deletingPathExtension().lastPathComponent, path: file.path, bytes: size.int64Value, source: name)
                 if found.count >= limit { break }
+            }
+            // Folders of Transformers weights: a config, a tokenizer and safetensors files.
+            guard let folders = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil, options: [.skipsPackageDescendants]) else { continue }
+            for case let file as URL in folders where file.lastPathComponent == "config.json" && found.count < limit {
+                let folder = file.deletingLastPathComponent()
+                if TransformersRuntime.isModelFolder(folder) { found[folder.resolvingSymlinksInPath().path] = TransformersRuntime.describe(folder, source: name) }
             }
         }
         return found.values.sorted { ($0.startable ? 0 : 1, $0.name.lowercased()) < ($1.startable ? 0 : 1, $1.name.lowercased()) }
@@ -199,6 +211,7 @@ public final class ModelServer {
     /// Starts the model and waits until the server lists it, up to five minutes. Progress carries the last log line while it loads.
     public static func start(_ model: LocalModel, runtime: String, context: Int? = nil, cpuOnly: Bool = false, progress: @escaping (String) -> Void) async throws -> ModelServer {
         guard model.startable else { throw MasonError("\(model.name) is not a chat model: \(model.verdict).") }
+        if model.transformers { return try await startTransformers(model, context: context, cpuOnly: cpuOnly, progress: progress) }
         guard let port = await freePort() else { throw MasonError("Ports 18310–18329 on this computer are all in use.") }
         let tokens = context ?? MemoryFit.context(weights: model.bytes)
         let alias = "mason-" + UUID().uuidString.prefix(8).lowercased()
@@ -235,6 +248,44 @@ public final class ModelServer {
         throw MasonError("\(model.name) did not finish loading in five minutes. Log: \(log.path)")
     }
 
+    /// Serves a folder of Transformers weights with the Python program that ships with Mason. Loading large weights can
+    /// take minutes, so this waits up to fifteen.
+    static func startTransformers(_ model: LocalModel, context: Int?, cpuOnly: Bool, progress: @escaping (String) -> Void) async throws -> ModelServer {
+        guard let script = TransformersRuntime.scriptFolder() else { throw MasonError("The Transformers server that ships with Mason was not found.") }
+        guard let python = TransformersRuntime.python() else { throw MasonError("No python3 was found. Install Python with PyTorch and Transformers, or choose one with /models python PATH.") }
+        guard let port = await freePort() else { throw MasonError("Ports 18310–18329 on this computer are all in use.") }
+        let alias = "mason-" + UUID().uuidString.prefix(8).lowercased()
+        let folder = DataHome.url.appendingPathComponent("model-servers")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let log = folder.appendingPathComponent(alias + ".log"), manifest = folder.appendingPathComponent(alias + ".json"), runFile = folder.appendingPathComponent(alias + ".run")
+        _ = FileManager.default.createFile(atPath: log.path, contents: nil)
+        _ = FileManager.default.createFile(atPath: runFile.path, contents: nil)
+        let watcher = "run=\"$1\"; shift; \"$@\" & child=$!; while kill -0 $PPID 2>/dev/null && kill -0 $child 2>/dev/null && [ -e \"$run\" ]; do sleep 0.5; done; kill -9 $child 2>/dev/null; rm -f \"$run\"; wait $child 2>/dev/null"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", watcher, "mason-model", runFile.path] + TransformersRuntime.command(model, python: python, script: script, alias: alias, device: TransformersRuntime.device(cpuOnly: cpuOnly), port: port, context: context ?? 8192, manifest: manifest)
+        let output = try FileHandle(forWritingTo: log)
+        process.standardOutput = output; process.standardError = output; process.standardInput = FileHandle.nullDevice
+        do { try process.run() } catch { throw MasonError("Python could not start: \(error.localizedDescription)") }
+        let endpoint = ModelEndpoint(url: "http://127.0.0.1:\(port)/", model: alias)
+        let deadline = Date().addingTimeInterval(900)
+        while Date() < deadline {
+            if Task.isCancelled { try? FileManager.default.removeItem(at: runFile); throw CancellationError() }
+            let status = TransformersRuntime.status(manifest)
+            guard process.isRunning, !status.failed else {
+                try? FileManager.default.removeItem(at: runFile)
+                throw MasonError(status.text.isEmpty ? "Python stopped while loading \(model.name). " + lastLines(of: log) : status.text)
+            }
+            if let listed = await OpenAIClient.models(at: endpoint.url, timeout: 1), listed.contains(alias) {
+                return ModelServer(model: model, endpoint: endpoint, context: status.context ?? context ?? 8192, log: log, runFile: runFile, process: process)
+            }
+            progress(status.text)
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        }
+        try? FileManager.default.removeItem(at: runFile)
+        throw MasonError("\(model.name) did not finish loading in fifteen minutes. Log: \(log.path)")
+    }
+
     static func lastLines(of log: URL, count: Int = 4) -> String {
         guard let data = try? Data(contentsOf: log) else { return "" }
         return String(decoding: data.suffix(4000), as: UTF8.self).split(separator: "\n").suffix(count).joined(separator: " · ")
@@ -265,6 +316,8 @@ public struct Preferences: Codable {
     public var lastEndpoint: ModelEndpoint?
     public var lastModelPath: String?
     public var lastContext: Int?
+    /// The Python that serves Transformers models, when the user chose one.
+    public var python: String?
 
     static var file: URL { DataHome.url.appendingPathComponent("preferences.json") }
     public static func load() -> Preferences {

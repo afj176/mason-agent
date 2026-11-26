@@ -81,6 +81,39 @@ struct Turn {
     std::optional<Verification> verification;
 };
 
+/// A note on one line of a file. `revision` is the file's SHA-256 when the note was made; a note on a line the
+/// request removed (`original`) quotes the old text and is located by its old line number.
+struct ReviewComment {
+    std::string id = new_id();
+    std::string path, revision;
+    bool original = false;
+    int line = 0;
+    std::string quote, note;
+};
+
+/// A window of another app, as the user attached it to a session.
+struct DesktopWindow {
+    int pid = 0;
+    std::string app, title;
+};
+
+struct MilestoneReceipt {
+    std::string id = new_id();
+    std::string at = now_iso();
+    std::string revision, detail;
+    bool manual = false;  ///< True when a person recorded what they saw; false when a workflow passed.
+};
+
+/// One step of a saved plan: what it decides, the files it covers, what must come first, and how it is checked
+/// (a workflow from mason.workflows.json, or by the user recording what they saw).
+struct Milestone {
+    std::string id = new_id();
+    std::string title, decision;
+    std::vector<std::string> files, depends_on;
+    std::string workflow;
+    std::optional<MilestoneReceipt> receipt;
+};
+
 struct Session {
     std::string id = new_id();
     std::string title = "New session";
@@ -103,6 +136,12 @@ struct Session {
     int compactions = 0;
     /// Follow-ups waiting their turn, oldest first. "/queue" resumes them after a stop.
     std::vector<FollowUp> pending_input;
+    /// Comments on lines of the project, sent with the next request.
+    std::vector<ReviewComment> comments;
+    /// The saved plan, if the user made one.
+    std::vector<Milestone> milestones;
+    /// The window of another app the user attached, which Mason may read and, with approval, operate.
+    std::optional<DesktopWindow> desktop;
 };
 
 json message_json(const ChatMessage& message);

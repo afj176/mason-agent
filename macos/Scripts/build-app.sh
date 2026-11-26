@@ -21,6 +21,9 @@ sed "s/__VERSION__/$VERSION/g" Packaging/Info.plist > "$APP/Contents/Info.plist"
 cp ../LICENSE ../THIRD-PARTY-NOTICES.md "$APP/Contents/Resources/"
 # The mascot, for the brand mark, Mason's answers and the welcome page.
 cp Packaging/mascot.png Packaging/welcome.png "$APP/Contents/Resources/"
+# The Python program that serves Transformers weights, and the list of architectures it accepts.
+mkdir -p "$APP/Contents/Resources/transformers"
+cp ../windows/scripts/Serve-Transformers.py ../windows/scripts/ModelAdapters.json "$APP/Contents/Resources/transformers/"
 
 # App icon from the brand kit's largest square mark.
 ICON_SOURCE="../brand/logo-kit/favicon/android-chrome-512x512.png"

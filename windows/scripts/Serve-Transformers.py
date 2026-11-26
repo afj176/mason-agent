@@ -109,7 +109,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", required=True)
     parser.add_argument("--model-id", required=True)
-    parser.add_argument("--device", choices=("cuda", "cpu"), required=True)
+    parser.add_argument("--device", choices=("cuda", "cpu", "mps"), required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--context", type=int, default=4096)
     parser.add_argument("--manifest", required=True)
@@ -141,6 +141,10 @@ def main():
             raise ValueError("Choose a Python environment with PyTorch, Transformers and this tokenizer's dependencies already installed in Models → Setup.") from error
         if args.device == "cuda" and not torch.cuda.is_available():
             raise ValueError("CUDA is unavailable in this Python environment. Choose CPU or select a CUDA-enabled Python runtime in Setup.")
+        if args.device == "mps" and not torch.backends.mps.is_available():
+            raise ValueError("The Apple GPU (MPS) is unavailable in this Python environment. Choose CPU, or install a PyTorch build with MPS support.")
+        if args.device == "mps" and quant:
+            raise ValueError("Packed GPTQ/AWQ checkpoints run on CUDA or CPU. Choose CPU on this Mac, or use an unquantized checkpoint.")
         torch.set_num_threads(4)
         if quant:
             try:
@@ -171,7 +175,7 @@ def main():
         if args.check_only:
             return
         status("Loading local weights into GPU memory…" if args.device == "cuda" else "Loading local weights into system memory…")
-        dtype = (torch.float16 if args.device == "cuda" else torch.bfloat16) if quant else (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16) if args.device == "cuda" else torch.float32
+        dtype = (torch.float16 if args.device == "cuda" else torch.bfloat16) if quant else (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16) if args.device == "cuda" else torch.float16 if args.device == "mps" else torch.float32
         # Pass a fresh generation config later: repository custom_generate and generation overrides are not used.
         concrete = model_class._model_mapping[type(config)]
         attention = "sdpa" if getattr(concrete, "_supports_sdpa", False) else "eager"

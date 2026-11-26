@@ -5,11 +5,14 @@ It speaks the OpenAI-compatible streaming protocol Mason uses and always decides
 a request mentioning "shell" runs one command, any other request writes hello.txt, and once a
 tool result has come back it answers "Done." A request without tools gets a one-line summary. Usage: stub-model.py PORT
 
+A request "In the window, press NAME" reads the attached window and presses the control with that name.
+
 A request that mentions "importer" plays a short, realistic session instead (read a file, fix it, add a test, run
 the tests, explain), for screenshots of the apps. It expects the project made by Scripts/demo-project.sh.
 """
 import json
 import os
+import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -54,6 +57,17 @@ def decide(messages):
     done = sum(1 for m in messages[last_user + 1:] if m.get("role") == "tool")
     if last_user >= 0 and "importer" in str(messages[last_user].get("content", "")).rsplit("\n\n", 1)[-1].lower():
         return DEMO_STEPS[done] if done < len(DEMO_STEPS) else DEMO_ANSWER
+    typed = str(messages[last_user].get("content", "")).rsplit("\n\n", 1)[-1].strip() if last_user >= 0 else ""
+    if typed.lower().startswith("in the window, press "):
+        # Reads the attached window, then presses the control with that name.
+        wanted = typed[len("in the window, press "):].strip(" .")
+        results = [str(m.get("content", "")) for m in messages[last_user + 1:] if m.get("role") == "tool"]
+        if not results:
+            return "desktop_observe", {}
+        if len(results) == 1:
+            match = re.search(r"(c\d+) \u00b7 [^\n\u00b7]* \u00b7 " + re.escape(wanted) + r"\s+\[[^\]\n]*invoke", results[0], re.I)
+            return ("desktop_act", {"operation": "invoke", "id": match.group(1), "value": ""}) if match else "The window has no control named " + wanted + "."
+        return "Pressed " + wanted + "."
     if done:
         return None
     # Notes Mason adds (an undo, a summary, an agent's instructions) come first; what was typed is the last paragraph.

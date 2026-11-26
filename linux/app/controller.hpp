@@ -12,7 +12,10 @@
 #include <glibmm/dispatcher.h>
 #include <sigc++/sigc++.h>
 
+#include "acceptance.hpp"
 #include "agent.hpp"
+#include "transfer.hpp"
+#include "planning.hpp"
 #include "models.hpp"
 
 namespace mason::app {
@@ -77,6 +80,35 @@ public:
     /// A system notification for something that happened while the window was in the background.
     sigc::signal<void(const std::string& title, const std::string& body)> notification;
 
+    // ---- comments and milestones ----
+    /// Pins a note to a line of a diff. It is sent with the next request. Returns false when it could not be added.
+    bool add_comment(const std::string& path, const DiffLine& row, const std::string& note);
+    void remove_comment(const std::string& id);
+    std::vector<MilestoneStatus> milestone_status() const;
+    std::vector<std::string> workflow_names() const;
+    bool put_milestone(const Milestone& item);
+    void remove_milestone(const std::string& id);
+    /// Runs the milestone's workflow, or records what the user saw.
+    void check_milestone(const std::string& id, const std::string& observation);
+    std::string milestone_busy;  ///< The milestone whose check is running, or empty.
+    /// Has the model read what this session changed. What it finds is pinned as comments, to go with the next request.
+    void review_changes();
+    bool reviewing = false;
+
+    // ---- fork, export and import ----
+    /// Opens a new session holding the conversation before this request. The request is left in `forked_request`
+    /// for the window to put back in the request box.
+    void fork_session(const std::string& turn_id, bool restore_files);
+    std::string forked_request;
+    void export_session(const std::string& id, const std::string& path, bool sanitize);
+    void import_session(const std::string& path, const std::string& workspace);
+
+    // ---- an attached window ----
+    /// The windows of other apps, or none when the accessibility service is not answering.
+    std::vector<DesktopWindow> open_windows();
+    /// Attaches a window to the session, or detaches with nothing.
+    void attach_window(const std::optional<DesktopWindow>& window);
+
     // ---- chat ----
     const std::vector<ChatConversation>& chats() const { return chats_; }
     const ChatConversation* chat() const;
@@ -122,13 +154,16 @@ private:
     void post(std::function<void()> work);
     void drain();
     void replace(const Session& session);
+    /// Saves a changed session and shows it.
+    void keep(Session& session);
     /// Starts model-page work on a thread. `work` gets a progress callback and a cancel token; `done` runs on the main thread.
     void model_task(const std::string& label, std::function<std::function<void()>(const std::function<void(const std::string&)>&, const CancelToken&)> work);
 
     std::unique_ptr<SessionStore> store_;
     std::unique_ptr<ChatStore> chat_store_;
     std::vector<ChatConversation> chats_;
-    std::thread chat_thread_, schedule_thread_, mcp_thread_;
+    std::thread chat_thread_, schedule_thread_, mcp_thread_, plan_thread_;
+    CancelToken plan_cancel_;
     bool schedules_running_ = false;
     CancelToken schedule_cancel_;
     sigc::connection schedule_timer_;

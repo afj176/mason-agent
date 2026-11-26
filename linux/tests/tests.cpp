@@ -3,13 +3,17 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <csignal>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include "agent.hpp"
+#include "transfer.hpp"
+#include "acceptance.hpp"
 #include "browser.hpp"
+#include "planning.hpp"
 #include "chat.hpp"
 #include "schedules.hpp"
 #include "models.hpp"
@@ -944,6 +948,8 @@ static void test_browser() {
     const browser::Result good = browser::run(workspace, "site/index.html", steps);
     CHECK(good.passed() && good.title == "Counter" && good.steps.size() == 5 && good.text.find("Total 2 for Ada") != std::string::npos);
     CHECK(starts_with(browser::report(good, "site/index.html"), "PASSED: site/index.html"));
+    CHECK(good.controls == (std::vector<std::string>{"#name | input | Name", "button | button | Add"}));
+    CHECK(browser::report(good, "site/index.html").find("Controls (selector | kind | label):\n  #name | input | Name") != std::string::npos);
 
     const browser::Result missing = browser::run(workspace, "site/index.html", json::array({{{"action", "click"}, {"text", "Remove"}}, {{"action", "expect_text"}, {"text", "never"}}}));
     CHECK(!missing.passed() && missing.steps.size() == 1 && !missing.steps[0].ok);
@@ -962,6 +968,455 @@ static void test_browser() {
     CHECK(asked == std::vector<std::string>{"site/index.html", "site/broken.html"});
     CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && session.activities[1].state == "failed");
     CHECK(session.activities[1].result.find("Script errors:") != std::string::npos);
+}
+
+/// Embeds text as counts of a few known words, so ranking is predictable.
+struct WordModels : SemanticModels {
+    bool reranks = false;
+    size_t embedded = 0;
+    std::string identity() const override { return "words"; }
+    bool can_rerank() const override { return reranks; }
+    std::vector<std::vector<float>> embed(const std::vector<std::string>& texts, const CancelToken&) override {
+        embedded += texts.size();
+        std::vector<std::vector<float>> vectors;
+        for (const std::string& text : texts) {
+            std::vector<float> vector;
+            const std::string lower = to_lower(text);
+            for (const char* word : {"invoice", "total", "tax", "login", "password", "color"}) {
+                float count = 0;
+                for (size_t at = lower.find(word); at != std::string::npos; at = lower.find(word, at + 1)) count++;
+                vector.push_back(count);
+            }
+            vector.push_back(0.01f);
+            vectors.push_back(vector);
+        }
+        return vectors;
+    }
+    std::vector<double> rerank(const std::string&, const std::vector<std::string>& documents, const CancelToken&) override {
+        std::vector<double> scores;
+        for (const std::string& document : documents) scores.push_back(document.find("File: auth.py") != std::string::npos ? 9 : 0);
+        return scores;
+    }
+};
+
+static void test_planning() {
+    const auto approve = [](const ApprovalRequest&) { return true; };
+    const auto quiet = [](const AgentEvent&) {};
+    const auto states = [](const Workspace& workspace, const std::vector<Milestone>& plan) {
+        std::vector<std::string> found;
+        for (const MilestoneStatus& status : milestones::inspect(workspace, plan)) found.push_back(status.state);
+        return found;
+    };
+    using Names = std::vector<std::string>;
+
+    // Comments travel with the next request while their files are unchanged.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+        CHECK_THROWS(review::comment(workspace, "calc.py", 3, "x"));
+        CHECK_THROWS(review::comment(workspace, "calc.py", 1, "  "));
+        const ReviewComment made = review::comment(workspace, "calc.py", 2, "This subtracts.");
+        CHECK(made.quote == "    return a - b");
+        const ReviewComment removed = review::comment(workspace, "calc.py", 7, "Why was this removed?", std::string("old()"));
+        CHECK(review::location(removed) == "calc.py · original line 7");
+        session.comments = {made, removed};
+        ScriptedModel model;
+        model.replies = {say("Fixed."), say("Again.")};
+        Agent(store, model, approve, quiet).run(session, "Fix it");
+        const std::string sent = model.seen[0].back().content;
+        CHECK(starts_with(sent, "Fix it\ncalc.py · updated line 2 (return a - b) — This subtracts.\ncalc.py · original line 7 (old()) — Why was this removed?"));
+        CHECK(session.comments.empty() && session.turns[0].request == sent);
+
+        session.comments = {review::comment(workspace, "calc.py", 1, "Rename it.")};
+        box.write("calc.py", "def add(a, b):\n    return a + b\n");
+        Agent(store, model, approve, quiet).run(session, "");
+        CHECK(session.state == "Failed" && session.detail.find("changed since the comment was written") != std::string::npos && session.comments.size() == 1);
+        session.comments = {review::comment(workspace, "calc.py", 1, "Rename it.")};
+        store.save(session);
+        CHECK(SessionStore(box.home).sessions().front().comments.size() == 1);  // comments are saved with the session
+        Agent(store, model, approve, quiet).run(session, " ");
+        CHECK(session.state == "Completed" && starts_with(model.seen[1].back().content, "Address these review comments.\ncalc.py · updated line 1"));
+
+        // The typed form.
+        CHECK(starts_with(review::command("", workspace, session), "No comments are waiting."));
+        CHECK_THROWS(review::command("calc.py nothing", workspace, session));
+        CHECK(review::command("calc.py:2 Use plus here.", workspace, session) == "Noted on calc.py · updated line 2: return a + b");
+        CHECK(starts_with(review::command("", workspace, session), "1. calc.py · updated line 2 — Use plus here."));
+        CHECK(review::command("remove 1", workspace, session) == "Dropped the comment on calc.py · updated line 2." && session.comments.empty());
+    }
+
+    // Milestones follow the files they cover.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        box.write("mason.workflows.json", R"({"version": 1, "workflows": {"tests": {"executable": "sh", "arguments": ["-c", "grep -q 'a + b' calc.py"]}}})");
+        std::vector<Milestone> plan;
+        Milestone first;
+        first.title = "Add works"; first.decision = "Use +"; first.files = {"./calc.py"}; first.workflow = "tests";
+        Milestone bad = first;
+        bad.id = new_id(); bad.title = "";
+        CHECK_THROWS(milestones::put(workspace, plan, bad));
+        bad.title = "Outside"; bad.files = {"../x"};
+        CHECK_THROWS(milestones::put(workspace, plan, bad));
+        plan = milestones::put(workspace, plan, first);
+        CHECK(plan[0].files == Names{"calc.py"});
+        Milestone second;
+        second.title = "Docs"; second.files = {"calc.py"}; second.depends_on = {first.id};
+        plan = milestones::put(workspace, plan, second);
+        first.depends_on = {second.id};
+        CHECK_THROWS(milestones::put(workspace, plan, first));  // a circle is refused
+        CHECK(states(workspace, plan) == (Names{"Ready", "Blocked"}));
+        CHECK(milestones::context(workspace, plan).find("Next: Add works") != std::string::npos);
+
+        CHECK_THROWS(milestones::check(workspace, plan[0], plan, false, false, ""));  // Mason may not run the workflow
+        CHECK_THROWS(milestones::check(workspace, plan[0], plan, true, false, ""));   // the workflow fails
+        CHECK_THROWS(milestones::check(workspace, plan[1], plan, true, false, "Looks right"));  // blocked by its prerequisite
+        box.write("calc.py", "def add(a, b):\n    return a + b\n");
+        plan[0].receipt = milestones::check(workspace, plan[0], plan, true, false, "");
+        CHECK(states(workspace, plan) == (Names{"Verified", "Ready"}));
+        CHECK_THROWS(milestones::check(workspace, plan[1], plan, true, false, ""));  // a manual check needs an observation
+        plan[1].receipt = milestones::check(workspace, plan[1], plan, false, false, "Read the docstring.");
+        CHECK(states(workspace, plan) == (Names{"Verified", "Reviewed"}));
+        box.write("calc.py", "def add(a, b):\n    return a + b  # sum\n");
+        CHECK(states(workspace, plan) == (Names{"Needs recheck", "Blocked"}));
+        plan = milestones::remove(plan[0].id, plan);
+        CHECK(plan.size() == 1 && states(workspace, plan) == (Names{"Ready"}));
+
+        // The model is told the plan, and the plan is saved with the session.
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::ReadOnly);
+        session.milestones = plan;
+        ScriptedModel model;
+        model.replies = {say("Ok.")};
+        Agent(store, model, approve, quiet).run(session, "What is next?");
+        CHECK(model.seen[0][0].content.find("The user's saved milestones") != std::string::npos && model.seen[0][0].content.find("- Docs [Ready]") != std::string::npos);
+        const std::vector<Session> saved = SessionStore(box.home).sessions();
+        CHECK(saved.front().milestones.size() == 1 && saved.front().milestones[0].title == "Docs");
+
+        // The typed form.
+        Session typed = store.create(workspace.root(), Permission::ReviewEdits);
+        box.write("mason.workflows.json", R"({"version": 1, "workflows": {"tests": {"executable": "sh", "arguments": ["-c", "true"]}}})");
+        CHECK(milestones::command("add Add works | calc.py | workflow tests | decision Use plus", workspace, typed, box.home) == "Added milestone 1: Add works");
+        milestones::command("add Documented | calc.py | after 1", workspace, typed, box.home);
+        CHECK_THROWS(milestones::command("add Bad | calc.py | workflow missing", workspace, typed, box.home));
+        const std::string listed = milestones::command("", workspace, typed, box.home);
+        CHECK(listed.find("1. [Ready] Add works  ·  calc.py  ·  workflow tests") != std::string::npos && listed.find("2. [Blocked] Documented  ·  calc.py  ·  after 1") != std::string::npos);
+        CHECK_THROWS(milestones::command("check 1", workspace, typed, box.home));  // outside Auto a workflow needs a saved rule
+        ApprovalRules(box.home, typed.workspace).add("run_workflow", "workflow tests");
+        CHECK(milestones::command("check 1", workspace, typed, box.home) == "Add works: Verified.");
+        CHECK(milestones::command("check 2 Read it through.", workspace, typed, box.home) == "Documented: Reviewed.");
+        milestones::command("remove 1", workspace, typed, box.home);
+        CHECK(typed.milestones.size() == 1 && typed.milestones[0].title == "Documented" && typed.milestones[0].depends_on.empty());
+    }
+
+    // Code is found by meaning, with each passage embedded once.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        box.write("billing.py", "def invoice_total(items):\n    # the invoice total with tax\n    return sum(items) * 1.2\n");
+        box.write("auth.py", "def login(user, password):\n    # check the password for a login\n    return user == 'ada'\n");
+        box.write("node_modules/x/invoice.js", "function invoice() { return 'invoice invoice invoice total total'; }\n");
+        box.write("logo.png", "invoice total invoice total invoice total");
+        auto models = std::make_shared<WordModels>();
+        const SemanticResult result = semantic::search(workspace, *models, "where is the invoice total and tax worked out");
+        CHECK(!result.hits.empty() && result.hits[0].path == "billing.py" && result.hits[0].start_line == 1 && result.files == 3);
+        for (const SemanticHit& hit : result.hits) CHECK(hit.path.find("node_modules") == std::string::npos && !ends_with(hit.path, ".png"));
+        CHECK(result.report().find("billing.py lines 1–") != std::string::npos && result.report().find("invoice_total") != std::string::npos);
+        const size_t first = models->embedded;
+        semantic::search(workspace, *models, "login");
+        CHECK(models->embedded == first + 1);  // only the new question is embedded the second time
+        models->reranks = true;
+        const SemanticResult reordered = semantic::search(workspace, *models, "invoice total");
+        CHECK(reordered.reranked && reordered.hits[0].path == "auth.py");  // the reranker's order wins
+        models->reranks = false;
+        std::string hundred;
+        for (int i = 1; i <= 100; i++) hundred += "line number " + std::to_string(i) + (i < 100 ? "\n" : "");
+        const std::vector<semantic::Chunk> pieces = semantic::chunks("a.py", hundred);
+        CHECK(pieces.size() == 3 && pieces[0].start == 1 && pieces[1].start == 33 && pieces[2].start == 65);
+
+        // The tool is offered only when an embeddings server is chosen, and the agent can call it.
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::ReadOnly);
+        const auto offered = [&](bool semantic) {
+            for (const ToolSpec& tool : Agent::extra_tools(session, workspace, semantic)) {
+                if (tool.name == "semantic_search") return true;
+            }
+            return false;
+        };
+        CHECK(!offered(false) && offered(true));
+        CHECK(!semantic::load(box.home));
+        CHECK_THROWS(semantic::save(EmbeddingSettings{"ftp://x", "m", "", "", ""}, box.home));
+        CHECK(starts_with(semantic::command("", box.home), "Code search by meaning is off"));
+        CHECK_THROWS(semantic::command("http://example.com/ m", box.home));  // only servers on this computer
+        semantic::command("http://127.0.0.1:9/ embed", box.home);
+        semantic::command("rerank http://127.0.0.1:9/ ranker", box.home);
+        CHECK(semantic::load(box.home) == std::optional<EmbeddingSettings>(EmbeddingSettings{"http://127.0.0.1:9/", "embed", "", "http://127.0.0.1:9/", "ranker"}));
+        CHECK_THROWS(semantic::command("test", box.home));  // nothing answers on that port
+        semantic::command("off", box.home);
+        CHECK(!semantic::load(box.home));
+        ScriptedModel model;
+        model.replies = {call("semantic_search", {{"query", "invoice total"}, {"path", "."}}), say("Found.")};
+        Agent agent(store, model, approve, quiet);
+        agent.set_semantic(models);
+        agent.run(session, "Where are totals?");
+        CHECK(session.activities.size() == 1 && session.activities[0].state == "completed" && session.activities[0].result.find("billing.py lines") != std::string::npos);
+    }
+}
+
+static void test_transformers() {
+    // A stand-in for Python: it writes the status file the real server writes, then serves the stub model.
+    Sandbox box;
+    const fs::path folder = box.base / "hub" / "models--acme--tiny-coder" / "snapshots" / "abc", scripts = box.base / "scripts";
+    fs::create_directories(folder);
+    fs::create_directories(scripts);
+    for (const char* name : {"config.json", "tokenizer_config.json", "tokenizer.json"}) std::ofstream(folder / name) << "{}";
+    std::ofstream(folder / "model.safetensors") << std::string(4096, '\0');
+    std::ofstream(scripts / "Serve-Transformers.py") << "# stand-in";
+    const fs::path stub = fs::path(__FILE__).parent_path().parent_path().parent_path() / "macos" / "Tests" / "stub-model.py";
+    const fs::path python = box.base / "fake-python";
+    std::ofstream(python) << "#!/bin/sh\n"
+                             "while [ $# -gt 0 ]; do case \"$1\" in --model-id) id=\"$2\"; shift;; --port) port=\"$2\"; shift;; --manifest) manifest=\"$2\"; shift;; --model-dir) dir=\"$2\"; shift;; --check-only) check=1;; esac; shift; done\n"
+                             "if [ -f \"$dir/broken\" ]; then printf '{\"status\": \"Tokenizer files are missing. Use the complete local model folder.\", \"error\": true}' > \"$manifest\"; exit 1; fi\n"
+                             "printf '{\"status\": \"Setup ready.\", \"contextTokens\": 2048}' > \"$manifest\"\n"
+                             "[ -n \"$check\" ] && exit 0\n"
+                             "STUB_NAME=\"$id\" exec python3 '" + stub.string() + "' \"$port\"\n";
+    fs::permissions(python, fs::perms::owner_all);
+    setenv("MASON_TRANSFORMERS_DIR", scripts.c_str(), 1);
+    setenv("MASON_PYTHON", python.c_str(), 1);
+    setenv("MASON_DATA_HOME", (box.base / "data").c_str(), 1);
+
+    const std::vector<LocalModel> listed = scan_models({{"Hugging Face cache", box.base / "hub"}});
+    CHECK(listed.size() == 1 && listed[0].name == "acme/tiny-coder" && listed[0].transformers && listed[0].startable() && listed[0].bytes == 4096);
+    CHECK(listed[0].verdict() == "Coding agent · Transformers weights · runs through Python with PyTorch");
+    CHECK_THROWS(transformers::model_at(box.base.string()));  // a folder without weights is not a model
+    CHECK(transformers::model_at(folder.string()).name == "acme/tiny-coder");
+    if (listed.empty() || !fs::exists(stub) || access("/usr/bin/python3", X_OK) != 0) {
+        std::cout << "  (python3 or the stub model is missing: serving was not run)\n";
+    } else {
+        CHECK(starts_with(transformers::check(listed[0]), "Setup ready. Context: 2048 tokens."));
+        {
+            const std::unique_ptr<ModelServer> server = ModelServer::start(listed[0], "", 0, false, nullptr);
+            CHECK(server->context == 2048);  // the context the server settled on
+            const auto names = OpenAIClient::models(server->endpoint.url);
+            CHECK(names && *names == std::vector<std::string>{server->endpoint.model});
+            const std::string url = server->endpoint.url;
+            server->stop();
+            bool gone = false;
+            for (int i = 0; i < 40 && !gone; i++) {
+                gone = !OpenAIClient::models(url, "", 0.3);
+                if (!gone) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            CHECK(gone);  // stopping ends the Python process
+        }
+        // What the Python program reports is what the user is told.
+        std::ofstream(folder / "broken") << "";
+        std::string said;
+        try { ModelServer::start(listed[0], "", 0, false, nullptr); } catch (const Error& error) { said = error.what(); }
+        CHECK(said == "Tokenizer files are missing. Use the complete local model folder.");
+    }
+    unsetenv("MASON_TRANSFORMERS_DIR");
+    unsetenv("MASON_PYTHON");
+    unsetenv("MASON_DATA_HOME");
+}
+
+/// A window with a text field, a button and a label that shows what was last saved.
+struct FakeDesktop : DesktopAutomation {
+    bool trusted = true;
+    std::string field, saved;
+    std::vector<std::string> acted;
+    DesktopWindow window{42, "Notes", "Shopping"};
+    std::string unavailable() override { return trusted ? "" : "The accessibility service is not answering."; }
+    std::vector<DesktopWindow> windows() override { return {DesktopWindow{43, "Calculator", "Calculator"}, window}; }
+    std::vector<DesktopControl> observe(const DesktopWindow&) override {
+        return {{"c1", "text", "Item", field, false, true}, {"c2", "push button", "Save", "", true, false}, {"c3", "label", "", saved.empty() ? "Nothing saved" : "Saved " + saved, false, false}};
+    }
+    void act(const DesktopWindow&, const std::string& control, const std::string& operation, const std::string& value) override {
+        acted.push_back(operation + " " + control + " " + value);
+        if (control == "c1") field = value; else saved = field;
+    }
+};
+
+static void test_desktop() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+    auto desktop = std::make_shared<FakeDesktop>();
+    const auto names = [](const std::vector<ToolSpec>& tools) {
+        std::vector<std::string> found;
+        for (const ToolSpec& tool : tools) found.push_back(tool.name);
+        return found;
+    };
+    using Names = std::vector<std::string>;
+
+    // Attaching is the user's act; without a window the tools are not offered.
+    CHECK(Agent::desktop_tools(session, true).empty());
+    CHECK(starts_with(desktop::command("", session, desktop), "1. Calculator\n2. Notes — Shopping\nAttach one with /window NUMBER."));
+    CHECK_THROWS(desktop::command("9", session, desktop));
+    CHECK(starts_with(desktop::command("2", session, desktop), "Attached Notes — Shopping."));
+    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe", "desktop_act"}) && Agent::desktop_tools(session, false).empty());
+    desktop->trusted = false;
+    CHECK_THROWS(desktop::command("", session, desktop));  // a missing service is said plainly
+    desktop->trusted = true;
+    store.save(session);
+    CHECK(SessionStore(box.home).sessions().front().desktop && SessionStore(box.home).sessions().front().desktop->title == "Shopping");
+
+    const auto act = [](const char* operation, const char* id, const char* value) { return call("desktop_act", {{"operation", operation}, {"id", id}, {"value", value}}); };
+    ScriptedModel model;
+    model.replies = {act("set", "c1", "Milk"), call("desktop_observe", json::object()), act("set", "c1", "Milk"), act("invoke", "c2", ""), act("invoke", "c3", ""), act("invoke", "c2", ""), say("Saved.")};
+    std::vector<std::string> asked;
+    std::deque<bool> answers = {true, true, false};
+    Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.title); const bool answer = answers.front(); answers.pop_front(); return answer; }, [](const AgentEvent&) {});
+    agent.set_desktop(desktop);
+    agent.run(session, "Add milk to the list");
+    CHECK(model.seen[0][0].content.find("The user attached a window of another app: Notes — Shopping.") != std::string::npos);
+    Names states;
+    for (const Activity& activity : session.activities) states.push_back(activity.state);
+    // An action needs an observation first, a control that accepts it, and the user's yes.
+    CHECK(states == (Names{"failed", "completed", "completed", "completed", "failed", "denied"}));
+    CHECK(session.activities[1].result.find("c1 · text · Item  [set]") != std::string::npos && session.activities[1].result.find("c2 · push button · Save  [invoke]") != std::string::npos);
+    // It asks every time, even in Auto.
+    CHECK(asked == (Names{"Set text “Item” to “Milk” in Notes — Shopping", "Press push button “Save” in Notes — Shopping", "Press push button “Save” in Notes — Shopping"}));
+    CHECK(desktop->acted == (Names{"set c1 Milk", "invoke c2 "}));
+    CHECK(session.activities[3].result.find("c3 · label = Saved Milk") != std::string::npos);  // each action returns a fresh observation
+
+    // A read-only session may look but not touch.
+    session.permission = Permission::ReadOnly;
+    session.ask_only = true;
+    CHECK(names(Agent::desktop_tools(session, true)) == (Names{"desktop_observe"}));
+    CHECK(desktop::command("off", session, desktop) == "No window is attached to this session." && !session.desktop);
+}
+
+static void test_acceptance() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    // A small shop: three products, ten percent off at three units, and an order number that survives a reload.
+    box.write("index.html", R"html(<!doctype html><title>Shop</title><ul aria-label="Products"><li>Wrench</li><li>Hammer</li><li>Saw</li></ul>
+<input id="qty" value="1"><p id="total">Total: $10.00</p><button id="checkout">Check out</button><p id="order"></p>
+<script>
+var qty = document.getElementById('qty'), total = document.getElementById('total'), order = document.getElementById('order');
+qty.addEventListener('input', function () { var n = Number(qty.value) || 0, sum = n * 10; if (n >= 3) sum = sum * 0.9; total.textContent = 'Total: $' + sum.toFixed(2); });
+order.textContent = localStorage.getItem('order') || '';
+document.getElementById('checkout').onclick = function () { var id = 'ORD-' + (Number(localStorage.getItem('count') || 0) + 1); localStorage.setItem('count', id.slice(4)); localStorage.setItem('order', id); order.textContent = id; };
+</script>)html");
+    const auto contract = [](const std::string& discount) {
+        return R"({"Version": 1, "Scenarios": [
+          {"Id": "products", "Requirement": "List three distinct products", "Page": "index.html", "Steps": [{"Op": "count_distinct", "Target": "ul[aria-label='Products'] li", "Value": "3"}]},
+          {"Id": "discount", "Requirement": "Ten percent off at three units", "Page": "index.html",
+           "Steps": [{"Op": "fill", "Target": "#qty", "Value": "3"}, {"Op": "money", "Target": "#total", "Value": ")" + discount + R"("}, {"Op": "fill", "Target": "#qty", "Value": "2"}, {"Op": "money", "Target": "#total", "Value": "20.00"}]},
+          {"Id": "order", "Requirement": "Checkout makes an order number that survives a reload", "Page": "index.html",
+           "Steps": [{"Op": "empty", "Target": "#order", "Value": ""}, {"Op": "click", "Target": "#checkout", "Value": ""}, {"Op": "capture", "Target": "#order", "Value": "ORD-"},
+                     {"Op": "reload", "Target": "", "Value": ""}, {"Op": "same", "Target": "#order", "Value": ""}, {"Op": "click", "Target": "#checkout"}, {"Op": "new_id", "Target": "#order", "Value": "ORD-"}]}
+        ]})";
+    };
+
+    // A contract is checked before it is run.
+    const AcceptanceContract parsed = acceptance::parse(workspace, contract("27.00"));
+    CHECK(parsed.scenarios.size() == 3 && parsed.scenarios[2].steps.size() == 7 && parsed.application.empty());
+    const auto one = [](const std::string& page, const std::string& steps) { return R"({"Version": 1, "Scenarios": [{"Id": "a", "Requirement": "r", "Page": ")" + page + R"(", "Steps": [)" + steps + "]}]}"; };
+    CHECK_THROWS(acceptance::parse(workspace, R"({"Version": 2, "Scenarios": []})"));
+    CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "click", "Target": "#x"})")));  // must end with an assertion
+    CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "same", "Target": "#x"})")));   // nothing was captured to compare
+    CHECK_THROWS(acceptance::parse(workspace, one("../x.html", R"({"Op": "text", "Target": "#x", "Value": "y"})")));  // the page must be in the project
+    CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "hover", "Target": "#x"}, {"Op": "text", "Target": "#x", "Value": "y"})")));
+    CHECK_THROWS(acceptance::parse(workspace, one("index.html", R"({"Op": "money", "Target": "#x", "Value": "ten"})")));
+    CHECK_THROWS(acceptance::run(workspace, acceptance::parse(workspace, R"({"Version": 1, "Application": "store:application", "Scenarios": [{"Id": "a", "Requirement": "r", "Page": "index.html", "Steps": [{"Op": "text", "Target": "#x", "Value": "y"}]}]})")));
+
+    // A review keeps only findings that quote the line they name.
+    {
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        CHECK_THROWS(review::findings(session, workspace, model));  // nothing was changed yet
+        Turn turn;
+        turn.request = "Add an add function";
+        turn.changes.push_back({"calc.py", std::nullopt, "def add(a, b):\n    return a - b\n"});
+        session.turns.push_back(turn);
+        model.replies = {say(R"(Here is what I found:
+[{"path": "calc.py", "line": 2, "evidence": "return a - b", "problem": "It subtracts instead of adding."},
+ {"path": "calc.py", "line": 1, "evidence": "return a - b", "problem": "Quoted from the wrong line."},
+ {"path": "other.py", "line": 1, "evidence": "x", "problem": "A file that was not changed."}])"), say("[]")};
+        const ReviewFindings found = review::findings(session, workspace, model);
+        CHECK(found.comments.size() == 1 && review::location(found.comments[0]) == "calc.py · updated line 2" && found.comments[0].note == "It subtracts instead of adding." && found.dropped == 2);
+        CHECK(model.seen[0][1].content.find("2\t    return a - b") != std::string::npos);  // the model reads numbered lines
+        CHECK(starts_with(review::summary(found), "The review found 1 thing in calc.py:\ncalc.py · updated line 2 — It subtracts instead of adding.\n2 findings were left out"));
+        review::validate(workspace, found.comments);  // a finding is a comment that can be sent
+        CHECK(review::summary(review::findings(session, workspace, model)) == "The review of calc.py found nothing to report.");
+    }
+
+    if (browser::find().empty()) {
+        std::cout << "  (no browser on this computer: the scenarios were not run)\n";
+        return;
+    }
+    const std::vector<AcceptanceResult> passed = acceptance::run(workspace, parsed);
+    CHECK(passed.size() == 3 && passed[0].passed && passed[1].passed && passed[2].passed);
+    if (passed.size() == 3 && !(passed[0].passed && passed[1].passed && passed[2].passed)) std::cerr << acceptance::receipt(passed) << "\n";
+    CHECK(starts_with(acceptance::receipt(passed), "3 of 3 acceptance scenarios passed, each at 390px and 1280px."));
+    CHECK(std::find(passed[1].detail.begin(), passed[1].detail.end(), "money #total = Total: $27.00") != passed[1].detail.end());
+    CHECK(std::find(passed[2].detail.begin(), passed[2].detail.end(), "new_id #order = ORD-2") != passed[2].detail.end());
+    const std::vector<AcceptanceResult> failed = acceptance::run(workspace, acceptance::parse(workspace, contract("30.00")));
+    CHECK(failed[0].passed && !failed[1].passed && failed[2].passed);
+    CHECK(failed[1].detail == std::vector<std::string>{"at 390px, step 2, money #total: expected '30.00', observed 'Total: $27.00' (1 visible)"});
+
+    // The agent runs them as a tool, asking first outside Auto.
+    box.write(acceptance::kFilename, contract("27.00"));
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::ReviewEdits);
+    ScriptedModel model;
+    model.replies = {call("verify_acceptance", json::object()), say("All three hold.")};
+    std::vector<std::string> asked;
+    Agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); return true; }, [](const AgentEvent&) {}).run(session, "Check the shop");
+    CHECK(asked == std::vector<std::string>{"mason.acceptance.json"});
+    CHECK(session.activities.size() == 1 && session.activities[0].state == "completed");
+    CHECK(session.activities[0].result.find("PASSED order — Checkout makes an order number that survives a reload (index.html)") != std::string::npos);
+    CHECK(model.seen[0][0].content.find("acceptance scenarios in mason.acceptance.json") != std::string::npos);
+}
+
+static void test_transfer() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root(), Permission::Auto);
+    ScriptedModel model;
+    model.replies = {call("write_file", {{"path", "a.txt"}, {"content", "one\n"}}), say("Made a."),
+                     call("write_file", {{"path", "b.txt"}, {"content", "two\n"}}), say("Made b with api_key = hunter2secret."),
+                     call("write_file", {{"path", "a.txt"}, {"content", "changed\n"}}), say("Changed a.")};
+    Agent agent(store, model, [](const ApprovalRequest&) { return true; }, [](const AgentEvent&) {});
+    agent.run(session, "Make a");
+    agent.run(session, "Make b in " + workspace.root());
+    agent.run(session, "Change a");
+    CHECK(session.turns.size() == 3);
+    using Names = std::vector<std::string>;
+
+    // A fork holds the conversation before the request, and can put the files back as they were then.
+    CHECK_THROWS(transfer::fork(session, store, 7, false));
+    const SessionFork plain = transfer::fork(session, store, 2, false);
+    CHECK(plain.session.turns.size() == 2 && plain.request == "Change a" && plain.session.messages.back().content == "Made b with api_key = hunter2secret.");
+    CHECK(plain.session.activities.size() == 2 && plain.session.permission == Permission::ReviewEdits && ends_with(plain.session.title, " · fork"));
+    CHECK(box.read("a.txt") == "changed\n");  // files are left alone unless asked
+    box.write("b.txt", "edited by hand\n");
+    const SessionFork restored = transfer::fork(session, store, 1, true);
+    CHECK(restored.session.turns.size() == 1 && box.read("a.txt") == "one\n");  // the later change to a.txt was undone
+    CHECK(restored.restored == Names{"a.txt"} && restored.skipped == Names{"b.txt"});  // a file changed since is left alone and reported
+    CHECK(restored.session.detail.find("changed since and left alone: b.txt") != std::string::npos);
+    CHECK(!session.turns[0].undone && session.turns[1].undone && session.turns[2].undone);
+
+    // An export can leave out the project's path, likely secrets and file contents.
+    const std::string full = transfer::export_session(session, false);
+    CHECK(full.find("hunter2secret") != std::string::npos && full.find(workspace.root()) != std::string::npos);
+    const std::string clean = transfer::export_session(session, true);
+    CHECK(clean.find("hunter2secret") == std::string::npos && clean.find(workspace.root()) == std::string::npos && clean.find("changed\\n") == std::string::npos);
+    CHECK(clean.find("<redacted>") != std::string::npos && clean.find("<workspace>") != std::string::npos);
+
+    const fs::path other = box.base / "elsewhere";
+    fs::create_directories(other);
+    const Session imported = transfer::import_session(clean, store, Workspace(other.string()).root());
+    CHECK(imported.id != session.id && imported.turns.size() == 3 && imported.turns[1].answer == "Made b with api_key = <redacted>");
+    for (const Turn& turn : imported.turns) CHECK(turn.changes.empty() && !turn.undone);
+    CHECK(ends_with(imported.title, " · imported") && starts_with(imported.detail, "Imported a sanitized session."));
+    CHECK_THROWS(transfer::import_session("{}", store, workspace.root()));
+    CHECK(SessionStore(box.home).sessions().size() == 4);  // the original, two forks and the import
 }
 
 static void test_verification() {
@@ -1054,7 +1509,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

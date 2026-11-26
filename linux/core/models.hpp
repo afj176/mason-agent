@@ -9,6 +9,8 @@ struct LocalModel {
     std::string name, path;
     int64_t bytes = 0;
     std::string source;
+    /// True for a folder of Transformers weights rather than a GGUF file.
+    bool transformers = false;
 
     /// coding, vision, projector, embeddings or reranker.
     std::string role() const;
@@ -48,6 +50,25 @@ Release latest(const CancelToken& cancel = nullptr);
 std::string install(const Release& release, const std::function<void(const std::string&)>& progress, const CancelToken& cancel = nullptr);
 }  // namespace llama
 
+/// Models kept as Hugging Face Transformers folders (config.json, a tokenizer and .safetensors weights). They are
+/// served by a small Python program that ships with Mason, in a Python environment the user already has with PyTorch
+/// and Transformers installed. Nothing is downloaded and no code from the model folder is run.
+namespace transformers {
+/// The folder holding Serve-Transformers.py: beside the program as installed, or `MASON_TRANSFORMERS_DIR`. Empty when missing.
+fs::path script_folder();
+/// The Python to use: `MASON_PYTHON`, the one the user chose, else the first python3 on the PATH. Empty when there is none.
+std::string python();
+/// Where PyTorch runs the model: an NVIDIA GPU where its driver is installed, else the CPU.
+std::string device(bool cpu_only = false);
+/// True for a folder with a model config, a tokenizer and safetensors weights.
+bool is_model_folder(const fs::path& folder);
+LocalModel describe(const fs::path& folder, const std::string& source);
+/// A model folder the user names. Throws Error when it is not one.
+LocalModel model_at(const std::string& path);
+/// Checks the folder and the Python environment without loading the weights, and says what was found.
+std::string check(const LocalModel& model, bool cpu_only = false, const CancelToken& cancel = nullptr);
+}  // namespace transformers
+
 /// One llama-server process owned by this app or command line session. It stops when stopped, when this object goes
 /// away, and when the owning process exits for any reason.
 class ModelServer {
@@ -67,6 +88,7 @@ public:
     fs::path log;
 private:
     ModelServer() = default;
+    static std::unique_ptr<ModelServer> start_transformers(const LocalModel& model, int context, bool cpu_only, const std::function<void(const std::string&)>& progress, const CancelToken& cancel);
     int pid_ = 0;
 };
 
@@ -82,6 +104,8 @@ struct Preferences {
     std::optional<ModelEndpoint> last_endpoint;
     std::string last_model_path;
     int last_context = 0;
+    /// The Python that serves Transformers models, when the user chose one.
+    std::string python;
     static Preferences load();
     void save() const;
 };

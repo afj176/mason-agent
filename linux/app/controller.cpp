@@ -42,7 +42,9 @@ Controller::~Controller() {
         approval_answer_ = false;
     }
     approval_answered_.notify_all();
+    if (plan_cancel_) plan_cancel_->store(true);
     if (run_thread_.joinable()) run_thread_.join();
+    if (plan_thread_.joinable()) plan_thread_.join();
     if (model_thread_.joinable()) model_thread_.join();
     if (chat_thread_.joinable()) chat_thread_.join();
     if (schedule_thread_.joinable()) schedule_thread_.join();
@@ -93,6 +95,228 @@ void Controller::replace(const Session& session) {
     auto existing = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& item) { return item.id == session.id; });
     if (existing != sessions_.end()) *existing = session;
     else sessions_.insert(sessions_.begin(), session);
+}
+
+void Controller::fork_session(const std::string& turn_id, bool restore_files) {
+    const Session* current = session();
+    if (!current || !store_ || running) return;
+    try {
+        Session source = *current;
+        size_t index = source.turns.size();
+        for (size_t i = 0; i < source.turns.size(); i++) {
+            if (source.turns[i].id == turn_id) index = i;
+        }
+        const SessionFork made = transfer::fork(source, *store_, index, restore_files);
+        replace(source);
+        replace(made.session);
+        selection = made.session.id;
+        forked_request = made.request;
+        notice.emit(made.session.detail);
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
+}
+
+void Controller::export_session(const std::string& id, const std::string& path, bool sanitize) {
+    const auto found = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& item) { return item.id == id; });
+    if (found == sessions_.end()) return;
+    try {
+        write_file_atomic(path, transfer::export_session(*found, sanitize));
+        notice.emit(std::string("Saved ") + (sanitize ? "a sanitized copy of " : "") + "the session to " + path);
+    } catch (const std::exception& error) {
+        notice.emit(std::string("The session could not be saved: ") + error.what());
+    }
+}
+
+void Controller::import_session(const std::string& path, const std::string& workspace) {
+    if (!store_) return;
+    try {
+        const Session imported = transfer::import_session(read_file(path), *store_, workspace);
+        replace(imported);
+        selection = imported.id;
+        notice.emit(imported.detail);
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
+}
+
+std::vector<DesktopWindow> Controller::open_windows() {
+    const std::shared_ptr<DesktopAutomation> automation = desktop::system();
+    try {
+        if (!automation) throw Error("This build cannot operate windows on this computer.");
+        if (const std::string problem = automation->unavailable(); !problem.empty()) throw Error(problem);
+        return automation->windows();
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return {};
+    }
+}
+
+void Controller::attach_window(const std::optional<DesktopWindow>& window) {
+    const Session* current = session();
+    if (!current || !store_ || running) return;
+    Session updated = *current;
+    updated.desktop = window;
+    keep(updated);
+    notice.emit(window ? "Attached " + desktop::label(*window) + ". Mason asks before pressing or changing anything in it." : "No window is attached.");
+}
+
+void Controller::keep(Session& session) {
+    try {
+        store_->save(session);
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    replace(session);
+    changed.emit();
+}
+
+bool Controller::add_comment(const std::string& path, const DiffLine& row, const std::string& note) {
+    const Session* current = session();
+    if (!current || !store_) return false;
+    try {
+        if (current->comments.size() >= review::kLimit) throw Error("At most " + std::to_string(review::kLimit) + " comments can wait at once.");
+        Session updated = *current;
+        updated.comments.push_back(review::comment(Workspace(updated.workspace), path, row.number, note, row.kind == '-' ? std::optional<std::string>(row.text) : std::nullopt));
+        keep(updated);
+        return true;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return false;
+    }
+}
+
+void Controller::remove_comment(const std::string& id) {
+    const Session* current = session();
+    if (!current || !store_) return;
+    Session updated = *current;
+    updated.comments.erase(std::remove_if(updated.comments.begin(), updated.comments.end(), [&](const ReviewComment& item) { return item.id == id; }), updated.comments.end());
+    keep(updated);
+}
+
+void Controller::review_changes() {
+    const Session* current = session();
+    if (!current || !store_ || running || reviewing || !milestone_busy.empty()) return;
+    if (!endpoint) {
+        notice.emit("No model is running. Open Models to start one.");
+        return;
+    }
+    if (plan_thread_.joinable()) plan_thread_.join();
+    reviewing = true;
+    plan_cancel_ = make_cancel();
+    changed.emit();
+    const std::shared_ptr<bool> alive = alive_;
+    plan_thread_ = std::thread([this, alive, working = *current, target = *endpoint, cancel = plan_cancel_] {
+        ReviewFindings found;
+        std::string problem;
+        try {
+            OpenAIClient model(target);
+            found = review::findings(working, Workspace(working.workspace), model, cancel);
+        } catch (const Cancelled&) {
+            problem = "The review was stopped.";
+        } catch (const std::exception& error) {
+            problem = error.what();
+        }
+        if (!*alive) return;
+        post([this, found, problem, id = working.id] {
+            reviewing = false;
+            const auto latest = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& each) { return each.id == id; });
+            if (problem.empty() && latest != sessions_.end() && !found.comments.empty()) {
+                Session updated = *latest;
+                for (const ReviewComment& item : found.comments) {
+                    if (updated.comments.size() < review::kLimit) updated.comments.push_back(item);
+                }
+                keep(updated);
+            }
+            notice.emit(!problem.empty() ? problem : found.comments.empty() ? review::summary(found)
+                        : "The review pinned " + std::to_string(found.comments.size()) + (found.comments.size() == 1 ? " comment" : " comments") + " above the request box. A model wrote them: check each before sending.");
+            changed.emit();
+        });
+    });
+}
+
+std::vector<MilestoneStatus> Controller::milestone_status() const {
+    const Session* current = session();
+    if (!current || current->milestones.empty()) return {};
+    try {
+        return milestones::inspect(Workspace(current->workspace), current->milestones);
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
+std::vector<std::string> Controller::workflow_names() const {
+    std::vector<std::string> names;
+    const Session* current = session();
+    if (!current) return names;
+    try {
+        for (const auto& [name, workflow] : workflows::load(Workspace(current->workspace))) names.push_back(name);
+    } catch (const std::exception&) {
+    }
+    return names;
+}
+
+bool Controller::put_milestone(const Milestone& item) {
+    const Session* current = session();
+    if (!current || !store_) return false;
+    try {
+        Session updated = *current;
+        updated.milestones = milestones::put(Workspace(updated.workspace), updated.milestones, item);
+        keep(updated);
+        return true;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return false;
+    }
+}
+
+void Controller::remove_milestone(const std::string& id) {
+    const Session* current = session();
+    if (!current || !store_) return;
+    Session updated = *current;
+    updated.milestones = milestones::remove(id, updated.milestones);
+    keep(updated);
+}
+
+void Controller::check_milestone(const std::string& id, const std::string& observation) {
+    const Session* current = session();
+    if (!current || !store_ || !milestone_busy.empty()) return;
+    const auto found = std::find_if(current->milestones.begin(), current->milestones.end(), [&](const Milestone& item) { return item.id == id; });
+    if (found == current->milestones.end()) return;
+    const bool automatic = current->permission == Permission::Auto;
+    const bool allowed = automatic || ApprovalRules(store_->home(), current->workspace).allows("run_workflow", "workflow " + found->workflow);
+    if (plan_thread_.joinable()) plan_thread_.join();
+    milestone_busy = id;
+    plan_cancel_ = make_cancel();
+    changed.emit();
+    const std::shared_ptr<bool> alive = alive_;
+    plan_thread_ = std::thread([this, alive, item = *found, plan = current->milestones, folder = current->workspace, session_id = current->id, allowed, automatic, observation, cancel = plan_cancel_] {
+        std::optional<MilestoneReceipt> receipt;
+        std::string problem;
+        try {
+            receipt = milestones::check(Workspace(folder), item, plan, allowed, automatic, observation, cancel);
+        } catch (const Cancelled&) {
+        } catch (const std::exception& error) {
+            problem = error.what();
+        }
+        if (!*alive) return;
+        post([this, receipt, problem, session_id, id = item.id] {
+            milestone_busy.clear();
+            // The session may have moved on while the workflow ran; only the receipt is added.
+            const auto latest = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& each) { return each.id == session_id; });
+            if (receipt && latest != sessions_.end()) {
+                Session updated = *latest;
+                for (Milestone& each : updated.milestones) {
+                    if (each.id == id) each.receipt = receipt;
+                }
+                keep(updated);
+            }
+            if (!problem.empty()) notice.emit(problem);
+            changed.emit();
+        });
+    });
 }
 
 void Controller::select(const std::string& id) {
@@ -156,7 +380,8 @@ void Controller::set_permission(Permission permission) {
 void Controller::send(const std::string& text) {
     const std::string input = trim(text);
     const Session* current = session();
-    if (input.empty() || running || !current || !store_) return;
+    // Comments pinned to lines are a request of their own, with or without typed text.
+    if (running || !current || !store_ || (input.empty() && current->comments.empty())) return;
     // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
     const std::string lowered = to_lower(input);
     if (lowered == "/compact") { compact(); return; }
@@ -181,7 +406,7 @@ void Controller::send(const std::string& text) {
     {
         Session shown = working;
         Turn turn;
-        turn.request = input;
+        turn.request = review::request(input, shown.comments);
         turn.first_activity = shown.activities.size();
         shown.turns.push_back(std::move(turn));
         shown.state = "Running";
@@ -688,7 +913,8 @@ void Controller::refresh_models(bool start_last_if_needed) {
 }
 
 void Controller::start_model(const LocalModel& model, int context) {
-    if (runtime_path.empty()) {
+    // Transformers weights run through Python, not llama.cpp.
+    if (runtime_path.empty() && !model.transformers) {
         notice.emit("Install llama.cpp first; it runs GGUF models.");
         return;
     }

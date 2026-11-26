@@ -11,6 +11,9 @@
 #include <thread>
 
 #include "agent.hpp"
+#include "transfer.hpp"
+#include "acceptance.hpp"
+#include "planning.hpp"
 #include "schedules.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
@@ -517,6 +520,82 @@ private:
             }
             return true;
         }
+        if (name == "/comment" || name == "/comments") {
+            if (to_lower(rest) == "send") {
+                if (session_.comments.empty()) term::line(paint(term::dim, "  No comments are waiting."));
+                else send(" ");
+            } else {
+                for (const std::string& line : split(review::command(rest, workspace_, session_), '\n')) term::line("  " + line);
+                store_.save(session_);
+            }
+            return true;
+        }
+        if (name == "/milestone" || name == "/milestones") {
+            // A check can run a workflow, so it shows progress and can be stopped.
+            const std::string said = starts_with(to_lower(rest), "check")
+                ? busy<std::string>("Checking the milestone", [&](const std::function<void(const std::string&)>&, const CancelToken& cancel) { return milestones::command(rest, workspace_, session_, store_.home(), cancel); })
+                : milestones::command(rest, workspace_, session_, store_.home());
+            for (const std::string& line : split(said, '\n')) term::line("  " + line);
+            store_.save(session_);
+            return true;
+        }
+        if (name == "/accept" || name == "/acceptance") {
+            const std::vector<AcceptanceResult> results = busy<std::vector<AcceptanceResult>>("Running the acceptance scenarios", [&](const auto& progress, const CancelToken& cancel) {
+                return acceptance::run(workspace_, acceptance::read(workspace_), progress, cancel);
+            });
+            for (const std::string& line : split(acceptance::receipt(results), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/review") {
+            if (!endpoint) throw Error("No model is running. /models lists the ones on this computer.");
+            OpenAIClient model(*endpoint);
+            const ReviewFindings found = busy<ReviewFindings>("Reviewing what this session changed", [&](const auto&, const CancelToken& cancel) { return review::findings(session_, workspace_, model, cancel); });
+            for (const ReviewComment& item : found.comments) {
+                if (session_.comments.size() < review::kLimit) session_.comments.push_back(item);
+            }
+            store_.save(session_);
+            for (const std::string& line : split(review::summary(found), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/fork") {
+            const std::vector<std::string> words = split(rest, ' ', false);
+            const int number = words.empty() ? 0 : std::atoi(words[0].c_str());
+            if (number < 1) {
+                for (size_t i = 0; i < session_.turns.size(); i++) term::line("  " + paint(term::dim, std::to_string(i + 1)) + "  " + term::clip(replace_all(session_.turns[i].request, "\n", " "), std::max(20, term::width() - 8)));
+                for (const std::string& line : split(transfer::kHelp, '\n')) term::line(paint(term::dim, "  " + line));
+                return true;
+            }
+            const SessionFork made = transfer::fork(session_, store_, static_cast<size_t>(number) - 1, words.size() > 1 && to_lower(words[1]) == "files");
+            session_ = made.session;
+            term::line("  " + session_.detail);
+            term::line(paint(term::dim, "  The request was: ") + made.request);
+            return true;
+        }
+        if (name == "/export") {
+            const std::vector<std::string> words = split(rest, ' ', false);
+            if (words.empty()) throw Error("Use /export FILE, or /export FILE sanitized.");
+            const bool sanitized = words.size() > 1 && to_lower(words[1]) == "sanitized";
+            const fs::path file = fs::absolute(starts_with(words[0], "~/") ? fs::path(home_dir()) / words[0].substr(2) : fs::path(words[0]));
+            write_file_atomic(file, transfer::export_session(session_, sanitized));
+            term::line(std::string("  Saved ") + (sanitized ? "a sanitized copy of " : "") + "this session to " + file.string());
+            return true;
+        }
+        if (name == "/import") {
+            if (rest.empty()) throw Error("Use /import FILE.");
+            const fs::path file = starts_with(rest, "~/") ? fs::path(home_dir()) / rest.substr(2) : fs::path(rest);
+            session_ = transfer::import_session(read_file(file), store_, workspace_.root());
+            term::line("  " + session_.detail + paint(term::dim, "  ·  " + std::to_string(session_.turns.size()) + " requests"));
+            return true;
+        }
+        if (name == "/window" || name == "/windows") {
+            for (const std::string& line : split(desktop::command(rest, session_), '\n')) term::line("  " + line);
+            store_.save(session_);
+            return true;
+        }
+        if (name == "/embeddings") {
+            for (const std::string& line : split(semantic::command(rest, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
         if (name == "/mcp") { mcp_command(rest); return true; }
         if (name == "/model") { choose_model(rest); return true; }
         if (name == "/models") { models(rest); return true; }
@@ -538,6 +617,14 @@ private:
             {"/queue", "Run the messages you queued, after a stop or a failure"},
             {"/agent [name|none]", "List your custom agents, or use one for this session"},
             {"/commands", "List your custom slash commands"},
+            {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
+            {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/review", "Have the model read what this session changed and pin what it finds as comments"},
+            {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},
+            {"/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"},
+            {"/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"},
+            {"/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"},
+            {"/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"},
             {"/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"},
             {"/mcp", "List your MCP servers and the tools Mason may call"},
             {"/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"},
@@ -548,6 +635,8 @@ private:
             {"/models", "List the models on this computer and what each is for"},
             {"/models start NUMBER|NAME", "Start a coding model here (add cpu, or a context size)"},
             {"/models stop", "Stop the model this session started"},
+            {"/models start FOLDER", "Serve a folder of Transformers weights through Python (PyTorch)"},
+            {"/models check NUMBER|FOLDER · python [PATH]", "Check a Transformers folder; choose the Python that serves them"},
             {"/models search TEXT", "Search Hugging Face"},
             {"/models download REPO [BUILD]", "List a repository's builds, or download one"},
             {"/models setup", "Suggest coding models that fit this computer and download one"},
@@ -826,6 +915,24 @@ private:
         const std::string verb = to_lower(rest.substr(0, space)), argument = space == std::string::npos ? "" : trim(rest.substr(space + 1));
         if (verb.empty() || verb == "list") list_models();
         else if (verb == "start") start_named(argument);
+        else if (verb == "python") {
+            if (!argument.empty()) {
+                if (access(argument.c_str(), X_OK) != 0) throw Error(argument + " is not a program.");
+                Preferences preferences = Preferences::load();
+                preferences.python = argument;
+                preferences.save();
+            }
+            const std::string found = transformers::python();
+            term::line(paint(term::dim, "  Transformers models run with ") + (found.empty() ? paint(term::yellow, "no python3 found") : found) + paint(term::dim, "  ·  it needs PyTorch and Transformers installed"));
+        }
+        else if (verb == "check") {
+            if (listed_.empty()) listed_ = scan_models();
+            const int number = std::atoi(argument.c_str());
+            const LocalModel model = number >= 1 && std::to_string(number) == argument && static_cast<size_t>(number) <= listed_.size() ? listed_[static_cast<size_t>(number) - 1] : transformers::model_at(argument);
+            if (!model.transformers) throw Error(model.name + " is a GGUF file; /models check is for Transformers folders.");
+            const std::string said = busy<std::string>("Checking " + model.name, [&](const auto&, const CancelToken& cancel) { return transformers::check(model, false, cancel); });
+            term::line(paint(term::green, "  ✓ ") + said);
+        }
         else if (verb == "stop") {
             if (!server_) { term::line(paint(term::dim, "  This session has not started a model.")); return; }
             const std::string name = server_->model.name;
@@ -861,6 +968,8 @@ private:
         term::line(paint(term::dim, "  Start a coding model with /models start NUMBER (add cpu, or a context size such as 16384)."));
     }
 
+    LocalModel named_folder_;
+
     void start_named(const std::string& argument) {
         std::vector<std::string> words = split(argument, ' ', false);
         bool cpu = false;
@@ -876,7 +985,10 @@ private:
         const LocalModel* model = nullptr;
         const int number = std::atoi(wanted.c_str());
         if (number >= 1 && std::to_string(number) == wanted && static_cast<size_t>(number) <= listed_.size()) model = &listed_[static_cast<size_t>(number) - 1];
-        else {
+        else if (starts_with(wanted, "/") || starts_with(wanted, "~")) {
+            named_folder_ = transformers::model_at(wanted);
+            model = &named_folder_;
+        } else {
             for (const LocalModel& candidate : listed_) {
                 if (candidate.startable() && contains_ci(candidate.name, wanted)) { model = &candidate; break; }
             }
@@ -889,7 +1001,8 @@ private:
     /// Starts a model with llama.cpp and makes it this session's model.
     bool start(const LocalModel& chosen, int context = 0, bool cpu_only = false) {
         const LocalModel model = chosen;  // `listed_` may change while this runs
-        std::string runtime = llama::find();
+        // Transformers weights run through Python, not llama.cpp.
+        std::string runtime = model.transformers ? "python" : llama::find();
         if (runtime.empty()) {
             term::line(paint(term::yellow, "  llama.cpp is not installed yet; it runs GGUF models."));
             runtime = install_runtime(false);

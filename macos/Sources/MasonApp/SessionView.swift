@@ -80,6 +80,10 @@ struct TurnView: View {
         VStack(alignment: .leading, spacing: 10) {
             Speaker(mason: false)
             Text(turn.request).textSelection(.enabled).messageBody()
+                .contextMenu {
+                    Button("Fork From Before This Request") { model.forkSession(before: turn, restoreFiles: false) }
+                    Button("Fork and Put the Files Back as They Were") { model.forkSession(before: turn, restoreFiles: true) }
+                }
 
             if !activities.isEmpty || live || !turn.answer.isEmpty || !turn.changes.isEmpty {
                 Speaker(mason: true).padding(.top, 4)
@@ -266,9 +270,11 @@ struct Composer: View {
     @EnvironmentObject var model: AppModel
     let session: Session
     @FocusState private var focused: Bool
+    var nothingToSend: Bool { model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (session.comments ?? []).isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let comments = session.comments, !comments.isEmpty { CommentChips(comments: comments) }
             TextEditor(text: $model.draft)
                 .font(.body)
                 .focused($focused)
@@ -304,6 +310,7 @@ struct Composer: View {
                 Button { model.pane = .models } label: { Label(model.endpoint == nil ? "No model running" : model.endpointName, systemImage: "cpu").lineLimit(1) }
                     .buttonStyle(.plain).chip()
                     .help(model.endpoint == nil ? "No model is running. Open Models to start one." : "Running at \(model.endpoint?.url ?? "")")
+                WindowMenu(session: session)
                 Spacer()
                 if !model.running { Text("⌘Return to send").font(.caption).foregroundStyle(Brand.muted) }
                 if model.running {
@@ -326,8 +333,8 @@ struct Composer: View {
                             .frame(width: 34, height: 34).background(Brand.accent, in: Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .opacity(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
+                    .disabled(nothingToSend)
+                    .opacity(nothingToSend ? 0.45 : 1)
                     .accessibilityLabel("Send")
                     .help("Send (⌘Return)")
                 }
@@ -348,6 +355,7 @@ struct Composer: View {
 struct ChangesView: View {
     @EnvironmentObject var model: AppModel
     let session: Session
+    @State private var showPlan = false
 
     var changes: [FileChange] {
         var merged: [String: FileChange] = [:], order: [String] = []
@@ -362,20 +370,31 @@ struct ChangesView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Changes").font(.headline)
+                Picker("Show", selection: $showPlan) {
+                    Text("Changes").tag(false)
+                    Text("Plan").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
                 Spacer()
-                Button("Undo") { model.undo() }.disabled(model.running).help("Put back the files the latest request edited")
-                Button("Redo") { model.undo(redo: true) }.disabled(model.running)
+                if !showPlan {
+                    if model.reviewing { ProgressView().controlSize(.small) }
+                    Button("Review") { model.reviewChanges() }.disabled(model.running || model.reviewing || changes.isEmpty)
+                        .help("Have the model read these changes and pin what it finds as comments")
+                    Button("Undo") { model.undo() }.disabled(model.running).help("Put back everything the latest request changed")
+                    Button("Redo") { model.undo(redo: true) }.disabled(model.running)
+                }
             }
             .padding(12)
             Divider()
-            if changes.isEmpty {
+            if showPlan {
+                MilestonesView(session: session)
+            } else if changes.isEmpty {
                 ContentUnavailableView("No changes", systemImage: "doc.text", description: Text("Files this session edits appear here."))
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
                         ForEach(changes, id: \.path) { FileDiff(change: $0) }
-                        Text("Undo covers files changed by edits. Files created or changed by commands are not tracked yet.")
+                        Text("Use the bubble beside a line to pin a comment to it. Comments go with your next request.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(12)
@@ -386,7 +405,10 @@ struct ChangesView: View {
 }
 
 struct FileDiff: View {
+    @EnvironmentObject var model: AppModel
     let change: FileChange
+    /// The row whose comment is being written.
+    @State private var commenting: Int?
 
     var body: some View {
         // A binary or very large file has no text to compare, so it is listed without lines.
@@ -403,13 +425,22 @@ struct FileDiff: View {
             .font(.callout)
             ScrollView(.horizontal) {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(visible(rows).enumerated()), id: \.offset) { _, row in
+                    ForEach(Array(visible(rows).enumerated()), id: \.offset) { offset, row in
                         if let row {
-                            Text("\(String(row.number).leftPadded(5)) \(String(row.kind.rawValue)) \(row.text)")
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(row.kind == .added ? Color.green : row.kind == .removed ? Color.red : Color.primary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(row.kind == .added ? Color.green.opacity(0.10) : row.kind == .removed ? Color.red.opacity(0.10) : Color.clear)
+                            HStack(spacing: 4) {
+                                let place = "\(change.path) · \(row.kind == .removed ? "original" : "updated") line \(row.number)"
+                                Button { commenting = offset } label: { Image(systemName: "plus.bubble").font(.caption2) }
+                                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                                    .help("Comment on this line").accessibilityLabel("Comment on \(place)")
+                                    .popover(isPresented: Binding(get: { commenting == offset }, set: { if !$0 { commenting = nil } }), arrowEdge: .leading) {
+                                        CommentEditor(location: place) { model.addComment(path: change.path, row: row, note: $0) }
+                                    }
+                                Text("\(String(row.number).leftPadded(5)) \(String(row.kind.rawValue)) \(row.text)")
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(row.kind == .added ? Color.green : row.kind == .removed ? Color.red : Color.primary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .background(row.kind == .added ? Color.green.opacity(0.10) : row.kind == .removed ? Color.red.opacity(0.10) : Color.clear)
                         } else {
                             Text("      ⋯").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                         }

@@ -105,6 +105,22 @@ private:
     Gtk::Button model_button_;
     Gtk::ToggleButton changes_toggle_;
     Gtk::Box changes_{Gtk::Orientation::VERTICAL, 12};
+    /// The notes waiting to go with the next request, above the request box.
+    Gtk::Box comments_{Gtk::Orientation::VERTICAL, 4};
+    /// Attaches a window of another app to the session.
+    Gtk::MenuButton window_button_;
+    Gtk::Popover window_popover_;
+    Gtk::Box window_list_{Gtk::Orientation::VERTICAL, 4};
+    void fill_window_list();
+    /// Asks where to save a session, or which exported session to add to a project.
+    void choose_export(const std::string& id, const std::string& title, bool sanitize);
+    void choose_import(const std::string& workspace);
+    std::string comments_shown_;
+    /// The side panel shows the changes or the plan.
+    bool plan_shown_ = false, adding_milestone_ = false;
+    std::string observing_;  ///< The milestone whose observation is being written.
+    void refresh_plan();
+    Gtk::Widget* panel_switch();
     Gtk::ScrolledWindow changes_scroll_;
     Gtk::Stack session_stack_;
     ModelsPage models_;

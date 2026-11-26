@@ -93,7 +93,9 @@ void SettingsPage::refresh() {
     const std::vector<Definition> commands = workspace.empty() ? std::vector<Definition>{} : customization::commands(home, workspace);
 
     // The page is rebuilt only when what it lists changes, so typing in an entry is not interrupted.
+    const std::optional<EmbeddingSettings> embeddings = semantic::load(home);
     std::string print = workspace + "|" + (session ? session->agent : "") + "|" + problem + "|" + c.mcp_busy;
+    print += embeddings ? embeddings->url + embeddings->model + embeddings->rerank_url + embeddings->rerank_model + "|" : "none|";
     for (const auto& rule : rules.rules()) print += rule.tool + rule.prefix + "|";
     for (const Definition& item : agents) print += item.name + "|";
     for (const Definition& item : commands) print += item.name + "|";
@@ -208,6 +210,27 @@ void SettingsPage::refresh() {
         });
         if (!added.empty()) c.discover_mcp(added);
     });
+
+    // ---- code search by meaning ----
+    AdwPreferencesGroup* search_group = group(content_, "Code search by meaning", "With an embeddings server chosen, Mason can find code from a description such as “where are invoice totals calculated”. Any server on this computer that answers /v1/embeddings works, for example llama-server --embedding with an embeddings model.");
+    auto typed = [&c, home](const std::string& arguments) {
+        try {
+            c.notice.emit(split(semantic::command(arguments, home), '\n').front());
+        } catch (const std::exception& error) {
+            c.notice.emit(error.what());
+        }
+        c.changed.emit();
+    };
+    if (embeddings) {
+        AdwActionRow* line = row(search_group, embeddings->model, embeddings->url + (embeddings->rerank_url.empty() ? "" : "\nReranked by " + embeddings->rerank_model + " at " + embeddings->rerank_url));
+        button(line, "Test", [typed] { typed("test"); });
+        button(line, "Turn Off", [typed] { typed("off"); });
+        if (!embeddings->rerank_url.empty()) button(line, "No Reranker", [typed] { typed("rerank off"); });
+        entry_row(search_group, "Reranker (optional)", "http://127.0.0.1:8082/  MODEL", "Use", [typed](const std::string& text) { typed("rerank " + text); });
+    } else {
+        row(search_group, "Off", "No embeddings server is chosen, so Mason searches by exact text only.");
+    }
+    entry_row(search_group, embeddings ? "Change the server" : "Choose a server", "http://127.0.0.1:8081/  MODEL", "Use", [typed](const std::string& text) { typed(text); });
 
     // ---- schedules ----
     AdwPreferencesGroup* schedule_group = group(content_, "Schedules", "Requests Mason runs by itself while this app is open (or when mason --run-due is run). A scheduled run is unattended: nothing is approved for it, so it is read-only unless it is marked Auto.");

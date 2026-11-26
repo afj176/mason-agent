@@ -35,6 +35,12 @@ const char* const kHarness = R"html(<!doctype html><meta charset="utf-8"><title>
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   try {
     var steps = JSON.parse(decodeURIComponent(escape(atob(q.get('steps') || 'W10='))));
+    var captured = null;
+    function unlabel(v) { var a = v.indexOf(':'), b = v.indexOf(String.fromCharCode(10)), i = a < 0 ? b : b < 0 ? a : Math.min(a, b); return i > 0 && i <= 64 && /^[A-Za-z -]+$/.test(v.slice(0, i)) ? v.slice(i + 1).trim() : v; }
+    function cents(t) { var n = Number(String(t).replace(/[$, ]/g, '')); return isNaN(n) ? null : Math.round(n * 100); }
+    function amount(v) { var t = unlabel(v).replace(/[ ]/g, ''); return /^-?[$]?-?[0-9][0-9,]*([.][0-9]+)?$/.test(t) ? cents(t) : null; }
+    function hasId(v, prefix) { if (v.length === 0 || v.length > 200) return false; var id = prefix.length > 0 && v.indexOf(prefix) === 0 ? v : unlabel(v); return id.indexOf(prefix) === 0 && id.length > prefix.length; }
+    if (steps.length && steps[0].action === 'viewport') { f.style.width = Number(steps[0].width) + 'px'; steps.shift(); }
     await new Promise(function (r) { f.onload = r; f.src = q.get('page'); });
     await sleep(300);
     function doc() { return f.contentDocument; }
@@ -59,13 +65,55 @@ const char* const kHarness = R"html(<!doctype html><meta charset="utf-8"><title>
         else if (s.action === 'expect_text') { r.ok = body().indexOf(String(s.text)) >= 0; if (!r.ok) r.detail = 'the page does not show it'; }
         else if (s.action === 'expect_no_text') { r.ok = body().indexOf(String(s.text)) < 0; if (!r.ok) r.detail = 'the page shows it'; }
         else if (s.action === 'wait') { await sleep(Math.min(Number(s.ms) || 500, 5000)); r.ok = true; }
+        else if (s.action === 'accept') {
+          var op = s.op, target = String(s.target || ''), expected = String(s.value == null ? '' : s.value);
+          var nodes = function () { return target ? Array.prototype.slice.call(doc().querySelectorAll(target)).filter(function (e) { return e.getClientRects().length > 0; }) : []; };
+          r.action = op + (target ? ' ' + target : '');
+          if (op === 'reload') {
+            out.errors = out.errors.concat((f.contentWindow.__masonErrors || []).slice(0, 20));
+            await new Promise(function (done) { f.onload = done; f.contentWindow.location.reload(); });
+            await sleep(300); r.ok = true;
+          } else if (op === 'click' || op === 'double_click' || op === 'click_if_enabled' || op === 'fill') {
+            var n = nodes()[0]; if (!n) throw new Error('nothing visible matches');
+            if (op === 'click') n.click();
+            else if (op === 'double_click') { n.click(); n.click(); n.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); }
+            else if (op === 'click_if_enabled') { if (!n.disabled) n.click(); }
+            else { n.focus(); n.value = expected; n.dispatchEvent(new Event('input', { bubbles: true })); n.dispatchEvent(new Event('change', { bubbles: true })); n.blur(); }
+            await sleep(150); r.ok = true;
+          } else {
+            var started = Date.now(), actual = '', count = 0;
+            while (true) {
+              var values = nodes().map(function (e) { return String(e.innerText || '').trim(); });
+              count = values.length; actual = count === 1 ? values[0] : values.slice(0, 8).join(' | ');
+              var pass = false;
+              if (op === 'count_distinct') { var seen = {}; values.forEach(function (v) { seen[v.toLowerCase()] = 1; }); pass = count === Number(expected) && values.every(function (v) { return v.length > 0; }) && Object.keys(seen).length === count; }
+              else if (op === 'empty') pass = count === 0 || (count === 1 && actual.length === 0);
+              else if (op === 'shelf_price') { var m = /[$][ ]*([0-9]+([.][0-9]{1,2})?)/.exec(actual); pass = count === 1 && !!m && cents(m[1]) === cents(expected); }
+              else if (op === 'money') pass = count === 1 && amount(actual) !== null && amount(actual) === cents(expected);
+              else if (op === 'text') pass = count === 1 && actual === expected;
+              else if (op === 'capture') pass = count === 1 && hasId(actual, expected);
+              else if (op === 'same') pass = count === 1 && actual === captured;
+              else if (op === 'new_id') pass = count === 1 && hasId(actual, expected) && unlabel(actual) !== unlabel(captured || '');
+              else throw new Error('unknown step');
+              if (pass) break;
+              if (Date.now() - started >= 2200) throw new Error("expected '" + (op === 'same' ? captured : expected) + "', observed '" + actual.slice(0, 160) + "' (" + count + ' visible)');
+              await sleep(75);
+            }
+            if (op === 'capture' || op === 'new_id') captured = actual;
+            r.ok = true; r.detail = actual.slice(0, 160);
+          }
+        }
         else throw new Error('unknown action; use click, fill, expect_text, expect_no_text or wait');
       } catch (error) { r.detail = String(error && error.message || error); }
       out.steps.push(r);
       if (!r.ok) break;
     }
     out.title = doc().title; out.text = String(doc().body.innerText || '').slice(0, 6000);
-    out.errors = (f.contentWindow.__masonErrors || []).slice(0, 20);
+    out.errors = out.errors.concat((f.contentWindow.__masonErrors || []).slice(0, 20));
+    out.controls = Array.prototype.slice.call(doc().querySelectorAll('button,a[href],input:not([type=hidden]):not([type=password]),select,textarea,[role=button]')).filter(function (e) { return e.getClientRects().length > 0; }).slice(0, 64).map(function (e) {
+      var kind = e.tagName.toLowerCase(), selector = e.id ? '#' + e.id : kind + (e.name ? '[name="' + e.name + '"]' : '');
+      return selector + ' | ' + kind + ' | ' + String(e.getAttribute('aria-label') || e.innerText || e.placeholder || e.value || e.name || e.type || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    });
   } catch (error) { out.errors.push('The check could not run: ' + String(error && error.message || error)); }
   done();
 })();
@@ -325,6 +373,11 @@ Result run(const Workspace& workspace, const std::string& page, const json& step
             if (item.is_string()) result.errors.push_back(item.get<std::string>());
         }
     }
+    if (object.contains("controls") && object["controls"].is_array()) {
+        for (const json& item : object["controls"]) {
+            if (item.is_string()) result.controls.push_back(item.get<std::string>());
+        }
+    }
     if (object.contains("steps") && object["steps"].is_array()) {
         for (const json& item : object["steps"]) {
             if (item.is_object()) result.steps.push_back({item.value("action", ""), item.value("ok", false), item.value("detail", "")});
@@ -342,6 +395,10 @@ std::string report(const Result& result, const std::string& page) {
     if (!result.errors.empty()) {
         text += "\nScript errors:";
         for (const std::string& error : result.errors) text += "\n  " + error;
+    }
+    if (!result.controls.empty()) {
+        text += "\nControls (selector | kind | label):";
+        for (const std::string& control : result.controls) text += "\n  " + control;
     }
     text += "\nWhat the page shows:\n" + (result.text.empty() ? std::string("  (nothing)") : result.text);
     return text;

@@ -139,6 +139,10 @@ struct Sidebar: View {
                         }
                         .tag(session.id)
                         .contextMenu {
+                            Button("Export Session…") { model.exportSession(session, sanitize: false) }
+                            Button("Export a Sanitized Copy…") { model.exportSession(session, sanitize: true) }
+                            Button("Import a Session Into This Project…") { model.importSession(into: project) }
+                            Divider()
                             Button("Delete Session", role: .destructive) { model.delete(session) }
                         }
                     }
@@ -203,6 +207,7 @@ struct GeneralPane: View {
                 }
                 .pickerStyle(.segmented)
             }
+            CodeSearchSection()
             Section("Command line") {
                 LabeledContent("mason") {
                     Button("Install Command Line Tool…") { model.installCommandLineTool() }
