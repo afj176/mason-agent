@@ -41,15 +41,39 @@ void suffix_text(AdwActionRow* on, const std::string& text, const char* css_clas
     adw_action_row_add_suffix(on, GTK_WIDGET(label->gobj()));
 }
 
+/// Runs `action` when the row is activated (clicked, or Enter on it).
+void on_activated(AdwActionRow* row, std::function<void()> action) {
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), TRUE);
+    auto* holder = new std::function<void()>(std::move(action));
+    g_signal_connect_data(row, "activated", G_CALLBACK(+[](AdwActionRow*, gpointer data) { (*static_cast<std::function<void()>*>(data))(); }), holder,
+                          +[](gpointer data, GClosure*) { delete static_cast<std::function<void()>*>(data); }, GConnectFlags(0));
+}
+
 }  // namespace
 
-ModelsPage::ModelsPage(Controller& controller) : controller_(controller) {
+ModelsPage::ModelsPage(Controller& controller) : Gtk::Box(Gtk::Orientation::VERTICAL), controller_(controller) {
     content_.set_margin(24);
     GtkWidget* clamp = adw_clamp_new();
     adw_clamp_set_maximum_size(ADW_CLAMP(clamp), 860);
     adw_clamp_set_child(ADW_CLAMP(clamp), GTK_WIDGET(content_.gobj()));
-    gtk_scrolled_window_set_child(gobj(), clamp);
-    set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    gtk_scrolled_window_set_child(library_.gobj(), clamp);
+    library_.set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+    library_.set_vexpand(true);
+    // The library, with one model's panel pushed over it when a model is chosen.
+    navigation_ = ADW_NAVIGATION_VIEW(adw_navigation_view_new());
+    AdwNavigationPage* library_page = adw_navigation_page_new(GTK_WIDGET(library_.gobj()), "Library");
+    adw_navigation_page_set_tag(library_page, "library");
+    adw_navigation_view_add(navigation_, library_page);
+    gtk_widget_set_vexpand(GTK_WIDGET(navigation_), TRUE);
+    gtk_box_append(gobj(), GTK_WIDGET(navigation_));
+    g_signal_connect(navigation_, "popped", G_CALLBACK(+[](AdwNavigationView*, AdwNavigationPage* page, gpointer self) {
+        auto* models = static_cast<ModelsPage*>(self);
+        if (page != models->detail_page_) return;
+        models->detail_page_ = nullptr;
+        models->detail_model_.reset();
+        models->detail_ = Detail{};
+        models->detail_shown_.clear();
+    }), this);
     search_.set_placeholder_text("Search Hugging Face, for example qwen coder");
     search_.set_hexpand(true);
     search_.signal_activate().connect([this] { controller_.search(search_.get_text()); });
@@ -72,9 +96,13 @@ void ModelsPage::read_gpu() {
     const std::shared_ptr<bool> alive = alive_;
     std::thread([this, alive] {
         GpuSample sample = gpu::read();
-        Glib::signal_idle().connect_once([this, alive, sample = std::move(sample)] {
+        MemoryReading memory = read_memory();
+        Glib::signal_idle().connect_once([this, alive, sample = std::move(sample), memory = std::move(memory)] {
             if (!*alive) return;
             gpu_reading_ = false;
+            memory_ = memory;
+            update_local_rows();
+            update_detail();
             const bool same_shape = sample.adapters.size() == gpu_.adapters.size() && sample.adapters.size() == gpu_rows_.size() && !sample.adapters.empty();
             gpu_ = sample;
             if (same_shape) {
@@ -88,9 +116,43 @@ void ModelsPage::read_gpu() {
     }).detach();
 }
 
+std::string ModelsPage::local_subtitle(const LocalModel& model) const {
+    std::string text = model.verdict() + "\n" + byte_text(model.bytes) + " · " + model.source;
+    if (model.role() == "projector" || !memory_.usable()) return text;
+    const auto profile = controller_.profiles.find(model.path);
+    if (profile == controller_.profiles.end()) return text;
+    const FitSummary fit = summarize_fit(model, profile->second, memory_);
+    return text + " · " + (model.startable() ? "GPU fit: " : "") + fit.note;
+}
+
+void ModelsPage::update_local_rows() {
+    for (const auto& [line, model] : local_rows_) adw_action_row_set_subtitle(line, Glib::Markup::escape_text(local_subtitle(model)).c_str());
+    if (local_group_) {
+        adw_preferences_group_set_description(local_group_, ("Every model file found is listed with what the agent can do with it. Choose one to see the memory it needs at each context length." +
+                                                             (memory_.usable() ? " " + memory_.label() + "." : std::string())).c_str());
+    }
+}
+
 void ModelsPage::refresh() {
     Controller& c = controller_;
     const bool busy = !c.model_busy.empty() || c.download.has_value();
+
+    // The open model panel: rebuilt when what it offers changes, else brought up to date in place.
+    if (detail_model_) {
+        const bool listed = std::any_of(c.local_models.begin(), c.local_models.end(), [&](const LocalModel& m) { return m.path == detail_model_->path; });
+        if (!listed && c.starting_path != detail_model_->path && c.model_busy.empty()) {
+            adw_navigation_view_pop(navigation_);
+        } else {
+            const std::string fingerprint = detail_model_->path + "|" + (detail_running() ? "running" : "") + "|" + (c.starting_path == detail_model_->path ? "starting" : "") + "|" +
+                                            (busy ? "busy" : "") + "|" + c.runtime_path + "|" + (c.endpoint ? c.endpoint->url + c.endpoint->model : "") + "|" +
+                                            std::to_string(c.profiles.count(detail_model_->path));
+            if (fingerprint != detail_shown_) {
+                detail_shown_ = fingerprint;
+                build_detail();
+            }
+            update_detail();
+        }
+    }
     // Rebuilding on every progress tick would reset scrolling and focus, so the page is rebuilt only when what it lists changes.
     std::string fingerprint = std::to_string(c.servers.size()) + "|" + std::to_string(c.local_models.size()) + "|" + c.runtime_path + "|" + (busy ? "busy" : "idle") + "|" +
                               (c.endpoint ? c.endpoint->url + c.endpoint->model : "") + "|" + (c.server() ? c.server()->model.path : "") + "|" + std::to_string(c.search_results.size()) + "|" +
@@ -106,6 +168,8 @@ void ModelsPage::refresh() {
     status_label_ = nullptr;
     progress_ = nullptr;
     gpu_rows_.clear();
+    local_rows_.clear();
+    local_group_ = nullptr;
     if (search_.get_parent()) search_.unparent();
     clear(content_);
 
@@ -164,14 +228,19 @@ void ModelsPage::refresh() {
     button(runtime_row, c.runtime_path.empty() ? "Install llama.cpp" : "Update", !busy, [this] { controller_.install_runtime(); }, c.runtime_path.empty());
 
     // ---- local models ----
-    AdwPreferencesGroup* local = group(content_, "On this computer", "Every model file found is listed with what the agent can do with it. " + byte_text(memory_budget_bytes()) + " of " + memory_budget_source() + " is available for a model.");
+    AdwPreferencesGroup* local = group(content_, "On this computer", "");
+    local_group_ = local;
     if (c.local_models.empty()) row(local, "No model files were found", "Search below, or let Mason suggest one that fits.");
     for (const LocalModel& item : c.local_models) {
-        const bool too_large = item.startable() && !memory_fits(item.bytes);
-        AdwActionRow* line = row(local, item.name, item.verdict() + "\n" + byte_text(item.bytes) + " · " + item.source + (too_large ? " · larger than the memory available" : ""));
+        AdwActionRow* line = row(local, item.name, local_subtitle(item));
         if (c.server() && c.server()->model.path == item.path) button(line, "Stop", !busy, [this] { controller_.stop_server(); });
-        else if (item.startable()) button(line, "Start", !busy, [this, item] { controller_.start_model(item); });
+        auto* open = Gtk::make_managed<Gtk::Image>();
+        open->set_from_icon_name("go-next-symbolic");
+        adw_action_row_add_suffix(line, GTK_WIDGET(open->gobj()));
+        on_activated(line, [this, item] { open_detail(item); });
+        local_rows_.push_back({line, item});
     }
+    update_local_rows();
 
     // ---- find a model ----
     AdwPreferencesGroup* find = group(content_, "Find a model", "Search Hugging Face. Nothing is hidden: each result says what it is for and whether Mason can run it.");

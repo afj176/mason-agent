@@ -17,6 +17,7 @@
 #include "transfer.hpp"
 #include "planning.hpp"
 #include "models.hpp"
+#include "model_memory.hpp"
 
 namespace mason::app {
 
@@ -139,7 +140,11 @@ public:
     std::string endpoint_name;
     std::vector<RunningServer> servers;
     std::vector<LocalModel> local_models;
+    /// Each local model's memory needs from its metadata, read with the scan, by path.
+    std::map<std::string, MemoryProfile> profiles;
     std::string runtime_path;
+    /// The model being started and the step it is on ("inspect", "load", "check", "ready"), or empty.
+    std::string starting_path, starting_stage;
     std::string model_busy;  ///< What the Models page is doing, or empty.
     std::optional<DownloadState> download;
     std::vector<HubModel> search_results;
@@ -149,7 +154,10 @@ public:
 
     void use(const ModelEndpoint& chosen, const std::string& name);
     void refresh_models(bool start_last_if_needed = false);
-    void start_model(const LocalModel& model, int context = 0);
+    /// Starts a model. A context of 0 uses the suggestion for the memory free now; `cpu_only` keeps it off the GPU.
+    void start_model(const LocalModel& model, int context = 0, bool cpu_only = false);
+    /// Moves a model's files to the Trash, then scans again. Not while it runs.
+    void trash_model(const LocalModel& model);
     void stop_server();
     void cancel_model_work();
     void install_runtime();

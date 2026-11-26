@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "model_memory.hpp"
 #include "shell.hpp"
 
 namespace mason {
@@ -42,6 +43,42 @@ std::string LocalModel::verdict() const {
     if (kind == "projector") return "Vision companion file · loaded with the chat model beside it";
     if (kind == "embeddings") return "Code search · embeddings · not started from Mason yet";
     return "Code search · reranker · not started from Mason yet";
+}
+
+std::string LocalModel::role_label() const {
+    if (transformers) return "Coding agent";
+    const std::string kind = role();
+    if (kind == "coding") return "Coding agent";
+    if (kind == "vision") return "Coding agent · vision";
+    if (kind == "projector") return "Vision companion";
+    if (kind == "embeddings") return "Code search · embeddings";
+    return "Code search · reranker";
+}
+
+std::string LocalModel::repository() const {
+    static const std::regex valid(R"([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)");
+    const fs::path file(path);
+    // The Hugging Face cache names the repository in a folder above: models--org--name/snapshots/…
+    for (const fs::path& part : file) {
+        const std::string text = part.string();
+        if (starts_with(text, "models--")) {
+            const std::string id = replace_all(text.substr(8), "--", "/");
+            return std::regex_match(id, valid) ? id : "";
+        }
+    }
+    // Mason's downloads keep each repository in a folder named org--name.
+    std::error_code failure;
+    const fs::path downloads = fs::weakly_canonical(download_folder(), failure);
+    const fs::path folder = fs::weakly_canonical(transformers ? file : file.parent_path(), failure);
+    if (!failure && folder.parent_path() == downloads) {
+        const std::string name = folder.filename().string();
+        const size_t split = name.find("--");
+        if (split != std::string::npos && split > 0) {
+            const std::string id = name.substr(0, split) + "/" + name.substr(split + 2);
+            return std::regex_match(id, valid) ? id : "";
+        }
+    }
+    return "";
 }
 
 bool LocalModel::startable() const {
@@ -81,7 +118,8 @@ std::vector<LocalModel> scan_models(const std::vector<std::pair<std::string, fs:
             if (ignored) continue;
             const auto size = fs::file_size(real, ignored);
             if (ignored || size <= 1'000'000) continue;
-            found[real.string()] = LocalModel{file.stem().string(), file.string(), static_cast<int64_t>(size), source};
+            // A split model counts all its parts.
+            found[real.string()] = LocalModel{file.stem().string(), file.string(), std::max<int64_t>(static_cast<int64_t>(size), gguf_total_bytes(file)), source};
             if (found.size() >= limit) break;
         }
         // Folders of Transformers weights: a config, a tokenizer and safetensors files.
@@ -103,10 +141,7 @@ std::vector<LocalModel> scan_models(const std::vector<std::pair<std::string, fs:
 
 // ---- memory ----------------------------------------------------------------------------------------------------
 
-namespace {
-
-/// Runs a small helper program and returns what it printed, or nothing when it is missing or fails.
-std::string capture(const std::vector<std::string>& arguments) {
+std::string program_output(const std::vector<std::string>& arguments) {
     int ends[2];
     if (pipe(ends) != 0) return "";
     const pid_t child = fork();
@@ -129,6 +164,10 @@ std::string capture(const std::vector<std::string>& arguments) {
     if (child < 0 || waitpid(child, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return "";
     return output;
 }
+
+namespace {
+
+std::string capture(const std::vector<std::string>& arguments) { return program_output(arguments); }
 
 /// Free video memory on the NVIDIA GPU with the most, in bytes, or 0 when there is no such GPU.
 int64_t nvidia_free_bytes() {
@@ -267,15 +306,22 @@ std::string last_lines(const fs::path& log, size_t count) {
 }  // namespace
 
 std::unique_ptr<ModelServer> ModelServer::start(const LocalModel& model, const std::string& runtime, int context, bool cpu_only,
-                                                const std::function<void(const std::string&)>& progress, const CancelToken& cancel) {
+                                                const std::function<void(const std::string&)>& progress, const CancelToken& cancel, const std::function<void(int)>& stage) {
     if (!model.startable()) throw Error(model.name + " is not a chat model: " + model.verdict() + ".");
-    if (model.transformers) return start_transformers(model, context, cpu_only, progress, cancel);
+    if (stage) stage(0);
+    if (context <= 0) {
+        // Nothing chosen: the largest context that likely fits the free memory now, as the panel suggests.
+        const Recommendation suggestion = recommend(read_profile(model), read_memory());
+        context = suggestion.context;
+        cpu_only = cpu_only || !suggestion.gpu;
+    }
+    if (model.transformers) return start_transformers(model, context, cpu_only, progress, cancel, stage);
     int port = 0;
     for (int candidate = 18310; candidate < 18330 && port == 0; candidate++) {
         if (!OpenAIClient::models("http://127.0.0.1:" + std::to_string(candidate), "", 0.4)) port = candidate;
     }
     if (port == 0) throw Error("Ports 18310–18329 on this computer are all in use.");
-    const int tokens = context > 0 ? context : context_for(model.bytes);
+    const int tokens = context;
     const std::string alias = "mason-" + new_id().substr(0, 8);
     const fs::path folder = data_home() / "model-servers";
     fs::create_directories(folder);
@@ -284,19 +330,39 @@ std::unique_ptr<ModelServer> ModelServer::start(const LocalModel& model, const s
     server->model = model;
     server->endpoint = {"http://127.0.0.1:" + std::to_string(port) + "/", alias, ""};
     server->context = tokens;
+    server->cpu_only = cpu_only;
     server->log = folder / (alias + ".log");
+    // Prompt batch 256 and microbatch 128 bound the working memory that the fit estimate allows for.
     std::vector<std::string> arguments = {runtime, "-m", model.path, "--host", "127.0.0.1", "--port", std::to_string(port), "--alias", alias,
-                                          "-c", std::to_string(tokens), "--jinja", "-ngl", cpu_only ? "0" : "999"};
+                                          "-c", std::to_string(tokens), "--jinja", "-ngl", cpu_only ? "0" : "999", "-b", "256", "-ub", "128"};
     if (const std::string projector = model.projector(); model.role() == "vision" && !projector.empty()) arguments.insert(arguments.end(), {"--mmproj", projector});
     server->pid_ = shell::spawn_owned(arguments, server->log);
+    if (stage) stage(1);
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+    bool listed_once = false;
     while (std::chrono::steady_clock::now() < deadline) {
         if (is_cancelled(cancel)) throw Cancelled();  // the server stops when `server` is destroyed
         if (!server->running()) throw Error("llama-server stopped while loading " + model.name + ". " + last_lines(server->log, 4));
-        if (const auto listed = OpenAIClient::models(server->endpoint.url, "", 1); listed && std::find(listed->begin(), listed->end(), alias) != listed->end()) return server;
+        if (!listed_once) {
+            if (const auto listed = OpenAIClient::models(server->endpoint.url, "", 1); listed && std::find(listed->begin(), listed->end(), alias) != listed->end()) {
+                listed_once = true;
+                if (stage) stage(2);
+            }
+        }
+        if (listed_once) {
+            // The model is listed; the server's own health check says when it takes requests.
+            try {
+                const long status = http_get(server->endpoint.url + "health", {}, 2, cancel).status;
+                if (status == 200 || status == 404) {  // a build without /health is ready once it lists the model
+                    if (stage) stage(3);
+                    return server;
+                }
+            } catch (const Error&) {
+            }
+        }
         if (progress) progress(last_lines(server->log, 1));
-        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+        std::this_thread::sleep_for(std::chrono::milliseconds(listed_once ? 300 : 700));
     }
     throw Error(model.name + " did not finish loading in five minutes. Log: " + server->log.string());
 }
@@ -438,7 +504,8 @@ std::string check(const LocalModel& model, bool cpu_only, const CancelToken& can
 
 /// Serves a folder of Transformers weights with the Python program that ships with Mason. Loading large weights can
 /// take minutes, so this waits up to fifteen.
-std::unique_ptr<ModelServer> ModelServer::start_transformers(const LocalModel& model, int context, bool cpu_only, const std::function<void(const std::string&)>& progress, const CancelToken& cancel) {
+std::unique_ptr<ModelServer> ModelServer::start_transformers(const LocalModel& model, int context, bool cpu_only, const std::function<void(const std::string&)>& progress, const CancelToken& cancel,
+                                                             const std::function<void(int)>& stage) {
     const fs::path scripts = transformers::script_folder();
     if (scripts.empty()) throw Error("The Transformers server that ships with Mason was not found.");
     const std::string program = transformers::python();
@@ -456,15 +523,19 @@ std::unique_ptr<ModelServer> ModelServer::start_transformers(const LocalModel& m
     server->model = model;
     server->endpoint = {"http://127.0.0.1:" + std::to_string(port) + "/", alias, ""};
     server->context = context > 0 ? context : 8192;
+    server->cpu_only = cpu_only;
     server->log = folder / (alias + ".log");
     server->pid_ = shell::spawn_owned(transformers::command(model, program, scripts, alias, transformers::device(cpu_only), port, server->context, manifest), server->log);
+    if (stage) stage(1);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(15);
     while (std::chrono::steady_clock::now() < deadline) {
         if (is_cancelled(cancel)) throw Cancelled();  // the server stops when `server` is destroyed
         const transformers::Status found = transformers::read_status(manifest);
         if (!server->running() || found.failed) throw Error(found.text.empty() ? "Python stopped while loading " + model.name + ". " + last_lines(server->log, 4) : found.text);
         if (const auto listed = OpenAIClient::models(server->endpoint.url, "", 1); listed && std::find(listed->begin(), listed->end(), alias) != listed->end()) {
+            if (stage) stage(2);
             if (found.context > 0) server->context = found.context;
+            if (stage) stage(3);
             return server;
         }
         if (progress) progress(found.text);
@@ -511,6 +582,7 @@ Preferences Preferences::load() {
         }
         preferences.last_model_path = saved.value("lastModelPath", "");
         preferences.last_context = saved.value("lastContext", 0);
+        preferences.last_cpu = saved.value("lastCpu", false);
         preferences.python = saved.value("python", "");
     } catch (const Error&) {
         // Nothing remembered yet.
@@ -519,7 +591,7 @@ Preferences Preferences::load() {
 }
 
 void Preferences::save() const {
-    json saved = {{"lastModelPath", last_model_path}, {"lastContext", last_context}};
+    json saved = {{"lastModelPath", last_model_path}, {"lastContext", last_context}, {"lastCpu", last_cpu}};
     if (!python.empty()) saved["python"] = python;
     if (last_endpoint) saved["lastEndpoint"] = {{"url", last_endpoint->url}, {"model", last_endpoint->model}};
     try { write_file_atomic(data_home() / "preferences.json", saved.dump(1)); } catch (const Error&) {}
