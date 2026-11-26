@@ -152,7 +152,10 @@ final class ModelMemoryTests: XCTestCase {
         XCTAssertNil(profile.unknownReason)
         // 40 layers, every 4th full attention: 10 attention layers keep a KV cache, 30 recurrent layers keep state.
         XCTAssertEqual(profile.kvBytesPerToken, 10 * 2 * (256 + 256) * 2)
-        let perLayer: Double = 128 * 4096 + 3 * (4096 + 2 * 16 * 128)
+        // Kept in steps: the macOS compiler times out type-checking the whole literal expression at once.
+        let stateSize: Double = 128, inner: Double = 4096, groups: Double = 16, kernelTail: Double = 3
+        let convolution: Double = kernelTail * (inner + 2 * groups * stateSize)
+        let perLayer: Double = stateSize * inner + convolution
         let state: Double = 30 * perLayer * 8
         XCTAssertEqual(profile.workspaceBytes, 0.75 * gib + state)
         XCTAssertEqual(profile.maxContext, 262144)
