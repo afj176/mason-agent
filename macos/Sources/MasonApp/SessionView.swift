@@ -20,13 +20,7 @@ struct SessionView: View {
             .navigationTitle(session.title)
             .navigationSubtitle(URL(fileURLWithPath: session.workspace).lastPathComponent)
         } else {
-            ContentUnavailableView {
-                Label("Make the next move clear", systemImage: "hammer")
-            } description: {
-                Text("Open a project folder and ask Mason to read, explain or change it. Sessions start by asking before each edit and command.")
-            } actions: {
-                Button("Open Project…") { model.openFolder() }.keyboardShortcut(.defaultAction)
-            }
+            WelcomeView()
         }
     }
 }
@@ -38,7 +32,7 @@ struct Transcript: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 24) {
                     ForEach(Array(session.turns.enumerated()), id: \.element.id) { index, turn in
                         TurnView(turn: turn, activities: activities(for: index), live: model.running && index == session.turns.count - 1)
                     }
@@ -55,7 +49,7 @@ struct Transcript: View {
                     }
                     Color.clear.frame(height: 1).id("end")
                 }
-                .padding(20)
+                .padding(24)
                 .frame(maxWidth: 860, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
@@ -84,38 +78,61 @@ struct TurnView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(turn.request)
-                .textSelection(.enabled)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 12))
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            if !activities.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(activities) { ActivityRow(activity: $0) }
-                }
-            }
-            if live {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(model.liveText.isEmpty ? model.liveStatus : String(model.liveText.suffix(400)))
-                        .foregroundStyle(.secondary).lineLimit(3)
-                }
-            } else if !turn.answer.isEmpty {
-                MarkdownText(text: turn.answer)
-            }
-            if !turn.changes.isEmpty, !live {
-                HStack(spacing: 10) {
-                    ForEach(turn.changes.prefix(6), id: \.path) { change in
-                        let counts = Diff.counts(before: change.before, after: change.deleted ? "" : change.after)
-                        Label(change.isOpaque ? "\(change.path)  binary" : "\(change.path)  +\(counts.added) −\(counts.removed)",
-                              systemImage: change.deleted ? "trash" : change.created ? "doc.badge.plus" : change.byCommand == true ? "terminal" : "pencil")
-                            .font(.caption).padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(.quaternary, in: Capsule())
+            Speaker(mason: false)
+            Text(turn.request).textSelection(.enabled).messageBody()
+
+            if !activities.isEmpty || live || !turn.answer.isEmpty || !turn.changes.isEmpty {
+                Speaker(mason: true).padding(.top, 4)
+                VStack(alignment: .leading, spacing: 10) {
+                    if !activities.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(activities) { ActivityRow(activity: $0) }
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .card()
                     }
-                    if turn.undone { Text("Undone").font(.caption).foregroundStyle(.orange) }
+                    if live {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(model.liveText.isEmpty ? model.liveStatus : String(model.liveText.suffix(400)))
+                                .foregroundStyle(.secondary).lineLimit(3)
+                        }
+                    } else if !turn.answer.isEmpty {
+                        MarkdownText(text: turn.answer)
+                    }
+                    if !live, !activities.isEmpty || !turn.changes.isEmpty {
+                        // What the request amounted to, in one line, and the way to its changes.
+                        HStack(spacing: 10) {
+                            Text(summary).font(.callout).foregroundStyle(Brand.muted)
+                            if !turn.changes.isEmpty {
+                                Button("\(turn.changes.count) changed file\(turn.changes.count == 1 ? "" : "s")") { model.showChanges = true }
+                                    .buttonStyle(.link).fontWeight(.semibold)
+                                    .help("Show what changed")
+                            }
+                            if turn.undone { Text("Undone").font(.caption).foregroundStyle(.orange) }
+                        }
+                    }
                 }
+                .messageBody()
             }
         }
+    }
+
+    /// "2 reads · 1 edit · 1 command", counting the steps that completed.
+    var summary: String {
+        var reads = 0, edits = 0, commands = 0, other = 0
+        for activity in activities where activity.state == .completed {
+            switch activity.tool {
+            case "read_file", "read_lines", "list_files", "search_files": reads += 1
+            case "edit_file", "write_file", "apply_edits": edits += 1
+            case "run_shell", "run_workflow", "start_job": commands += 1
+            default: other += 1
+            }
+        }
+        func count(_ number: Int, _ one: String, _ many: String) -> String? { number == 0 ? nil : "\(number) \(number == 1 ? one : many)" }
+        let parts = [count(reads, "read", "reads"), count(edits, "edit", "edits"), count(commands, "command", "commands"), count(other, "other step", "other steps")].compactMap { $0 }
+        return parts.isEmpty ? "No steps completed" : parts.joined(separator: " · ")
     }
 }
 
@@ -247,11 +264,9 @@ struct Composer: View {
                 .focused($focused)
                 .frame(minHeight: 44, maxHeight: 140)
                 .scrollContentBackground(.hidden)
-                .padding(8)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
                 .overlay(alignment: .topLeading) {
                     if model.draft.isEmpty {
-                        Text("Ask about this project or describe a change").foregroundStyle(.tertiary).padding(.horizontal, 13).padding(.vertical, 8).allowsHitTesting(false)
+                        Text("Describe a change, or ask about the project…").foregroundStyle(.tertiary).padding(.horizontal, 5).allowsHitTesting(false)
                     }
                 }
                 .accessibilityLabel("Request")
@@ -276,7 +291,11 @@ struct Composer: View {
                 }
                 .labelsHidden().fixedSize().disabled(model.running)
                 .help("What Mason may do without asking. Auto runs commands in the macOS sandbox, limited to this project, with network access off.")
+                Button { model.pane = .models } label: { Label(model.endpoint == nil ? "No model running" : model.endpointName, systemImage: "cpu").lineLimit(1) }
+                    .buttonStyle(.plain).chip()
+                    .help(model.endpoint == nil ? "No model is running. Open Models to start one." : "Running at \(model.endpoint?.url ?? "")")
                 Spacer()
+                if !model.running { Text("⌘Return to send").font(.caption).foregroundStyle(Brand.muted) }
                 if model.running {
                     if model.waitingFollowUps > 0 { Text("\(model.waitingFollowUps) waiting").font(.caption).foregroundStyle(.secondary) }
                     let empty = model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -292,14 +311,24 @@ struct Composer: View {
                         Button { model.runQueued() } label: { Label("Run \(waiting.count) Queued", systemImage: "play") }
                             .help("Run the messages that were waiting when the last request stopped")
                     }
-                    Button { model.send() } label: { Label("Send", systemImage: "arrow.up.circle.fill") }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .help("Send (⌘Return)")
+                    Button { model.send() } label: {
+                        Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold)).foregroundStyle(Brand.onAccent)
+                            .frame(width: 34, height: 34).background(Brand.accent, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.45 : 1)
+                    .accessibilityLabel("Send")
+                    .help("Send (⌘Return)")
                 }
             }
         }
-        .padding(16)
+        .padding(12)
+        .card(radius: 18)
+        .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16).padding(.bottom, 14).padding(.top, 6)
         .onAppear { focused = true }
         .onChange(of: model.approval == nil) { _, answered in focused = answered }
     }

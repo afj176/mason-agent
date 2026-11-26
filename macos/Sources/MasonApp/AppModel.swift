@@ -31,6 +31,8 @@ final class AppModel: ObservableObject {
 
     /// Which part of the window is showing.
     @Published var pane: Pane = .code
+    /// Whether the files the session changed are shown beside the conversation.
+    @Published var showChanges = false
     @Published var chats: [ChatConversation] = []
     @Published var chatSelection: UUID?
     @Published var chatDraft = ""

@@ -19,6 +19,8 @@ cp "$BIN/MasonAgent" "$APP/Contents/MacOS/MasonAgent"
 cp "$BIN/mason" "$APP/Contents/Resources/bin/mason"
 sed "s/__VERSION__/$VERSION/g" Packaging/Info.plist > "$APP/Contents/Info.plist"
 cp ../LICENSE ../THIRD-PARTY-NOTICES.md "$APP/Contents/Resources/"
+# The mascot, for the brand mark, Mason's answers and the welcome page.
+cp Packaging/mascot.png Packaging/welcome.png "$APP/Contents/Resources/"
 
 # App icon from the brand kit's largest square mark.
 ICON_SOURCE="../brand/logo-kit/favicon/android-chrome-512x512.png"

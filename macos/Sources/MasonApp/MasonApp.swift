@@ -4,12 +4,16 @@ import MasonCore
 @main
 struct MasonAgentApp: App {
     @StateObject private var model = AppModel()
+    @AppStorage("appearance") private var appearance = AppearanceChoice.system.rawValue
 
     var body: some Scene {
         WindowGroup("Mason Agent") {
             RootView()
                 .environmentObject(model)
                 .frame(minWidth: 860, minHeight: 540)
+                .tint(Brand.accent)
+                .onAppear { NSApp.appearance = (AppearanceChoice(rawValue: appearance) ?? .system).appearance }
+                .onChange(of: appearance) { _, choice in NSApp.appearance = (AppearanceChoice(rawValue: choice) ?? .system).appearance }
         }
         .defaultSize(width: 1180, height: 760)
         .commands {
@@ -59,8 +63,6 @@ enum Pane: String, CaseIterable, Identifiable {
 
 struct RootView: View {
     @EnvironmentObject var model: AppModel
-    @State private var showChanges = false
-
     var body: some View {
         NavigationSplitView {
             Group {
@@ -68,13 +70,18 @@ struct RootView: View {
             }
             .navigationSplitViewColumnWidth(min: 200, ideal: 250, max: 340)
         } detail: {
-            Group {
-                switch model.pane {
-                case .code: SessionView(showChanges: $showChanges)
-                case .chat: ChatView()
-                case .models: ModelsView()
+            VStack(spacing: 0) {
+                Group {
+                    switch model.pane {
+                    case .code: SessionView(showChanges: $model.showChanges)
+                    case .chat: ChatView()
+                    case .models: ModelsView()
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                StatusBar()
             }
+            .background(Brand.background)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Picker("View", selection: $model.pane) {
@@ -86,7 +93,7 @@ struct RootView: View {
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.pane == .code {
-                        Toggle(isOn: $showChanges) { Label("Changes", systemImage: "plusminus") }
+                        Toggle(isOn: $model.showChanges) { Label("Changes", systemImage: "plusminus") }
                             .help("Show the files this session changed")
                     }
                     Button { model.pane = .models } label: {
@@ -110,12 +117,25 @@ struct Sidebar: View {
 
     var body: some View {
         List(selection: $model.selection) {
+            Section {
+                HStack(spacing: 8) {
+                    Mascot(size: 26)
+                    Text("Mason Agent").font(.headline).fontWeight(.heavy)
+                }
+                .padding(.vertical, 4)
+                .listRowSeparator(.hidden)
+                .selectionDisabled()
+            }
             ForEach(model.projects, id: \.self) { project in
                 Section {
                     ForEach(model.sessions(in: project)) { session in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(session.title).lineLimit(1)
-                            Text(session.state).font(.caption).foregroundStyle(.secondary)
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.title).lineLimit(1)
+                                Text(session.state).font(.caption).foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: session.state == "Running" || session.state == "Awaiting review" ? "ellipsis.bubble" : "bubble.left")
                         }
                         .tag(session.id)
                         .contextMenu {
@@ -136,6 +156,8 @@ struct Sidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(Brand.sidebar)
         .overlay {
             if model.sessions.isEmpty {
                 ContentUnavailableView {
@@ -157,9 +179,16 @@ struct Sidebar: View {
 
 struct SettingsView: View {
     @EnvironmentObject var model: AppModel
+    @AppStorage("appearance") private var appearance = AppearanceChoice.system.rawValue
 
     var body: some View {
         Form {
+            Section("Appearance") {
+                Picker("Theme", selection: $appearance) {
+                    ForEach(AppearanceChoice.allCases) { Text($0.rawValue).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+            }
             Section("Command line") {
                 LabeledContent("mason") {
                     Button("Install Command Line Tool…") { model.installCommandLineTool() }
