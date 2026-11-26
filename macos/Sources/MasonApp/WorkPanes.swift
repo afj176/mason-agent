@@ -19,7 +19,7 @@ extension AppModel {
         switch name {
         case "/policy": return (try Policies.command(rest, workspace: workspace, home: home), nil)
         case "/experiment": return (try await Experiments.command(rest, workspace: workspace, home: home), nil)
-        case "/deliver": return try await Delivery.command(rest, workspace: workspace, home: home)
+        case "/deliver": return try await Delivery.command(rest, workspace: workspace, receipt: session.passedReceipt, home: home)
         case "/task": return (try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: session.permission == .auto && !session.askOnly, program: masonProgram, home: home), nil)
         default: throw MasonError("Unknown command \(name).")
         }

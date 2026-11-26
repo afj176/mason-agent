@@ -301,7 +301,7 @@ extension AppModel {
                 switch name {
                 case "/experiment", "/experiments": notice = try await Experiments.command(rest, workspace: workspace, home: home)
                 case "/deliver":
-                    let said = try await Delivery.command(rest, workspace: workspace, home: home)
+                    let said = try await Delivery.command(rest, workspace: workspace, receipt: session.passedReceipt, home: home)
                     notice = said.text
                     // Feedback to act on is put in the request box for the user to send.
                     if let request = said.request { draft = request }

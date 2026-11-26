@@ -367,6 +367,10 @@ public final class Agent {
             }
             var blocked: String?
             var reviewed = false
+            // With hooks on, the project's afterPlan workflows run once the checks are worked out and before any work.
+            if let failure = await runHooks("afterPlan", in: workspace, session: session) {
+                session.messages[session.messages.count - 1].content += "\n\nThe project's afterPlan hook failed before work began:\n" + failure
+            }
             let window = await model.contextWindow()
             for _ in 0..<Agent.actionLimit {
                 try Task.checkCancellation()

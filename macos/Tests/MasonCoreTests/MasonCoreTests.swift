@@ -896,6 +896,43 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(plain.turns.last?.answer, "Done.")
     }
 
+    func testProbesGoBeyondAPinnedTestAndAnAfterPlanHookRunsFirst() async throws {
+        func put(_ name: String, _ text: String) throws {
+            let file = folder.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try put("mason.workflows.json", #"{"version": 1, "workflows": {"test": {"executable": "sh", "arguments": ["-c", "echo 'ok 1 - joins'"]}, "note": {"executable": "sh", "arguments": ["-c", "echo planned >> plan.log; exit 1"], "events": ["afterPlan"]}}}"#)
+        try put("join.cjs", "exports.join = function (a, b) { return a + '-' + b; };\n")
+        try put("join.test.cjs", "const { join } = require('./join.cjs');\nconsole.log(join('x', \"y\") === 'x-y' ? 'ok 1 - joins' : 'not ok 1 - joins');\n")
+        try put(".mason/tests.json", #"[{"requirement": "Join two words", "workflow": "test", "format": "tap", "test": "joins", "testFiles": ["join.test.cjs"], "inputs": ["join.cjs"], "argumentOrder": "interchangeable", "roundTrip": {"module": "join.cjs", "encode": "join", "decode": "join", "alphabet": "ab"}}]"#)
+        let workspace = try Workspace(path: folder.path)
+        let test = try XCTUnwrap(try ProjectTests.load(workspace).first)
+        XCTAssertEqual(ProjectTests.example(test, workspace: workspace), ["join.cjs", "join", "\"x\"", "\"y\""], "the example is taken from the test's own call")
+        let plan = await Derived.prepare("Join two words", workspace: workspace, model: nil)
+        XCTAssertEqual(ProjectTests.value(plan.checks[0], "argumentOrder"), ["join.cjs", "join", "\"x\"", "\"y\""])
+        let result = try await Derived.verify(plan, workspace: workspace)[0]
+        let node = (try? await Shell.run("command -v node", in: workspace, sandboxed: false))?.exitCode == 0
+        if node {
+            XCTAssertEqual(result.state, "failed", "the test passes, but join is not the same with its arguments exchanged: " + result.detail)
+            XCTAssertTrue(result.detail.contains("argument order: join(\"x\", \"y\") gives \"x-y\" but exchanged it gives \"y-x\""), result.detail)
+            XCTAssertTrue(result.detail.contains("round trip:"), result.detail)
+        } else {
+            XCTAssertTrue(result.detail.contains("not run"), result.detail)
+        }
+
+        // afterPlan runs once, before the model is asked, and its failure is told to the model.
+        _ = try Policies.command("hooks on", workspace: workspace, home: home)
+        var (store, session) = try session(.auto)
+        let model = ScriptedModel([ModelReply(text: "Nothing to do.")])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        agent.hooksNeedSandbox = false
+        agent.derivesChecks = false
+        await agent.run(&session, request: "Look around")
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("plan.log"), encoding: .utf8), "planned\n")
+        XCTAssertTrue(model.seen.first?.last?.content.contains("The project's afterPlan hook failed before work began") ?? false)
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

@@ -1542,6 +1542,42 @@ static void test_extra_tools() {
         CHECK(box.read("calc.py") == "def add(a, b):\n    return a + b\n");
     }
 
+    // Probes go beyond a pinned test, and an afterPlan hook runs first.
+    {
+        Sandbox box;
+        box.write("mason.workflows.json", R"J({"version": 1, "workflows": {"test": {"executable": "sh", "arguments": ["-c", "echo 'ok 1 - joins'"]}, "note": {"executable": "sh", "arguments": ["-c", "echo planned >> plan.log; exit 1"], "events": ["afterPlan"]}}})J");
+        box.write("join.cjs", "exports.join = function (a, b) { return a + '-' + b; };\n");
+        box.write("join.test.cjs", "const { join } = require('./join.cjs');\nconsole.log(join('x', \"y\") === 'x-y' ? 'ok 1 - joins' : 'not ok 1 - joins');\n");
+        fs::create_directories(box.project / ".mason");
+        box.write(".mason/tests.json", R"J([{"requirement": "Join two words", "workflow": "test", "format": "tap", "test": "joins", "testFiles": ["join.test.cjs"], "inputs": ["join.cjs"], "argumentOrder": "interchangeable", "roundTrip": {"module": "join.cjs", "encode": "join", "decode": "join", "alphabet": "ab"}}])J");
+        const Workspace workspace(box.project.string());
+        const std::vector<ProjectTest> listed = project_tests::load(workspace);
+        CHECK(listed.size() == 1);
+        if (listed.size() == 1) CHECK(project_tests::example(listed[0], workspace) == (std::vector<std::string>{"join.cjs", "join", "\"x\"", "\"y\""}));  // the example is taken from the test's own call
+        const DerivedPlan plan = derived::prepare("Join two words", workspace, nullptr);
+        CHECK(plan.checks.size() == 1);
+        if (plan.checks.size() == 1) {
+            const DerivedResult result = derived::verify(plan, workspace)[0];
+            if (shell::run("command -v node", workspace, false, 10).exit_code == 0) {
+                CHECK(result.state == "failed" && result.detail.find("argument order: join(\"x\", \"y\") gives \"x-y\" but exchanged it gives \"y-x\"") != std::string::npos && result.detail.find("round trip:") != std::string::npos);
+            } else {
+                CHECK(result.detail.find("not run") != std::string::npos);
+            }
+        }
+        // afterPlan runs once, before the model is asked, and its failure is told to the model.
+        policies::command("hooks on", workspace, box.home);
+        SessionStore store(box.home);
+        Session session = store.create(workspace.root(), Permission::Auto);
+        ScriptedModel model;
+        model.replies = {say("Nothing to do.")};
+        Agent agent(store, model, [](const ApprovalRequest&) { return true; }, quiet);
+        agent.set_hooks_need_sandbox(false);
+        agent.derives_checks = false;
+        agent.run(session, "Look around");
+        CHECK(box.read("plan.log") == "planned\n");
+        CHECK(!model.seen.empty() && model.seen[0].back().content.find("The project's afterPlan hook failed before work began") != std::string::npos);
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;

@@ -142,7 +142,7 @@ DeliveryReview review(const Workspace& workspace, const std::string& base) {
     return reviewed;
 }
 
-DeliveryDraft draft(const Workspace& workspace, const std::string& base, const std::string& pinned, const std::string& given, const std::set<std::string>& selected, const fs::path& home) {
+DeliveryDraft draft(const Workspace& workspace, const std::string& base, const std::string& pinned, const std::string& given, const std::set<std::string>& selected, const fs::path& home, const std::string& receipt) {
     const std::string title = trim(given);
     if (title.empty() || utf8_length(title) > 120 || title.find('\n') != std::string::npos || selected.empty() || selected.size() > 128) {
         throw Error("Choose reviewed hunks and a pull request title of up to 120 characters.");
@@ -189,8 +189,9 @@ DeliveryDraft draft(const Workspace& workspace, const std::string& base, const s
     made.body = "## Changes\n\n";
     for (const std::string& path : made.paths) made.body += "- " + path + "\n";
     made.body += "\n## Verification\n\n";
-    made.body += patches.size() == reviewed.patches.size() ? "This is every change in the checkout against " + base + ". No verification receipt is attached."
-                                                           : "This is a selection of the checkout's changes, which was not verified on its own.";
+    if (patches.size() != reviewed.patches.size()) made.body += "This is a selection of the checkout's changes, which was not verified on its own.";
+    else if (!receipt.empty()) made.body += "This is every change in the checkout against " + base + ". Mason's own checks on the latest request found:\n\n" + (utf8_length(receipt) > 12000 ? utf8_prefix(receipt, 12000) : receipt);
+    else made.body += "This is every change in the checkout against " + base + ". No verification receipt is attached.";
     std::vector<DeliveryDraft> kept;
     for (const DeliveryDraft& other : load(home)) {
         if (other.workspace != made.workspace) kept.push_back(other);
@@ -276,7 +277,7 @@ std::optional<DeliveryDraft> current(const Workspace& workspace, const fs::path&
     return found;
 }
 
-Said command(const std::string& rest, const Workspace& workspace, const fs::path& home) {
+Said command(const std::string& rest, const Workspace& workspace, const fs::path& home, const std::string& receipt) {
     const std::vector<std::string> words = split(trim(rest), ' ', false);
     const std::string verb = words.empty() ? "" : to_lower(words[0]);
     if (verb.empty()) {
@@ -302,7 +303,7 @@ Said command(const std::string& rest, const Workspace& workspace, const fs::path
         }
         std::string title;
         for (size_t i = 3; i < words.size(); i++) title += (i > 3 ? " " : "") + words[i];
-        return {"Drafted " + described(draft(workspace, words[1], reviewed.revision, title, chosen, home)), ""};
+        return {"Drafted " + described(draft(workspace, words[1], reviewed.revision, title, chosen, home, receipt)), ""};
     }
     if (verb == "publish" || verb == "feedback") {
         const auto made = current(workspace, home);

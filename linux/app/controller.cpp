@@ -397,13 +397,14 @@ void Controller::host_command(const std::string& name, const std::string& rest) 
     const bool automatic = current->permission == Permission::Auto && !current->ask_only;
     const std::shared_ptr<bool> alive = alive_;
     // Some of these run git, so they work off the main thread and report back.
-    std::thread([this, alive, name, rest, folder, home, target, automatic] {
+    const std::string receipt = derived::passed_receipt(*current);
+    std::thread([this, alive, name, rest, folder, home, target, automatic, receipt] {
         std::string said, request;
         try {
             const Workspace workspace(folder);
             if (name == "/experiment" || name == "/experiments") said = experiments::command(rest, workspace, home);
             else if (name == "/deliver") {
-                const delivery::Said answer = delivery::command(rest, workspace, home);
+                const delivery::Said answer = delivery::command(rest, workspace, home, receipt);
                 said = answer.text;
                 request = answer.request;
             } else if (name == "/task" || name == "/tasks") {

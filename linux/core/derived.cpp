@@ -163,6 +163,14 @@ std::string DerivedPlan::brief() const {
 
 namespace derived {
 
+std::string passed_receipt(const Session& session) {
+    for (auto turn = session.turns.rbegin(); turn != session.turns.rend(); ++turn) {
+        if (turn->undone || !turn->checks) continue;
+        return passed(*turn->checks) && !turn->checks->results.empty() ? report(*turn->checks) : "";
+    }
+    return "";
+}
+
 std::string description(const DerivedCheck& check) {
     if (check.kind == "document_text") return check.path + " contains “" + check.expected + "”";
     if (check.kind == "browser_heading") return check.path + " shows a heading that reads “" + check.expected + "”";

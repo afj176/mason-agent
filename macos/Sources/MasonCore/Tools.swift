@@ -7,7 +7,7 @@ public struct ProjectWorkflows {
         public let executable: String
         public let arguments: [String]
         public let directory: String
-        /// When the workflow runs by itself as a hook: afterEdit, beforeVerify. (afterPlan is accepted and not used here.)
+        /// When the workflow runs by itself as a hook: afterPlan, afterEdit, beforeVerify.
         public var events: [String] = []
     }
     public let workflows: [String: Workflow]
@@ -29,7 +29,7 @@ public struct ProjectWorkflows {
             if directory != "." { _ = try workspace.resolve(directory) }
             var events = item["events"] as? [String] ?? []
             if item["beforeVerify"] as? Bool == true, !events.contains("beforeVerify") { events.append("beforeVerify") }
-            guard events.allSatisfy({ ["afterPlan", "afterEdit", "beforeVerify"].contains($0) }) else { throw MasonError("The workflow \(name) names an event other than afterEdit or beforeVerify.") }
+            guard events.allSatisfy({ ["afterPlan", "afterEdit", "beforeVerify"].contains($0) }) else { throw MasonError("The workflow \(name) names an event other than afterPlan, afterEdit or beforeVerify.") }
             found[name] = Workflow(executable: executable, arguments: arguments, directory: directory, events: events)
         }
         return ProjectWorkflows(workflows: found)

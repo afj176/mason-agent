@@ -22,6 +22,8 @@ std::string description(const DerivedCheck& check);
 bool passed(const DerivedReceipt& receipt);
 std::string summary(const DerivedReceipt& receipt);
 std::string report(const DerivedReceipt& receipt);
+/// What Mason's own checks found on the latest request that had any, when they all held: for a pull request's description.
+std::string passed_receipt(const Session& session);
 /// The separate requirements of a request: its clauses, with quoted text kept whole.
 std::vector<std::string> units(const std::string& request);
 /// Works out what can be checked. `model` (may be null) is asked only when some requirement has no exact check and

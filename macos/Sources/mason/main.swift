@@ -512,7 +512,7 @@ final class CLI {
         case "/task", "/tasks":
             for line in try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: session.permission == .auto && !session.askOnly, program: ScriptOperations.ownProgram).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/deliver":
-            let said = try await Delivery.command(rest, workspace: workspace)
+            let said = try await Delivery.command(rest, workspace: workspace, receipt: session.passedReceipt)
             for line in said.text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             if let request = said.request { await send(request) }
         case "/comment", "/comments":

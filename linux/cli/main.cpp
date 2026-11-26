@@ -565,7 +565,7 @@ private:
             return true;
         }
         if (name == "/deliver") {
-            const delivery::Said said = delivery::command(rest, workspace_, store_.home());
+            const delivery::Said said = delivery::command(rest, workspace_, store_.home(), derived::passed_receipt(session_));
             for (const std::string& line : split(said.text, '\n')) term::line("  " + line);
             if (!said.request.empty()) send(said.request);
             return true;

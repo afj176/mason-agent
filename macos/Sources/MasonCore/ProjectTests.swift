@@ -15,6 +15,10 @@ public struct ProjectTest: Equatable {
     public var test: String
     public var testFiles: [String]
     public var inputs: [String]
+    /// An extra check after the test passes: strings over `alphabet` must survive encode then decode. [module, encode, decode, alphabet].
+    public var roundTrip: [String] = []
+    /// "interchangeable" when the function under test must give the same result with its two arguments exchanged.
+    public var argumentOrder = ""
 }
 
 public enum ProjectTests {
@@ -30,7 +34,14 @@ public enum ProjectTests {
         return try listed.map { item in
             func text(_ key: String) -> String { (item.first { $0.key.lowercased() == key.lowercased() }?.value as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
             func list(_ key: String) -> [String] { item.first { $0.key.lowercased() == key.lowercased() }?.value as? [String] ?? [] }
-            let test = ProjectTest(requirement: text("requirement"), workflow: text("workflow"), format: text("format").lowercased(), report: text("report"), test: text("test"), testFiles: list("testFiles"), inputs: list("inputs"))
+            var test = ProjectTest(requirement: text("requirement"), workflow: text("workflow"), format: text("format").lowercased(), report: text("report"), test: text("test"), testFiles: list("testFiles"), inputs: list("inputs"))
+            if let trip = item.first(where: { $0.key.lowercased() == "roundtrip" })?.value as? [String: Any] {
+                func part(_ key: String) -> String { trip.first { $0.key.lowercased() == key }?.value as? String ?? "" }
+                test.roundTrip = [part("module"), part("encode"), part("decode"), part("alphabet")]
+                guard !test.roundTrip.contains(""), !test.roundTrip[0].hasPrefix("/"), !test.roundTrip[0].split(separator: "/").contains("..") else { throw MasonError("\(manifest): roundTrip needs module, encode, decode and alphabet.") }
+            }
+            test.argumentOrder = text("argumentOrder").lowercased()
+            guard ["", "ordered", "interchangeable"].contains(test.argumentOrder) else { throw MasonError("\(manifest): argumentOrder is ordered or interchangeable.") }
             guard !test.requirement.isEmpty, !test.test.isEmpty, test.test.count <= 400, formats.contains(test.format), (1...16).contains(test.testFiles.count), (1...32).contains(test.inputs.count),
                   test.format == "junit" || test.format == "trx" ? !test.report.isEmpty : true else { throw invalid }
             guard workflows[test.workflow] != nil else { throw MasonError("\(manifest) names the workflow \(test.workflow), which is not in mason.workflows.json.") }
@@ -141,6 +152,48 @@ public enum ProjectTests {
         return (outcome(of: test, in: outcomes(format: format, text: text)), result.exitCode, result.timedOut ? "The workflow ran past 300 seconds." : tail)
     }
 
+    // MARK: probes beyond the test itself
+
+    static let roundTripScript = #"""
+        var p=require('path'),m=require(p.resolve(process.argv[1])),enc=m[process.argv[2]],dec=m[process.argv[3]],alpha=Array.from(process.argv[4]);
+        if(typeof enc!=='function'||typeof dec!=='function'||!alpha.length){console.log('MASON-PROBE fail the module does not export both functions');process.exit(0);}
+        var seed=12345;function next(){seed=(seed*1103515245+12345)&0x7fffffff;return seed;}
+        var cases=[''];for(var i=0;i<63;i++){var n=next()%24,s='';for(var j=0;j<n;j++)s+=alpha[next()%alpha.length];cases.push(s);}
+        for(var k=0;k<cases.length;k++){var c=cases[k],out;try{out=dec(enc(c));}catch(e){console.log('MASON-PROBE fail '+JSON.stringify(c)+' threw '+String(e&&e.message));process.exit(0);}
+        if(out!==c){console.log('MASON-PROBE fail '+JSON.stringify(c)+' came back as '+JSON.stringify(out));process.exit(0);}}
+        console.log('MASON-PROBE pass '+cases.length+' strings came back unchanged');
+        """#
+    static let orderScript = #"""
+        var p=require('path'),f=require(p.resolve(process.argv[1]))[process.argv[2]],a=JSON.parse(process.argv[3]),b=JSON.parse(process.argv[4]);
+        if(typeof f!=='function'){console.log('MASON-PROBE fail the module does not export '+process.argv[2]);process.exit(0);}
+        var x,y;try{x=f(a,b);y=f(b,a);}catch(e){console.log('MASON-PROBE fail it threw '+String(e&&e.message));process.exit(0);}
+        try{require('assert').deepStrictEqual(y,x);console.log('MASON-PROBE pass the same result with the arguments exchanged ('+JSON.stringify(x)+')');}
+        catch(e){console.log('MASON-PROBE fail '+process.argv[2]+'('+process.argv[3]+', '+process.argv[4]+') gives '+JSON.stringify(x)+' but exchanged it gives '+JSON.stringify(y));}
+        """#
+
+    /// A direct call of the one function a CommonJS module exports, with two literal arguments, taken from the
+    /// test's own files: [module, function, first argument as JSON, second argument as JSON].
+    static func example(_ test: ProjectTest, workspace: Workspace) -> [String]? {
+        guard test.inputs.count == 1, ["cjs", "js"].contains((test.inputs[0] as NSString).pathExtension.lowercased()), let module = try? workspace.read(test.inputs[0]) else { return nil }
+        let names = Set(Rx.matches(#"\bexports\.([A-Za-z_$][\w$]*)\s*="#, in: module).map { $0[1] })
+        guard names.count == 1, let name = names.first else { return nil }
+        let literal = #"(-?\d+(?:\.\d+)?|"[^"\\]*"|'[^'\\]*')"#
+        for path in test.testFiles {
+            guard let source = try? workspace.read(path), let call = Rx.first("\\b" + NSRegularExpression.escapedPattern(for: name) + "\\(\\s*" + literal + "\\s*,\\s*" + literal + "\\s*\\)", in: source) else { continue }
+            func json(_ text: String) -> String { text.hasPrefix("'") ? "\"" + text.dropFirst().dropLast().replacingOccurrences(of: "\"", with: "\\\"") + "\"" : text }
+            return [test.inputs[0], name, json(call[1]), json(call[2])]
+        }
+        return nil
+    }
+
+    /// Runs one probe with Node.js. Nil when it could not be run at all.
+    static func probe(_ script: String, _ arguments: [String], workspace: Workspace, sandboxed: Bool) async -> (passed: Bool, text: String)? {
+        let command = "node -e " + Shell.quote(script) + " " + arguments.map(Shell.quote).joined(separator: " ")
+        guard let result = try? await Shell.run(command, in: workspace, sandboxed: sandboxed, timeout: 30), let line = result.output.components(separatedBy: "\n").first(where: { $0.hasPrefix("MASON-PROBE ") }) else { return nil }
+        let said = String(line.dropFirst("MASON-PROBE ".count))
+        return (said.hasPrefix("pass "), String(said.dropFirst(5)))
+    }
+
     // MARK: as one of Mason's own checks
 
     static func value(_ check: DerivedCheck, _ key: String) -> [String] { Array((check.steps ?? []).first { $0.first == key }?.dropFirst() ?? []) }
@@ -151,8 +204,10 @@ public enum ProjectTests {
         if !requireSandbox || Shell.sandboxAvailable {
             if let ran = try? await run(test: test.test, workflow: test.workflow, format: test.format, report: test.report, workspace: workspace, sandboxed: Shell.sandboxAvailable) { baseline = ran.outcome ?? "not reported" }
         }
-        return DerivedCheck(unit: unit, feature: test.requirement, kind: "project_test", path: test.workflow, target: test.test, expected: "passed",
-                            steps: [["format", test.format], ["report", test.report], ["files"] + test.testFiles, ["pin", pin(test.testFiles, workflow: test.workflow, workspace: workspace)], ["baseline", baseline]])
+        var steps = [["format", test.format], ["report", test.report], ["files"] + test.testFiles, ["pin", pin(test.testFiles, workflow: test.workflow, workspace: workspace)], ["baseline", baseline]]
+        if !test.roundTrip.isEmpty { steps.append(["roundTrip"] + test.roundTrip) }
+        if test.argumentOrder == "interchangeable", let found = example(test, workspace: workspace) { steps.append(["argumentOrder"] + found) }
+        return DerivedCheck(unit: unit, feature: test.requirement, kind: "project_test", path: test.workflow, target: test.test, expected: "passed", steps: steps)
     }
 
     static func verify(_ check: DerivedCheck, workspace: Workspace, requireSandbox: Bool) async -> DerivedResult {
@@ -165,7 +220,20 @@ public enum ProjectTests {
             let ran = try await run(test: check.target, workflow: check.path, format: value(check, "format").first ?? "", report: value(check, "report").first ?? "", workspace: workspace, sandboxed: Shell.sandboxAvailable)
             let now = ran.outcome ?? "not reported"
             let story = "baseline: \(baseline); now: \(now) (the workflow \(check.path) exited \(ran.exit))"
-            return DerivedResult(check: check, state: ran.outcome == "passed" ? "passed" : "failed", detail: ran.outcome == "passed" ? story : story + "\n" + ran.diagnostics)
+            guard ran.outcome == "passed" else { return DerivedResult(check: check, state: "failed", detail: story + "\n" + ran.diagnostics) }
+            // The test passes. The probes the project asked for go further than its examples.
+            var notes: [String] = [], broken = false
+            for (key, script, label) in [("roundTrip", roundTripScript, "round trip"), ("argumentOrder", orderScript, "argument order")] {
+                let arguments = value(check, key)
+                guard !arguments.isEmpty else { continue }
+                if let outcome = await probe(script, arguments, workspace: workspace, sandboxed: Shell.sandboxAvailable) {
+                    notes.append("\(label): \(outcome.text)")
+                    broken = broken || !outcome.passed
+                } else {
+                    notes.append("\(label): not run (Node.js was not found, or the module could not be loaded)")
+                }
+            }
+            return DerivedResult(check: check, state: broken ? "failed" : "passed", detail: ([story] + notes).joined(separator: "\n"))
         } catch { return DerivedResult(check: check, state: "failed", detail: (error as? MasonError)?.description ?? error.localizedDescription) }
     }
 }

@@ -887,6 +887,9 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                 plan = std::move(made);
             }
         }
+        // With hooks on, the project's afterPlan workflows run once the checks are worked out and before any work.
+        const std::string planned = run_hooks("afterPlan", *workspace, session, cancel);
+        if (!planned.empty()) session.messages.back().content += "\n\nThe project's afterPlan hook failed before work began:\n" + planned;
         const int window = model_.context_window();
         for (int step = 0; step < kActionLimit; step++) {
             check_cancel(cancel);
