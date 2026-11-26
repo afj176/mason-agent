@@ -5,6 +5,7 @@
 #include "experiments.hpp"
 #include "desktop.hpp"
 #include "acceptance.hpp"
+#include "browse.hpp"
 #include "navigation.hpp"
 #include "preview.hpp"
 #include "roles.hpp"
@@ -16,7 +17,7 @@
 namespace mason::script {
 
 const std::set<std::string>& names() {
-    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree", "review", "serve", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"};
+    static const std::set<std::string> all = {"exec", "map", "symbol", "git-status", "worktree", "review", "serve", "browse", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"};
     return all;
 }
 
@@ -24,6 +25,7 @@ const char* const kUsage =
     "mason exec --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto] [--profile PATH] [--resume SESSION_ID]\n"
     "                   [--visual-model ID [--visual-endpoint URL]] [--trace-dir FOLDER]\n"
     "mason review --workspace PATH --endpoint URL --model ID --prompt TEXT --path FILE\n"
+    "mason browse --workspace PATH --endpoint URL --model ID --prompt TEXT [--page index.html]\n"
     "mason serve --workspace PATH --workflow NAME --port PORT [--page PATH]\n"
     "mason map --workspace PATH --query NAME\n"
     "mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics\n"
@@ -39,6 +41,7 @@ const char* const kUsage =
     "  an approval it would need is reported and declined. --prompt-file PATH reads the request from a file.\n"
     "  Each exec keeps its own journal, or the one in --profile.\n"
     "  review has the model read one file against what it was meant to do; it exits 2 when it finds something.\n"
+    "  browse has the model carry out a task on a project page in a real browser, one step at a time; it exits 2 when the task was not done.\n"
     "  serve starts the workflow with your account, waits for the port, fetches the page, and stops the server.\n"
     "  A task runs in the background and keeps going after this command returns. Without --auto it waits for\n"
     "  task-allow before each edit and command; task-show prints the approval it is waiting on.\n";
@@ -156,6 +159,26 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
             for (const ReviewComment& item : found.comments) findings.push_back({{"line", item.line}, {"quote", item.quote}, {"problem", item.note}});
             event("review.result", {{"path", path}, {"dropped", found.dropped}, {"findings", findings}});
             return found.comments.empty() ? 0 : 2;
+        }
+        if (operation == "browse") {
+            std::string prompt;
+            if (values.count("prompt-file")) {
+                std::ifstream file(values["prompt-file"], std::ios::binary);
+                if (!file) throw Error("The prompt file could not be read.");
+                std::ostringstream content;
+                content << file.rdbuf();
+                prompt = content.str();
+            } else {
+                prompt = get("prompt");
+            }
+            std::unique_ptr<OpenAIClient> owned;
+            if (!model) {
+                owned = std::make_unique<OpenAIClient>(ModelEndpoint{validated_endpoint(get("endpoint")), get("model"), ""});
+                model = owned.get();
+            }
+            const BrowseOutcome outcome = browse::run(workspace, values.count("page") ? values["page"] : "index.html", prompt, *model, 12, cancel);
+            event("browser.result", {{"completed", outcome.completed}, {"answer", outcome.answer}, {"steps", outcome.steps}, {"errors", outcome.errors}, {"turns", outcome.turns}});
+            return outcome.completed ? 0 : 2;
         }
         if (operation == "serve") {
             const std::string name = get("workflow");

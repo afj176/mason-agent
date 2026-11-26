@@ -1,8 +1,10 @@
 import Foundation
 
 /// A bundle is a folder of skills and documentation that the user installs once and every project can then use. It
-/// holds `bundle.json` (`{"name": ..., "version": ..., "description": ...}`), `skills/NAME/SKILL.md` and `docs/*.md`.
-/// Only those text files are copied. A project's own documentation lives in `.mason/docs`.
+/// holds `bundle.json` (`{"name": ..., "version": ..., "description": ...}`), `skills/NAME/SKILL.md`, `docs/*.md` and,
+/// optionally, `mcp.json`: MCP servers in the format of Mason's own list. Only those text files are copied. A bundle's
+/// servers are not used until the user adds them, and then they arrive switched off. A project's own documentation
+/// lives in `.mason/docs`.
 public struct InstalledBundle: Equatable {
     public var name: String
     public var version: String
@@ -30,6 +32,7 @@ public enum Bundles {
     static func files(in folder: URL) throws -> [String] {
         var found = ["bundle.json"]
         let manager = FileManager.default
+        if manager.fileExists(atPath: folder.appendingPathComponent("mcp.json").path) { found.append("mcp.json") }
         for skill in ((try? manager.contentsOfDirectory(atPath: folder.appendingPathComponent("skills").path)) ?? []).sorted() where Customization.validName(skill) {
             if manager.fileExists(atPath: folder.appendingPathComponent("skills/\(skill)/SKILL.md").path) { found.append("skills/\(skill)/SKILL.md") }
         }
@@ -70,6 +73,30 @@ public enum Bundles {
     public static func remove(_ name: String, home: URL = DataHome.url) throws {
         guard let found = list(home: home).first(where: { $0.name.lowercased() == name.lowercased() }) else { throw MasonError("No bundle named \(name) is installed.") }
         try FileManager.default.removeItem(at: found.folder)
+    }
+
+    /// The MCP servers a bundle names. They are only a proposal until the user adds them.
+    public static func servers(of bundle: InstalledBundle) throws -> [McpServer] {
+        let file = bundle.folder.appendingPathComponent("mcp.json")
+        guard FileManager.default.fileExists(atPath: file.path) else { return [] }
+        let data = try Data(contentsOf: file)
+        guard data.count <= 32768, let servers = try? JSONDecoder().decode([McpServer].self, from: data), servers.count <= 16 else { throw MasonError("The mcp.json of \(bundle.name) is not a list of up to 16 MCP servers.") }
+        return servers
+    }
+
+    /// Adds a bundle's MCP servers to Mason's list, switched off, so each is looked at before it is used.
+    /// Returns the names added; a server whose name is already registered is left as it is.
+    public static func addServers(of bundle: InstalledBundle, home: URL = DataHome.url) throws -> [String] {
+        var registered = try Mcp.all(home: home)
+        var added: [String] = []
+        for var server in try servers(of: bundle) where !registered.contains(where: { $0.name == server.name }) {
+            try Mcp.validate(server)
+            server.enabled = false
+            registered.append(server)
+            added.append(server.name)
+        }
+        if !added.isEmpty { try Mcp.save(registered, home: home) }
+        return added
     }
 
     /// The skills installed bundles bring.
@@ -133,6 +160,8 @@ public enum Bundles {
     public static let usage = """
         /bundle                    The bundles installed on this computer
         /bundle install FOLDER     Install a bundle: its skills and docs become available in every project
+        /bundle servers NAME       The MCP servers a bundle names
+        /bundle servers NAME add   Add them to your MCP servers, switched off; switch one on in Settings once you have looked at it
         /bundle remove NAME        Remove one
         A bundle is a folder with bundle.json ({"name": ..., "version": ...}), skills/NAME/SKILL.md and docs/*.md.
         """
@@ -148,8 +177,20 @@ public enum Bundles {
         case "install":
             guard !argument.isEmpty else { throw MasonError("Use /bundle install FOLDER.") }
             let made = try install(from: argument, home: home)
-            let count = try files(in: made.folder).count - 1
+            let named = try servers(of: made)
+            let count = try files(in: made.folder).count - 1 - (named.isEmpty ? 0 : 1)
             return "Installed \(made.name) \(made.version): \(count) file\(count == 1 ? "" : "s") of skills and docs."
+                + (named.isEmpty ? "" : "\nIt names \(named.count) MCP server\(named.count == 1 ? "" : "s") (\(named.map(\.name).joined(separator: ", "))). They are not in use: /bundle servers \(made.name) shows them.")
+        case "servers":
+            let words = argument.split(separator: " ").map(String.init)
+            guard let name = words.first, let bundle = list(home: home).first(where: { $0.name.lowercased() == name.lowercased() }) else { throw MasonError("Use /bundle servers NAME, with the name of an installed bundle.") }
+            let named = try servers(of: bundle)
+            if named.isEmpty { return "\(bundle.name) names no MCP servers." }
+            if words.count > 1, words[1].lowercased() == "add" {
+                let added = try addServers(of: bundle, home: home)
+                return added.isEmpty ? "Those servers are already in your list." : "Added, switched off: \(added.joined(separator: ", ")). Look at each and switch it on in Settings, under MCP servers."
+            }
+            return named.map { "\($0.name)  ·  \($0.transport)  ·  tools: \($0.tools.isEmpty ? "none listed" : $0.tools.joined(separator: ", "))" }.joined(separator: "\n") + "\n/bundle servers \(bundle.name) add puts them in your list, switched off."
         case "remove":
             try remove(argument, home: home)
             return "Removed \(argument)."

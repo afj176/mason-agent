@@ -39,6 +39,7 @@ std::optional<InstalledBundle> manifest(const fs::path& folder) {
 /// The text files a bundle is made of, relative to its folder.
 std::vector<std::string> files_in(const fs::path& folder) {
     std::vector<std::string> found = {"bundle.json"};
+    if (fs::exists(folder / "mcp.json")) found.push_back("mcp.json");
     for (const std::string& skill : names_in(folder / "skills")) {
         if (std::regex_match(skill, kName) && fs::exists(folder / "skills" / skill / "SKILL.md")) found.push_back("skills/" + skill + "/SKILL.md");
     }
@@ -85,6 +86,8 @@ std::vector<Document> documents(const fs::path& home, const Workspace& workspace
 const char* const kUsage =
     "/bundle                    The bundles installed on this computer\n"
     "/bundle install FOLDER     Install a bundle: its skills and docs become available in every project\n"
+    "/bundle servers NAME       The MCP servers a bundle names\n"
+    "/bundle servers NAME add   Add them to your MCP servers, switched off; switch one on in Settings once you have looked at it\n"
     "/bundle remove NAME        Remove one\n"
     "A bundle is a folder with bundle.json ({\"name\": ..., \"version\": ...}), skills/NAME/SKILL.md and docs/*.md.";
 
@@ -129,6 +132,31 @@ void remove(const std::string& name, const fs::path& home) {
         return;
     }
     throw Error("No bundle named " + name + " is installed.");
+}
+
+std::vector<McpServer> servers(const InstalledBundle& bundle) {
+    std::vector<McpServer> found;
+    try {
+        found = mcp::read_list(bundle.folder / "mcp.json");
+    } catch (const Error&) {
+        throw Error("The mcp.json of " + bundle.name + " is not a list of up to 16 MCP servers.");
+    }
+    if (found.size() > 16) throw Error("The mcp.json of " + bundle.name + " is not a list of up to 16 MCP servers.");
+    return found;
+}
+
+std::vector<std::string> add_servers(const InstalledBundle& bundle, const fs::path& home) {
+    std::vector<McpServer> registered = mcp::all(home);
+    std::vector<std::string> added;
+    for (McpServer server : servers(bundle)) {
+        if (std::any_of(registered.begin(), registered.end(), [&](const McpServer& existing) { return existing.name == server.name; })) continue;
+        mcp::validate(server);
+        server.enabled = false;
+        registered.push_back(server);
+        added.push_back(server.name);
+    }
+    if (!added.empty()) mcp::save(registered, home);
+    return added;
 }
 
 std::vector<Definition> skills(const fs::path& home) {
@@ -209,8 +237,32 @@ std::string command(const std::string& rest, const fs::path& home) {
     if (verb == "install") {
         if (argument.empty()) throw Error("Use /bundle install FOLDER.");
         const InstalledBundle made = install(argument, home);
-        const size_t count = files_in(made.folder).size() - 1;
-        return "Installed " + made.name + " " + made.version + ": " + std::to_string(count) + (count == 1 ? " file" : " files") + " of skills and docs.";
+        const std::vector<McpServer> named = servers(made);
+        const size_t count = files_in(made.folder).size() - 1 - (named.empty() ? 0 : 1);
+        std::string said = "Installed " + made.name + " " + made.version + ": " + std::to_string(count) + (count == 1 ? " file" : " files") + " of skills and docs.";
+        if (!named.empty()) {
+            std::vector<std::string> names;
+            for (const McpServer& server : named) names.push_back(server.name);
+            said += "\nIt names " + std::to_string(named.size()) + (named.size() == 1 ? " MCP server (" : " MCP servers (") + join(names, ", ") + "). They are not in use: /bundle servers " + made.name + " shows them.";
+        }
+        return said;
+    }
+    if (verb == "servers") {
+        const std::vector<std::string> words = split(argument, ' ', false);
+        std::optional<InstalledBundle> bundle;
+        for (const InstalledBundle& item : list(home)) {
+            if (!words.empty() && to_lower(item.name) == to_lower(words[0])) bundle = item;
+        }
+        if (!bundle) throw Error("Use /bundle servers NAME, with the name of an installed bundle.");
+        const std::vector<McpServer> named = servers(*bundle);
+        if (named.empty()) return bundle->name + " names no MCP servers.";
+        if (words.size() > 1 && to_lower(words[1]) == "add") {
+            const std::vector<std::string> added = add_servers(*bundle, home);
+            return added.empty() ? "Those servers are already in your list." : "Added, switched off: " + join(added, ", ") + ". Look at each and switch it on in Settings, under MCP servers.";
+        }
+        std::string text;
+        for (const McpServer& server : named) text += server.name + "  ·  " + server.transport() + "  ·  tools: " + (server.tools.empty() ? std::string("none listed") : join(server.tools, ", ")) + "\n";
+        return text + "/bundle servers " + bundle->name + " add puts them in your list, switched off.";
     }
     if (verb == "remove") {
         remove(argument, home);

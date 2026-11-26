@@ -59,7 +59,7 @@ extension RepositoryMap {
 /// one `{"type": ..., "data": ...}` object per line, and returns the exit code: 0 completed, 2 ran and did not
 /// complete, 1 error.
 public enum ScriptOperations {
-    public static let names: Set<String> = ["exec", "map", "symbol", "git-status", "worktree", "review", "serve", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"]
+    public static let names: Set<String> = ["exec", "map", "symbol", "git-status", "worktree", "review", "serve", "browse", "task-start", "task-list", "task-show", "task-allow", "task-deny", "task-cancel", "task-run"]
 
     /// The path of the running mason, which is what a background task's worker is started from.
     public static var ownProgram: String { (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments.first ?? "mason")).resolvingSymlinksInPath().path }
@@ -68,6 +68,7 @@ public enum ScriptOperations {
         mason exec --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto] [--profile PATH] [--resume SESSION_ID]
                    [--visual-model ID [--visual-endpoint URL]] [--trace-dir FOLDER]
         mason review --workspace PATH --endpoint URL --model ID --prompt TEXT --path FILE
+        mason browse --workspace PATH --endpoint URL --model ID --prompt TEXT [--page index.html]
         mason serve --workspace PATH --workflow NAME --port PORT [--page PATH]
         mason map --workspace PATH --query NAME
         mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics
@@ -83,6 +84,7 @@ public enum ScriptOperations {
           an approval it would need is reported and declined. --prompt-file PATH reads the request from a file.
           Each exec keeps its own journal, or the one in --profile.
           review has the model read one file against what it was meant to do; it exits 2 when it finds something.
+          browse has the model carry out a task on a project page in a real browser, one step at a time; it exits 2 when the task was not done.
           serve starts the workflow with your account, waits for the port, fetches the page, and stops the server.
           A task runs in the background and keeps going after this command returns. Without --auto it waits for
           task-allow before each edit and command; task-show prints the approval it is waiting on.
@@ -158,6 +160,14 @@ public enum ScriptOperations {
                 let found = try await Review.findings(reading, workspace: workspace, model: Roles.reviewer(main: chosen, workspace: workspace))
                 event("review.result", ["path": path, "dropped": found.dropped, "findings": found.comments.map { ["line": $0.line, "quote": $0.quote, "problem": $0.note] as [String: Any] }])
                 return found.comments.isEmpty ? 0 : 2
+
+            case "browse":
+                let prompt = try values["prompt-file"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? get("prompt")
+                let chosen: ChatModel
+                if let model { chosen = model } else { chosen = try OpenAIClient(ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model"))) }
+                let outcome = try await Browse.run(workspace, page: values["page"] ?? "index.html", task: prompt, model: chosen)
+                event("browser.result", ["completed": outcome.completed, "answer": outcome.answer, "steps": outcome.steps, "errors": outcome.errors, "turns": outcome.turns])
+                return outcome.completed ? 0 : 2
 
             case "serve":
                 let name = try get("workflow")

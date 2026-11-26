@@ -33,6 +33,8 @@ constexpr const char* kProtocolVersion = "2025-06-18";
 
 /// Every registration, including servers that are switched off. Throws Error when the file cannot be read.
 std::vector<McpServer> all(const fs::path& home);
+/// The servers listed in a file of that format, such as a bundle's mcp.json. Nothing when the file does not exist.
+std::vector<McpServer> read_list(const fs::path& path);
 /// The servers the agent may use: switched on and valid. A broken file gives no servers.
 std::vector<McpServer> enabled(const fs::path& home);
 void save(const std::vector<McpServer>& servers, const fs::path& home);

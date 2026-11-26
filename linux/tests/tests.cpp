@@ -27,6 +27,7 @@
 #include "preview.hpp"
 #include "network.hpp"
 #include "bundles.hpp"
+#include "browse.hpp"
 #include "shell.hpp"
 #include "models.hpp"
 
@@ -1387,8 +1388,15 @@ static void test_extra_tools() {
         put(source / "skills/release/SKILL.md", "---\ndescription: How to release the shop\n---\nRun the release checklist.\n");
         put(source / "docs/payments.md", "# Payments\nCards are charged at dispatch.\n\n## Refunds\nA refund is allowed within 30 days of delivery.\n\n## Fraud\nOrders over 500 are held.\n");
         put(source / "run.sh", "echo not copied\n");
+        put(source / "mcp.json", R"([{"Name": "shop-docs", "Endpoint": "http://127.0.0.1:8088/mcp", "Tools": ["search_docs"]}])");
         CHECK(bundles::command("", data).find("No bundles") != std::string::npos);
-        CHECK(bundles::command("install " + source.string(), data).find("Installed shop-kit 1.2.0: 2 files") != std::string::npos);
+        const std::string installed = bundles::command("install " + source.string(), data);
+        CHECK(installed.find("Installed shop-kit 1.2.0: 2 files") != std::string::npos && installed.find("names 1 MCP server (shop-docs)") != std::string::npos);
+        CHECK(mcp::enabled(data).empty());  // installing a bundle puts no server into use
+        CHECK(bundles::command("servers shop-kit", data).find("shop-docs  ·  http://127.0.0.1:8088/mcp  ·  tools: search_docs") != std::string::npos);
+        CHECK(bundles::command("servers shop-kit add", data).find("Added, switched off: shop-docs") != std::string::npos);
+        CHECK(mcp::all(data).size() == 1 && mcp::all(data)[0].name == "shop-docs" && mcp::enabled(data).empty());  // an added server waits to be switched on
+        CHECK(bundles::command("servers shop-kit add", data).find("already in your list") != std::string::npos);
         CHECK(bundles::list(data).size() == 1 && bundles::list(data)[0].name == "shop-kit");
         CHECK(!fs::exists(data / "bundles/shop-kit/run.sh"));  // only skills and docs are copied
         const std::vector<Definition> known = skills::list(workspace, data);
@@ -1417,6 +1425,30 @@ static void test_extra_tools() {
         CHECK(refused);  // a folder without bundle.json is not a bundle
         bundles::command("remove shop-kit", data);
         CHECK(bundles::list(data).empty());
+    }
+
+    // A model carries out a task on a page, one step at a time.
+    if (!browser::find().empty()) {
+        Sandbox box;
+        box.write("index.html", "<!doctype html><title>Shop</title><h1>Corner Shop</h1><p id=\"status\">Nothing in the cart.</p><input id=\"name\" placeholder=\"Name\"><button id=\"add\" onclick=\"document.getElementById('status').textContent = '1 tea in the cart for ' + document.getElementById('name').value + '.'\">Add tea</button>");
+        const Workspace workspace(box.project.string());
+        ScriptedModel model;
+        model.replies = {say(R"J({"action": "click", "selector": "#missing"})J"), say(R"J({"action": "fill", "selector": "#name", "value": "Ada"})J"),
+                         say("I will press it now: {\"action\": \"click\", \"selector\": \"#add\"}"), say(R"J({"action": "done", "answer": "The cart shows 1 tea for Ada."})J")};
+        const BrowseOutcome outcome = browse::run(workspace, "index.html", "Add a tea for Ada and say what the cart shows.", model);
+        CHECK(outcome.completed && outcome.answer == "The cart shows 1 tea for Ada.");
+        CHECK(outcome.steps.size() == 2);  // the step that did not work was taken back
+        CHECK(model.seen.size() == 4);
+        if (model.seen.size() == 4) {
+            CHECK(model.seen[0].back().content.find("Nothing in the cart.") != std::string::npos && model.seen[0].back().content.find("#add") != std::string::npos);  // the model is shown the page and its controls
+            CHECK(model.seen[1].back().content.find("did not work") != std::string::npos);  // a failed step is reported back
+            CHECK(model.seen[3].back().content.find("1 tea in the cart for Ada.") != std::string::npos);  // the model sees what its steps really led to
+        }
+        std::vector<json> events;
+        ScriptedModel refusing;
+        refusing.replies = {say(R"J({"action": "fail", "answer": "There is no checkout on this page."})J")};
+        CHECK(script::run({"browse", "--workspace", box.project.string(), "--prompt", "Is there a checkout?"}, [&](const std::string& line) { events.push_back(json::parse(line)); }, &refusing) == 2);
+        CHECK(events.size() == 1 && events[0]["data"]["answer"] == "There is no checkout on this page.");
     }
 
     // A job runs in the background and stops when the request ends.

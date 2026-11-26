@@ -750,9 +750,17 @@ final class MasonCoreTests: XCTestCase {
         try put("skills/release/SKILL.md", "---\ndescription: How to release the shop\n---\nRun the release checklist.\n", under: source)
         try put("docs/payments.md", "# Payments\nCards are charged at dispatch.\n\n## Refunds\nA refund is allowed within 30 days of delivery.\n\n## Fraud\nOrders over 500 are held.\n", under: source)
         try put("run.sh", "echo not copied\n", under: source)
+        try put("mcp.json", #"[{"Name": "shop-docs", "Endpoint": "http://127.0.0.1:8088/mcp", "Tools": ["search_docs"]}]"#, under: source)
         let data = home.appendingPathComponent("data")
         XCTAssertTrue(try Bundles.command("", home: data).contains("No bundles"))
-        XCTAssertTrue(try Bundles.command("install \(source.path)", home: data).contains("Installed shop-kit 1.2.0: 2 files"))
+        let installed = try Bundles.command("install \(source.path)", home: data)
+        XCTAssertTrue(installed.contains("Installed shop-kit 1.2.0: 2 files") && installed.contains("names 1 MCP server (shop-docs)"), installed)
+        XCTAssertTrue(Mcp.enabled(home: data).isEmpty, "installing a bundle puts no server into use")
+        XCTAssertTrue(try Bundles.command("servers shop-kit", home: data).contains("shop-docs  ·  http://127.0.0.1:8088/mcp  ·  tools: search_docs"))
+        XCTAssertTrue(try Bundles.command("servers shop-kit add", home: data).contains("Added, switched off: shop-docs"))
+        XCTAssertEqual(try Mcp.all(home: data).map(\.name), ["shop-docs"])
+        XCTAssertTrue(Mcp.enabled(home: data).isEmpty, "an added server waits to be switched on")
+        XCTAssertTrue(try Bundles.command("servers shop-kit add", home: data).contains("already in your list"))
         XCTAssertEqual(Bundles.list(home: data).map(\.name), ["shop-kit"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: data.appendingPathComponent("bundles/shop-kit/run.sh").path), "only skills and docs are copied")
         XCTAssertEqual(Skills.list(workspace, home: data).map(\.name), ["release"])
@@ -771,6 +779,32 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertThrowsError(try Bundles.install(from: folder.path, home: data), "a folder without bundle.json is not a bundle")
         _ = try Bundles.command("remove shop-kit", home: data)
         XCTAssertTrue(Bundles.list(home: data).isEmpty)
+    }
+
+    func testAModelCarriesOutATaskOnAPageOneStepAtATime() async throws {
+        try XCTSkipIf(BrowserCheck.findBrowser() == nil, "no browser on this computer")
+        try "<!doctype html><title>Shop</title><h1>Corner Shop</h1><p id=\"status\">Nothing in the cart.</p><input id=\"name\" placeholder=\"Name\"><button id=\"add\" onclick=\"document.getElementById('status').textContent = '1 tea in the cart for ' + document.getElementById('name').value + '.'\">Add tea</button>"
+            .write(to: folder.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+        let workspace = try Workspace(path: folder.path)
+        let model = ScriptedModel([
+            ModelReply(text: #"{"action": "click", "selector": "#missing"}"#),
+            ModelReply(text: #"{"action": "fill", "selector": "#name", "value": "Ada"}"#),
+            ModelReply(text: "I will press it now: {\"action\": \"click\", \"selector\": \"#add\"}"),
+            ModelReply(text: #"{"action": "done", "answer": "The cart shows 1 tea for Ada."}"#),
+        ])
+        let outcome = try await Browse.run(workspace, page: "index.html", task: "Add a tea for Ada and say what the cart shows.", model: model)
+        XCTAssertTrue(outcome.completed)
+        XCTAssertEqual(outcome.answer, "The cart shows 1 tea for Ada.")
+        XCTAssertEqual(outcome.steps.count, 2, "the step that did not work was taken back")
+        let prompts = model.seen.map { $0.last?.content ?? "" }
+        XCTAssertTrue(prompts[0].contains("Nothing in the cart.") && prompts[0].contains("#add"), "the model is shown the page and its controls")
+        XCTAssertTrue(prompts[1].contains("did not work"), "a failed step is reported back")
+        XCTAssertTrue(prompts[3].contains("1 tea in the cart for Ada."), "the model sees what its steps really led to")
+
+        var lines: [String] = []
+        let code = await ScriptOperations.run(["browse", "--workspace", folder.path, "--prompt", "Is there a checkout?"], model: ScriptedModel([ModelReply(text: #"{"action": "fail", "answer": "There is no checkout on this page."}"#)])) { lines.append($0) }
+        XCTAssertEqual(code, 2)
+        XCTAssertTrue(lines.joined().contains("There is no checkout on this page."))
     }
 
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
