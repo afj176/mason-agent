@@ -287,6 +287,13 @@ final class CLI {
             }
             Term.line(Term.paint(Term.dim, "  /diff shows the changes · /undo puts the files back"))
         }
+        if let receipt = turn?.checks {
+            // What Mason found when it ran the checks it worked out from the request.
+            let ran = receipt.results.contains { $0.state != "notRun" }
+            Term.line()
+            Term.line("  " + Term.paint(!ran ? Term.yellow : receipt.passed ? Term.green : Term.red, (!ran ? "· " : receipt.passed ? "✓ " : "✗ ") + receipt.summary))
+            for result in receipt.results where result.state == "failed" { Term.line(Term.paint(Term.dim, "    " + result.check.description + ": " + result.detail)) }
+        }
         if let receipt = turn?.verification {
             // What Mason found when it ran the project's verify workflow itself.
             let good = receipt.verdict == .passed || receipt.verdict == .fixed

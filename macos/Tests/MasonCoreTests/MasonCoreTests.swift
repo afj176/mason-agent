@@ -1579,6 +1579,147 @@ final class DesktopVisionTests: XCTestCase {
     }
 }
 
+final class DerivedTests: XCTestCase {
+    var folder: URL!
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("mason-derived-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("project"), withIntermediateDirectories: true)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    func testRequirementsWithAnExactOutcomeBecomeChecksWithoutAModel() async throws {
+        let workspace = try Workspace(path: folder.appendingPathComponent("project").path)
+        XCTAssertEqual(Derived.units(#"Show a heading "Orders, and more" and clicking "Add" must show "Added". Keep it tidy"#), [#"Show a heading "Orders, and more""#, #"clicking "Add" must show "Added""#, "Keep it tidy"], "quoted text is kept whole")
+        let plan = await Derived.prepare(#"In index.html show a heading "Orders"; clicking "Add" must show "Added"; write notes.md containing "Shipped""#, workspace: workspace, model: nil)
+        XCTAssertEqual(plan.checks.map(\.kind), ["browser_heading", "browser_click", "document_text"])
+        XCTAssertEqual(plan.checks.map(\.description), ["index.html shows a heading that reads “Orders”", "in index.html, clicking “Add” makes “Added” appear", "notes.md contains “Shipped”"])
+        XCTAssertTrue(plan.unverified.isEmpty)
+        XCTAssertTrue(plan.brief.hasPrefix("Mason will check these itself when you say you are done:\n- index.html shows a heading"))
+        let vague = await Derived.prepare("Make the totals right and tidy up", workspace: workspace, model: nil)
+        XCTAssertTrue(vague.checks.isEmpty)
+        XCTAssertEqual(vague.unverified, ["Make the totals right", "tidy up"])
+
+        // A document check needs no browser.
+        try "Shipped on Monday".write(to: workspace.root.appendingPathComponent("notes.md"), atomically: true, encoding: .utf8)
+        let results = try await Derived.verify(DerivedPlan(units: ["x"], checks: [plan.checks[2], DerivedCheck(unit: 1, feature: "x", kind: "document_text", path: "missing.txt", expected: "y")]), workspace: workspace)
+        XCTAssertEqual(results.map(\.state), ["passed", "failed"])
+    }
+
+    func testAModelsProposedChecksAreKeptOnlyWhenMasonCanRunThemAndTheyQuoteTheRequest() async throws {
+        let workspace = try Workspace(path: folder.appendingPathComponent("project").path)
+        let request = #"In shop.html the banner should say "Open today" and clicking the "Hide" button hides it"#
+        let proposals = """
+        {"checks": [{"Unit": 1, "Feature": "Banner text", "Kind": "browser_text", "Path": "shop.html", "Target": "", "Expected": "Open today"},
+                    {"Unit": 1, "Feature": "Invented", "Kind": "browser_text", "Path": "shop.html", "Target": "", "Expected": "Welcome back"},
+                    {"Unit": 2, "Feature": "Hiding", "Kind": "browser_text", "Path": "shop.html", "Target": "", "Expected": "Hide"},
+                    {"Unit": 2, "Feature": "Unknown kind", "Kind": "screenshot", "Path": "shop.html", "Target": "", "Expected": "Hide"},
+                    {"Unit": 9, "Feature": "No such requirement", "Kind": "browser_text", "Path": "shop.html", "Target": "", "Expected": "Hide"}]}
+        """
+        let model = ScriptedModel([ModelReply(text: proposals)])
+        let plan = await Derived.prepare(request, workspace: workspace, model: model)
+        XCTAssertEqual(plan.units.count, 2)
+        XCTAssertEqual(plan.checks.map(\.expected), ["Open today"], "text the request never gave, a check that ignores the click, an unknown kind and an unknown requirement are all dropped")
+        XCTAssertEqual(plan.unverified, [#"clicking the "Hide" button hides it"#])
+        XCTAssertTrue(model.seen[0][1].content.contains("1. In shop.html the banner should say"))
+    }
+
+    func testInAutoAFailedCheckGoesBackToTheModelAndTheReceiptSaysWhatMasonFound() async throws {
+        guard BrowserCheck.findBrowser() != nil else { throw XCTSkip("No Chromium-family browser on this computer.") }
+        let workspace = try Workspace(path: folder.appendingPathComponent("project").path)
+        let store = try SessionStore(home: folder.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .auto)
+        let wrong = "<!doctype html><h1>Order</h1><button onclick=\"document.getElementById('o').textContent='Added'\">Add</button><p id=o></p>"
+        let right = wrong.replacingOccurrences(of: "<h1>Order</h1>", with: "<h1>Orders</h1>")
+        let model = ScriptedModel([call("write_file", ["path": "index.html", "content": wrong]), ModelReply(text: "Done."), call("write_file", ["path": "index.html", "content": right]), ModelReply(text: "Fixed the heading.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: #"In index.html show a heading "Orders"; clicking "Add" must show "Added""#)
+        XCTAssertTrue(model.seen[0].last!.content.contains("Mason will check these itself"), "the model is told what will be checked")
+        XCTAssertTrue(model.seen[2].last!.content.contains("this does not hold yet:\n- index.html shows a heading that reads “Orders”"), model.seen[2].last!.content)
+        let receipt = try XCTUnwrap(session.turns[0].checks)
+        XCTAssertEqual(receipt.results.map(\.state), ["passed", "passed"])
+        XCTAssertEqual(receipt.repairs, 1)
+        XCTAssertEqual(receipt.summary, "Mason checked 2 requirements itself: all hold · handed back 1 time")
+        XCTAssertEqual(session.turns[0].answer, "Fixed the heading.")
+
+        // Outside Auto nothing is derived or run.
+        var reviewed = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        await Agent(store: store, model: ScriptedModel([ModelReply(text: "Ok.")]), approve: { _ in true }, emit: { _ in }).run(&reviewed, request: #"In index.html show a heading "Nope""#)
+        XCTAssertNil(reviewed.turns[0].checks)
+    }
+}
+
+final class CatalogTests: XCTestCase {
+    let request = """
+    Build a whimsical bear market as a single offline index.html in this directory. Honey costs $8 each. Berries are $3 each; buy three or more Berries and they are $2.50 each. Salmon is $12 each.
+    Shoppers can add items to a cart and see the total. Checkout must clear the cart and show a new receipt that starts with BEAR-, and the receipt persists after reload.
+    """
+    let extraction = #"{"Items": [{"Name": "Honey", "Price": 8, "SalePrice": 8, "Threshold": 0}, {"Name": "Berries", "Price": 3, "SalePrice": 2.5, "Threshold": 3}, {"Name": "Salmon", "Price": 12, "SalePrice": 2.5, "Threshold": 3}], "ReceiptPrefix": "BEAR-", "PersistReceipt": true, "ClearCart": true, "OtherRequirements": ["Shoppers can add items to a cart and see the total."]}"#
+    let design = ##"{"Title": "The Bear Market", "Introduction": "Provisions for discerning bears, only $1!", "Accent": "#3b2f1e", "Background": "not a colour", "Descriptions": ["Golden <b>honey</b>", "Wild berries", "River salmon"]}"##
+
+    func testTheOffersAreReadFromTheRequestAndCheckedAgainstIt() async throws {
+        XCTAssertEqual(Catalog.amounts(request), [800, 300, 250, 1200])
+        XCTAssertEqual(Catalog.explicitReceiptPrefix(request), "BEAR-")
+        XCTAssertTrue(Catalog.requiresFreshReceipt(request))
+        let read = await Catalog.extract(request, model: ScriptedModel([ModelReply(text: extraction)]))
+        let spec = try XCTUnwrap(read)
+        XCTAssertEqual(spec.items, [CatalogItem(name: "Honey", cents: 800), CatalogItem(name: "Berries", cents: 300, saleCents: 250, threshold: 3), CatalogItem(name: "Salmon", cents: 1200)],
+                       "the discount the model copied onto Salmon is dropped: the request gives it only to Berries")
+        XCTAssertTrue(spec.otherRequirements.isEmpty, "a clause the component already covers is not an extra requirement")
+        XCTAssertTrue(Catalog.complete(spec, request: request))
+
+        // A price the model got wrong is put right from the request's own words; a product the request never names is refused.
+        let invented = extraction.replacingOccurrences(of: #""Price": 12"#, with: #""Price": 11"#)
+        let corrected = await Catalog.extract(request, model: ScriptedModel([ModelReply(text: invented)]))
+        XCTAssertEqual(corrected?.items.last, CatalogItem(name: "Salmon", cents: 1200))
+        let stranger = extraction.replacingOccurrences(of: "Salmon", with: "Trout")
+        let unknown = await Catalog.extract(request, model: ScriptedModel([ModelReply(text: stranger)]))
+        XCTAssertNil(unknown)
+        // Something the component does not do keeps the request on the ordinary path.
+        let extra = extraction.replacingOccurrences(of: "Shoppers can add items to a cart and see the total.", with: "Email the receipt to the shopper.")
+        let other = await Catalog.extract(request, model: ScriptedModel([ModelReply(text: extra)]))
+        let more = try XCTUnwrap(other)
+        XCTAssertFalse(Catalog.complete(more, request: request))
+
+        let scenarios = Catalog.scenarios(spec, request: request)
+        XCTAssertEqual(scenarios.map(\.id), ["offer-0", "offer-1", "discount-1", "offer-2", "order"])
+        XCTAssertEqual(scenarios[2].steps.map { "\($0.op) \($0.value)" }, ["click ", "click ", "money 6.00", "click ", "money 7.50"], "two at the full price, then three at the sale price")
+        XCTAssertEqual(scenarios[4].steps.map(\.op), ["click", "click", "capture", "money", "empty", "reload", "same", "click", "click", "new_id", "reload", "same"])
+
+        let made = await Catalog.design(request, spec: spec, model: ScriptedModel([ModelReply(text: design)]))
+        XCTAssertEqual(made.introduction, "", "copy that states a price is left out")
+        let page = Catalog.render(spec, made)
+        XCTAssertTrue(page.contains("<h1>The Bear Market</h1>") && page.contains("--accent: #3b2f1e") && page.contains("--paper: #f6f1e2"), "a colour that is not one falls back")
+        XCTAssertTrue(page.contains("Golden &lt;b&gt;honey&lt;/b&gt;") && page.contains(#"{name: "Berries", cents: 300, saleCents: 250, threshold: 3}"#) && page.contains(#"const prefix = "BEAR-";"#))
+        XCTAssertTrue(page.contains("<p>Buy 3 or more for $2.50 each.</p>"))
+    }
+
+    func testAnEmptyProjectGetsTheStoreAndItPassesItsOwnScenarios() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-catalog-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try FileManager.default.createDirectory(at: base.appendingPathComponent("project"), withIntermediateDirectories: true)
+        let workspace = try Workspace(path: base.appendingPathComponent("project").path)
+        XCTAssertTrue(Catalog.applies(request, workspace: workspace))
+        XCTAssertFalse(Catalog.applies("Fix the login bug", workspace: workspace))
+        let store = try SessionStore(home: base.appendingPathComponent("home"))
+        var session = try store.create(workspace: workspace.root.path, permission: .auto)
+        let model = ScriptedModel([ModelReply(text: extraction), ModelReply(text: design)])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: request)
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(model.seen.count, 2, "the model read the offers and wrote the copy; Mason wrote the page")
+        XCTAssertTrue(try workspace.read("index.html").contains("The Bear Market"))
+        XCTAssertEqual(session.turns[0].changes.map(\.path), ["index.html"], "the page can be undone like any other change")
+        XCTAssertEqual(session.activities.map(\.tool), ["write_file"])
+        XCTAssertTrue(session.turns[0].answer.contains("Honey at $8.00, Berries at $3.00 ($2.50 each from 3), Salmon at $12.00"))
+        let receipt = try XCTUnwrap(session.turns[0].checks)
+        if BrowserCheck.findBrowser() != nil {
+            XCTAssertEqual(receipt.results.map(\.state), ["passed", "passed", "passed", "passed", "passed"], receipt.report)
+        } else {
+            XCTAssertTrue(receipt.results.allSatisfy { $0.state == "notRun" })
+            XCTAssertTrue(session.turns[0].answer.contains("the page was not checked"))
+        }
+        XCTAssertFalse(Catalog.applies(request, workspace: workspace), "only an empty project gets the component")
+    }
+}
+
 final class TransformersTests: XCTestCase {
     /// A stand-in for Python: it writes the status file the real server writes, then serves the stub model.
     func testAFolderOfTransformersWeightsIsListedCheckedAndServed() async throws {

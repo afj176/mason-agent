@@ -105,6 +105,14 @@ struct TurnView: View {
                     } else if !turn.answer.isEmpty {
                         MarkdownText(text: turn.answer)
                     }
+                    if !live, let receipt = turn.checks {
+                        // What Mason found when it ran the checks it worked out from the request.
+                        let ran = receipt.results.contains { $0.state != "notRun" }
+                        Label(receipt.summary, systemImage: !ran ? "minus.circle" : receipt.passed ? "checkmark.seal.fill" : "xmark.seal.fill")
+                            .font(.callout)
+                            .foregroundStyle(!ran ? Color.orange : receipt.passed ? Color.green : Color.red)
+                            .help(receipt.report)
+                    }
                     if !live, let receipt = turn.verification {
                         // What Mason found when it ran the project's verify workflow itself.
                         let good = receipt.verdict == .passed || receipt.verdict == .fixed
