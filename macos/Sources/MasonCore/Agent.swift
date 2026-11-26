@@ -70,6 +70,10 @@ public final class Agent {
     public static let followUpLimit = 16
     /// Background programs started during the current request.
     let jobs = Jobs()
+    /// The language servers this request has started, and what the user said about starting each.
+    let languages = LanguageSessions()
+    var languageAnswers: [String: Bool] = [:]
+    var languageTold: Set<String> = []
     /// In Auto, Mason works out checks from the request and runs them itself when the model says it is done.
     public var derivesChecks = true
     /// What reads and operates the attached window. Left nil, it is this computer's accessibility interface.
@@ -297,6 +301,8 @@ public final class Agent {
             if !continuing {
                 // Whatever the request left running in the background ends with it.
                 await jobs.stopAll()
+                await languages.stopAll()
+                languageAnswers = [:]; languageTold = []
                 network?.stop(); network = nil
                 return
             }
@@ -592,7 +598,8 @@ public final class Agent {
                 try workspace.write(path, after)
                 record(path: path, before: before, after: after, session: &session)
                 let counts = Diff.counts(before: before, after: after)
-                return finish(.completed, "\(before == nil ? "Created" : "Edited") \(path) (+\(counts.added) −\(counts.removed)).")
+                let said = await languageNote(path: path, text: after, workspace: workspace, session: &session)
+                return finish(.completed, "\(before == nil ? "Created" : "Edited") \(path) (+\(counts.added) −\(counts.removed))." + said)
             case "run_shell":
                 if readOnly { throw MasonError("This session is read-only. Commands are not available.") }
                 guard let command = text("command") else { throw MasonError("run_shell needs a command.") }

@@ -18,6 +18,7 @@ extension AppModel {
             save(current)
             return (said, nil)
         case "/bundle": return (try Bundles.command(rest, home: home), nil)
+        case "/languages": return (try await LanguageServers.command(rest, workspace: session.flatMap { try? Workspace(path: $0.workspace) }, home: home), nil)
         default: break
         }
         guard let session, let workspace = try? Workspace(path: session.workspace) else { throw MasonError("Open a project first.") }
@@ -268,4 +269,69 @@ struct BundlesPane: View {
 
     func load() { bundles = Bundles.list(home: home) }
     func run(_ rest: String, show: Bool = false) { model.runControl("/bundle", rest, show: show, then: load) }
+}
+
+/// The language servers that check edits: which are installed, and installing the ones a language's own tool can fetch.
+struct LanguagesPane: View {
+    @EnvironmentObject var model: AppModel
+    @State private var everything = false
+    @State private var rows: [LanguageRow] = []
+    @State private var installing: String?
+
+    struct LanguageRow: Identifiable {
+        let id: String
+        let name: String
+        let text: String
+        let canInstall: Bool
+    }
+
+    var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
+    var workspace: Workspace? { model.session.flatMap { try? Workspace(path: $0.workspace) } }
+
+    var body: some View {
+        Form {
+            Section {
+                if workspace != nil { Toggle("Show every language, not only this project's", isOn: $everything) }
+                if rows.isEmpty { Text("No file in this project is in a language Mason knows a server for").foregroundStyle(.secondary) }
+                ForEach(rows) { row in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(row.name)
+                            Text(row.text).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if installing == row.id { ProgressView().controlSize(.small) }
+                        if row.canInstall { Button("Install") { install(row) }.disabled(installing != nil) }
+                    }
+                }
+            } header: {
+                Text("Language servers")
+            } footer: {
+                Text("After each edit Mason hands the file to its language's server, and the errors the server reports go back to the model. A server runs in the sandbox in Auto, and asks first otherwise. Mason installs a server only when you choose Install, using that language's own tool. One you installed yourself is found on the PATH.")
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear(perform: load)
+        .onChange(of: everything) { _, _ in load() }
+    }
+
+    func load() {
+        let home = home
+        var listed = LanguageServers.known
+        if !everything, let workspace { listed = LanguageServers.present(in: workspace) }
+        var made: [LanguageRow] = []
+        for language in listed {
+            let said = LanguageServers.described(language, home: home)
+            made.append(LanguageRow(id: language.key, name: language.name, text: said.text, canInstall: said.canInstall))
+        }
+        rows = made
+    }
+
+    func install(_ row: LanguageRow) {
+        installing = row.id
+        model.runControl("/languages", "install " + row.id, show: true) {
+            installing = nil
+            load()
+        }
+    }
 }

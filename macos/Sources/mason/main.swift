@@ -503,6 +503,9 @@ final class CLI {
             for line in try await Experiments.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/bundle", "/bundles":
             for line in try Bundles.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/languages", "/language":
+            if rest.hasPrefix("install") { Term.line("  Installing. This can take a few minutes.") }
+            for line in try await LanguageServers.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/policy":
             for line in try Policies.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/network":
@@ -608,6 +611,7 @@ final class CLI {
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
             ("/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"),
+            ("/languages", "The languages in this project and the language server that checks each; install one (see /languages help)"),
             ("/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"),
             ("/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"),
             ("/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"),
