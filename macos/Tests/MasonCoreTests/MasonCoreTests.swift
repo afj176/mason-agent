@@ -359,7 +359,8 @@ final class MasonCoreTests: XCTestCase {
 
         var reading = try store.create(workspace: session.workspace, permission: .readOnly)
         reading.askOnly = true
-        let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name)
+        // check_page is offered wherever a browser is installed, which depends on the computer.
+        let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name).filter { $0 != "check_page" }
         XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "read_skill"], "a read-only session gets no editing, job or workflow tools")
         try "{\"version\": 2}".write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try ProjectWorkflows.load(workspace))

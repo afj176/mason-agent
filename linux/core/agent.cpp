@@ -1,4 +1,5 @@
 #include "agent.hpp"
+#include "browser.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -158,6 +159,10 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
             // A manifest that cannot be read offers no workflows.
         }
     }
+    if (!browser::find().empty()) {
+        list.push_back({"check_page", "Load one of the project's HTML pages in a real browser and report what it shows and any script errors. steps_json is a JSON array of steps carried out in order, each one of: {\"action\":\"click\",\"text\":\"Add\"}, {\"action\":\"fill\",\"selector\":\"#name\",\"value\":\"Ada\"}, {\"action\":\"expect_text\",\"text\":\"Saved\"}, {\"action\":\"expect_no_text\",\"text\":\"Error\"}, {\"action\":\"wait\",\"ms\":500}. Use text or selector to name an element. Use [] to only load the page. The page has no network beyond this computer.",
+                        schema({{"path", text}, {"steps_json", text}}, {"path", "steps_json"})});
+    }
     if (!skills::list(workspace).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
     return list;
 }
@@ -217,6 +222,21 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         if (question.empty() || utf8_length(question) > 2000) throw Error("ask_user needs a question of up to 2,000 characters.");
         pending_question_ = question;
         return Outcome{"completed", "Asked the user. The request stops here; their reply will come as the next message."};
+    }
+    if (call.name == "check_page") {
+        const auto path = text("path");
+        if (!path) throw Error("check_page needs the path of an HTML file in the project.");
+        const json steps = json::parse(text("steps_json").value_or("[]"), nullptr, false);
+        if (!steps.is_array()) throw Error("steps_json must be a JSON array of steps.");
+        // The page's scripts run in a browser outside the command sandbox, so outside Auto this asks like a command.
+        if (session.permission != Permission::Auto) {
+            const std::string detail = "Opens " + *path + " in a headless browser with a fresh profile and no network beyond this computer, and carries out " +
+                                       std::to_string(steps.size()) + (steps.size() == 1 ? " step." : " steps.");
+            if (!allowed({call.name, "Check " + *path + " in a browser", detail, *path}, session)) return Outcome{"denied", "The user declined. Do not retry it; ask what they want instead."};
+        }
+        emit_({AgentEvent::Kind::Status, "Checking " + *path + " in a browser", {}});
+        const browser::Result result = browser::run(workspace, *path, steps, cancel);
+        return Outcome{result.passed() ? "completed" : "failed", browser::report(result, *path)};
     }
     if (call.name == "git_status") {
         std::error_code failure;
