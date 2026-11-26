@@ -70,6 +70,9 @@ public final class Agent {
     public static let followUpLimit = 16
     /// Background programs started during the current request.
     let jobs = Jobs()
+    /// What searches code by meaning. Left nil, it is the embeddings server saved in settings, if there is one.
+    public var semantic: SemanticModels?
+    var semanticModels: SemanticModels? { semantic ?? EmbeddingSettings.load(home: home).map(EmbeddingServers.init) }
     /// The tools offered for the request in progress, for the message about an unknown tool.
     var offeredNames: [String] = []
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
@@ -242,20 +245,26 @@ public final class Agent {
 
     /// Runs one request to completion. The session is saved after every step, so an interruption loses nothing that already happened.
     func runTurn(_ session: inout Session, request: String) async {
-        let input = request.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !input.isEmpty, input.count <= 16_000 else {
-            session.state = "Failed"; session.detail = "Describe a request in 1–16,000 characters."; return
-        }
         guard let workspace = try? Workspace(path: session.workspace) else {
             session.state = "Failed"; session.detail = "The project folder \(session.workspace) is no longer available."; return
         }
+        // Comments on lines of the project travel with the request, and only while those files are unchanged.
+        let comments = session.comments ?? []
+        do { try Review.validate(workspace, comments: comments) }
+        catch { session.state = "Failed"; session.detail = "\(error)"; return }
+        let input = Review.request(request, comments: comments)
+        guard !input.isEmpty, input.count <= 16_000 else {
+            session.state = "Failed"; session.detail = "Describe a request in 1–16,000 characters."; return
+        }
+        session.comments = nil
         if session.title == "New session" { session.title = input.count > 55 ? String(input.prefix(55)) + "…" : input }
         let servers = Mcp.enabled(home: home)
-        let offered = Agent.tools + Agent.extraTools(session: session, workspace: workspace) + (servers.isEmpty ? [] : Agent.mcpTools)
+        let offered = Agent.tools + Agent.extraTools(session: session, workspace: workspace, semantic: semanticModels != nil) + (servers.isEmpty ? [] : Agent.mcpTools)
         offeredNames = offered.map(\.name)
         var prompt = Agent.systemPrompt(session, servers: servers)
         let skills = Skills.list(workspace)
         if !skills.isEmpty { prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + skills.map { "\($0.name) (\($0.description))" }.joined(separator: "; ") + "." }
+        if let plan = session.milestones, !plan.isEmpty { prompt += "\n" + Milestones.context(workspace, plan: plan) }
         if session.messages.first?.role == "system" { session.messages[0].content = prompt }
         else { session.messages.insert(ChatMessage(role: "system", content: prompt), at: 0) }
         // A note from undo or redo travels with the next request, so the conversation keeps alternating user and assistant turns.

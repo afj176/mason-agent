@@ -175,7 +175,7 @@ final class Jobs: @unchecked Sendable {
 
 extension Agent {
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
-    static func extraTools(session: Session, workspace: Workspace) -> [ToolSpec] {
+    static func extraTools(session: Session, workspace: Workspace, semantic: Bool = false) -> [ToolSpec] {
         func schema(_ properties: [String: Any], required: [String]) -> [String: Any] {
             ["type": "object", "properties": properties, "required": required, "additionalProperties": false]
         }
@@ -204,6 +204,10 @@ extension Agent {
                 tools.append(ToolSpec(name: "run_workflow", description: "Run one of the project's named workflows: " + workflows.workflows.keys.sorted().joined(separator: ", ") + ".",
                                       parameters: schema(["name": text], required: ["name"])))
             }
+        }
+        if semantic {
+            tools.append(ToolSpec(name: "semantic_search", description: "Find code by meaning when you don't know the exact names, for example \"where are invoice totals calculated\". Returns ranked line ranges to read next.",
+                                  parameters: schema(["query": text, "path": ["type": "string", "description": "Folder to search, relative to the project. Use . for the whole project."]], required: ["query", "path"])))
         }
         if BrowserCheck.findBrowser() != nil {
             tools.append(ToolSpec(name: "check_page", description: "Load one of the project's HTML pages in a real browser and report what it shows and any script errors. steps_json is a JSON array of steps carried out in order, each one of: {\"action\":\"click\",\"text\":\"Add\"}, {\"action\":\"fill\",\"selector\":\"#name\",\"value\":\"Ada\"}, {\"action\":\"expect_text\",\"text\":\"Saved\"}, {\"action\":\"expect_no_text\",\"text\":\"Error\"}, {\"action\":\"wait\",\"ms\":500}. Use text or selector to name an element. Use [] to only load the page. The page has no network beyond this computer.",
@@ -239,6 +243,12 @@ extension Agent {
             guard let question = text("question")?.trimmingCharacters(in: .whitespacesAndNewlines), !question.isEmpty, question.count <= 2000 else { throw MasonError("ask_user needs a question of up to 2,000 characters.") }
             pendingQuestion = question
             return (.completed, "Asked the user. The request stops here; their reply will come as the next message.")
+
+        case "semantic_search":
+            guard let models = semanticModels else { throw MasonError("No embeddings server is chosen for code search.") }
+            guard let query = text("query") else { throw MasonError("semantic_search needs a query.") }
+            emit(.status("Searching by meaning"))
+            return (.completed, try await SemanticSearch.search(workspace, models: models, query: query, directory: text("path") ?? ".").report)
 
         case "check_page":
             guard let path = text("path") else { throw MasonError("check_page needs the path of an HTML file in the project.") }

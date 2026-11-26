@@ -203,6 +203,7 @@ struct GeneralPane: View {
                 }
                 .pickerStyle(.segmented)
             }
+            CodeSearchSection()
             Section("Command line") {
                 LabeledContent("mason") {
                     Button("Install Command Line Tool…") { model.installCommandLineTool() }

@@ -43,6 +43,8 @@ final class AppModel: ObservableObject {
     private var activeAgent: Agent?
     /// Follow-ups sent during the current request that have not started yet.
     @Published var waitingFollowUps = 0
+    /// The milestone whose check is running.
+    @Published var milestoneBusy: UUID?
     private var chatStore: ChatStore?
     private var chatTask: Task<Void, Never>?
 
@@ -211,10 +213,10 @@ final class AppModel: ObservableObject {
     }
     func sessions(in project: String) -> [Session] { sessions.filter { $0.workspace == project } }
 
-    private func replace(_ session: Session) {
+    func replace(_ session: Session) {
         if let index = sessions.firstIndex(where: { $0.id == session.id }) { sessions[index] = session } else { sessions.insert(session, at: 0) }
     }
-    private func save(_ session: Session) {
+    func save(_ session: Session) {
         replace(session)
         do { try store?.save(session) } catch { notice = "The session could not be saved: \(describe(error))" }
     }
@@ -259,7 +261,8 @@ final class AppModel: ObservableObject {
         // While a request runs, Send queues the message for afterwards.
         if running { followUp(steer: false); return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let current = session, let store else { return }
+        // Comments pinned to lines are a request of their own, with or without typed text.
+        guard let current = session, let store, !text.isEmpty || !(current.comments ?? []).isEmpty else { return }
         // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
         if text.lowercased() == "/compact" { draft = ""; compact(); return }
         if text.lowercased() == "/mcp" { draft = ""; showMcpServers(); return }
@@ -274,7 +277,7 @@ final class AppModel: ObservableObject {
         draft = ""; running = true; liveText = ""; liveStatus = "Thinking"; liveActivities = []
         // Show the request at once; the engine's copy replaces it when the run ends.
         var shown = current
-        shown.turns.append(Turn(request: text, firstActivity: current.activities.count))
+        shown.turns.append(Turn(request: Review.request(text, comments: current.comments ?? []), firstActivity: current.activities.count))
         shown.state = "Running"
         replace(shown)
         runTask = Task {

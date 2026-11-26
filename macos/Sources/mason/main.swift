@@ -488,6 +488,33 @@ final class CLI {
             } else {
                 for line in try Schedules.command(rest, home: home, workspace: workspace.root.path, endpoint: endpoint).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
             }
+        case "/comment", "/comments":
+            if rest.lowercased() == "send" {
+                if (session.comments ?? []).isEmpty { Term.line(Term.paint(Term.dim, "  No comments are waiting.")) } else { await send(" ") }
+            } else {
+                for line in try Review.command(rest, workspace: workspace, session: &session).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+                try store.save(session)
+            }
+        case "/milestone", "/milestones":
+            // A check can run a workflow, so it shows progress and can be stopped.
+            var changed = session
+            let text: String
+            if rest.lowercased().hasPrefix("check") {
+                let before = session, folder = workspace, data = home
+                let outcome: (String, Session) = try await busy("Checking the milestone") { _ in
+                    var copy = before
+                    let said = try await Milestones.command(rest, workspace: folder, session: &copy, home: data)
+                    return (said, copy)
+                }
+                text = outcome.0; changed = outcome.1
+            } else {
+                text = try await Milestones.command(rest, workspace: workspace, session: &changed, home: home)
+            }
+            session = changed
+            for line in text.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            try store.save(session)
+        case "/embeddings":
+            for line in try await EmbeddingSettings.command(rest, home: home).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/mcp": try await mcp(rest)
         case "/model": try await chooseModel(rest)
         case "/models": try await models(rest)
@@ -511,6 +538,9 @@ final class CLI {
             ("/queue", "Run the messages you queued, after a stop or a failure"),
             ("/agent [name|none]", "List your custom agents, or use one for this session"),
             ("/commands", "List your custom slash commands"),
+            ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
+            ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"),
             ("/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"),
             ("/mcp", "List your MCP servers and the tools Mason may call"),
             ("/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"),

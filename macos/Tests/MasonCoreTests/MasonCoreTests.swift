@@ -984,6 +984,197 @@ final class ChatTests: XCTestCase {
     }
 }
 
+/// Embeds text as counts of a few known words, so ranking is predictable.
+struct WordModels: SemanticModels {
+    static let words = ["invoice", "total", "tax", "login", "password", "color"]
+    let identity = "words"
+    var canRerank = false
+    var calls = Counter()
+    final class Counter { var texts = 0 }
+    func embed(_ texts: [String]) async throws -> [[Float]] {
+        calls.texts += texts.count
+        return texts.map { text in WordModels.words.map { word in Float(text.lowercased().components(separatedBy: word).count - 1) } + [0.01] }
+    }
+    func rerank(_ query: String, documents: [String]) async throws -> [Double] { documents.map { $0.contains("File: auth.py") ? 9 : 0 } }
+}
+
+final class PlanningTests: XCTestCase {
+    var folder: URL!
+    var home: URL!
+
+    override func setUpWithError() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-plan-" + UUID().uuidString)
+        folder = base.appendingPathComponent("project"); home = base.appendingPathComponent("home")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try write("calc.py", "def add(a, b):\n    return a - b\n")
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder.deletingLastPathComponent()) }
+    func write(_ name: String, _ text: String) throws { try text.write(to: folder.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+
+    func testCommentsTravelWithTheNextRequestWhileTheirFilesAreUnchanged() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+        XCTAssertThrowsError(try Review.comment(workspace, path: "calc.py", line: 3, note: "x"))
+        XCTAssertThrowsError(try Review.comment(workspace, path: "calc.py", line: 1, note: "  "))
+        let comment = try Review.comment(workspace, path: "calc.py", line: 2, note: "This subtracts.")
+        XCTAssertEqual(comment.quote, "    return a - b")
+        let removed = try Review.comment(workspace, path: "calc.py", line: 7, note: "Why was this removed?", removed: "old()")
+        XCTAssertEqual(removed.location, "calc.py · original line 7")
+        session.comments = [comment, removed]
+
+        let model = ScriptedModel([ModelReply(text: "Fixed."), ModelReply(text: "Again.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Fix it")
+        let sent = model.seen[0].last!.content
+        XCTAssertTrue(sent.hasPrefix("Fix it\ncalc.py · updated line 2 (return a - b) — This subtracts.\ncalc.py · original line 7 (old()) — Why was this removed?"), sent)
+        XCTAssertNil(session.comments, "sent comments are not sent twice")
+        XCTAssertEqual(session.turns[0].request, sent)
+
+        // Comments alone are a request; a comment on a file that changed since is refused, and kept.
+        session.comments = [try Review.comment(workspace, path: "calc.py", line: 1, note: "Rename it.")]
+        try write("calc.py", "def add(a, b):\n    return a + b\n")
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "")
+        XCTAssertEqual(session.state, "Failed")
+        XCTAssertTrue(session.detail.contains("changed since the comment was written"), session.detail)
+        XCTAssertEqual(session.comments?.count, 1)
+        session.comments = [try Review.comment(workspace, path: "calc.py", line: 1, note: "Rename it.")]
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: " ")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertTrue(model.seen[1].last!.content.hasPrefix("Address these review comments.\ncalc.py · updated line 1"))
+    }
+
+    func testMilestonesFollowTheFilesTheyCover() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try write("mason.workflows.json", #"{"version": 1, "workflows": {"tests": {"executable": "sh", "arguments": ["-c", "grep -q 'a + b' calc.py"]}}}"#)
+        var plan: [Milestone] = []
+        XCTAssertThrowsError(try Milestones.put(workspace, current: plan, item: Milestone(title: "", files: ["calc.py"])))
+        XCTAssertThrowsError(try Milestones.put(workspace, current: plan, item: Milestone(title: "Outside", files: ["../x"])))
+        var first = Milestone(title: "Add works", decision: "Use +", files: ["./calc.py"], workflow: "tests")
+        plan = try Milestones.put(workspace, current: plan, item: first)
+        XCTAssertEqual(plan[0].files, ["calc.py"])
+        let second = Milestone(title: "Docs", files: ["calc.py"], dependsOn: [first.id])
+        plan = try Milestones.put(workspace, current: plan, item: second)
+        first.dependsOn = [second.id]
+        XCTAssertThrowsError(try Milestones.put(workspace, current: plan, item: first), "a circle is refused")
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.ready, .blocked])
+        XCTAssertTrue(Milestones.context(workspace, plan: plan).contains("Next: Add works"))
+
+        // The workflow fails until the file is right, and Mason only runs it when it may.
+        await XCTAssertThrowsErrorAsync(try await Milestones.check(workspace, item: plan[0], plan: plan, runWorkflow: (false, false), observation: ""))
+        await XCTAssertThrowsErrorAsync(try await Milestones.check(workspace, item: plan[0], plan: plan, runWorkflow: (true, false), observation: ""))
+        await XCTAssertThrowsErrorAsync(try await Milestones.check(workspace, item: plan[1], plan: plan, runWorkflow: (true, false), observation: "Looks right"), "blocked by its prerequisite")
+        try write("calc.py", "def add(a, b):\n    return a + b\n")
+        plan[0].receipt = try await Milestones.check(workspace, item: plan[0], plan: plan, runWorkflow: (true, false), observation: "")
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.verified, .ready])
+        await XCTAssertThrowsErrorAsync(try await Milestones.check(workspace, item: plan[1], plan: plan, runWorkflow: (true, false), observation: ""), "a manual check needs an observation")
+        plan[1].receipt = try await Milestones.check(workspace, item: plan[1], plan: plan, runWorkflow: (false, false), observation: "Read the docstring.")
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.verified, .reviewed])
+
+        // Changing a covered file asks for both to be looked at again.
+        try write("calc.py", "def add(a, b):\n    return a + b  # sum\n")
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.recheck, .blocked])
+        plan = Milestones.remove(plan[0].id, from: plan)
+        XCTAssertEqual(plan.count, 1)
+        XCTAssertEqual(Milestones.inspect(workspace, plan: plan).map(\.state), [.ready])
+
+        // The model is told the plan.
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .readOnly)
+        session.milestones = plan
+        let model = ScriptedModel([ModelReply(text: "Ok.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "What is next?")
+        XCTAssertTrue(model.seen[0][0].content.contains("The user's saved milestones") && model.seen[0][0].content.contains("- Docs [Ready]"))
+        XCTAssertEqual(try SessionStore(home: home).sessions.first?.milestones?.first?.title, "Docs", "the plan is saved with the session")
+    }
+
+    func testTheTypedFormsOfCommentsMilestonesAndEmbeddings() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .reviewEdits)
+        XCTAssertTrue(try Review.command("", workspace: workspace, session: &session).hasPrefix("No comments are waiting."))
+        XCTAssertThrowsError(try Review.command("calc.py nothing", workspace: workspace, session: &session))
+        XCTAssertEqual(try Review.command("calc.py:2 Use plus here.", workspace: workspace, session: &session), "Noted on calc.py · updated line 2: return a - b")
+        XCTAssertTrue(try Review.command("", workspace: workspace, session: &session).hasPrefix("1. calc.py · updated line 2 — Use plus here."))
+        XCTAssertEqual(try Review.command("remove 1", workspace: workspace, session: &session), "Dropped the comment on calc.py · updated line 2.")
+        XCTAssertNil(session.comments)
+
+        try write("mason.workflows.json", #"{"version": 1, "workflows": {"tests": {"executable": "sh", "arguments": ["-c", "true"]}}}"#)
+        var said = try await Milestones.command("add Add works | calc.py | workflow tests | decision Use plus", workspace: workspace, session: &session, home: home)
+        XCTAssertEqual(said, "Added milestone 1: Add works")
+        said = try await Milestones.command("add Documented | calc.py | after 1", workspace: workspace, session: &session, home: home)
+        await XCTAssertThrowsErrorAsync(try await Milestones.command("add Bad | calc.py | workflow missing", workspace: workspace, session: &session, home: home))
+        said = try await Milestones.command("", workspace: workspace, session: &session, home: home)
+        XCTAssertTrue(said.contains("1. [Ready] Add works  ·  calc.py  ·  workflow tests") && said.contains("2. [Blocked] Documented  ·  calc.py  ·  after 1"), said)
+        await XCTAssertThrowsErrorAsync(try await Milestones.command("check 1", workspace: workspace, session: &session, home: home), "outside Auto a workflow needs a saved rule")
+        session.permission = .auto
+        if Shell.sandboxAvailable {
+            said = try await Milestones.command("check 1", workspace: workspace, session: &session, home: home)
+            XCTAssertEqual(said, "Add works: Verified.")
+            said = try await Milestones.command("check 2 Read it through.", workspace: workspace, session: &session, home: home)
+            XCTAssertEqual(said, "Documented: Reviewed.")
+        }
+        said = try await Milestones.command("remove 1", workspace: workspace, session: &session, home: home)
+        XCTAssertEqual(session.milestones?.map(\.title), ["Documented"])
+        XCTAssertEqual(session.milestones?.first?.dependsOn, [])
+
+        said = try await EmbeddingSettings.command("", home: home)
+        XCTAssertTrue(said.hasPrefix("Code search by meaning is off"))
+        await XCTAssertThrowsErrorAsync(try await EmbeddingSettings.command("http://example.com/ m", home: home), "only servers on this computer")
+        said = try await EmbeddingSettings.command("http://127.0.0.1:9/ embed", home: home)
+        said = try await EmbeddingSettings.command("rerank http://127.0.0.1:9/ ranker", home: home)
+        XCTAssertEqual(EmbeddingSettings.load(home: home), EmbeddingSettings(url: "http://127.0.0.1:9/", model: "embed", rerankUrl: "http://127.0.0.1:9/", rerankModel: "ranker"))
+        await XCTAssertThrowsErrorAsync(try await EmbeddingSettings.command("test", home: home), "nothing answers on that port")
+        said = try await EmbeddingSettings.command("off", home: home)
+        XCTAssertNil(EmbeddingSettings.load(home: home))
+    }
+
+    func testCodeIsFoundByMeaningWithEachPassageEmbeddedOnce() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try write("billing.py", "def invoice_total(items):\n    # the invoice total with tax\n    return sum(items) * 1.2\n")
+        try write("auth.py", "def login(user, password):\n    # check the password for a login\n    return user == 'ada'\n")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("node_modules/x"), withIntermediateDirectories: true)
+        try write("node_modules/x/invoice.js", "function invoice() { return 'invoice invoice invoice total total'; }\n")
+        try write("logo.png", "invoice total invoice total invoice total")
+        let models = WordModels()
+        let result = try await SemanticSearch.search(workspace, models: models, query: "where is the invoice total and tax worked out")
+        XCTAssertEqual(result.hits.first?.path, "billing.py")
+        XCTAssertEqual(result.hits.first?.startLine, 1)
+        XCTAssertFalse(result.hits.contains { $0.path.contains("node_modules") || $0.path.hasSuffix(".png") })
+        XCTAssertEqual(result.files, 3)
+        XCTAssertTrue(result.report.contains("billing.py lines 1–") && result.report.contains("invoice_total"), result.report)
+        let first = models.calls.texts
+        _ = try await SemanticSearch.search(workspace, models: models, query: "login")
+        XCTAssertEqual(models.calls.texts, first + 1, "only the new question is embedded the second time")
+        var reranking = models
+        reranking.canRerank = true
+        let reordered = try await SemanticSearch.search(workspace, models: reranking, query: "invoice total")
+        XCTAssertTrue(reordered.reranked)
+        XCTAssertEqual(reordered.hits.first?.path, "auth.py", "the reranker's order wins")
+        XCTAssertEqual(SemanticSearch.chunks(path: "a.py", content: (1...100).map { "line number \($0)" }.joined(separator: "\n")).map(\.start), [1, 33, 65])
+
+        // The tool is offered only when an embeddings server is chosen, and the agent can call it.
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .readOnly)
+        XCTAssertFalse(Agent.extraTools(session: session, workspace: workspace).contains { $0.name == "semantic_search" })
+        XCTAssertNil(EmbeddingSettings.load(home: home))
+        XCTAssertThrowsError(try EmbeddingSettings.save(EmbeddingSettings(url: "ftp://x", model: "m"), home: home))
+        try EmbeddingSettings.save(EmbeddingSettings(url: "http://127.0.0.1:9/", model: "embed"), home: home)
+        XCTAssertEqual(EmbeddingSettings.load(home: home)?.model, "embed")
+        try EmbeddingSettings.save(nil, home: home)
+        XCTAssertNil(EmbeddingSettings.load(home: home))
+        let model = ScriptedModel([call("semantic_search", ["query": "invoice total", "path": "."]), ModelReply(text: "Found.")])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        agent.semantic = models
+        await agent.run(&session, request: "Where are totals?")
+        XCTAssertEqual(session.activities.first?.state, .completed)
+        XCTAssertTrue(session.activities.first?.result.contains("billing.py lines") ?? false)
+    }
+}
+
+func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async throws -> T, _ message: String = "", file: StaticString = #filePath, line: UInt = #line) async {
+    do { _ = try await expression(); XCTFail("expected an error. " + message, file: file, line: line) } catch {}
+}
+
 #if os(macOS)
 /// Runs real commands under the Auto sandbox. These only run on a Mac, where sandbox-exec exists.
 final class SandboxTests: XCTestCase {
