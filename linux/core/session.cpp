@@ -94,6 +94,20 @@ json to_json(const Session& session) {
         result["pendingInput"] = json::array();
         for (const FollowUp& item : session.pending_input) result["pendingInput"].push_back({{"id", item.id}, {"text", item.text}, {"steer", item.steer}});
     }
+    if (!session.comments.empty()) {
+        result["comments"] = json::array();
+        for (const ReviewComment& item : session.comments) {
+            result["comments"].push_back({{"id", item.id}, {"path", item.path}, {"revision", item.revision}, {"original", item.original}, {"line", item.line}, {"quote", item.quote}, {"note", item.note}});
+        }
+    }
+    if (!session.milestones.empty()) {
+        result["milestones"] = json::array();
+        for (const Milestone& item : session.milestones) {
+            json saved = {{"id", item.id}, {"title", item.title}, {"decision", item.decision}, {"files", item.files}, {"dependsOn", item.depends_on}, {"workflow", item.workflow}};
+            if (item.receipt) saved["receipt"] = {{"id", item.receipt->id}, {"at", item.receipt->at}, {"revision", item.receipt->revision}, {"detail", item.receipt->detail}, {"manual", item.receipt->manual}};
+            result["milestones"].push_back(std::move(saved));
+        }
+    }
     if (!session.archived.empty()) {
         result["archived"] = json::array();
         for (const ChatMessage& message : session.archived) result["archived"].push_back(message_json(message));
@@ -117,6 +131,24 @@ Session session_from_json(const json& value) {
     session.compactions = value.value("compactions", 0);
     for (const json& item : value.value("pendingInput", json::array())) {
         if (item.is_object()) session.pending_input.push_back({item.value("id", new_id()), item.value("text", ""), item.value("steer", false)});
+    }
+    for (const json& item : value.value("comments", json::array())) {
+        if (item.is_object()) session.comments.push_back({item.value("id", new_id()), item.value("path", ""), item.value("revision", ""), item.value("original", false), item.value("line", 0), item.value("quote", ""), item.value("note", "")});
+    }
+    for (const json& item : value.value("milestones", json::array())) {
+        if (!item.is_object()) continue;
+        Milestone milestone;
+        milestone.id = item.value("id", new_id());
+        milestone.title = item.value("title", "");
+        milestone.decision = item.value("decision", "");
+        milestone.files = item.value("files", std::vector<std::string>{});
+        milestone.depends_on = item.value("dependsOn", std::vector<std::string>{});
+        milestone.workflow = item.value("workflow", "");
+        if (item.contains("receipt") && item["receipt"].is_object()) {
+            const json& receipt = item["receipt"];
+            milestone.receipt = MilestoneReceipt{receipt.value("id", new_id()), receipt.value("at", now_iso()), receipt.value("revision", ""), receipt.value("detail", ""), receipt.value("manual", false)};
+        }
+        session.milestones.push_back(std::move(milestone));
     }
     for (const json& item : value.value("messages", json::array())) session.messages.push_back(message_from_json(item));
     for (const json& item : value.value("archived", json::array())) session.archived.push_back(message_from_json(item));

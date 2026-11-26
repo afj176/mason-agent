@@ -1,5 +1,6 @@
 #include "agent.hpp"
 #include "browser.hpp"
+#include "planning.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -126,7 +127,13 @@ const std::vector<ToolSpec>& Agent::mcp_tools() {
     return list;
 }
 
-std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace) {
+std::shared_ptr<SemanticModels> Agent::semantic_models() const {
+    if (semantic_) return semantic_;
+    if (const std::optional<EmbeddingSettings> saved = semantic::load(store_.home())) return std::make_shared<EmbeddingServers>(*saved);
+    return nullptr;
+}
+
+std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace, bool semantic) {
     auto schema = [](json properties, std::vector<std::string> required) {
         return json{{"type", "object"}, {"properties", std::move(properties)}, {"required", std::move(required)}, {"additionalProperties", false}};
     };
@@ -159,6 +166,10 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
             // A manifest that cannot be read offers no workflows.
         }
     }
+    if (semantic) {
+        list.push_back({"semantic_search", "Find code by meaning when you don't know the exact names, for example \"where are invoice totals calculated\". Returns ranked line ranges to read next.",
+                        schema({{"query", text}, {"path", {{"type", "string"}, {"description", "Folder to search, relative to the project. Use . for the whole project."}}}}, {"query", "path"})});
+    }
     if (!browser::find().empty()) {
         list.push_back({"check_page", "Load one of the project's HTML pages in a real browser and report what it shows and any script errors. steps_json is a JSON array of steps carried out in order, each one of: {\"action\":\"click\",\"text\":\"Add\"}, {\"action\":\"fill\",\"selector\":\"#name\",\"value\":\"Ada\"}, {\"action\":\"expect_text\",\"text\":\"Saved\"}, {\"action\":\"expect_no_text\",\"text\":\"Error\"}, {\"action\":\"wait\",\"ms\":500}. Use text or selector to name an element. Use [] to only load the page. The page has no network beyond this computer.",
                         schema({{"path", text}, {"steps_json", text}}, {"path", "steps_json"})});
@@ -169,7 +180,7 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
 
 std::vector<ToolSpec> Agent::offered_tools(const Session& session, const Workspace& workspace) const {
     std::vector<ToolSpec> offered = tools();
-    const std::vector<ToolSpec> extra = extra_tools(session, workspace);
+    const std::vector<ToolSpec> extra = extra_tools(session, workspace, semantic_models() != nullptr);
     offered.insert(offered.end(), extra.begin(), extra.end());
     if (!mcp::enabled(store_.home()).empty()) offered.insert(offered.end(), mcp_tools().begin(), mcp_tools().end());
     return offered;
@@ -222,6 +233,14 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         if (question.empty() || utf8_length(question) > 2000) throw Error("ask_user needs a question of up to 2,000 characters.");
         pending_question_ = question;
         return Outcome{"completed", "Asked the user. The request stops here; their reply will come as the next message."};
+    }
+    if (call.name == "semantic_search") {
+        const std::shared_ptr<SemanticModels> models = semantic_models();
+        if (!models) throw Error("No embeddings server is chosen for code search.");
+        const auto query = text("query");
+        if (!query) throw Error("semantic_search needs a query.");
+        emit_({AgentEvent::Kind::Status, "Searching by meaning", {}});
+        return Outcome{"completed", semantic::search(workspace, *models, *query, text("path").value_or("."), 8, cancel).report()};
     }
     if (call.name == "check_page") {
         const auto path = text("path");
@@ -528,12 +547,6 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
 }
 
 void Agent::run_turn(Session& session, const std::string& request, const CancelToken& cancel) {
-    const std::string input = trim(request);
-    if (input.empty() || utf8_length(input) > 16000) {
-        session.state = "Failed";
-        session.detail = "Describe a request in 1–16,000 characters.";
-        return;
-    }
     std::optional<Workspace> workspace;
     try {
         workspace.emplace(session.workspace);
@@ -542,6 +555,21 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         session.detail = "The project folder " + session.workspace + " is no longer available.";
         return;
     }
+    // Comments on lines of the project travel with the request, and only while those files are unchanged.
+    try {
+        review::validate(*workspace, session.comments);
+    } catch (const Error& error) {
+        session.state = "Failed";
+        session.detail = error.what();
+        return;
+    }
+    const std::string input = review::request(request, session.comments);
+    if (input.empty() || utf8_length(input) > 16000) {
+        session.state = "Failed";
+        session.detail = "Describe a request in 1–16,000 characters.";
+        return;
+    }
+    session.comments.clear();
     if (session.title == "New session") session.title = utf8_length(input) > 55 ? utf8_prefix(input, 55) + "…" : input;
     const std::vector<ToolSpec> offered = offered_tools(session, *workspace);
     offered_names_.clear();
@@ -557,6 +585,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         for (const McpServer& server : mcp::enabled(store_.home())) names.push_back(server.name);
         if (!names.empty()) prompt += "\nThe user registered these MCP servers: " + join(names, ", ") + ". Use mcp_tools to see what one offers before calling it.";
     }
+    if (!session.milestones.empty()) prompt += "\n" + milestones::context(*workspace, session.milestones);
     if (!session.messages.empty() && session.messages.front().role == "system") session.messages.front().content = prompt;
     else session.messages.insert(session.messages.begin(), ChatMessage{"system", prompt, {}, ""});
     // A note from undo or redo travels with the next request, so the conversation keeps alternating user and assistant turns.

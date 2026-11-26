@@ -168,7 +168,8 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     send_.add_css_class("send-round");
     send_.signal_clicked().connect([this] {
         const std::string text = draft_.get_buffer()->get_text();
-        if (trim(text).empty() || controller_.running) return;
+        const Session* current = controller_.session();
+        if ((trim(text).empty() && (!current || current->comments.empty())) || controller_.running) return;
         draft_.get_buffer()->set_text("");
         controller_.send(text);
     });
@@ -219,6 +220,8 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     auto* draft_overlay = Gtk::make_managed<Gtk::Overlay>();
     draft_overlay->set_child(*draft_scroll);
     draft_overlay->add_overlay(*placeholder);
+    comments_.set_visible(false);
+    composer_card->append(comments_);
     composer_card->append(*draft_overlay);
     composer_card->append(*controls);
     GtkWidget* composer_clamp = adw_clamp_new();
@@ -778,9 +781,40 @@ void MainWindow::refresh_composer() {
     permission_.set_sensitive(!controller_.running);
     const bool has_text = !trim(draft_.get_buffer()->get_text()).empty();
     const bool can_follow_up = has_text && !controller_.approval;
+    // Comments pinned to diff lines, each with a way to drop it.
+    std::string print;
+    if (session) {
+        for (const ReviewComment& item : session->comments) print += item.id + "|";
+    }
+    if (print != comments_shown_) {
+        comments_shown_ = print;
+        clear(comments_);
+        comments_.set_visible(session && !session->comments.empty());
+        if (session) {
+            for (const ReviewComment& item : session->comments) {
+                auto* chip = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+                chip->add_css_class("comment-chip");
+                auto* where = Gtk::make_managed<Gtk::Label>();
+                where->set_markup("<b>" + escape(review::location(item)) + "</b>  " + escape(item.note));
+                where->set_xalign(0);
+                where->set_hexpand(true);
+                where->set_ellipsize(Pango::EllipsizeMode::END);
+                auto* drop = Gtk::make_managed<Gtk::Button>();
+                drop->set_icon_name("window-close-symbolic");
+                drop->add_css_class("flat");
+                drop->set_tooltip_text("Remove this comment");
+                gtk_accessible_update_property(GTK_ACCESSIBLE(drop->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, ("Remove the comment on " + review::location(item)).c_str(), -1);
+                drop->signal_clicked().connect([this, id = item.id] { controller_.remove_comment(id); });
+                chip->append(*where);
+                chip->append(*drop);
+                comments_.append(*chip);
+            }
+        }
+    }
+    const bool has_comments = session && !session->comments.empty();
     stop_.set_visible(controller_.running);
     send_.set_visible(!controller_.running);
-    send_.set_sensitive(has_text);
+    send_.set_sensitive(has_text || has_comments);
     queue_.set_visible(controller_.running);
     steer_.set_visible(controller_.running);
     queue_.set_sensitive(can_follow_up);
@@ -792,10 +826,192 @@ void MainWindow::refresh_composer() {
     run_queued_.set_label("Run " + std::to_string(queued) + " Queued");
 }
 
+/// Two linked buttons at the top of the side panel: the session's changes, or its plan.
+Gtk::Widget* MainWindow::panel_switch() {
+    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
+    box->add_css_class("linked");
+    box->set_hexpand(true);
+    auto* changes = Gtk::make_managed<Gtk::ToggleButton>("Changes");
+    auto* plan = Gtk::make_managed<Gtk::ToggleButton>("Plan");
+    plan->set_group(*changes);
+    (plan_shown_ ? plan : changes)->set_active(true);
+    plan->set_tooltip_text("Milestones: the steps of the work, the files each covers and how each is checked");
+    plan->signal_toggled().connect([this, plan] {
+        if (plan->get_active() == plan_shown_) return;
+        plan_shown_ = plan->get_active();
+        changes_shown_.clear();
+        // Rebuilding the panel removes this button, so it happens after the click is over.
+        Glib::signal_idle().connect_once([this] { refresh_changes(); });
+    });
+    box->append(*changes);
+    box->append(*plan);
+    return box;
+}
+
+void MainWindow::refresh_plan() {
+    const Session* session = controller_.session();
+    const std::vector<MilestoneStatus> rows = controller_.milestone_status();
+    std::string fingerprint = "plan|" + std::string(controller_.running ? "run|" : "idle|") + controller_.milestone_busy + "|" + observing_ + "|" + (adding_milestone_ ? "adding" : "") + "|" + (session ? session->id : "");
+    for (const MilestoneStatus& row : rows) fingerprint += row.item.id + row.state + row.reason + "|";
+    if (fingerprint == changes_shown_) return;
+    changes_shown_ = fingerprint;
+    clear(changes_);
+    auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    bar->append(*panel_switch());
+    changes_.append(*bar);
+    if (!session) return;
+    if (rows.empty() && !adding_milestone_) {
+        auto* empty = dim_label("No milestones yet. Break the work into steps. Each names the files it covers and how it is checked: a project workflow, or what you saw yourself. Mason is told the plan with every request.");
+        empty->set_wrap(true);
+        changes_.append(*empty);
+    }
+    for (size_t index = 0; index < rows.size(); index++) {
+        const MilestoneStatus& row = rows[index];
+        const std::string id = row.item.id;
+        auto* card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 6);
+        card->add_css_class("card");
+        card->add_css_class("milestone");
+        auto* top = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+        auto* title = Gtk::make_managed<Gtk::Label>();
+        title->set_markup("<b>" + escape(std::to_string(index + 1) + ". " + row.item.title) + "</b>");
+        title->set_xalign(0);
+        title->set_hexpand(true);
+        title->set_wrap(true);
+        auto* state = Gtk::make_managed<Gtk::Label>(row.state);
+        state->add_css_class("state-pill");
+        state->add_css_class(row.done() ? "state-done" : row.state == "Ready" ? "state-ready" : row.state == "Blocked" ? "state-blocked" : "state-recheck");
+        state->set_valign(Gtk::Align::START);
+        top->append(*title);
+        top->append(*state);
+        card->append(*top);
+        if (!row.item.decision.empty()) card->append(*text_label(row.item.decision));
+        auto* files = dim_label(join(row.item.files, ", "));
+        files->add_css_class("monospace");
+        files->add_css_class("caption");
+        files->set_wrap(true);
+        card->append(*files);
+        auto* reason = dim_label((row.item.workflow.empty() ? "" : "Workflow " + row.item.workflow + " · ") + split(row.reason, '\n').front());
+        reason->add_css_class("caption");
+        reason->set_wrap(true);
+        card->append(*reason);
+        if (observing_ == id) {
+            auto* entry = Gtk::make_managed<Gtk::Entry>();
+            entry->set_placeholder_text("What did you observe?");
+            auto* buttons = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+            auto* record = Gtk::make_managed<Gtk::Button>("Record");
+            record->add_css_class("suggested-action");
+            auto* cancel = Gtk::make_managed<Gtk::Button>("Cancel");
+            auto submit = [this, entry, id] {
+                const std::string seen = trim(entry->get_text());
+                if (seen.empty()) return;
+                observing_.clear();
+                Glib::signal_idle().connect_once([this, id, seen] { controller_.check_milestone(id, seen); });
+            };
+            entry->signal_activate().connect(submit);
+            record->signal_clicked().connect(submit);
+            cancel->signal_clicked().connect([this] { observing_.clear(); Glib::signal_idle().connect_once([this] { refresh_changes(); }); });
+            buttons->append(*record);
+            buttons->append(*cancel);
+            card->append(*entry);
+            card->append(*buttons);
+        } else {
+            auto* buttons = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+            const bool manual = row.item.workflow.empty();
+            auto* check = Gtk::make_managed<Gtk::Button>(controller_.milestone_busy == id ? "Checking…" : manual ? "Record What You Saw…" : "Run Check");
+            check->set_sensitive(row.state != "Blocked" && controller_.milestone_busy.empty() && !controller_.running);
+            check->set_tooltip_text(manual ? "Record what you observed as this milestone's evidence" : "Run the workflow " + row.item.workflow + ". Mason runs it in Auto, or when you chose Always Allow for it.");
+            check->signal_clicked().connect([this, id, manual] {
+                if (manual) { observing_ = id; Glib::signal_idle().connect_once([this] { refresh_changes(); }); }
+                else controller_.check_milestone(id, "");
+            });
+            auto* spacer = Gtk::make_managed<Gtk::Box>();
+            spacer->set_hexpand(true);
+            auto* remove = Gtk::make_managed<Gtk::Button>();
+            remove->set_icon_name("user-trash-symbolic");
+            remove->add_css_class("flat");
+            remove->set_tooltip_text("Remove this milestone");
+            gtk_accessible_update_property(GTK_ACCESSIBLE(remove->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, ("Remove " + row.item.title).c_str(), -1);
+            remove->signal_clicked().connect([this, id] { Glib::signal_idle().connect_once([this, id] { controller_.remove_milestone(id); }); });
+            buttons->append(*check);
+            buttons->append(*spacer);
+            buttons->append(*remove);
+            card->append(*buttons);
+        }
+        changes_.append(*card);
+    }
+    if (!adding_milestone_) {
+        auto* add = Gtk::make_managed<Gtk::Button>("Add Milestone");
+        add->set_halign(Gtk::Align::START);
+        add->signal_clicked().connect([this] { adding_milestone_ = true; Glib::signal_idle().connect_once([this] { refresh_changes(); }); });
+        changes_.append(*add);
+        return;
+    }
+    auto* form = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+    form->add_css_class("card");
+    form->add_css_class("milestone");
+    auto* heading = Gtk::make_managed<Gtk::Label>("New milestone");
+    heading->add_css_class("heading");
+    heading->set_xalign(0);
+    auto entry = [](const char* placeholder) {
+        auto* made = Gtk::make_managed<Gtk::Entry>();
+        made->set_placeholder_text(placeholder);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(made->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, placeholder, -1);
+        return made;
+    };
+    auto* title = entry("Title, for example: Totals include tax");
+    auto* files = entry("Files it covers, separated by commas");
+    auto* decision = entry("Decision or note (optional)");
+    std::vector<Glib::ustring> choices = {"Checked by what I observe"};
+    const std::vector<std::string> names = controller_.workflow_names();
+    for (const std::string& name : names) choices.push_back("Checked by the workflow " + name);
+    auto* checked_by = Gtk::make_managed<Gtk::DropDown>(choices);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(checked_by->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "How it is checked", -1);
+    form->append(*heading);
+    form->append(*title);
+    form->append(*files);
+    form->append(*decision);
+    form->append(*checked_by);
+    auto after = std::make_shared<std::vector<std::pair<std::string, Gtk::CheckButton*>>>();
+    if (!rows.empty()) {
+        form->append(*dim_label("Comes after"));
+        for (const MilestoneStatus& row : rows) {
+            auto* box = Gtk::make_managed<Gtk::CheckButton>(row.item.title);
+            after->push_back({row.item.id, box});
+            form->append(*box);
+        }
+    }
+    auto* buttons = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    auto* add = Gtk::make_managed<Gtk::Button>("Add");
+    add->add_css_class("suggested-action");
+    auto* cancel = Gtk::make_managed<Gtk::Button>("Cancel");
+    add->signal_clicked().connect([this, title, files, decision, checked_by, names, after] {
+        Milestone item;
+        item.title = title->get_text();
+        item.decision = decision->get_text();
+        for (const std::string& path : split(files->get_text(), ',', false)) {
+            if (!trim(path).empty()) item.files.push_back(trim(path));
+        }
+        const guint chosen = checked_by->get_selected();
+        if (chosen >= 1 && chosen - 1 < names.size()) item.workflow = names[chosen - 1];
+        for (const auto& [id, box] : *after) {
+            if (box->get_active()) item.depends_on.push_back(id);
+        }
+        Glib::signal_idle().connect_once([this, item] {
+            if (controller_.put_milestone(item)) { adding_milestone_ = false; changes_shown_.clear(); refresh_changes(); }
+        });
+    });
+    cancel->signal_clicked().connect([this] { adding_milestone_ = false; Glib::signal_idle().connect_once([this] { refresh_changes(); }); });
+    buttons->append(*add);
+    buttons->append(*cancel);
+    form->append(*buttons);
+    changes_.append(*form);
+}
+
 void MainWindow::refresh_changes() {
     if (!changes_toggle_.get_active()) return;
     const Session* session = controller_.session();
     std::vector<FileChange> merged;
+    if (plan_shown_) { refresh_plan(); return; }
     std::string fingerprint = controller_.running ? "run|" : "idle|";
     if (session) {
         for (const Turn& turn : session->turns) {
@@ -812,10 +1028,7 @@ void MainWindow::refresh_changes() {
     changes_shown_ = fingerprint;
     clear(changes_);
     auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    auto* heading = Gtk::make_managed<Gtk::Label>("Changes");
-    heading->add_css_class("heading");
-    heading->set_hexpand(true);
-    heading->set_xalign(0);
+    auto* heading = panel_switch();
     auto* undo = Gtk::make_managed<Gtk::Button>("Undo");
     undo->set_tooltip_text("Put back the files the latest request edited");
     undo->set_sensitive(!controller_.running);
@@ -848,19 +1061,63 @@ void MainWindow::refresh_changes() {
             auto* line = Gtk::make_managed<Gtk::Label>(row.kind == 0 ? "      ⋯" : std::string(number) + row.kind + " " + replace_all(row.text, "\t", "    "));
             line->set_xalign(0);
             line->set_selectable(true);
+            line->set_hexpand(true);
             line->add_css_class("monospace");
             line->add_css_class("caption");
-            if (row.kind == '+') line->add_css_class("diff-added");
-            else if (row.kind == '-') line->add_css_class("diff-removed");
+            auto* whole = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 2);
+            if (row.kind == '+') whole->add_css_class("diff-added");
+            else if (row.kind == '-') whole->add_css_class("diff-removed");
             else if (row.kind == 0) line->add_css_class("dim-label");
-            lines->append(*line);
+            if (row.kind != 0) {
+                // A small button beside each line opens a place to write a comment about it.
+                const std::string place = change.path + " · " + (row.kind == '-' ? "original" : "updated") + " line " + std::to_string(row.number);
+                auto* pin = Gtk::make_managed<Gtk::MenuButton>();
+                pin->set_icon_name("list-add-symbolic");
+                pin->add_css_class("flat");
+                pin->add_css_class("comment-pin");
+                pin->set_tooltip_text("Comment on this line");
+                gtk_accessible_update_property(GTK_ACCESSIBLE(pin->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, ("Comment on " + place).c_str(), -1);
+                auto* popover = Gtk::make_managed<Gtk::Popover>();
+                auto* form = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+                form->set_margin(10);
+                auto* title_label = Gtk::make_managed<Gtk::Label>("Comment on " + place);
+                title_label->add_css_class("heading");
+                title_label->set_xalign(0);
+                auto* entry = Gtk::make_managed<Gtk::Entry>();
+                entry->set_placeholder_text("What should change here?");
+                entry->set_width_chars(40);
+                auto* add = Gtk::make_managed<Gtk::Button>("Add Comment");
+                add->add_css_class("suggested-action");
+                add->set_halign(Gtk::Align::END);
+                auto submit = [this, popover, entry, path = change.path, row] {
+                    if (trim(entry->get_text()).empty()) return;
+                    const std::string note = entry->get_text();
+                    popover->popdown();
+                    controller_.add_comment(path, row, note);
+                };
+                entry->signal_activate().connect(submit);
+                add->signal_clicked().connect(submit);
+                form->append(*title_label);
+                form->append(*entry);
+                form->append(*dim_label("Sent with your next request."));
+                form->append(*add);
+                popover->set_child(*form);
+                pin->set_popover(*popover);
+                whole->append(*pin);
+            } else {
+                auto* gap = Gtk::make_managed<Gtk::Box>();
+                gap->set_size_request(24, -1);
+                whole->append(*gap);
+            }
+            whole->append(*line);
+            lines->append(*whole);
         }
         auto* scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
         scroll->set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::NEVER);
         scroll->set_child(*lines);
         changes_.append(*scroll);
     }
-    auto* note = dim_label("Undo puts back everything the latest request changed, including files its commands created, changed or deleted.");
+    auto* note = dim_label("Use the + beside a line to pin a comment to it; comments go with your next request. Undo puts back everything the latest request changed, including files its commands created, changed or deleted.");
     note->add_css_class("caption");
     changes_.append(*note);
 }

@@ -42,7 +42,9 @@ Controller::~Controller() {
         approval_answer_ = false;
     }
     approval_answered_.notify_all();
+    if (plan_cancel_) plan_cancel_->store(true);
     if (run_thread_.joinable()) run_thread_.join();
+    if (plan_thread_.joinable()) plan_thread_.join();
     if (model_thread_.joinable()) model_thread_.join();
     if (chat_thread_.joinable()) chat_thread_.join();
     if (schedule_thread_.joinable()) schedule_thread_.join();
@@ -93,6 +95,121 @@ void Controller::replace(const Session& session) {
     auto existing = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& item) { return item.id == session.id; });
     if (existing != sessions_.end()) *existing = session;
     else sessions_.insert(sessions_.begin(), session);
+}
+
+void Controller::keep(Session& session) {
+    try {
+        store_->save(session);
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    replace(session);
+    changed.emit();
+}
+
+bool Controller::add_comment(const std::string& path, const DiffLine& row, const std::string& note) {
+    const Session* current = session();
+    if (!current || !store_) return false;
+    try {
+        if (current->comments.size() >= review::kLimit) throw Error("At most " + std::to_string(review::kLimit) + " comments can wait at once.");
+        Session updated = *current;
+        updated.comments.push_back(review::comment(Workspace(updated.workspace), path, row.number, note, row.kind == '-' ? std::optional<std::string>(row.text) : std::nullopt));
+        keep(updated);
+        return true;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return false;
+    }
+}
+
+void Controller::remove_comment(const std::string& id) {
+    const Session* current = session();
+    if (!current || !store_) return;
+    Session updated = *current;
+    updated.comments.erase(std::remove_if(updated.comments.begin(), updated.comments.end(), [&](const ReviewComment& item) { return item.id == id; }), updated.comments.end());
+    keep(updated);
+}
+
+std::vector<MilestoneStatus> Controller::milestone_status() const {
+    const Session* current = session();
+    if (!current || current->milestones.empty()) return {};
+    try {
+        return milestones::inspect(Workspace(current->workspace), current->milestones);
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
+std::vector<std::string> Controller::workflow_names() const {
+    std::vector<std::string> names;
+    const Session* current = session();
+    if (!current) return names;
+    try {
+        for (const auto& [name, workflow] : workflows::load(Workspace(current->workspace))) names.push_back(name);
+    } catch (const std::exception&) {
+    }
+    return names;
+}
+
+bool Controller::put_milestone(const Milestone& item) {
+    const Session* current = session();
+    if (!current || !store_) return false;
+    try {
+        Session updated = *current;
+        updated.milestones = milestones::put(Workspace(updated.workspace), updated.milestones, item);
+        keep(updated);
+        return true;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return false;
+    }
+}
+
+void Controller::remove_milestone(const std::string& id) {
+    const Session* current = session();
+    if (!current || !store_) return;
+    Session updated = *current;
+    updated.milestones = milestones::remove(id, updated.milestones);
+    keep(updated);
+}
+
+void Controller::check_milestone(const std::string& id, const std::string& observation) {
+    const Session* current = session();
+    if (!current || !store_ || !milestone_busy.empty()) return;
+    const auto found = std::find_if(current->milestones.begin(), current->milestones.end(), [&](const Milestone& item) { return item.id == id; });
+    if (found == current->milestones.end()) return;
+    const bool automatic = current->permission == Permission::Auto;
+    const bool allowed = automatic || ApprovalRules(store_->home(), current->workspace).allows("run_workflow", "workflow " + found->workflow);
+    if (plan_thread_.joinable()) plan_thread_.join();
+    milestone_busy = id;
+    plan_cancel_ = make_cancel();
+    changed.emit();
+    const std::shared_ptr<bool> alive = alive_;
+    plan_thread_ = std::thread([this, alive, item = *found, plan = current->milestones, folder = current->workspace, session_id = current->id, allowed, automatic, observation, cancel = plan_cancel_] {
+        std::optional<MilestoneReceipt> receipt;
+        std::string problem;
+        try {
+            receipt = milestones::check(Workspace(folder), item, plan, allowed, automatic, observation, cancel);
+        } catch (const Cancelled&) {
+        } catch (const std::exception& error) {
+            problem = error.what();
+        }
+        if (!*alive) return;
+        post([this, receipt, problem, session_id, id = item.id] {
+            milestone_busy.clear();
+            // The session may have moved on while the workflow ran; only the receipt is added.
+            const auto latest = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& each) { return each.id == session_id; });
+            if (receipt && latest != sessions_.end()) {
+                Session updated = *latest;
+                for (Milestone& each : updated.milestones) {
+                    if (each.id == id) each.receipt = receipt;
+                }
+                keep(updated);
+            }
+            if (!problem.empty()) notice.emit(problem);
+            changed.emit();
+        });
+    });
 }
 
 void Controller::select(const std::string& id) {
@@ -156,7 +273,8 @@ void Controller::set_permission(Permission permission) {
 void Controller::send(const std::string& text) {
     const std::string input = trim(text);
     const Session* current = session();
-    if (input.empty() || running || !current || !store_) return;
+    // Comments pinned to lines are a request of their own, with or without typed text.
+    if (running || !current || !store_ || (input.empty() && current->comments.empty())) return;
     // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
     const std::string lowered = to_lower(input);
     if (lowered == "/compact") { compact(); return; }
@@ -181,7 +299,7 @@ void Controller::send(const std::string& text) {
     {
         Session shown = working;
         Turn turn;
-        turn.request = input;
+        turn.request = review::request(input, shown.comments);
         turn.first_activity = shown.activities.size();
         shown.turns.push_back(std::move(turn));
         shown.state = "Running";

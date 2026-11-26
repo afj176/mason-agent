@@ -86,6 +86,16 @@ const char* const kWidgets = R"css(
 .welcome-lede { font-size: 1.1em; color: @mason_muted; }
 .diff-added { color: @success_color; background: alpha(@success_bg_color, 0.12); }
 .diff-removed { color: @error_color; background: alpha(@error_bg_color, 0.12); }
+.comment-pin { opacity: 0.45; }
+.comment-pin > button { min-height: 0; min-width: 0; padding: 0 3px; -gtk-icon-size: 11px; }
+.comment-pin:hover, .comment-pin:focus-within { opacity: 1; }
+.comment-chip { background: alpha(@accent_bg_color, 0.12); border-radius: 8px; padding: 2px 4px 2px 10px; }
+.milestone { padding: 12px; }
+.state-pill { border-radius: 999px; padding: 1px 9px; font-size: 0.82em; font-weight: 700; }
+.state-done { color: @success_color; background: alpha(@success_bg_color, 0.16); }
+.state-ready { color: @accent_color; background: alpha(@accent_bg_color, 0.16); }
+.state-recheck { color: @warning_color; background: alpha(@warning_bg_color, 0.18); }
+.state-blocked { color: @mason_muted; background: alpha(@view_fg_color, 0.08); }
 .project-row { font-weight: 700; }
 .session-state { font-size: 0.82em; color: @mason_muted; }
 .navigation-sidebar row { border-radius: 10px; }

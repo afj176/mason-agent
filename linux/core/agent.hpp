@@ -4,6 +4,7 @@
 #include "mcp.hpp"
 #include "tools.hpp"
 #include "model.hpp"
+#include "semantic.hpp"
 #include "shell.hpp"
 
 namespace mason {
@@ -55,7 +56,9 @@ public:
     /// Offered only when the user has registered an MCP server, so sessions without one keep a short tool list.
     static const std::vector<ToolSpec>& mcp_tools();
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
-    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace);
+    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false);
+    /// What searches code by meaning. Left unset, it is the embeddings server saved in settings, if there is one.
+    void set_semantic(std::shared_ptr<SemanticModels> models) { semantic_ = std::move(models); }
     /// True when no background job from the last request is still held.
     bool jobs_empty() { return jobs_.empty(); }
     static constexpr size_t kFollowUpLimit = 16;
@@ -109,6 +112,8 @@ private:
     std::vector<std::string> offered_names_;
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     std::optional<std::string> pending_question_;
+    std::shared_ptr<SemanticModels> semantic_;
+    std::shared_ptr<SemanticModels> semantic_models() const;
     /// Follow-ups that arrive while a request runs. Everything here is read and changed under the lock.
     std::mutex inbox_lock_;
     std::vector<FollowUp> inbox_;

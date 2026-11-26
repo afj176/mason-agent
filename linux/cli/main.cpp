@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "agent.hpp"
+#include "planning.hpp"
 #include "schedules.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
@@ -517,6 +518,29 @@ private:
             }
             return true;
         }
+        if (name == "/comment" || name == "/comments") {
+            if (to_lower(rest) == "send") {
+                if (session_.comments.empty()) term::line(paint(term::dim, "  No comments are waiting."));
+                else send(" ");
+            } else {
+                for (const std::string& line : split(review::command(rest, workspace_, session_), '\n')) term::line("  " + line);
+                store_.save(session_);
+            }
+            return true;
+        }
+        if (name == "/milestone" || name == "/milestones") {
+            // A check can run a workflow, so it shows progress and can be stopped.
+            const std::string said = starts_with(to_lower(rest), "check")
+                ? busy<std::string>("Checking the milestone", [&](const std::function<void(const std::string&)>&, const CancelToken& cancel) { return milestones::command(rest, workspace_, session_, store_.home(), cancel); })
+                : milestones::command(rest, workspace_, session_, store_.home());
+            for (const std::string& line : split(said, '\n')) term::line("  " + line);
+            store_.save(session_);
+            return true;
+        }
+        if (name == "/embeddings") {
+            for (const std::string& line : split(semantic::command(rest, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
         if (name == "/mcp") { mcp_command(rest); return true; }
         if (name == "/model") { choose_model(rest); return true; }
         if (name == "/models") { models(rest); return true; }
@@ -538,6 +562,9 @@ private:
             {"/queue", "Run the messages you queued, after a stop or a failure"},
             {"/agent [name|none]", "List your custom agents, or use one for this session"},
             {"/commands", "List your custom slash commands"},
+            {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
+            {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"},
             {"/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"},
             {"/mcp", "List your MCP servers and the tools Mason may call"},
             {"/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"},

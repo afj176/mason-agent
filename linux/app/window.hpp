@@ -105,6 +105,14 @@ private:
     Gtk::Button model_button_;
     Gtk::ToggleButton changes_toggle_;
     Gtk::Box changes_{Gtk::Orientation::VERTICAL, 12};
+    /// The notes waiting to go with the next request, above the request box.
+    Gtk::Box comments_{Gtk::Orientation::VERTICAL, 4};
+    std::string comments_shown_;
+    /// The side panel shows the changes or the plan.
+    bool plan_shown_ = false, adding_milestone_ = false;
+    std::string observing_;  ///< The milestone whose observation is being written.
+    void refresh_plan();
+    Gtk::Widget* panel_switch();
     Gtk::ScrolledWindow changes_scroll_;
     Gtk::Stack session_stack_;
     ModelsPage models_;
