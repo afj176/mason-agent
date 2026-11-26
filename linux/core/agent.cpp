@@ -869,6 +869,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         std::optional<CommandResult> baseline;
         int repairs = 0;
         std::string blocked;
+        bool reviewed = false;
         static const std::set<std::string> changing = {"edit_file", "write_file", "apply_edits", "run_shell", "run_command", "run_workflow", "start_job", "start_terminal"};
         pending_question_.reset();
         // In Auto, Mason works out what it can check for itself before the work starts.
@@ -938,6 +939,28 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                             if (result.state == "failed") failed += "\n- " + derived::description(result.check) + ": " + result.detail;
                         }
                         session.messages.push_back({"user", "Mason checked the result itself and this does not hold yet:" + failed + "\nFix it, then answer again.", {}, ""});
+                        store_.save(session);
+                        continue;
+                    }
+                }
+                // Last, when the user chose a separate reviewer: it reads what this session changed, once, and what it
+                // finds goes back to the model. A finding must quote the line it names.
+                if (session.permission == Permission::Auto && !session.ask_only && !reviewed && repairs < kRepairLimit && (reviewer_ || roles::load(store_.home()).reviewer) && !session.turns.back().changes.empty()) {
+                    reviewed = true;
+                    emit_({AgentEvent::Kind::Status, "Having the reviewer read the changes", {}});
+                    ReviewFindings found;
+                    try {
+                        const std::unique_ptr<RoleModel> chosen = reviewer_ ? nullptr : roles::reviewer(model_, &*workspace, store_.home());
+                        found = review::findings(session, *workspace, reviewer_ ? *reviewer_ : *chosen, cancel);
+                    } catch (const Cancelled&) {
+                        throw;
+                    } catch (const std::exception&) {
+                    }
+                    if (!found.comments.empty()) {
+                        repairs++;
+                        std::string listed;
+                        for (const ReviewComment& item : found.comments) listed += "\n- " + item.path + ":" + std::to_string(item.line) + " “" + item.quote + "”: " + item.note;
+                        session.messages.push_back({"user", "A separate reviewer read your changes and reports these defects:" + listed + "\nFix the ones that are real, and say which you disagree with and why. Then answer again.", {}, ""});
                         store_.save(session);
                         continue;
                     }

@@ -85,6 +85,8 @@ public final class Agent {
     var offeredNames: [String] = []
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     var pendingQuestion: String?
+    /// The reviewer that reads a request's changes before it may finish. Normally the model chosen with /roles; a test supplies its own.
+    public var reviewer: ChatModel?
     /// The project's policy, read when a request starts.
     var policy: ProjectPolicy?
     /// Hooks run only inside the sandbox. Tests on a computer without one turn this off.
@@ -364,6 +366,7 @@ public final class Agent {
                 }
             }
             var blocked: String?
+            var reviewed = false
             let window = await model.contextWindow()
             for _ in 0..<Agent.actionLimit {
                 try Task.checkCancellation()
@@ -410,6 +413,20 @@ public final class Agent {
                             repairs += 1
                             let failed = results.filter { $0.state == "failed" }.map { "- \($0.check.description): \($0.detail)" }.joined(separator: "\n")
                             session.messages.append(ChatMessage(role: "user", content: "Mason checked the result itself and this does not hold yet:\n\(failed)\nFix it, then answer again."))
+                            try? store.save(session)
+                            continue
+                        }
+                    }
+                    // Last, when the user chose a separate reviewer: it reads what this session changed, once, and
+                    // what it finds goes back to the model. A finding must quote the line it names.
+                    if session.permission == .auto, !session.askOnly, !reviewed, repairs < Agent.repairLimit, reviewer != nil || Roles.load(home: home).reviewer != nil,
+                       session.turns.last?.changes.isEmpty == false {
+                        reviewed = true
+                        emit(.status("Having the reviewer read the changes"))
+                        if let found = try? await Review.findings(session, workspace: workspace, model: reviewer ?? Roles.reviewer(main: model, workspace: workspace, home: home)), !found.comments.isEmpty {
+                            repairs += 1
+                            let listed = found.comments.map { "- \($0.path):\($0.line) “\($0.quote)”: \($0.note)" }.joined(separator: "\n")
+                            session.messages.append(ChatMessage(role: "user", content: "A separate reviewer read your changes and reports these defects:\n\(listed)\nFix the ones that are real, and say which you disagree with and why. Then answer again."))
                             try? store.save(session)
                             continue
                         }

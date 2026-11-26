@@ -48,6 +48,8 @@ fs::path trace_folder(const ModelRoles& roles, const Workspace* workspace);
 std::unique_ptr<RoleModel> implementer(ChatModel& main, const Workspace* workspace, const fs::path& home);
 /// The model that reviews: the reviewer when one is chosen, otherwise the main model, held to the call limit.
 std::unique_ptr<RoleModel> reviewer(ChatModel& main, const Workspace* workspace, const fs::path& home);
+/// Puts a recorded call (one of the files a trace folder holds) to a model again and sets its answer beside the recorded one.
+json compare(const fs::path& trace, ChatModel& model, const CancelToken& cancel = nullptr);
 /// The endpoint of the model behind `model`, through any role wrapper.
 std::optional<ModelEndpoint> endpoint_of(ChatModel& model);
 /// The /roles command, shared by the command line and the app. Returns what to tell the user.

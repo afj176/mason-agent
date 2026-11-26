@@ -20,12 +20,16 @@ ModelReply RoleModel::complete(const std::vector<ChatMessage>& messages, const s
                 for (const ToolCall& call : message.tool_calls) calls.push_back({{"name", call.name}, {"arguments", call.arguments}});
                 sent.push_back({{"role", message.role}, {"content", message.content}, {"toolCalls", calls}});
             }
-            json offered = json::array();
-            for (const ToolSpec& tool : tools) offered.push_back(tool.name);
+            // The names, and the full definitions so the same call can be put to another model later.
+            json offered = json::array(), specs = json::array();
+            for (const ToolSpec& tool : tools) {
+                offered.push_back(tool.name);
+                specs.push_back({{"name", tool.name}, {"description", tool.description}, {"parameters", tool.parameters}});
+            }
             json made = json::array();
             for (const ToolCall& call : reply.tool_calls) made.push_back({{"name", call.name}, {"arguments", call.arguments}});
             const long long stamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-            const json record = {{"role", role_}, {"model", base_.name()}, {"call", number}, {"at", stamp}, {"messages", sent}, {"tools", offered},
+            const json record = {{"role", role_}, {"model", base_.name()}, {"call", number}, {"at", stamp}, {"messages", sent}, {"tools", offered}, {"toolSpecs", specs},
                                  {"reply", {{"text", reply.text}, {"toolCalls", made}, {"finishReason", reply.finish_reason}}}};
             fs::create_directories(trace_);
             write_file_atomic(trace_ / (std::to_string(stamp) + "-" + role_ + "-" + std::to_string(number) + ".json"), record.dump(2, ' ', false, json::error_handler_t::replace));
@@ -107,6 +111,56 @@ std::unique_ptr<RoleModel> reviewer(ChatModel& main, const Workspace* workspace,
         }
     }
     return std::make_unique<RoleModel>(main, "reviewer", chosen.limit, trace);
+}
+
+json compare(const fs::path& trace, ChatModel& model, const CancelToken& cancel) {
+    std::error_code failure;
+    if (!fs::is_regular_file(trace, failure) || fs::file_size(trace, failure) > 32 * 1024 * 1024) throw Error("That file is not a recorded model call.");
+    const json record = json::parse(read_file(trace), nullptr, false);
+    if (!record.is_object() || !record.contains("messages") || !record["messages"].is_array() || !record.contains("reply") || !record["reply"].is_object()) throw Error("That file is not a recorded model call.");
+    auto calls = [](const json& holder) {
+        json found = json::array();
+        if (holder.is_object() && holder.contains("toolCalls") && holder["toolCalls"].is_array()) {
+            for (const json& item : holder["toolCalls"]) found.push_back({{"name", item.value("name", "")}, {"arguments", item.value("arguments", "")}});
+        }
+        return found;
+    };
+    // Recorded calls carry no ids, so each is given one and its result, which follows, is matched to it in order.
+    std::vector<ChatMessage> messages;
+    std::vector<std::string> waiting;
+    int number = 0;
+    for (const json& item : record["messages"]) {
+        ChatMessage message{item.value("role", "user"), item.value("content", ""), {}, ""};
+        if (message.role == "tool") {
+            message.tool_call_id = waiting.empty() ? "call-0" : waiting.front();
+            if (!waiting.empty()) waiting.erase(waiting.begin());
+        } else {
+            for (const json& made : calls(item)) {
+                const std::string id = "call-" + std::to_string(++number);
+                message.tool_calls.push_back({id, made.value("name", ""), made.value("arguments", "{}")});
+                waiting.push_back(id);
+            }
+        }
+        messages.push_back(std::move(message));
+    }
+    std::vector<ToolSpec> tools;
+    if (record.contains("toolSpecs") && record["toolSpecs"].is_array()) {
+        for (const json& item : record["toolSpecs"]) tools.push_back({item.value("name", ""), item.value("description", ""), item.contains("parameters") ? item["parameters"] : json::object()});
+    }
+    const ModelReply reply = model.complete(messages, tools, [](const std::string&) {}, cancel);
+    json now_calls = json::array();
+    for (const ToolCall& made : reply.tool_calls) now_calls.push_back({{"name", made.name}, {"arguments", made.arguments}});
+    const json before_calls = calls(record["reply"]);
+    const std::string before_text = record["reply"].value("text", "");
+    // The same decision: the same tools called with the same arguments, or, with no calls, the same words.
+    const bool same = before_calls.empty() && now_calls.empty() ? trim(before_text) == trim(reply.text) : before_calls == now_calls;
+    auto names = [](const json& list) {
+        std::vector<std::string> found;
+        for (const json& item : list) found.push_back(item.value("name", ""));
+        return found;
+    };
+    return {{"role", record.value("role", "")}, {"recordedModel", record.value("model", "")}, {"model", model.name()}, {"recorded", {{"text", before_text}, {"toolCalls", before_calls}}},
+            {"now", {{"text", reply.text}, {"toolCalls", now_calls}}}, {"same", same}, {"sameTools", names(before_calls) == names(now_calls)}};
 }
 
 std::optional<ModelEndpoint> endpoint_of(ChatModel& model) {

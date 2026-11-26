@@ -69,10 +69,10 @@
             <span class="os-name">Windows<small>Installer · x64</small></span></a>
           <a class="button secondary os" data-os="macos" data-asset="MasonAgent-macos.pkg" href="https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.pkg">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></svg>
-            <span class="os-name">macOS<small>Preview · universal</small></span></a>
+            <span class="os-name">macOS<small>Installer · universal</small></span></a>
           <a class="button secondary os" data-os="linux" data-asset="mason-agent-linux-amd64.deb" href="https://github.com/afj176/mason-agent/releases/download/preview/mason-agent-linux-amd64.deb">
             <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><rect x="2.5" y="4" width="19" height="16" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m7 9.5 3 2.5-3 2.5M12.5 15H17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="os-name">Linux<small>Preview · .deb, x64</small></span></a>
+            <span class="os-name">Linux<small>.deb · x64</small></span></a>
         </div>
         <p class="fine">Free and open source. <a href="#download">Other formats, requirements and install steps</a></p>
       </div>
@@ -149,23 +149,24 @@
         <li class="card">
           <span class="status available">Available</span>
           <h3>Windows</h3>
-          <p>WinUI 3 and C#. Commands in Auto run in a Windows sandbox limited to your project. The complete app: installer or portable ZIP.</p>
+          <p>WinUI 3 and C#. Commands in Auto run in a Windows sandbox limited to your project. An installer or a portable ZIP.</p>
           <p><a href="#download" data-platform="windows">Download for Windows</a></p>
         </li>
         <li class="card">
-          <span class="status preview">Preview</span>
+          <span class="status available">Available</span>
           <h3>macOS</h3>
           <p>SwiftUI and Swift, engine included. Auto uses the macOS sandbox. A universal app for Apple silicon and Intel, with an installer that puts <code>mason</code> on your PATH.</p>
           <p><a href="#download" data-platform="macos">Download for macOS</a></p>
         </li>
         <li class="card">
-          <span class="status preview">Preview</span>
+          <span class="status available">Available</span>
           <h3>Linux</h3>
           <p>GTK 4, libadwaita and C++. Auto uses a bubblewrap sandbox. A <code>.deb</code> for Debian and Ubuntu, and an archive that installs for your user on other distributions.</p>
           <p><a href="#download" data-platform="linux">Download for Linux</a></p>
         </li>
       </ul>
-      <p class="section-lede">The previews now cover most of what the Windows app does: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. They also work out checks from a request and run them, and build a simple offline store with a built-in component. They now also have experiments in worktrees, pull request drafting, background tasks that outlive the app, separate reviewer and vision models, pinned project tests, a file viewer and a Website panel, network access you allow per host, project policy with hooks, installable bundles, pictures and documents in chat, and charts for tables in answers. Also, for C#, Windows uses the compiler built into the app, while macOS and Linux ask the C# language server you have installed.</p>
+      <p class="section-lede">All three apps do the same things: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. They work out checks from a request and run them, and build a simple offline store with a built-in component. They have experiments in worktrees, pull request drafting, background tasks that outlive the app, separate reviewer and vision models, pinned project tests, a file viewer and a Website panel, network access you allow per host, project policy with hooks, installable bundles, pictures and documents in chat, and charts for tables in answers.</p>
+      <p class="section-lede"><strong>Where they differ today.</strong> For C#, Windows uses a compiler built into the app, while macOS and Linux ask the C# language server you have installed. On macOS and Linux, experiments, pull request drafting, background tasks, model roles, project policy, network mode and bundles are used by typing a command in the request box, where Windows has menus and panels. Windows only for now: the reviewer taking part inside a request, editor evidence from VS Code, project notes and the Ctrl+K palette, GPU telemetry and per-connection generation settings.</p>
       <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, Mason starts a local model, reads a file, asks before editing it, and reports the change">
         <pre><code><span class="t-dim">~/src/shop $</span> mason
   <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
@@ -186,7 +187,7 @@
   <section class="screens" id="screenshots" aria-labelledby="screens-title">
     <div class="wrap">
       <h2 id="screens-title">Screenshots</h2>
-      <p class="section-lede">One design, built natively three times: Fluent and Mica on Windows, SwiftUI on macOS, libadwaita on Linux. Each follows your light or dark setting, or you can choose. The macOS and Linux pictures show a demonstration session played by a stand-in model.</p>
+      <p class="section-lede">One design, built natively three times: Fluent and Mica on Windows, SwiftUI on macOS, libadwaita on Linux. Each follows your light or dark setting, or you can choose. The pictures show each app in dark mode. The macOS and Linux pictures show a demonstration session played by a stand-in model.</p>
       <div class="gallery">
         <figure class="shot">
           <img src="assets/mac-app.png" width="1024" height="681" loading="lazy" decoding="async" alt="Mason Agent on macOS in dark mode: a request to fix a CSV importer, the four steps Mason took, its explanation, and a link to the two changed files">
@@ -228,8 +229,8 @@
         </div>
         <div class="platform-tabs" role="tablist" aria-label="Your system">
           <button type="button" role="tab" id="tab-windows" aria-controls="panel-windows" aria-selected="true">Windows</button>
-          <button type="button" role="tab" id="tab-macos" aria-controls="panel-macos" aria-selected="false" tabindex="-1">macOS <span class="tag">Preview</span></button>
-          <button type="button" role="tab" id="tab-linux" aria-controls="panel-linux" aria-selected="false" tabindex="-1">Linux <span class="tag">Preview</span></button>
+          <button type="button" role="tab" id="tab-macos" aria-controls="panel-macos" aria-selected="false" tabindex="-1">macOS</button>
+          <button type="button" role="tab" id="tab-linux" aria-controls="panel-linux" aria-selected="false" tabindex="-1">Linux</button>
         </div>
 
         <div class="platform-panel" id="panel-windows" role="tabpanel" aria-labelledby="tab-windows">
@@ -261,7 +262,7 @@
         </div>
 
         <div class="platform-panel" id="panel-macos" role="tabpanel" aria-labelledby="tab-macos">
-          <h3 class="panel-title">macOS <span class="fine">Preview <span data-preview-version>2.2.1</span> · Apple silicon and Intel</span></h3>
+          <h3 class="panel-title">macOS <span class="fine">Version <span data-preview-version>2.2.1</span> · Apple silicon and Intel</span></h3>
           <div class="ctas">
             <a class="button primary" data-asset="MasonAgent-macos.pkg" href="https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.pkg">
               <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2.5a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 10 2.5ZM3.75 15.5a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z"/></svg>
@@ -281,12 +282,12 @@
               </ul>
             </div>
           </div>
-          <p class="note"><strong>First launch:</strong> the preview is not notarized by Apple, so macOS blocks it the first time. Open <em>System Settings → Privacy &amp; Security</em> and choose <em>Open Anyway</em>. On macOS 14 you can also right-click the file and choose <em>Open</em>.</p>
-          <p class="note"><strong>Preview:</strong> built and checked on a Mac for every change, but new. It covers most of what the Windows app does; what is still Windows only is listed above.</p>
+          <p class="note"><strong>First launch:</strong> the app is not notarized by Apple, so macOS blocks it the first time. Open <em>System Settings → Privacy &amp; Security</em> and choose <em>Open Anyway</em>. On macOS 14 you can also right-click the file and choose <em>Open</em>.</p>
+          <p class="note"><strong>Checked on a Mac:</strong> the app is built and checked on a Mac for every change. Where it differs from the Windows and Linux apps is listed above.</p>
         </div>
 
         <div class="platform-panel" id="panel-linux" role="tabpanel" aria-labelledby="tab-linux">
-          <h3 class="panel-title">Linux <span class="fine">Preview <span data-preview-version>2.2.1</span> · x64</span></h3>
+          <h3 class="panel-title">Linux <span class="fine">Version <span data-preview-version>2.2.1</span> · x64</span></h3>
           <div class="ctas">
             <a class="button primary" data-asset="mason-agent-linux-amd64.deb" href="https://github.com/afj176/mason-agent/releases/download/preview/mason-agent-linux-amd64.deb">
               <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><path fill="currentColor" d="M10 2.5a.75.75 0 0 1 .75.75v8.69l2.72-2.72a.75.75 0 1 1 1.06 1.06l-4 4a.75.75 0 0 1-1.06 0l-4-4a.75.75 0 1 1 1.06-1.06l2.72 2.72V3.25A.75.75 0 0 1 10 2.5ZM3.75 15.5a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z"/></svg>
@@ -312,7 +313,7 @@ cd mason-agent-*-linux-amd64 &amp;&amp; ./install.sh</code></pre>
               </ul>
             </div>
           </div>
-          <p class="note"><strong>Preview:</strong> built and checked on Ubuntu 24.04 for every change, and not yet tried on other distributions. It covers most of what the Windows app does; what is still Windows only is listed above.</p>
+          <p class="note"><strong>Checked on Ubuntu:</strong> the app is built and checked on Ubuntu 24.04 for every change, and not yet tried on other distributions. Where it differs from the Windows and macOS apps is listed above.</p>
         </div>
 
         <p class="note">SHA-256 checksums are attached to each release if you want to verify a download.</p>

@@ -6,6 +6,8 @@ final class ScriptedModel: ChatModel {
     let name = "scripted"
     var replies: [ModelReply]
     var seen: [[ChatMessage]] = []
+    /// The names of the tools offered with each request.
+    var seenTools: [[String]] = []
     var window: Int?
     init(_ replies: [ModelReply]) { self.replies = replies }
     func contextWindow() async -> Int? { window }
@@ -14,6 +16,7 @@ final class ScriptedModel: ChatModel {
     var delay: UInt64 = 0
     func complete(messages: [ChatMessage], tools: [ToolSpec], onText: @escaping (String) -> Void) async throws -> ModelReply {
         seen.append(messages)
+        seenTools.append(tools.map(\.name))
         onRequest?(seen.count)
         if delay > 0 { try await Task.sleep(nanoseconds: delay) }
         guard !replies.isEmpty else { throw MasonError("The script ran out of replies.") }
@@ -842,6 +845,55 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(Tables.find(in: "| just | one row |\nno rule").isEmpty)
         let prose = Tables.prose(answer)
         XCTAssertTrue(prose.contains("Here are the sales.") && !prose.contains("| Jan |") && prose.contains("| a | b |"), "the table's own lines are left out of the prose, and code is kept: " + prose)
+    }
+
+    func testTheReviewerTakesPartInARequestAndADecisionCanBeComparedLater() async throws {
+        _ = try Roles.command("reviewer http://127.0.0.1:9 judge", home: home)
+        XCTAssertNotNil(Roles.load(home: home).reviewer)
+        // The reviewer here is the agent's own scripted model: the chosen endpoint has nothing listening, so the role falls back to it only when the client cannot be made. The request shows the order of calls.
+        let trace = home.appendingPathComponent("traces")
+        let recorded = RoleModel(ScriptedModel([call("read_file", ["path": "calc.py"])]), role: "implementer", trace: trace)
+        _ = try await recorded.complete(messages: [ChatMessage(role: "user", content: "Look at calc.py")], tools: Agent.tools) { _ in }
+        let file = trace.appendingPathComponent(try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: trace.path).first))
+        let same = try await Roles.compare(trace: file, model: ScriptedModel([call("read_file", ["path": "calc.py"])]))
+        XCTAssertEqual(same["same"] as? Bool, true)
+        let other = ScriptedModel([call("list_files", ["path": "."])])
+        let different = try await Roles.compare(trace: file, model: other)
+        XCTAssertEqual(different["same"] as? Bool, false)
+        XCTAssertEqual(different["sameTools"] as? Bool, false)
+        XCTAssertTrue(other.seenTools.first?.contains("read_file") ?? false, "the other model is offered the tools the first one had")
+        var lines: [String] = []
+        let code = await ScriptOperations.run(["compare-decision", "--trace", file.path], model: ScriptedModel([call("read_file", ["path": "calc.py"])])) { lines.append($0) }
+        XCTAssertEqual(code, 0)
+        XCTAssertTrue(lines.joined().contains("\"same\":true"), lines.joined())
+    }
+
+    func testAChosenReviewerReadsTheChangesBeforeARequestFinishes() async throws {
+        var (store, session) = try session(.auto)
+        let worker = ScriptedModel([
+            call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a * b\n"]),
+            ModelReply(text: "Done."),
+            call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a + b\n"]),
+            ModelReply(text: "Fixed after review."),
+        ])
+        let judge = ScriptedModel([ModelReply(text: #"[{"path": "calc.py", "line": 2, "evidence": "return a * b", "problem": "It multiplies instead of adding."}]"#)])
+        let agent = Agent(store: store, model: worker, approve: { _ in true }, emit: { _ in })
+        agent.derivesChecks = false
+        agent.reviewer = judge
+        await agent.run(&session, request: "Make add return the sum")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.turns.last?.answer, "Fixed after review.")
+        XCTAssertEqual(judge.seen.count, 1, "the reviewer reads the changes once, not after every repair")
+        XCTAssertTrue(session.messages.contains { $0.role == "user" && $0.content.contains("A separate reviewer read your changes") && $0.content.contains("calc.py:2") && $0.content.contains("It multiplies instead of adding.") })
+        XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a + b\n")
+
+        // Outside Auto, and without a reviewer, a request finishes as before.
+        var (store2, plain) = try self.session(.workspaceEdits)
+        let quiet = Agent(store: store2, model: ScriptedModel([call("write_file", ["path": "notes.txt", "content": "x"]), ModelReply(text: "Done.")]), approve: { _ in true }, emit: { _ in })
+        quiet.reviewer = ScriptedModel([])
+        await quiet.run(&plain, request: "Write a note")
+        XCTAssertEqual(plain.state, "Completed")
+        XCTAssertEqual(plain.turns.last?.answer, "Done.")
     }
 
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {

@@ -1498,6 +1498,50 @@ static void test_extra_tools() {
         CHECK(prose.find("Here are the sales.") != std::string::npos && prose.find("| Jan |") == std::string::npos && prose.find("| a | b |") != std::string::npos);  // the table's own lines are left out, and code is kept
     }
 
+    // A decision can be compared later, and the reviewer takes part in a request.
+    {
+        Sandbox box;
+        const fs::path trace = box.home / "traces";
+        ScriptedModel first;
+        first.replies = {call("read_file", {{"path", "calc.py"}})};
+        RoleModel recorded(first, "implementer", 0, trace);
+        recorded.complete({ChatMessage{"user", "Look at calc.py", {}, ""}}, Agent::tools(), [](const std::string&) {}, nullptr);
+        fs::path file;
+        for (const auto& entry : fs::directory_iterator(trace)) file = entry.path();
+        ScriptedModel again;
+        again.replies = {call("read_file", {{"path", "calc.py"}})};
+        CHECK(roles::compare(file, again)["same"] == true);
+        ScriptedModel other;
+        other.replies = {call("list_files", {{"path", "."}})};
+        const json different = roles::compare(file, other);
+        CHECK(different["same"] == false && different["sameTools"] == false);
+        std::vector<json> events;
+        ScriptedModel third;
+        third.replies = {call("read_file", {{"path", "calc.py"}})};
+        CHECK(script::run({"compare-decision", "--trace", file.string()}, [&](const std::string& line) { events.push_back(json::parse(line)); }, &third) == 0);
+        CHECK(events.size() == 1 && events[0]["data"]["same"] == true);
+    }
+
+    // A chosen reviewer reads the changes before a request finishes.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
+        ScriptedModel worker, judge;
+        worker.replies = {call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a * b\n"}}), say("Done."), call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Fixed after review.")};
+        judge.replies = {say(R"J([{"path": "calc.py", "line": 2, "evidence": "return a * b", "problem": "It multiplies instead of adding."}])J")};
+        Agent agent(store, worker, [](const ApprovalRequest&) { return true; }, quiet);
+        agent.derives_checks = false;
+        agent.set_reviewer(&judge);
+        agent.run(session, "Make add return the sum");
+        CHECK(session.state == "Completed" && session.turns.back().answer == "Fixed after review.");
+        CHECK(judge.seen.size() == 1);  // the reviewer reads the changes once, not after every repair
+        bool told = false;
+        for (const ChatMessage& message : session.messages) told = told || (message.role == "user" && message.content.find("A separate reviewer read your changes") != std::string::npos && message.content.find("calc.py:2") != std::string::npos);
+        CHECK(told);
+        CHECK(box.read("calc.py") == "def add(a, b):\n    return a + b\n");
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;

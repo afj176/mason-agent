@@ -43,6 +43,8 @@ public final class RoleModel: ChatModel, @unchecked Sendable {
                 "role": role, "model": base.name, "call": number, "at": ISO8601DateFormatter().string(from: Date()),
                 "messages": messages.map { ["role": $0.role, "content": $0.content, "toolCalls": ($0.toolCalls ?? []).map { ["name": $0.name, "arguments": $0.arguments] }] as [String: Any] },
                 "tools": tools.map(\.name),
+                // The full definitions, so the same call can be put to another model later.
+                "toolSpecs": tools.map { ["name": $0.name, "description": $0.description, "parameters": $0.parameters] as [String: Any] },
                 "reply": ["text": reply.text, "toolCalls": reply.toolCalls.map { ["name": $0.name, "arguments": $0.arguments] }, "finishReason": reply.finishReason ?? ""] as [String: Any],
             ]
             try? FileManager.default.createDirectory(at: trace, withIntermediateDirectories: true)
@@ -85,6 +87,37 @@ public enum Roles {
         let roles = load(home: home)
         let chosen = roles.reviewer.flatMap { try? OpenAIClient($0) } ?? main
         return RoleModel(chosen, role: "reviewer", limit: roles.limit, trace: traceFolder(roles, workspace: workspace))
+    }
+
+    /// Puts a recorded call to a model again and sets its answer beside the recorded one.
+    /// `trace` is one of the files a trace folder holds.
+    public static func compare(trace: URL, model: ChatModel) async throws -> [String: Any] {
+        guard let data = try? Data(contentsOf: trace), data.count <= 32 * 1024 * 1024, let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let recorded = record["messages"] as? [[String: Any]], let before = record["reply"] as? [String: Any] else { throw MasonError("That file is not a recorded model call.") }
+        func calls(_ value: Any?) -> [[String: String]] {
+            (value as? [[String: Any]] ?? []).map { ["name": $0["name"] as? String ?? "", "arguments": $0["arguments"] as? String ?? ""] }
+        }
+        // Recorded calls carry no ids, so each is given one and its result, which follows, is matched to it in order.
+        var messages: [ChatMessage] = [], waiting: [String] = [], number = 0
+        for item in recorded {
+            let role = item["role"] as? String ?? "user"
+            let made = calls(item["toolCalls"]).map { call -> ToolCall in number += 1; return ToolCall(id: "call-\(number)", name: call["name"] ?? "", arguments: call["arguments"] ?? "{}") }
+            if role == "tool" {
+                messages.append(ChatMessage(role: role, content: item["content"] as? String ?? "", toolCallId: waiting.isEmpty ? "call-0" : waiting.removeFirst()))
+            } else {
+                messages.append(ChatMessage(role: role, content: item["content"] as? String ?? "", toolCalls: made.isEmpty ? nil : made))
+                waiting += made.map(\.id)
+            }
+        }
+        let tools = (record["toolSpecs"] as? [[String: Any]] ?? []).map { ToolSpec(name: $0["name"] as? String ?? "", description: $0["description"] as? String ?? "", parameters: $0["parameters"] as? [String: Any] ?? [:]) }
+        let reply = try await model.complete(messages: messages, tools: tools) { _ in }
+        let now: [String: Any] = ["text": reply.text, "toolCalls": reply.toolCalls.map { ["name": $0.name, "arguments": $0.arguments] }]
+        let recordedCalls = calls(before["toolCalls"]), newCalls = reply.toolCalls.map { ["name": $0.name, "arguments": $0.arguments] }
+        // The same decision: the same tools called with the same arguments, or, with no calls, the same words.
+        let same = recordedCalls.isEmpty && newCalls.isEmpty ? (before["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines) == reply.text.trimmingCharacters(in: .whitespacesAndNewlines) : recordedCalls == newCalls
+        return ["role": record["role"] as? String ?? "", "recordedModel": record["model"] as? String ?? "", "model": model.name,
+                "recorded": ["text": before["text"] as? String ?? "", "toolCalls": recordedCalls] as [String: Any], "now": now, "same": same,
+                "sameTools": recordedCalls.map { $0["name"] ?? "" } == newCalls.map { $0["name"] ?? "" }]
     }
 
     /// The endpoint of the model behind `model`, through any role wrapper.
