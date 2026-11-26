@@ -26,6 +26,7 @@
 #include "project_tests.hpp"
 #include "preview.hpp"
 #include "network.hpp"
+#include "bundles.hpp"
 #include "shell.hpp"
 #include "models.hpp"
 
@@ -1371,6 +1372,51 @@ static void test_extra_tools() {
             CHECK(events.size() == 3 && events[0]["type"] == "server.ready" && events[1]["data"]["title"] == "Served Shop");
             CHECK(!preview::listening(18475));  // the server is stopped afterwards
         }
+    }
+
+    // A bundle brings skills and documentation to every project.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        const fs::path source = box.base / "shop-kit", data = box.base / "data";
+        auto put = [](const fs::path& file, const std::string& text) {
+            fs::create_directories(file.parent_path());
+            write_file_atomic(file, text);
+        };
+        put(source / "bundle.json", R"({"name": "shop-kit", "version": "1.2.0", "description": "How the shop team works"})");
+        put(source / "skills/release/SKILL.md", "---\ndescription: How to release the shop\n---\nRun the release checklist.\n");
+        put(source / "docs/payments.md", "# Payments\nCards are charged at dispatch.\n\n## Refunds\nA refund is allowed within 30 days of delivery.\n\n## Fraud\nOrders over 500 are held.\n");
+        put(source / "run.sh", "echo not copied\n");
+        CHECK(bundles::command("", data).find("No bundles") != std::string::npos);
+        CHECK(bundles::command("install " + source.string(), data).find("Installed shop-kit 1.2.0: 2 files") != std::string::npos);
+        CHECK(bundles::list(data).size() == 1 && bundles::list(data)[0].name == "shop-kit");
+        CHECK(!fs::exists(data / "bundles/shop-kit/run.sh"));  // only skills and docs are copied
+        const std::vector<Definition> known = skills::list(workspace, data);
+        CHECK(known.size() == 1 && known[0].name == "release");
+        Session session;
+        session.workspace = workspace.root();
+        auto offers = [&](const fs::path& home) {
+            for (const ToolSpec& tool : Agent::extra_tools(session, workspace, false, false, home)) {
+                if (tool.name == "read_documentation") return true;
+            }
+            return false;
+        };
+        CHECK(offers(data) && !offers(box.base / "empty"));  // with nothing to read, the tool is not offered
+        const std::string found = bundles::read("when is a refund allowed", data, workspace);
+        CHECK(found.rfind("[shop-kit 1.2.0/docs/payments.md:4]\n## Refunds\nA refund is allowed within 30 days", 0) == 0);
+        put(box.project / ".mason/docs/notes.md", "# Local notes\nRefunds over 100 need a manager.\n");
+        CHECK(bundles::read("refund manager", data, workspace).rfind("[.mason/docs/notes.md:1]", 0) == 0);  // the project's own docs are read too
+        CHECK(bundles::read("kubernetes", data, workspace).find("does not mention") != std::string::npos);
+        // A file that is really a link to somewhere else is not taken.
+        fs::create_symlink("/etc/hosts", source / "docs/secrets.md");
+        bool refused = false;
+        try { bundles::install(source.string(), data); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+        refused = false;
+        try { bundles::install(box.project.string(), data); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // a folder without bundle.json is not a bundle
+        bundles::command("remove shop-kit", data);
+        CHECK(bundles::list(data).empty());
     }
 
     // A job runs in the background and stops when the request ends.

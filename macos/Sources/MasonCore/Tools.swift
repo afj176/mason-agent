@@ -50,7 +50,8 @@ public struct ProjectWorkflows {
 public enum Skills {
     static let folders = [".mason/skills", ".claude/skills", ".agents/skills"]
 
-    public static func list(_ workspace: Workspace) -> [Definition] {
+    /// The project's skills, then those of installed bundles. A project skill wins over a bundle's of the same name.
+    public static func list(_ workspace: Workspace, home: URL = DataHome.url) -> [Definition] {
         var found: [String: Definition] = [:]
         for folder in folders {
             let root = workspace.root.appendingPathComponent(folder)
@@ -62,6 +63,7 @@ public enum Skills {
                 found[name.lowercased()] = Customization.parse(name: name, text: text, source: relative)
             }
         }
+        for skill in Bundles.skills(home: home) where found[skill.name.lowercased()] == nil { found[skill.name.lowercased()] = skill }
         return found.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
 }
@@ -227,7 +229,7 @@ final class Jobs: @unchecked Sendable {
 
 extension Agent {
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
-    static func extraTools(session: Session, workspace: Workspace, semantic: Bool = false, presents: Bool = false) -> [ToolSpec] {
+    static func extraTools(session: Session, workspace: Workspace, semantic: Bool = false, presents: Bool = false, home: URL = DataHome.url) -> [ToolSpec] {
         func schema(_ properties: [String: Any], required: [String]) -> [String: Any] {
             ["type": "object", "properties": properties, "required": required, "additionalProperties": false]
         }
@@ -290,7 +292,10 @@ extension Agent {
             tools.append(ToolSpec(name: "verify_acceptance", description: "Run the project's acceptance scenarios from mason.acceptance.json in a real browser, at a phone width and a desktop width, and report which requirements hold. Run it after changing a page the scenarios cover.",
                                   parameters: schema([:], required: [])))
         }
-        if !Skills.list(workspace).isEmpty {
+        if Bundles.hasDocuments(home: home, workspace: workspace) {
+            tools.append(ToolSpec(name: "read_documentation", description: "Look something up in the documentation that comes with this project (.mason/docs) and with the bundles the user installed. Give a few words; it returns the sections that mention them, each with where it came from, so you can cite it.", parameters: schema(["query": text], required: ["query"])))
+        }
+        if !Skills.list(workspace, home: home).isEmpty {
             tools.append(ToolSpec(name: "read_skill", description: "Read the project's instructions for one kind of work, by skill name.", parameters: schema(["name": text], required: ["name"])))
         }
         return tools
@@ -493,8 +498,11 @@ extension Agent {
             let eof = (arguments["eof"] as? Bool) ?? ((arguments["eof"] as? String) == "true")
             return (.completed, try jobs.send(id, text: text("text") ?? "", eof: eof))
 
+        case "read_documentation":
+            return (.completed, Bundles.read(text("query") ?? "", home: home, workspace: workspace))
+
         case "read_skill":
-            let skills = Skills.list(workspace)
+            let skills = Skills.list(workspace, home: home)
             guard let name = text("name"), let skill = skills.first(where: { $0.name.lowercased() == name.lowercased() }) else {
                 throw MasonError("No skill named \(text("name") ?? ""). Skills: " + skills.map(\.name).joined(separator: ", "))
             }

@@ -21,6 +21,7 @@
 #include "delivery.hpp"
 #include "background.hpp"
 #include "roles.hpp"
+#include "bundles.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
 
@@ -542,6 +543,10 @@ private:
             for (const std::string& line : split(experiments::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
             return true;
         }
+        if (name == "/bundle" || name == "/bundles") {
+            for (const std::string& line : split(bundles::command(rest, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
         if (name == "/policy") {
             for (const std::string& line : split(policies::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
             return true;
@@ -665,6 +670,7 @@ private:
             {"/commands", "List your custom slash commands"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"},
             {"/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"},
             {"/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"},
             {"/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"},

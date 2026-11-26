@@ -29,7 +29,8 @@ std::string command_line(const ProjectWorkflow& workflow);
 /// Instructions a project keeps for particular kinds of work, each in `.mason/skills/<name>/SKILL.md`
 /// (also `.claude/skills` and `.agents/skills`). The agent sees their names and reads one when it needs it.
 namespace skills {
-std::vector<Definition> list(const Workspace& workspace);
+/// The project's skills, then those of installed bundles. A project skill wins over a bundle's of the same name.
+std::vector<Definition> list(const Workspace& workspace, const fs::path& home = data_home());
 }
 
 /// An outline of a project for the model: each source file with its size and the top-level things it defines.

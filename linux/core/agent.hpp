@@ -59,7 +59,7 @@ public:
     /// Offered only when the user has registered an MCP server, so sessions without one keep a short tool list.
     static const std::vector<ToolSpec>& mcp_tools();
     /// Tools beyond the basic file and shell ones. Which of them a request is offered depends on the session and the project.
-    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false, bool presents = false);
+    static std::vector<ToolSpec> extra_tools(const Session& session, const Workspace& workspace, bool semantic = false, bool presents = false, const fs::path& home = data_home());
     /// Set by an app that can show things to the user: a file at a line ("file") or a project page ("page").
     /// Hooks run only inside the sandbox. Tests on a computer without one turn this off.
     void set_hooks_need_sandbox(bool needed) { hooks_need_sandbox_ = needed; }

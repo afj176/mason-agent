@@ -738,6 +738,41 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(((events().first?["data"] as? [String: Any])?["message"] as? String ?? "").contains("ended before anything listened"))
     }
 
+    func testABundleBringsSkillsAndDocumentationToEveryProject() async throws {
+        let workspace = try Workspace(path: folder.path)
+        let source = home.appendingPathComponent("shop-kit")
+        func put(_ name: String, _ text: String, under root: URL) throws {
+            let file = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try put("bundle.json", #"{"name": "shop-kit", "version": "1.2.0", "description": "How the shop team works"}"#, under: source)
+        try put("skills/release/SKILL.md", "---\ndescription: How to release the shop\n---\nRun the release checklist.\n", under: source)
+        try put("docs/payments.md", "# Payments\nCards are charged at dispatch.\n\n## Refunds\nA refund is allowed within 30 days of delivery.\n\n## Fraud\nOrders over 500 are held.\n", under: source)
+        try put("run.sh", "echo not copied\n", under: source)
+        let data = home.appendingPathComponent("data")
+        XCTAssertTrue(try Bundles.command("", home: data).contains("No bundles"))
+        XCTAssertTrue(try Bundles.command("install \(source.path)", home: data).contains("Installed shop-kit 1.2.0: 2 files"))
+        XCTAssertEqual(Bundles.list(home: data).map(\.name), ["shop-kit"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: data.appendingPathComponent("bundles/shop-kit/run.sh").path), "only skills and docs are copied")
+        XCTAssertEqual(Skills.list(workspace, home: data).map(\.name), ["release"])
+        XCTAssertTrue(Agent.extraTools(session: Session(workspace: folder.path), workspace: workspace, home: data).contains { $0.name == "read_documentation" })
+        XCTAssertFalse(Agent.extraTools(session: Session(workspace: folder.path), workspace: workspace, home: home.appendingPathComponent("empty")).contains { $0.name == "read_documentation" }, "with nothing to read, the tool is not offered")
+
+        let found = Bundles.read("when is a refund allowed", home: data, workspace: workspace)
+        XCTAssertTrue(found.hasPrefix("[shop-kit 1.2.0/docs/payments.md:4]\n## Refunds\nA refund is allowed within 30 days"), found)
+        try put(".mason/docs/notes.md", "# Local notes\nRefunds over 100 need a manager.\n", under: folder)
+        XCTAssertTrue(Bundles.read("refund manager", home: data, workspace: workspace).hasPrefix("[.mason/docs/notes.md:1]"), "the project's own docs are read too")
+        XCTAssertTrue(Bundles.read("kubernetes", home: data, workspace: workspace).contains("does not mention"))
+
+        // A file that is really a link to somewhere else is not taken.
+        try FileManager.default.createSymbolicLink(atPath: source.appendingPathComponent("docs/secrets.md").path, withDestinationPath: "/etc/hosts")
+        XCTAssertThrowsError(try Bundles.install(from: source.path, home: data))
+        XCTAssertThrowsError(try Bundles.install(from: folder.path, home: data), "a folder without bundle.json is not a bundle")
+        _ = try Bundles.command("remove shop-kit", home: data)
+        XCTAssertTrue(Bundles.list(home: data).isEmpty)
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

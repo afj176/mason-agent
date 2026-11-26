@@ -308,6 +308,7 @@ extension AppModel {
                 case "/task", "/tasks": notice = try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: automatic, program: masonProgram, home: home)
                 case "/roles", "/role": notice = try Roles.command(rest, home: home)
                 case "/policy": notice = try Policies.command(rest, workspace: workspace, home: home)
+                case "/bundle", "/bundles": notice = try Bundles.command(rest, home: home)
                 default: notice = try NetworkSettings.command(rest, home: home)
                 }
             } catch {

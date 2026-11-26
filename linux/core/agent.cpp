@@ -5,6 +5,7 @@
 #include "navigation.hpp"
 #include "planning.hpp"
 #include "roles.hpp"
+#include "bundles.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -215,7 +216,7 @@ std::shared_ptr<SemanticModels> Agent::semantic_models() const {
     return nullptr;
 }
 
-std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace, bool semantic, bool presents) {
+std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace& workspace, bool semantic, bool presents, const fs::path& home) {
     auto schema = [](json properties, std::vector<std::string> required) {
         return json{{"type", "object"}, {"properties", std::move(properties)}, {"required", std::move(required)}, {"additionalProperties", false}};
     };
@@ -282,13 +283,14 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
         list.push_back({"verify_acceptance", "Run the project's acceptance scenarios from mason.acceptance.json in a real browser, at a phone width and a desktop width, and report which requirements hold. Run it after changing a page the scenarios cover.",
                         schema(json::object(), {})});
     }
-    if (!skills::list(workspace).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
+    if (bundles::has_documents(home, workspace)) list.push_back({"read_documentation", "Look something up in the documentation that comes with this project (.mason/docs) and with the bundles the user installed. Give a few words; it returns the sections that mention them, each with where it came from, so you can cite it.", schema({{"query", text}}, {"query"})});
+    if (!skills::list(workspace, home).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
     return list;
 }
 
 std::vector<ToolSpec> Agent::offered_tools(const Session& session, const Workspace& workspace) const {
     std::vector<ToolSpec> offered = tools();
-    const std::vector<ToolSpec> extra = extra_tools(session, workspace, semantic_models() != nullptr, static_cast<bool>(present_));
+    const std::vector<ToolSpec> extra = extra_tools(session, workspace, semantic_models() != nullptr, static_cast<bool>(present_), store_.home());
     offered.insert(offered.end(), extra.begin(), extra.end());
     const std::vector<ToolSpec> window = desktop_tools(session, desktop_automation() != nullptr);
     offered.insert(offered.end(), window.begin(), window.end());
@@ -587,8 +589,9 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         const bool eof = arguments.contains("eof") && ((arguments["eof"].is_boolean() && arguments["eof"].get<bool>()) || (arguments["eof"].is_string() && arguments["eof"].get<std::string>() == "true"));
         return Outcome{"completed", jobs_.send(*id, text("text").value_or(""), eof)};
     }
+    if (call.name == "read_documentation") return Outcome{"completed", bundles::read(text("query").value_or(""), store_.home(), workspace)};
     if (call.name == "read_skill") {
-        const std::vector<Definition> known = skills::list(workspace);
+        const std::vector<Definition> known = skills::list(workspace, store_.home());
         const std::string wanted = to_lower(text("name").value_or(""));
         for (const Definition& skill : known) {
             if (to_lower(skill.name) == wanted) return Outcome{"completed", "Skill " + skill.name + " (" + skill.source + "):\n" + skill.body};
@@ -832,7 +835,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     std::string prompt = system_prompt(session);
     {
         std::vector<std::string> listed;
-        for (const Definition& skill : skills::list(*workspace)) listed.push_back(skill.name + " (" + skill.description + ")");
+        for (const Definition& skill : skills::list(*workspace, store_.home())) listed.push_back(skill.name + " (" + skill.description + ")");
         if (!listed.empty()) prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + join(listed, "; ") + ".";
     }
     {

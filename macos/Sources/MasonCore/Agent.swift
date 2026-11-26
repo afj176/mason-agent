@@ -323,14 +323,14 @@ public final class Agent {
         if session.title == "New session" { session.title = input.count > 55 ? String(input.prefix(55)) + "…" : input }
         let servers = Mcp.enabled(home: home)
         policy = Policies.load(home: home, workspace: workspace.root.path)
-        let everything = Agent.tools + Agent.extraTools(session: session, workspace: workspace, semantic: semanticModels != nil, presents: present != nil)
+        let everything = Agent.tools + Agent.extraTools(session: session, workspace: workspace, semantic: semanticModels != nil, presents: present != nil, home: home)
             + Agent.desktopTools(for: session, available: (desktop ?? Desktop.system) != nil) + (servers.isEmpty ? [] : Agent.mcpTools)
         // A tool the user's policy switches off is not offered at all.
         let offered = everything.filter { !(policy?.disabledTools.contains($0.name) ?? false) }
         lastObservation = []
         offeredNames = offered.map(\.name)
         var prompt = Agent.systemPrompt(session, servers: servers)
-        let skills = Skills.list(workspace)
+        let skills = Skills.list(workspace, home: home)
         if !skills.isEmpty { prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + skills.map { "\($0.name) (\($0.description))" }.joined(separator: "; ") + "." }
         if let window = session.desktop, (desktop ?? Desktop.system) != nil { prompt += "\nThe user attached a window of another app: \(window.label). Read it with desktop_observe; use desktop_visual for what its controls do not name. Acting on it asks the user each time." }
         if offeredNames.contains("verify_acceptance") { prompt += "\nThis project has acceptance scenarios in mason.acceptance.json. Run verify_acceptance after changing a page they cover, and do not edit that file unless asked." }

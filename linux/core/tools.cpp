@@ -1,5 +1,7 @@
 #include "tools.hpp"
 
+#include "bundles.hpp"
+
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -68,7 +70,7 @@ std::string command_line(const ProjectWorkflow& workflow) {
 
 namespace skills {
 
-std::vector<Definition> list(const Workspace& workspace) {
+std::vector<Definition> list(const Workspace& workspace, const fs::path& home) {
     static const std::regex name_pattern("^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$");
     std::map<std::string, Definition> found;
     for (const char* folder : {".mason/skills", ".claude/skills", ".agents/skills"}) {
@@ -86,6 +88,9 @@ std::vector<Definition> list(const Workspace& workspace) {
             } catch (const std::exception&) {
             }
         }
+    }
+    for (const Definition& skill : bundles::skills(home)) {
+        if (!found.count(to_lower(skill.name))) found[to_lower(skill.name)] = skill;
     }
     std::vector<Definition> result;
     for (auto& [key, definition] : found) result.push_back(std::move(definition));
