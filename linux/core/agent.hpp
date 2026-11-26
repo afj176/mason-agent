@@ -124,6 +124,7 @@ private:
     std::vector<std::string> offered_names_;
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     std::optional<std::string> pending_question_;
+    std::optional<std::string> last_search_;  // this request's latest search_files text, which search_next continues
     std::shared_ptr<SemanticModels> semantic_;
     std::shared_ptr<DesktopAutomation> desktop_;
     std::shared_ptr<DesktopVision> vision_;

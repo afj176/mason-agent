@@ -85,6 +85,8 @@ public final class Agent {
     var offeredNames: [String] = []
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     var pendingQuestion: String?
+    /// The text of this request's latest search_files call, which search_next continues.
+    var lastSearch: String?
 
     public init(store: SessionStore, model: ChatModel, approve: @escaping (ApprovalRequest) async -> Bool, emit: @escaping (AgentEvent) -> Void) {
         self.store = store; self.model = model; self.approve = approve; self.emit = emit
@@ -98,7 +100,8 @@ public final class Agent {
         return [
             ToolSpec(name: "list_files", description: "List the project's files.", parameters: schema(["path": ["type": "string", "description": "Folder to list, relative to the project. Use . for the whole project."]], required: ["path"])),
             ToolSpec(name: "read_file", description: "Read a UTF-8 text file with line numbers.", parameters: schema(["path": path], required: ["path"])),
-            ToolSpec(name: "search_files", description: "Search the project's files for text (case-insensitive).", parameters: schema(["query": ["type": "string"]], required: ["query"])),
+            ToolSpec(name: "search_files", description: "Search the project's files for text (case-insensitive). Returns up to 100 matches and, when there may be more, a cursor for search_next.", parameters: schema(["query": ["type": "string"]], required: ["query"])),
+            ToolSpec(name: "search_next", description: "Continue the latest search_files call from the cursor it returned, to see later files and matches.", parameters: schema(["cursor": ["type": "string"]], required: ["cursor"])),
             ToolSpec(name: "edit_file", description: "Replace one exact passage in an existing file. old_text must match exactly once; include enough surrounding lines to make it unique.",
                      parameters: schema(["path": path, "old_text": ["type": "string"], "new_text": ["type": "string"]], required: ["path", "old_text", "new_text"])),
             ToolSpec(name: "write_file", description: "Create a file, or replace its whole content.", parameters: schema(["path": path, "content": ["type": "string"]], required: ["path", "content"])),
@@ -141,7 +144,7 @@ public final class Agent {
     /// The name of the workflow in mason.workflows.json that Mason runs to verify a request.
     public static let verifyWorkflow = "verify"
     /// Tools that can change the project.
-    static let changing: Set<String> = ["edit_file", "write_file", "apply_edits", "run_shell", "run_workflow", "start_job"]
+    static let changing: Set<String> = ["edit_file", "write_file", "apply_edits", "run_shell", "run_command", "run_workflow", "start_job", "start_terminal"]
 
     /// The verify workflow, when the project defines one.
     func verifyCommand(_ workspace: Workspace) -> String? {
@@ -455,10 +458,19 @@ public final class Agent {
                 let content = try workspace.read(path)
                 let numbered = content.split(separator: "\n", omittingEmptySubsequences: false).enumerated().map { "\($0.offset + 1)\t\($0.element)" }.joined(separator: "\n")
                 return finish(.completed, numbered.count > 60_000 ? String(numbered.prefix(60_000)) + "\n[File clipped.]" : numbered)
-            case "search_files":
-                guard let query = text("query") else { throw MasonError("search_files needs a query.") }
-                let matches = try workspace.search(query)
-                return finish(.completed, matches.isEmpty ? "No matches." : matches.map { "\($0.path):\($0.line): \($0.text)" }.joined(separator: "\n"))
+            case "search_files", "search_next":
+                let query: String, skip: Int
+                if call.name == "search_next" {
+                    guard let last = lastSearch else { throw MasonError("search_next continues a search_files call, and this request has not made one.") }
+                    guard let cursor = (arguments["cursor"] as? String).flatMap({ Int($0) }) ?? (arguments["cursor"] as? Int), cursor > 0 else { throw MasonError("search_next needs the cursor the search returned.") }
+                    query = last; skip = cursor
+                } else {
+                    guard let given = text("query") else { throw MasonError("search_files needs a query.") }
+                    query = given; skip = 0; lastSearch = given
+                }
+                let matches = try workspace.search(query, skip: skip)
+                let more = matches.count == 100 ? "\n[There may be more matches. Continue with search_next and cursor \"\(skip + 100)\".]" : ""
+                return finish(.completed, matches.isEmpty ? (skip > 0 ? "No more matches." : "No matches.") : matches.map { "\($0.path):\($0.line): \($0.text)" }.joined(separator: "\n") + more)
             case "edit_file", "write_file":
                 if readOnly { throw MasonError("This session is read-only. Tell the user what you would change instead.") }
                 guard let path = text("path") else { throw MasonError("\(call.name) needs a path.") }

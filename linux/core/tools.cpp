@@ -1,8 +1,14 @@
 #include "tools.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <regex>
+
+#include <fcntl.h>
+#include <pthread.h>
+#include <unistd.h>
 
 namespace mason {
 
@@ -142,9 +148,10 @@ std::string outline(const Workspace& workspace, const std::string& under) {
 
 }  // namespace repository_map
 
-std::string Jobs::start(const std::string& command, const Workspace& workspace, bool sandboxed) {
+std::string Jobs::start(const std::string& command, const Workspace& workspace, bool sandboxed, bool interactive) {
     auto job = std::make_shared<Job>();
     job->command = command;
+    job->interactive = interactive;
     const std::string id = new_id().substr(0, 8);
     {
         std::lock_guard<std::mutex> guard(lock_);
@@ -158,14 +165,28 @@ std::string Jobs::start(const std::string& command, const Workspace& workspace, 
         if (running >= kMaxRunning) throw Error("Three jobs are running. Stop one before starting another.");
         jobs_[id] = job;
     }
-    job->thread = std::thread([this, job, command, workspace, sandboxed] {
+    int reading = -1;
+    if (interactive) {
+        int ends[2];
+        if (pipe2(ends, O_CLOEXEC) != 0) {
+            std::lock_guard<std::mutex> guard(lock_);
+            jobs_.erase(id);
+            throw Error("The terminal could not start: no pipe.");
+        }
+        reading = ends[0];
+        // A line sent to a program that stopped reading must fail as an error, not block.
+        fcntl(ends[1], F_SETFL, fcntl(ends[1], F_GETFL) | O_NONBLOCK);
+        std::lock_guard<std::mutex> guard(lock_);
+        job->input_fd = ends[1];
+    }
+    job->thread = std::thread([this, job, command, workspace, sandboxed, reading] {
         std::optional<CommandResult> result;
         std::string failure;
         try {
             result = shell::run(command, workspace, sandboxed, kTimeoutSeconds, job->cancel, [this, job](const char* data, size_t size) {
                 std::lock_guard<std::mutex> guard(lock_);
                 if (job->output.size() < 256 * 1024) job->output.append(data, size);
-            });
+            }, reading);
         } catch (const Cancelled&) {
             failure = "stopped";
         } catch (const std::exception& error) {
@@ -174,8 +195,44 @@ std::string Jobs::start(const std::string& command, const Workspace& workspace, 
         std::lock_guard<std::mutex> guard(lock_);
         job->result = result;
         job->failure = failure;
+        if (job->input_fd >= 0) { ::close(job->input_fd); job->input_fd = -1; }
     });
     return id;
+}
+
+std::string Jobs::send(const std::string& id, const std::string& text, bool eof) {
+    std::lock_guard<std::mutex> guard(lock_);
+    const auto found = jobs_.find(id);
+    if (found == jobs_.end()) throw Error("No terminal " + id + " in this request.");
+    const std::shared_ptr<Job>& job = found->second;
+    if (!job->interactive) throw Error("Job " + id + " was started with start_job and reads no input. Use start_terminal for a program you need to answer.");
+    if (text.size() > 4000 || text.find('\n') != std::string::npos || text.find('\0') != std::string::npos) throw Error("terminal_input sends one line of up to 4,000 bytes.");
+    if (job->done()) throw Error("Terminal " + id + " has ended. Read what it printed with terminal_status.");
+    if (job->input_fd < 0) throw Error("The input of terminal " + id + " is already closed.");
+    if (!text.empty() || !eof) {
+        // Writing to a program that closed its input raises SIGPIPE. Hold it back for this thread and discard it, so the
+        // write fails with an error instead of ending Mason, and nothing changes for the rest of the process.
+        sigset_t pipe_signal, before;
+        sigemptyset(&pipe_signal);
+        sigaddset(&pipe_signal, SIGPIPE);
+        pthread_sigmask(SIG_BLOCK, &pipe_signal, &before);
+        const std::string line = text + "\n";
+        size_t sent = 0;
+        int problem = 0;
+        while (sent < line.size()) {
+            const ssize_t count = ::write(job->input_fd, line.data() + sent, line.size() - sent);
+            if (count <= 0) { problem = errno ? errno : EPIPE; break; }
+            sent += static_cast<size_t>(count);
+        }
+        if (problem == EPIPE) {
+            const timespec none{0, 0};
+            sigtimedwait(&pipe_signal, nullptr, &none);
+        }
+        pthread_sigmask(SIG_SETMASK, &before, nullptr);
+        if (problem != 0) throw Error(problem == EAGAIN ? "The program in terminal " + id + " is not reading its input." : "The program in terminal " + id + " has closed its input.");
+    }
+    if (eof) { ::close(job->input_fd); job->input_fd = -1; }
+    return eof ? "Sent, and closed the input of terminal " + id + ". Read what it prints with terminal_status." : "Sent to terminal " + id + ". Read what it prints with terminal_status.";
 }
 
 std::string Jobs::observe(const std::string& id, bool stop, int wait_ms, const CancelToken& cancel) {

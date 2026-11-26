@@ -851,6 +851,55 @@ static void test_extra_tools() {
         CHECK(box.read("calc.py") == "def add(a, b):\n    return a - b\n");
     }
 
+    // A command with exact arguments, search paging, and a terminal that is answered line by line.
+    {
+        Sandbox box;
+        std::string many;
+        for (int i = 1; i <= 150; i++) many += "needle " + std::to_string(i) + "\n";
+        box.write("many.txt", many);
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::WorkspaceEdits);
+        std::vector<std::string> asked;
+        ScriptedModel model;
+        model.replies = {call("run_command", {{"program", "printf"}, {"arguments", json::array({"%s|", "a b", "$HOME", "it's", "*"})}, {"directory", "."}}),
+                         call("search_files", {{"query", "needle"}}), call("search_next", {{"cursor", "100"}}), say("Done.")};
+        Agent agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.tool); return true; }, quiet);
+        agent.run(session, "Try them");
+        CHECK(asked == std::vector<std::string>{"run_command"});  // a command with exact arguments asks like any command outside Auto
+        CHECK(session.activities.size() == 3);
+        if (session.activities.size() == 3) {
+            CHECK(session.activities[0].result.find("a b|$HOME|it's|*|") != std::string::npos);  // nothing in an argument is expanded or split
+            const std::string first = session.activities[1].result, second = session.activities[2].result;
+            CHECK(first.find("many.txt:100: needle 100") != std::string::npos && first.find("needle 101") == std::string::npos && first.find("search_next and cursor \"100\"") != std::string::npos);
+            CHECK(second.find("many.txt:101: needle 101") != std::string::npos && second.find("needle 150") != std::string::npos && second.find("search_next") == std::string::npos);
+        }
+
+        Jobs jobs;
+        const Workspace workspace(box.project.string());
+        const std::string id = jobs.start("read a; echo got $a; read b; echo end $b", workspace, false, true);
+        jobs.send(id, "one", false);
+        std::string seen;
+        for (int i = 0; i < 40 && seen.find("got one") == std::string::npos; i++) seen = jobs.observe(id, false, 250);
+        CHECK(seen.find("got one") != std::string::npos && seen.find("running") != std::string::npos);  // the program answered the line and waits for the next
+        jobs.send(id, "", true);
+        seen = jobs.observe(id, false, 5000);
+        CHECK(seen.find("exited 0") != std::string::npos && seen.find("end") != std::string::npos);  // closing the input lets the program finish
+        bool refused = false;
+        try { jobs.send(id, "late", false); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // a terminal that has ended takes no more input
+        const std::string plain = jobs.start("sleep 30", workspace, false);
+        refused = false;
+        try { jobs.send(plain, "x", false); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // a job started without input takes none
+        // A program that closed its input: the line fails as an error and Mason keeps running.
+        const std::string closed = jobs.start("exec 0<&-; sleep 30", workspace, false, true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        refused = false;
+        try { jobs.send(closed, "anyone", false); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+        jobs.stop_all();
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;

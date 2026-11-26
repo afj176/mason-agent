@@ -307,6 +307,35 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: folder.appendingPathComponent("calc.py"), encoding: .utf8), "def add(a, b):\n    return a - b\n")
     }
 
+    func testACommandWithExactArgumentsSearchPagingAndATerminal() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        try (1...150).map { "needle \($0)" }.joined(separator: "\n").write(to: folder.appendingPathComponent("many.txt"), atomically: true, encoding: .utf8)
+        let exact = ModelReply(toolCalls: [ToolCall(id: "exact", name: "run_command", arguments: #"{"program":"printf","arguments":["%s|","a b","$HOME","it's","*"],"directory":"."}"#)])
+        let script = [exact, call("search_files", ["query": "needle"]), call("search_next", ["cursor": "100"]), ModelReply(text: "Done.")]
+        var asked: [String] = []
+        await Agent(store: store, model: ScriptedModel(script), approve: { asked.append($0.tool); return true }, emit: { _ in }).run(&session, request: "Try them")
+        XCTAssertEqual(asked, ["run_command"], "a command with exact arguments asks like any command outside Auto")
+        XCTAssertTrue(session.activities[0].result.contains("a b|$HOME|it's|*|"), "nothing in an argument is expanded or split: " + session.activities[0].result)
+        let first = session.activities[1].result, second = session.activities[2].result
+        XCTAssertTrue(first.contains("many.txt:100: needle 100") && !first.contains("needle 101") && first.contains("search_next and cursor \"100\""), first)
+        XCTAssertTrue(second.contains("many.txt:101: needle 101") && second.contains("needle 150") && !second.contains("search_next"), second)
+
+        let jobs = Jobs()
+        let workspace = try Workspace(path: folder.path)
+        let id = try jobs.start("read a; echo got $a; read b; echo end $b", workspace: workspace, sandboxed: false, interactive: true)
+        _ = try jobs.send(id, text: "one", eof: false)
+        var seen = ""
+        for _ in 0..<40 where !seen.contains("got one") { seen = try await jobs.observe(id, stop: false, waitMs: 250) }
+        XCTAssertTrue(seen.contains("got one") && seen.contains("running"), "the program answered the line and waits for the next: " + seen)
+        _ = try jobs.send(id, text: "", eof: true)
+        seen = try await jobs.observe(id, stop: false, waitMs: 5000)
+        XCTAssertTrue(seen.contains("exited 0") && seen.contains("end"), "closing the input lets the program finish: " + seen)
+        XCTAssertThrowsError(try jobs.send(id, text: "late", eof: false), "a terminal that has ended takes no more input")
+        let plain = try jobs.start("sleep 30", workspace: workspace, sandboxed: false)
+        XCTAssertThrowsError(try jobs.send(plain, text: "x", eof: false), "a job started without input takes none")
+        await jobs.stopAll()
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

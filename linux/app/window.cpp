@@ -662,9 +662,9 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
         int reads = 0, edits = 0, commands = 0, other = 0;
         for (const Activity& activity : activities) {
             if (activity.state != "completed") continue;
-            if (activity.tool == "read_file" || activity.tool == "read_lines" || activity.tool == "list_files" || activity.tool == "search_files") reads++;
+            if (activity.tool == "read_file" || activity.tool == "read_lines" || activity.tool == "list_files" || activity.tool == "search_files" || activity.tool == "search_next") reads++;
             else if (activity.tool == "edit_file" || activity.tool == "write_file" || activity.tool == "apply_edits") edits++;
-            else if (activity.tool == "run_shell" || activity.tool == "run_workflow" || activity.tool == "start_job") commands++;
+            else if (activity.tool == "run_shell" || activity.tool == "run_command" || activity.tool == "run_workflow" || activity.tool == "start_job" || activity.tool == "start_terminal") commands++;
             else other++;
         }
         std::vector<std::string> parts;

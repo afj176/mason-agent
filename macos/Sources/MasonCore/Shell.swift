@@ -84,15 +84,21 @@ public enum Shell {
     /// The wrapper silences its own messages (job-control notices) so only the command's output is returned.
     static let wrapper = """
         set -m
-        exec 3>&1 4>&2 2>/dev/null
-        "$1" -c "$2" >&3 2>&4 3>&- 4>&- &
+        exec 3>&1 4>&2 2>/dev/null 5<&0
+        "$1" -c "$2" <&5 >&3 2>&4 3>&- 4>&- 5<&- &
         child=$!
+        exec 5<&-
         ( while kill -0 $child 2>/dev/null; do gone=; case "$(LC_ALL=C kill -0 $PPID 2>&1)" in *"No such process"*) gone=1;; esac; if [ ! -e "$3" ] || [ -n "$gone" ]; then kill -9 -$child 2>/dev/null; break; fi; sleep 0.2; done ) >/dev/null 2>&1 &
         wait $child
         """
 
+    /// One argument as the shell reads it literally: nothing inside is expanded or interpreted.
+    static func quote(_ argument: String) -> String { "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+
     /// `onOutput` receives the command's output as it arrives, for a caller that wants to show it before the command ends.
-    public static func run(_ command: String, in workspace: Workspace, sandboxed: Bool, timeout: TimeInterval = 120, onOutput: (@Sendable (Data) -> Void)? = nil) async throws -> CommandResult {
+    /// `input` becomes the command's standard input; without it the command reads nothing. It is closed here once the command has it.
+    public static func run(_ command: String, in workspace: Workspace, sandboxed: Bool, timeout: TimeInterval = 120, input: FileHandle? = nil, onOutput: (@Sendable (Data) -> Void)? = nil) async throws -> CommandResult {
+        defer { try? input?.close() }
         guard !command.isEmpty, command.utf8.count <= 8000, !command.contains("\0") else { throw MasonError("Use a shell command of 1–8,000 characters.") }
         if sandboxed, !sandboxAvailable { throw MasonError("The macOS sandbox is unavailable, so Auto cannot run commands here. No unrestricted fallback was run.") }
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mason-" + UUID().uuidString)
@@ -117,7 +123,7 @@ public enum Shell {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        process.standardInput = FileHandle.nullDevice
+        process.standardInput = input ?? FileHandle.nullDevice
 
         let collected = OutputBuffer(limit: outputLimit)
         pipe.fileHandleForReading.readabilityHandler = { handle in
@@ -127,6 +133,7 @@ public enum Shell {
         let finished = AsyncSignal()
         process.terminationHandler = { _ in finished.fire() }
         do { try process.run() } catch { throw MasonError("The command could not start: \(error.localizedDescription)") }
+        try? input?.close()
 
         let stop: @Sendable () -> Void = { try? FileManager.default.removeItem(at: runFile) }
         let deadline = Task {

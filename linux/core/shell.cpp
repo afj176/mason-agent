@@ -91,8 +91,21 @@ std::vector<std::string> sandbox_arguments(const std::string& workspace) {
     return arguments;
 }
 
+std::string quote(const std::string& argument) {
+    std::string quoted = "'";
+    for (char c : argument) {
+        if (c == '\'') quoted += "'\\''";
+        else quoted += c;
+    }
+    return quoted + "'";
+}
+
 CommandResult run(const std::string& command, const Workspace& workspace, bool sandboxed, double timeout_seconds, const CancelToken& cancel,
-                  const std::function<void(const char*, size_t)>& on_output) {
+                  const std::function<void(const char*, size_t)>& on_output, int input_fd) {
+    struct Closer {
+        int fd;
+        ~Closer() { if (fd >= 0) ::close(fd); }
+    } input{input_fd};
     if (command.empty() || command.size() > 8000 || command.find('\0') != std::string::npos) throw Error("Use a shell command of 1–8,000 characters.");
     std::vector<std::string> arguments;
     if (sandboxed) {
@@ -115,13 +128,14 @@ CommandResult run(const std::string& command, const Workspace& workspace, bool s
         setsid();
         reset_signals();
         prctl(PR_SET_PDEATHSIG, SIGKILL);
-        const int null = open("/dev/null", O_RDONLY);
-        dup2(null, 0); dup2(pipe_ends[1], 1); dup2(pipe_ends[1], 2);
+        const int standard_input = input.fd >= 0 ? input.fd : open("/dev/null", O_RDONLY);
+        dup2(standard_input, 0); dup2(pipe_ends[1], 1); dup2(pipe_ends[1], 2);
         if (chdir(workspace.root().c_str()) != 0) _exit(126);
         execv(argv[0], argv.data());
         _exit(127);
     }
     close(pipe_ends[1]);
+    if (input.fd >= 0) { ::close(input.fd); input.fd = -1; }
     fcntl(pipe_ends[0], F_SETFL, fcntl(pipe_ends[0], F_GETFL) | O_NONBLOCK);
 
     CommandResult result;

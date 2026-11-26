@@ -43,7 +43,10 @@ public:
     static constexpr double kTimeoutSeconds = 30 * 60;
     ~Jobs() { stop_all(); }
 
-    std::string start(const std::string& command, const Workspace& workspace, bool sandboxed);
+    /// `interactive` gives the program a standard input that `send` writes lines to.
+    std::string start(const std::string& command, const Workspace& workspace, bool sandboxed, bool interactive = false);
+    /// Writes one line to a terminal's standard input, and closes the input when `eof` is set.
+    std::string send(const std::string& id, const std::string& text, bool eof);
     /// The job's state and the end of its output so far. `stop` ends it first; otherwise waits up to `wait_ms` for it to finish.
     std::string observe(const std::string& id, bool stop, int wait_ms, const CancelToken& cancel = nullptr);
     void stop_all();
@@ -55,6 +58,8 @@ private:
         std::optional<CommandResult> result;
         CancelToken cancel = make_cancel();
         std::thread thread;
+        bool interactive = false;
+        int input_fd = -1;  // the writing end of the program's standard input, while it is open
         bool done() const { return result.has_value() || !failure.empty(); }
     };
     std::mutex lock_;

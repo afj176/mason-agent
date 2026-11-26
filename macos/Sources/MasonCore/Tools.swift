@@ -114,7 +114,10 @@ final class Jobs: @unchecked Sendable {
         var task: Task<CommandResult?, Never>?
         var result: CommandResult?
         var failure: String?
-        init(command: String) { self.command = command }
+        /// The writing end of the program's standard input, for a terminal whose input is still open.
+        var input: FileHandle?
+        let interactive: Bool
+        init(command: String, interactive: Bool) { self.command = command; self.interactive = interactive }
     }
     private let lock = NSLock()
     private var jobs: [String: Job] = [:]
@@ -123,9 +126,25 @@ final class Jobs: @unchecked Sendable {
 
     private func locked<T>(_ body: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return body() }
 
-    func start(_ command: String, workspace: Workspace, sandboxed: Bool) throws -> String {
+    /// `interactive` gives the program a standard input that `send` writes lines to.
+    func start(_ command: String, workspace: Workspace, sandboxed: Bool, interactive: Bool = false) throws -> String {
         let id = String(UUID().uuidString.prefix(8)).lowercased()
-        let job = Job(command: command)
+        let job = Job(command: command, interactive: interactive)
+        var reading: FileHandle?
+        if interactive {
+            let pipe = Pipe()
+            reading = pipe.fileHandleForReading
+            job.input = pipe.fileHandleForWriting
+            let descriptor = pipe.fileHandleForWriting.fileDescriptor
+            // A line sent to a program that stopped reading must fail as an error, not block or end Mason.
+            _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK)
+            #if os(Linux)
+            signal(SIGPIPE, SIG_IGN)
+            #else
+            _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+            #endif
+        }
+        let standardInput = reading
         let problem: String? = locked {
             if jobs.count >= Jobs.maxTotal { return "This request has started \(Jobs.maxTotal) jobs already." }
             if jobs.values.filter({ $0.result == nil && $0.failure == nil }).count >= Jobs.maxRunning { return "Three jobs are running. Stop one before starting another." }
@@ -133,18 +152,42 @@ final class Jobs: @unchecked Sendable {
             jobs[id] = job
             return nil
         }
-        if let problem { throw MasonError(problem) }
+        if let problem { try? reading?.close(); try? job.input?.close(); throw MasonError(problem) }
         job.task = Task { [self] in
             do {
-                let result = try await Shell.run(command, in: workspace, sandboxed: sandboxed, timeout: Jobs.timeout) { job.output.append($0) }
-                locked { job.result = result }
+                let result = try await Shell.run(command, in: workspace, sandboxed: sandboxed, timeout: Jobs.timeout, input: standardInput) { job.output.append($0) }
+                locked { job.result = result; try? job.input?.close(); job.input = nil }
                 return result
             } catch {
-                locked { job.failure = error is CancellationError ? "stopped" : ((error as? MasonError)?.description ?? error.localizedDescription) }
+                locked {
+                    job.failure = error is CancellationError ? "stopped" : ((error as? MasonError)?.description ?? error.localizedDescription)
+                    try? job.input?.close(); job.input = nil
+                }
                 return nil
             }
         }
         return id
+    }
+
+    /// Writes one line to a terminal's standard input, and closes the input when `eof` is set.
+    func send(_ id: String, text: String, eof: Bool) throws -> String {
+        guard let job = locked({ jobs[id] }) else { throw MasonError("No terminal \(id) in this request. Jobs: " + locked { jobs.keys.sorted().joined(separator: ", ") }) }
+        guard job.interactive else { throw MasonError("Job \(id) was started with start_job and reads no input. Use start_terminal for a program you need to answer.") }
+        guard text.utf8.count <= 4000, !text.contains("\n"), !text.contains("\0") else { throw MasonError("terminal_input sends one line of up to 4,000 bytes.") }
+        let (ended, handle): (Bool, FileHandle?) = locked { (job.result != nil || job.failure != nil, job.input) }
+        if ended { throw MasonError("Terminal \(id) has ended. Read what it printed with terminal_status.") }
+        guard let handle else { throw MasonError("The input of terminal \(id) is already closed.") }
+        if !text.isEmpty || !eof {
+            let bytes = Array((text + "\n").utf8)
+            var sent = 0
+            while sent < bytes.count {
+                let count = bytes[sent...].withUnsafeBytes { write(handle.fileDescriptor, $0.baseAddress, $0.count) }
+                if count <= 0 { throw MasonError(errno == EAGAIN ? "The program in terminal \(id) is not reading its input." : "The program in terminal \(id) has closed its input.") }
+                sent += count
+            }
+        }
+        if eof { locked { try? job.input?.close(); job.input = nil } }
+        return eof ? "Sent, and closed the input of terminal \(id). Read what it prints with terminal_status." : "Sent to terminal \(id). Read what it prints with terminal_status."
     }
 
     /// The job's state and the end of its output so far. `stop` ends it first; otherwise waits up to `waitMs` for it to finish.
@@ -206,6 +249,15 @@ extension Agent {
             tools.append(ToolSpec(name: "poll_job", description: "Read a job's state and recent output, waiting up to wait_ms for it to finish.",
                                   parameters: schema(["id": text, "wait_ms": ["type": "integer", "minimum": 0, "maximum": 10000]], required: ["id", "wait_ms"])))
             tools.append(ToolSpec(name: "stop_job", description: "Stop a job and return its output.", parameters: schema(["id": text], required: ["id"])))
+            tools.append(ToolSpec(name: "run_command", description: "Run one program with exact arguments and no shell: nothing in an argument is expanded, split or interpreted, and shell builtins are not available. Use it when an argument holds quotes, spaces, $ or other special characters. directory is relative to the project; use . for the project folder. 120 second limit.",
+                                  parameters: schema(["program": text, "arguments": ["type": "array", "items": text, "maxItems": 64], "directory": text], required: ["program", "arguments", "directory"])))
+            tools.append(ToolSpec(name: "start_terminal", description: "Start a program you need to answer line by line (a prompt, a REPL, an installer's questions) and return at once with an id. Send lines with terminal_input and read output with terminal_status. It is line-oriented, not a screen: full-screen programs do not work, and some programs hold their output back until they exit. It stops when the request ends.",
+                                  parameters: schema(["command": text], required: ["command"])))
+            tools.append(ToolSpec(name: "terminal_input", description: "Send one line to a terminal started with start_terminal. Set eof to true to close its input after the line (use an empty text to only close it).",
+                                  parameters: schema(["id": text, "text": text, "eof": ["type": "boolean"]], required: ["id", "text", "eof"])))
+            tools.append(ToolSpec(name: "terminal_status", description: "Read a terminal's state and recent output, waiting up to wait_ms for it to finish.",
+                                  parameters: schema(["id": text, "wait_ms": ["type": "integer", "minimum": 0, "maximum": 10000]], required: ["id", "wait_ms"])))
+            tools.append(ToolSpec(name: "terminal_stop", description: "Stop a terminal and return its output.", parameters: schema(["id": text], required: ["id"])))
             if let workflows = try? ProjectWorkflows.load(workspace), !workflows.workflows.isEmpty {
                 tools.append(ToolSpec(name: "run_workflow", description: "Run one of the project's named workflows: " + workflows.workflows.keys.sorted().joined(separator: ", ") + ".",
                                       parameters: schema(["name": text], required: ["name"])))
@@ -361,38 +413,54 @@ extension Agent {
             let counts = Diff.counts(before: before, after: after)
             return (.completed, "Edited \(path) with \(edits.count) change\(edits.count == 1 ? "" : "s") (+\(counts.added) −\(counts.removed)).")
 
-        case "start_job", "run_workflow":
+        case "start_job", "run_workflow", "run_command", "start_terminal":
             if readOnly { throw MasonError("This session is read-only. Commands are not available.") }
             let command: String, title: String, subject: String
+            let background = call.name == "start_job" || call.name == "start_terminal"
             if call.name == "run_workflow" {
                 guard let name = text("name"), let workflow = try ProjectWorkflows.load(workspace).workflows[name] else { throw MasonError("No workflow named \(text("name") ?? "") in mason.workflows.json.") }
                 command = ProjectWorkflows.commandLine(workflow); title = "Run the workflow \(name): \(command)"; subject = "workflow " + name
+            } else if call.name == "run_command" {
+                guard let program = text("program"), !program.isEmpty, !program.contains("\0") else { throw MasonError("run_command needs a program.") }
+                guard let given = (arguments["arguments"] ?? [String]()) as? [String], given.count <= 64, !given.contains(where: { $0.contains("\0") }) else { throw MasonError("run_command takes up to 64 text arguments.") }
+                let directory = text("directory") ?? "."
+                guard !directory.hasPrefix("/"), !directory.split(separator: "/").contains("..") else { throw MasonError("directory must be a folder inside the project, written relative to it.") }
+                let exact = ([program] + given).map(Shell.quote).joined(separator: " ")
+                command = (directory.isEmpty || directory == "." ? "" : "cd -- " + Shell.quote(directory) + " && ") + "exec " + exact
+                title = "Run \(program) with \(given.count) exact argument\(given.count == 1 ? "" : "s")"; subject = exact
             } else {
-                guard let given = text("command"), !given.isEmpty else { throw MasonError("start_job needs a command.") }
-                command = given; title = "Start in the background: \(given)"; subject = given
+                guard let given = text("command"), !given.isEmpty else { throw MasonError("\(call.name) needs a command.") }
+                command = given; title = (call.name == "start_terminal" ? "Start a terminal for: " : "Start in the background: ") + given; subject = given
             }
             if !sandboxed {
-                let detail = "Runs in \(workspace.root.path) with your account and environment. It is not sandboxed." + (call.name == "start_job" ? " It keeps running until this request ends, for at most 30 minutes." : " Limit: 120 seconds.")
+                let detail = (call.name == "run_command" ? command + "\n" : "") + "Runs in \(workspace.root.path) with your account and environment. It is not sandboxed." + (background ? " It keeps running until this request ends, for at most 30 minutes." : " Limit: 120 seconds.")
                 if !(await allowed(ApprovalRequest(tool: call.name, title: title, detail: detail, subject: subject), session: &session)) {
                     return (.denied, "The user declined. Do not retry it; ask what they want instead.")
                 }
             }
-            if call.name == "start_job" {
-                let id = try jobs.start(command, workspace: workspace, sandboxed: sandboxed)
-                return (.completed, "Started job \(id). Read it with poll_job; it stops when this request ends.")
+            if background {
+                let id = try jobs.start(command, workspace: workspace, sandboxed: sandboxed, interactive: call.name == "start_terminal")
+                return (.completed, call.name == "start_terminal" ? "Started terminal \(id). Send lines with terminal_input and read it with terminal_status; it stops when this request ends."
+                                                                  : "Started job \(id). Read it with poll_job; it stops when this request ends.")
             }
-            emit(.status("Running the workflow"))
+            emit(.status(call.name == "run_command" ? "Running the command" : "Running the workflow"))
             let before = Snapshot.capture(workspace, previous: snapshot)
             let result: CommandResult
             do { result = try await Shell.run(command, in: workspace, sandboxed: sandboxed) }
             catch { _ = recordCommandChanges(since: before.entries, in: workspace, session: &session); throw error }
             let changed = recordCommandChanges(since: before.entries, in: workspace, session: &session)
-            let output = "exit \(result.exitCode)\n" + result.output + (changed.isEmpty ? "" : "\n[Files changed by this workflow: " + changed.prefix(12).joined(separator: ", ") + "]")
+            let output = "exit \(result.exitCode)\n" + result.output + (changed.isEmpty ? "" : "\n[Files changed by this \(call.name == "run_command" ? "command" : "workflow"): " + changed.prefix(12).joined(separator: ", ") + "]")
             return (result.exitCode == 0 && !result.timedOut ? .completed : .failed, output)
 
-        case "poll_job", "stop_job":
-            guard let id = text("id") else { throw MasonError("\(call.name) needs the job id.") }
-            return (.completed, try await jobs.observe(id, stop: call.name == "stop_job", waitMs: call.name == "poll_job" ? (number("wait_ms") ?? 0) : 0))
+        case "poll_job", "stop_job", "terminal_status", "terminal_stop":
+            guard let id = text("id") else { throw MasonError("\(call.name) needs the id.") }
+            let stop = call.name.hasSuffix("stop") || call.name == "stop_job"
+            return (.completed, try await jobs.observe(id, stop: stop, waitMs: stop ? 0 : (number("wait_ms") ?? 0)))
+
+        case "terminal_input":
+            guard let id = text("id") else { throw MasonError("terminal_input needs the terminal's id.") }
+            let eof = (arguments["eof"] as? Bool) ?? ((arguments["eof"] as? String) == "true")
+            return (.completed, try jobs.send(id, text: text("text") ?? "", eof: eof))
 
         case "read_skill":
             let skills = Skills.list(workspace)

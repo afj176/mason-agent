@@ -36,7 +36,7 @@ public:
     /// Project-relative file paths in a stable order, skipping excluded folders and links.
     FileListing files(const std::string& under = ".", size_t limit = 2000) const;
     /// Case-insensitive text search over the project's UTF-8 files.
-    std::vector<SearchMatch> search(const std::string& query, size_t limit = 100) const;
+    std::vector<SearchMatch> search(const std::string& query, size_t limit = 100, size_t skip = 0) const;
 
 private:
     std::string root_;
