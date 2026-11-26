@@ -292,7 +292,7 @@ final class AppModel: ObservableObject {
         }
         // Commands that act on the project or on Mason itself, shared with the command line. What they say is shown as a notice.
         let word = text.split(separator: " ", maxSplits: 1).first.map { $0.lowercased() } ?? ""
-        if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language"].contains(word) {
+        if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language", "/generation"].contains(word) {
             draft = ""
             hostCommand(word, String(text.dropFirst(word.count)).trimmingCharacters(in: .whitespaces), in: current)
             return

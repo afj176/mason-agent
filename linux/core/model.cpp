@@ -1,4 +1,5 @@
 #include "model.hpp"
+#include "generation.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -349,7 +350,10 @@ ModelReply StreamAssembler::finish() {
     return reply_;
 }
 
-OpenAIClient::OpenAIClient(ModelEndpoint endpoint) : endpoint_(std::move(endpoint)), base_(validated_endpoint(endpoint_.url)) {}
+OpenAIClient::OpenAIClient(ModelEndpoint endpoint) : endpoint_(std::move(endpoint)), base_(validated_endpoint(endpoint_.url)) {
+    // The generation settings the user keeps for this connection go with every request, unless a caller sets its own.
+    extra_body_ = generation::body(endpoint_);
+}
 
 ModelReply OpenAIClient::complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>& tools,
                                   const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) {

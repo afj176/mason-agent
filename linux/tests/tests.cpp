@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "generation.hpp"
 #include "agent.hpp"
 #include "derived.hpp"
 #include "navigation.hpp"
@@ -2541,6 +2542,32 @@ static void test_catalog() {
     CHECK(!catalog::applies(request, workspace));  // only an empty project gets the component
 }
 
+static void test_generation_settings() {
+    Sandbox box;
+    const ModelEndpoint coder{"http://127.0.0.1:8080/", "coder", ""}, other{"http://127.0.0.1:8080/", "other", ""};
+    const auto refused = [&](const std::string& rest, const std::optional<ModelEndpoint>& endpoint) {
+        try { generation::command(rest, endpoint, box.home); } catch (const Error&) { return true; }
+        return false;
+    };
+    CHECK(refused("", std::nullopt));
+    CHECK(generation::command("", coder, box.home).find("temperature  ·  the server's default") != std::string::npos);
+    CHECK(generation::command("temperature 0.2", coder, box.home) == "Temperature is 0.2 for coder.");
+    CHECK(generation::command("top-k 40", coder, box.home) == "Top K is 40 for coder.");
+    CHECK(generation::command("seed 7", other, box.home) == "Seed is 7 for other.");
+    // Out of range, not a number, a fraction where a whole number is meant, and an unknown name are refused.
+    for (const char* wrong : {"temperature 3", "top_p lots", "top_k 1.5", "warmth 1", "temperature"}) CHECK(refused(wrong, coder));
+    const std::string shown = generation::command("", coder, box.home);
+    CHECK(shown.find("temperature  ·  0.2") != std::string::npos && shown.find("top_k  ·  40") != std::string::npos && shown.find("seed  ·  the server's default") != std::string::npos);
+    // What goes in a request: only what was set, for this connection, with whole numbers as whole numbers.
+    const json body = generation::body(coder, box.home);
+    CHECK(body.size() == 2 && body["temperature"] == 0.2 && body["top_k"].is_number_integer() && body["top_k"] == 40);
+    CHECK(generation::body(other, box.home) == json({{"seed", 7}}));
+    CHECK(generation::command("top_k off", coder, box.home) == "Top K is left to the server's default for coder.");
+    CHECK(!generation::body(coder, box.home).contains("top_k"));
+    CHECK(generation::command("clear", coder, box.home) == "Generation settings for coder are left to the server's defaults.");
+    CHECK(generation::body(coder, box.home).empty() && generation::values(other, box.home).size() == 1);
+}
+
 static void test_tool_groups() {
     Sandbox box;
     SessionStore store(box.home);
@@ -2822,7 +2849,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

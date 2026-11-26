@@ -18,6 +18,7 @@ extension AppModel {
             save(current)
             return (said, nil)
         case "/bundle": return (try Bundles.command(rest, home: home), nil)
+        case "/generation": return (try Generation.command(rest, endpoint: endpoint, home: home), nil)
         case "/languages": return (try await LanguageServers.command(rest, workspace: session.flatMap { try? Workspace(path: $0.workspace) }, home: home), nil)
         default: break
         }
@@ -211,6 +212,7 @@ struct RolesPane: View {
             } footer: {
                 Text("Other local models beside the one doing the work. A reviewer reads what a request changed before it may finish, and for the Review button. A visual model looks at pictures of a window.")
             }
+            GenerationSection()
             Section {
                 Toggle("Ask when a command needs a host", isOn: Binding(get: { asks }, set: { run("/network", $0 ? "computer ask" : "computer off") }))
             } header: {
@@ -334,4 +336,38 @@ struct LanguagesPane: View {
             load()
         }
     }
+}
+
+/// Temperature, top P and the like, kept for the model in use.
+struct GenerationSection: View {
+    @EnvironmentObject var model: AppModel
+    @State private var values: [String: Double] = [:]
+
+    var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
+
+    var body: some View {
+        Section {
+            if model.endpoint == nil {
+                Text("Start or choose a model first").foregroundStyle(.secondary)
+            } else {
+                ForEach(Generation.fields, id: \.key) { field in
+                    LabeledContent(field.label, value: values[field.key].map { Generation.shown($0, field) } ?? "The server's default")
+                    CommandField(prompt: range(field), label: "Set") { run(field.key + " " + $0) }
+                }
+                if !values.isEmpty { Button("Use the Server's Defaults") { run("clear") } }
+            }
+        } header: {
+            Text("Generation settings")
+        } footer: {
+            Text("Kept for " + (model.endpoint.map { "\($0.model) at \($0.url)" } ?? "the model in use") + ", and sent whenever it works as the coding agent. A setting you leave alone is the server's. Top K, Min P and repeat penalty are llama.cpp's. Chats have their own options.")
+        }
+        .onAppear(perform: load)
+    }
+
+    func range(_ field: Generation.Field) -> String {
+        field.key == "seed" ? "A whole number, or off" : "\(Generation.shown(field.low, field)) to \(Generation.shown(field.high, field)), or off"
+    }
+
+    func load() { values = model.endpoint.map { Generation.values(for: $0, home: home) } ?? [:] }
+    func run(_ rest: String) { model.runControl("/generation", rest, then: load) }
 }

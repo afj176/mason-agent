@@ -3,6 +3,7 @@
 
 #include "background.hpp"
 #include "bundles.hpp"
+#include "generation.hpp"
 #include "language.hpp"
 #include "delivery.hpp"
 #include "experiments.hpp"
@@ -312,6 +313,26 @@ void SettingsPage::refresh() {
     if (!chosen_roles.trace.empty()) button(trace_row, "Turn Off", [run] { run("/roles", "trace off"); });
     entry_row(roles_group, "Record to a folder", "~/mason-traces    (outside your projects)", "Record", [run](const std::string& text) { run("/roles", "trace " + text); });
     entry_row(roles_group, "Reviewer calls in one review: " + std::to_string(chosen_roles.limit), "64", "Set", [run](const std::string& text) { run("/roles", "limit " + text); });
+
+    // ---- generation settings ----
+    AdwPreferencesGroup* generation_group = group(content_, "Generation settings", "Kept for the model in use, and sent whenever it works as the coding agent. A setting you leave alone is the server's. "
+                                                                                     "Top K, Min P and repeat penalty are llama.cpp's. Chats have their own options.");
+    if (!c.endpoint) {
+        row(generation_group, "No model in use", "Start or choose a model first.");
+    } else {
+        const std::map<std::string, double> kept = generation::values(*c.endpoint, home);
+        for (const GenerationField& field : generation::fields()) {
+            const auto found = kept.find(field.key);
+            const std::string key = field.key;
+            const std::string range = key == "seed" ? "A whole number, or off" : generation::shown(field.low, field) + " to " + generation::shown(field.high, field) + ", or off";
+            entry_row(generation_group, field.label + ": " + (found == kept.end() ? "the server's default" : generation::shown(found->second, field)), range, "Set",
+                      [run, key](const std::string& text) { run("/generation", key + " " + text); });
+        }
+        if (!kept.empty()) {
+            AdwActionRow* clear_generation = row(generation_group, "All of them", c.endpoint->model + " at " + c.endpoint->url);
+            button(clear_generation, "Use the Server's Defaults", [run] { run("/generation", "clear"); });
+        }
+    }
 
     // ---- network ----
     AdwPreferencesGroup* network_group = group(content_, "Network in Auto", "The setting for this computer; a session can choose its own with /network. Commands in the sandbox have no network unless you allow it.");

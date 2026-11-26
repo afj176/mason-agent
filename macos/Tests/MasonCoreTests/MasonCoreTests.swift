@@ -2469,6 +2469,40 @@ final class LanguageServerTests: XCTestCase {
     }
 }
 
+final class GenerationTests: XCTestCase {
+    func testGenerationSettingsAreKeptPerConnectionAndSentWithItsRequests() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("mason-generation-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let coder = ModelEndpoint(url: "http://127.0.0.1:8080/", model: "coder"), other = ModelEndpoint(url: "http://127.0.0.1:8080/", model: "other")
+        XCTAssertThrowsError(try Generation.command("", endpoint: nil, home: home))
+        XCTAssertTrue(try Generation.command("", endpoint: coder, home: home).contains("temperature  ·  the server's default"))
+        XCTAssertEqual(try Generation.command("temperature 0.2", endpoint: coder, home: home), "Temperature is 0.2 for coder.")
+        XCTAssertEqual(try Generation.command("top-k 40", endpoint: coder, home: home), "Top K is 40 for coder.")
+        XCTAssertEqual(try Generation.command("seed 7", endpoint: other, home: home), "Seed is 7 for other.")
+        // Out of range, not a number, a fraction where a whole number is meant, and an unknown name are refused.
+        for wrong in ["temperature 3", "top_p lots", "top_k 1.5", "warmth 1", "temperature"] {
+            XCTAssertThrowsError(try Generation.command(wrong, endpoint: coder, home: home), wrong)
+        }
+        let shown = try Generation.command("", endpoint: coder, home: home)
+        XCTAssertTrue(shown.contains("temperature  ·  0.2") && shown.contains("top_k  ·  40") && shown.contains("seed  ·  the server's default"), shown)
+        // What goes in a request: only what was set, for this connection, with whole numbers as whole numbers.
+        let body = Generation.body(for: coder, home: home)
+        XCTAssertEqual(body.keys.sorted(), ["temperature", "top_k"])
+        XCTAssertEqual(body["temperature"] as? Double, 0.2)
+        XCTAssertEqual(body["top_k"] as? Int, 40)
+        XCTAssertEqual(Generation.body(for: other, home: home)["seed"] as? Int, 7)
+        // The client for a connection carries them.
+        setenv("MASON_DATA_HOME", home.path, 1)
+        defer { unsetenv("MASON_DATA_HOME") }
+        XCTAssertEqual(try OpenAIClient(coder).extraBody["top_k"] as? Int, 40)
+        XCTAssertEqual(try Generation.command("top_k off", endpoint: coder, home: home), "Top K is left to the server's default for coder.")
+        XCTAssertNil(try OpenAIClient(coder).extraBody["top_k"])
+        XCTAssertEqual(try Generation.command("clear", endpoint: coder, home: home), "Generation settings for coder are left to the server's defaults.")
+        XCTAssertTrue(Generation.body(for: coder, home: home).isEmpty)
+        XCTAssertEqual(Generation.values(for: other, home: home), ["seed": 7])
+    }
+}
+
 final class ToolGroupTests: XCTestCase {
     func testSpecialisedToolsAreSentOnlyOnceTheirGroupIsLoaded() async throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-groups-" + UUID().uuidString)

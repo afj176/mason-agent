@@ -1,3 +1,4 @@
+#include "generation.hpp"
 #include "language.hpp"
 #include "controller.hpp"
 #include "roles.hpp"
@@ -431,6 +432,7 @@ void Controller::host_command(const std::string& name, const std::string& rest) 
             } else if (name == "/roles" || name == "/role") said = roles::command(rest, home);
             else if (name == "/policy") said = policies::command(rest, workspace, home);
             else if (name == "/bundle" || name == "/bundles") said = bundles::command(rest, home);
+            else if (name == "/generation") said = generation::command(rest, target, home);
             else if (name == "/languages" || name == "/language") said = language_servers::command(rest, &workspace, home);
             else said = network_settings::command(rest, home);
         } catch (const std::exception& error) {
@@ -465,7 +467,7 @@ void Controller::send(const std::string& text) {
         // Commands that act on the project or on Mason itself, shared with the command line.
         const size_t space = input.find(' ');
         const std::string word = lowered.substr(0, space);
-        static const std::set<std::string> hosted = {"/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language"};
+        static const std::set<std::string> hosted = {"/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language", "/generation"};
         if (hosted.count(word)) { host_command(word, space == std::string::npos ? "" : trim(input.substr(space))); return; }
     }
     if (lowered == "/agent" || starts_with(lowered, "/agent ")) { choose_agent(trim(input.substr(6))); return; }
