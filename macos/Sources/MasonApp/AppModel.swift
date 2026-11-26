@@ -67,6 +67,11 @@ final class AppModel: ObservableObject {
     @Published var servers: [(name: String, endpoint: ModelEndpoint)] = []
     @Published var server: ModelServer?
     @Published var localModels: [LocalModel] = []
+    /// Memory metadata for each startable model, read on every scan, for the Ladder panel.
+    @Published var memoryProfiles: [String: ModelMemoryProfile] = [:]
+    /// The model being started and how far it has got.
+    @Published var startingPath: String?
+    @Published var startStage: ModelStartStage?
     @Published var modelBusy: String?
     @Published var searchText = ""
     @Published var searchResults: [HubModel] = []
@@ -470,30 +475,36 @@ final class AppModel: ObservableObject {
             found.insert((name: "Local server", endpoint: last), at: 0)
         }
         let files = await Task.detached { ModelLibrary.scan() }.value
-        servers = found; localModels = files; runtimePath = LlamaRuntime.find()
+        let profiles = await Task.detached {
+            Dictionary(files.filter(\.startable).map { ($0.path, ModelMemory.read($0)) }, uniquingKeysWith: { first, _ in first })
+        }.value
+        servers = found; localModels = files; memoryProfiles = profiles; runtimePath = LlamaRuntime.find()
         if let current = endpoint, found.contains(where: { $0.endpoint == current }) { return }
         if let last = Preferences.load().lastEndpoint, found.contains(where: { $0.endpoint == last }) { endpoint = last; endpointName = last.model; return }
         if let first = found.first { use(first.endpoint, name: "\(first.endpoint.model) (\(first.name))"); return }
         endpoint = nil; endpointName = ""
         if startLastIfNeeded, let path = Preferences.load().lastModelPath, let model = files.first(where: { $0.path == path }), runtimePath != nil {
-            start(model, context: Preferences.load().lastContext)
+            start(model, context: Preferences.load().lastContext, cpuOnly: Preferences.load().lastCpuOnly ?? false)
         }
     }
 
-    func start(_ model: LocalModel, context: Int? = nil) {
+    func start(_ model: LocalModel, context: Int? = nil, cpuOnly: Bool = false) {
         guard modelBusy == nil else { return }
         // Transformers weights run through Python, not llama.cpp.
         guard let runtime = model.transformers ? "" : runtimePath else { notice = "Install llama.cpp first; it runs GGUF models."; return }
         modelBusy = "Starting \(model.name)…"
         server?.stop(); server = nil
+        startingPath = model.path; startStage = .inspect
         modelTask = Task {
+            defer { self.startingPath = nil; self.startStage = nil }
             do {
-                let started = try await ModelServer.start(model, runtime: runtime, context: context) { [weak self] line in
+                let started = try await ModelServer.start(model, runtime: runtime, context: context, cpuOnly: cpuOnly,
+                                                          stage: { [weak self] stage in Task { @MainActor in self?.startStage = stage } }) { [weak self] line in
                     Task { @MainActor in if !line.isEmpty { self?.modelBusy = "Starting \(model.name)… \(line.suffix(90))" } }
                 }
                 self.server = started
                 self.use(started.endpoint, name: model.name)
-                var preferences = Preferences.load(); preferences.lastModelPath = model.path; preferences.lastContext = started.context; preferences.save()
+                var preferences = Preferences.load(); preferences.lastModelPath = model.path; preferences.lastContext = started.context; preferences.lastCpuOnly = cpuOnly; preferences.save()
             } catch is CancellationError {
             } catch { self.notice = "\(model.name) did not start. \(self.describe(error))" }
             self.modelBusy = nil
@@ -509,6 +520,16 @@ final class AppModel: ObservableObject {
     }
 
     func cancelModelWork() { modelTask?.cancel() }
+
+    /// Moves a model's files to the Trash (never a permanent delete) and scans again. A running model is left alone.
+    func trash(_ item: LocalModel) {
+        guard server?.model.path != item.path, modelBusy == nil else { return }
+        do {
+            for url in item.trashItems { try FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+            notice = "Moved \(item.name) to the Trash."
+        } catch { notice = "\(item.name) was not moved to the Trash. \(describe(error))" }
+        Task { await refreshModels() }
+    }
 
     func installRuntime() {
         guard modelBusy == nil else { return }

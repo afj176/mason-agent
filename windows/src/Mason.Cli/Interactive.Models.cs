@@ -117,30 +117,7 @@ internal sealed partial class Interactive
         catch (Exception e) when (e is JsonException or IOException or ArgumentException) { return []; }
     }
 
-    async Task ListLocal()
-    {
-        await Scan();
-        if (local.Length == 0)
-        {
-            Term.Line(Term.Paint(Term.Dim, "  No model files were found on this computer."));
-            Term.Line(Term.Paint(Term.Dim, "  /models setup suggests one that fits and downloads it · /models search TEXT looks on Hugging Face."));
-            return;
-        }
-        var facts = await Facts(Library(), CancellationToken.None);
-        Term.Line();
-        for (int i = 0; i < local.Length && i < 40; i++)
-        {
-            var model = local[i]; var verdict = ModelCompatibility.Assess(model, facts);
-            bool running = served is { Owner.IsRunning: true } && served.Model.Path.Equals(model.Path, StringComparison.OrdinalIgnoreCase);
-            string note = running ? Term.Paint(Term.Green, "  ● running here") : Startable(model) ? "" : model.Launchable ? Term.Paint(Term.Dim, "  start it in the desktop app") : "";
-            Term.Line($"  {Term.Paint(Term.Dim, (i + 1).ToString().PadLeft(2))}  {(Startable(model) ? Term.Paint(Term.Bold, Term.Clip(model.Name, 52)) : Term.Clip(model.Name, 52))}" +
-                Term.Paint(Term.Dim, $"  {model.Format} · {model.Size}") + note);
-            Term.Line(Term.Paint(Term.Dim, "      " + Term.Clip(verdict.RoleLabel + " · " + verdict.Summary, Term.Width - 8)));
-        }
-        if (local.Length > 40) Term.Line(Term.Paint(Term.Dim, $"      … and {local.Length - 40} more files"));
-        Term.Line(Term.Paint(Term.Dim, "  Start a coding model with /models start NUMBER (add cpu, or a context size such as 16384)."));
-    }
-
+    /// <summary>"/models start NUMBER|NAME [16k] [cpu|gpu]". Without a size the picker opens; a typed size that is tight or too large asks first.</summary>
     async Task StartNamed(string argument)
     {
         var words = argument.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
@@ -149,7 +126,7 @@ internal sealed partial class Interactive
         {
             if (word.Equals("cpu", StringComparison.OrdinalIgnoreCase)) { gpu = false; words.Remove(word); }
             else if (word.Equals("gpu", StringComparison.OrdinalIgnoreCase)) { gpu = true; words.Remove(word); }
-            else if (int.TryParse(word, out var tokens) && tokens >= 512) { context = tokens; words.Remove(word); }
+            else if (ModelLadder.Parse(word) is { } tokens) { context = tokens; words.Remove(word); }
         }
         string wanted = string.Join(' ', words);
         if (wanted.Length == 0) throw new ArgumentException("Use /models start NUMBER or NAME. /models lists them.");
@@ -158,11 +135,30 @@ internal sealed partial class Interactive
             : local.FirstOrDefault(m => Startable(m) && m.Name.Contains(wanted, StringComparison.OrdinalIgnoreCase))
             ?? throw new ArgumentException("No model on this computer matches \"" + wanted + "\". /models lists them.");
         if (!Startable(model)) throw new ArgumentException(model.Name + " is " + ModelVerdict.Label(model.Role).ToLowerInvariant() + " (" + model.Format + "). This session starts GGUF coding models; start others in the desktop app.");
-        await StartModel(model, gpu, context);
+        var reading = await ReadMemory([model]);
+        if (context is { } typed)
+        {
+            // "128k" on a model that holds 128,000 tokens means its maximum, not 131,072.
+            if (reading.Profiles.GetValueOrDefault(model.Path) is { ContextDeclared: true } capacity && typed > capacity.MaxContext)
+            {
+                Term.Line(Term.Paint(Term.Dim, $"  {model.Name} holds up to {capacity.MaxContext:N0} tokens; using that."));
+                typed = capacity.MaxContext; context = typed;
+            }
+            if (gpu != false)
+            {
+                if (ConfirmTyped(model, typed, reading) is not { } confirmed) return;
+                context = confirmed.Tokens; gpu = confirmed.Gpu && gpu != false;
+            }
+            await StartModel(model, gpu, context, null, reading);
+            return;
+        }
+        if (gpu == null && Picker(model, reading) is { } pick) { await StartModel(model, pick.Gpu, pick.Tokens, pick.Draft, reading); return; }
+        if (gpu == null && Term.Interactive && Term.Ansi) return; // the picker was closed
+        await StartModel(model, gpu, null, null, reading);
     }
 
     /// <summary>Starts a GGUF model with llama.cpp and makes it this session's model. Returns false when it did not start.</summary>
-    async Task<bool> StartModel(LocalModel model, bool? gpu = null, int? context = null)
+    async Task<bool> StartModel(LocalModel model, bool? gpu = null, int? context = null, LocalModel? draft = null, Reading? reading = null)
     {
         var settings = Library() with { EmbedGguf = false };
         if (!ModelServing.HasRuntime(model, settings))
@@ -171,13 +167,20 @@ internal sealed partial class Interactive
             if (await InstallRuntime(force: false) == null) return false;
             settings = Library() with { EmbedGguf = false };
         }
-        var (memory, sample) = await Busy("Checking memory for " + model.Name, async (ct, _) => (await Task.Run(() => ModelMemory.Read(model, ct), ct), await GpuTelemetry.Read(ct)));
-        var suggested = ModelMemory.Recommend(memory, sample);
+        reading ??= await ReadMemory([model]);
+        var memory = reading.Profiles.GetValueOrDefault(model.Path);
+        var suggested = ModelMemory.Recommend(memory, reading.Sample);
         bool onGpu = gpu ?? suggested.Gpu; int tokens = context ?? suggested.Context;
         StopModel(say: true);
         serving ??= new ModelServing();
         string scripts = Path.Combine(AppContext.BaseDirectory, "model-runtime");
-        Task<ServedModel> Launch(bool device) => Busy("Starting " + model.Name, (ct, progress) => serving.Start(model, settings, device, scripts, ct, progress, new ModelLaunchOptions(tokens)));
+        var options = new ModelLaunchOptions(tokens) { DraftPath = draft?.Path };
+        Task<ServedModel> Launch(bool device)
+        {
+            Term.Line();
+            Term.Line("  " + Term.Paint(Term.Bold, "Starting " + model.Name) + Term.Paint(Term.Dim, $" · {ModelLadder.Label(tokens)} · {(device ? "GPU" : "CPU")}" + (draft != null ? " · draft " + draft.Name : "")));
+            return Stages((ct, progress, phase) => serving.Start(model, settings, device, scripts, ct, progress, options, phase));
+        }
         try
         {
             try { served = await Launch(onGpu); }
@@ -194,6 +197,7 @@ internal sealed partial class Interactive
             return false;
         }
         profile = served.Profile; key = ""; session.Model = profile.Id; store.Save(session);
+        servedTokens = tokens; servedGpu = onGpu; servedGiB = onGpu ? ModelMemory.Assess(memory, reading.Sample, tokens).HighGiB : null;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(LastModelFile)!);
@@ -201,10 +205,42 @@ internal sealed partial class Interactive
         }
         catch (IOException) { /* Remembering the choice is a convenience; the model is already running. */ }
         var check = served.Profile.Checks.LastOrDefault();
-        Term.Line(Term.Paint(Term.Green, "  ✓ " + model.Name + " is running") + Term.Paint(Term.Dim, $"  ·  {(onGpu ? "GPU" : "CPU")} · {tokens:N0} context · stops when you leave mason"));
+        Term.Line("  " + Term.Paint(Term.Green, "✓ Ready") + Term.Paint(Term.Dim, " · " + served.Profile.Endpoint.Replace("http://", "").TrimEnd('/') + " · ") + "this session now codes with " + model.Name + Term.Paint(Term.Dim, " · stops when you leave mason"));
         if (check is { State: not "Passed" }) Term.Line(Term.Paint(Term.Yellow, "  Its first reply check did not pass: " + check.Detail));
         return true;
     }
+
+    /// <summary>Runs a model start behind the stage line "✓ inspect   ✓ load   ⠹ check   · ready   0:14 · esc cancels", then leaves the final stages on screen.</summary>
+    async Task<ServedModel> Stages(Func<CancellationToken, Action<string>, Action<ModelStartupPhase>, Task<ServedModel>> work)
+    {
+        string[] names = ["inspect", "load", "check", "ready"];
+        int stage = 0; using var stop = new CancellationTokenSource(); run = stop;
+        var clock = System.Diagnostics.Stopwatch.StartNew(); int frame = 0;
+        string Line(bool styled, string? failed = null)
+        {
+            var parts = names.Select((name, i) =>
+                i < stage || stage == 3 && failed == null && i == 3 ? (styled ? Term.Paint(Term.Green, "✓ " + name) : "✓ " + name)
+                : i == stage ? (failed != null ? (styled ? Term.Paint(Term.Red, "✗ " + name) : "✗ " + name) : "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[frame / 2 % 10] + " " + name)
+                : "· " + name);
+            return "  " + string.Join("   ", parts);
+        }
+        try
+        {
+            var task = Task.Run(() => work(stop.Token, _ => { }, phase => stage = (int)phase));
+            while (!task.IsCompleted)
+            {
+                if (Term.Interactive && Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape) stop.Cancel();
+                frame++;
+                Term.Status(Line(false) + $"      {clock.Elapsed:m\\:ss} · esc cancels");
+                await Task.Delay(80);
+            }
+            Term.Status("");
+            try { var result = await task; stage = 3; Term.Line(Line(true) + Term.Paint(Term.Dim, $"      {clock.Elapsed:m\\:ss}")); return result; }
+            catch (Exception error) { Term.Line(Line(true, error.Message)); throw; }
+        }
+        finally { run = null; Term.Status(""); }
+    }
+
     void StopModel(bool say)
     {
         if (served == null) { if (say && serving == null) { } return; }
@@ -410,7 +446,7 @@ internal sealed partial class Interactive
             for (int i = 0; i < choices.Length; i++) Term.Line($"  {Term.Paint(Term.Dim, (i + 1).ToString().PadLeft(2))}  {Term.Paint(Term.Bold, Term.Clip(choices[i].Name, 60))}" + Term.Paint(Term.Dim, $"  {choices[i].Size}"));
             Term.Write("  Start which? Type a number, or press Enter to skip: ");
             var answer = Console.ReadLine()?.Trim();
-            if (int.TryParse(answer, out var number) && number >= 1 && number <= choices.Length) await StartModel(choices[number - 1]);
+            if (int.TryParse(answer, out var number) && number >= 1 && number <= choices.Length) { var chosen = choices[number - 1]; var reading = await ReadMemory([chosen]); if (Picker(chosen, reading) is { } pick) await StartModel(chosen, pick.Gpu, pick.Tokens, pick.Draft, reading); }
             else Term.Line(Term.Paint(Term.Dim, "  Later: /models lists them · /models setup suggests a download · /model switches to a running server."));
         }
         catch (OperationCanceledException) { Term.Line(Term.Paint(Term.Yellow, "  Cancelled.") + Term.Paint(Term.Dim, " /models continues when you are ready.")); }

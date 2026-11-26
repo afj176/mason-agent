@@ -19,6 +19,11 @@ enum Brand {
     static let onAccent = adaptive(light: 0xFFFFFF, dark: 0x171A2B)
     static let muted = adaptive(light: 0x535B72, dark: 0xC3C9E0)
     static let seam = adaptive(light: 0xD9DBE1, dark: 0x3B4059)
+    /// Model fit tones, each paired with its words in the panel. Both shades keep 4.5:1 on the window background.
+    static let fitGood = adaptive(light: 0x1E7A46, dark: 0x86D9AE)
+    static let fitTight = adaptive(light: 0x8A5A00, dark: 0xF2C46D)
+    static let fitOver = adaptive(light: 0xB3261E, dark: 0xF49A8C)
+    static let track = adaptive(light: 0xEDEBF2, dark: 0x1E2236)
 
     private static func resource(_ name: String) -> NSImage? {
         guard let url = Bundle.main.resourceURL?.appendingPathComponent(name) else { return nil }

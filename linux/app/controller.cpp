@@ -11,6 +11,7 @@
 #include "network.hpp"
 #include "policy.hpp"
 
+#include <gio/gio.h>
 #include <set>
 
 #include <algorithm>
@@ -968,6 +969,9 @@ void Controller::refresh_models(bool start_last_if_needed) {
     model_task("Looking for models on this computer…", [this, start_last_if_needed](const auto&, const CancelToken&) -> std::function<void()> {
         std::vector<RunningServer> found = detect_servers();
         std::vector<LocalModel> files = scan_models();
+        // Metadata only: headers are read, never the weights.
+        std::map<std::string, MemoryProfile> read;
+        for (const LocalModel& model : files) read[model.path] = read_profile(model);
         std::string runtime = llama::find();
         // The endpoint used last may be on a port the scan does not cover (a server the user started themselves).
         const Preferences remembered = Preferences::load();
@@ -975,9 +979,10 @@ void Controller::refresh_models(bool start_last_if_needed) {
             const auto listed = OpenAIClient::models(remembered.last_endpoint->url);
             if (listed && std::find(listed->begin(), listed->end(), remembered.last_endpoint->model) != listed->end()) found.insert(found.begin(), {"Local server", *remembered.last_endpoint});
         }
-        return [this, found, files, runtime, start_last_if_needed] {
+        return [this, found, files, read, runtime, start_last_if_needed] {
             servers = found;
             local_models = files;
+            profiles = read;
             runtime_path = runtime;
             auto listed = [&](const ModelEndpoint& wanted) { return std::any_of(found.begin(), found.end(), [&](const RunningServer& s) { return s.endpoint == wanted; }); };
             if (endpoint && listed(*endpoint)) return;
@@ -1000,7 +1005,8 @@ void Controller::refresh_models(bool start_last_if_needed) {
                     if (model.path == preferences.last_model_path) {
                         const LocalModel last = model;
                         const int context = preferences.last_context;
-                        post([this, last, context] { start_model(last, context); });
+                        const bool cpu = preferences.last_cpu;
+                        post([this, last, context, cpu] { start_model(last, context, cpu); });
                         break;
                     }
                 }
@@ -1009,7 +1015,8 @@ void Controller::refresh_models(bool start_last_if_needed) {
     });
 }
 
-void Controller::start_model(const LocalModel& model, int context) {
+void Controller::start_model(const LocalModel& model, int context, bool cpu_only) {
+    if (!model_busy.empty() || download) return;
     // Transformers weights run through Python, not llama.cpp.
     if (runtime_path.empty() && !model.transformers) {
         notice.emit("Install llama.cpp first; it runs GGUF models.");
@@ -1021,11 +1028,24 @@ void Controller::start_model(const LocalModel& model, int context) {
         if (endpoint && *endpoint == server_->endpoint) endpoint.reset();
         server_.reset();
     }
-    model_task("Starting " + model.name + "…", [this, model, context, runtime](const auto& progress, const CancelToken& cancel) -> std::function<void()> {
-        std::shared_ptr<ModelServer> started = ModelServer::start(model, runtime, context, false, [&](const std::string& line) {
-            if (!line.empty()) progress("Starting " + model.name + "… " + utf8_suffix(line, 90));
-        }, cancel);
+    starting_path = model.path;
+    starting_stage = kStartStages[0];
+    const std::shared_ptr<bool> alive = alive_;
+    model_task("Starting " + model.name + "…", [this, model, context, cpu_only, runtime, alive](const auto& progress, const CancelToken& cancel) -> std::function<void()> {
+        std::shared_ptr<ModelServer> started;
+        try {
+            started = ModelServer::start(model, runtime, context, cpu_only, [&](const std::string& line) {
+                if (!line.empty()) progress("Starting " + model.name + "… " + utf8_suffix(line, 90));
+            }, cancel, [this, alive](int stage) {
+                if (*alive) post([this, stage] { starting_stage = kStartStages[std::clamp(stage, 0, 3)]; changed.emit(); });
+            });
+        } catch (...) {
+            if (*alive) post([this] { starting_path.clear(); starting_stage.clear(); });
+            throw;
+        }
         return [this, started, model] {
+            starting_path.clear();
+            starting_stage.clear();
             // Replacing the previous server stops it.
             server_ = started;
             endpoint = started->endpoint;
@@ -1034,10 +1054,41 @@ void Controller::start_model(const LocalModel& model, int context) {
             preferences.last_endpoint = started->endpoint;
             preferences.last_model_path = model.path;
             preferences.last_context = started->context;
+            preferences.last_cpu = started->cpu_only;
             preferences.save();
             post([this] { refresh_models(); });
         };
     });
+}
+
+void Controller::trash_model(const LocalModel& model) {
+    if (server_ && server_->model.path == model.path) {
+        notice.emit("Stop " + model.name + " before moving it to the Trash.");
+        return;
+    }
+    // Every part of a split model goes, and in the Hugging Face cache the stored file behind each link too.
+    std::vector<fs::path> paths = model.transformers ? std::vector<fs::path>{model.path} : gguf_parts(model.path);
+    std::vector<fs::path> targets;
+    for (const fs::path& path : paths) {
+        std::error_code failure;
+        if (fs::is_symlink(path, failure)) {
+            const fs::path target = fs::canonical(path, failure);
+            if (!failure) targets.push_back(target);
+        }
+    }
+    paths.insert(paths.end(), targets.begin(), targets.end());
+    std::string problem;
+    for (const fs::path& path : paths) {
+        GFile* file = g_file_new_for_path(path.c_str());
+        GError* error = nullptr;
+        if (!g_file_trash(file, nullptr, &error)) {
+            if (problem.empty()) problem = error ? error->message : "The file could not be moved to the Trash.";
+            if (error) g_error_free(error);
+        }
+        g_object_unref(file);
+    }
+    notice.emit(problem.empty() ? "Moved " + model.name + " to the Trash." : model.name + " was not fully moved to the Trash: " + problem);
+    refresh_models();
 }
 
 void Controller::stop_server() {

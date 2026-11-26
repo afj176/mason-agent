@@ -85,13 +85,65 @@ public sealed partial class MainWindow
             if (element.FindName("RowTalk") is Button talk) { talk.Click -= RowTalkClick; talk.Click += RowTalkClick; talk.Tag = element; }
         };
         var modelTitle=Text("Choose a model",23); modelTitle.MaxLines=2;modelTitle.TextTrimming=TextTrimming.CharacterEllipsis; var modelFacts=Text("Your local collection will appear here after scanning.",14); var modelPath=new TextBox { Header="Stored on this computer",IsReadOnly=true,TextWrapping=TextWrapping.Wrap };
-        var device=new ComboBox { Header="Compute",ItemsSource=new[]{"GPU · CUDA","CPU"},SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch };
-        var contextChoice=new NumberBox {Header="Loaded context tokens",Minimum=64,Maximum=int.MaxValue,Value=2048,SmallChange=1024,Width=140,SpinButtonPlacementMode=NumberBoxSpinButtonPlacementMode.Compact};
-        var fitTitle=Text("",15);fitTitle.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;
-        var fitDetail=Text("",12);var fitBasis=Text("",12);var recommendation=Text("",12);
-        int Context()=>double.IsFinite(contextChoice.Value)&&contextChoice.Value==Math.Truncate(contextChoice.Value)&&contextChoice.Value>=64?(int)contextChoice.Value:throw new ArgumentException("Enter a whole context window of at least 64 tokens.");
+        // The Ladder panel: org line, chips and a status dot over the context ladder, the fit card and the actions.
+        var modelOrg=Muted("",12);var modelChips=new StackPanel{Orientation=Orientation.Horizontal,Spacing=6};
+        var statusDot=new Microsoft.UI.Xaml.Shapes.Ellipse{Style=Token("MasonDotNeutral"),VerticalAlignment=VerticalAlignment.Center};
+        var device=new Segmented("Compute",[("GPU",null),("CPU",null)]);
+        var ladder=new ContextLadder();string ladderShown="";
+        var ladderMax=Muted("",12);
+        var fitTitle=Text("",14);fitTitle.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;
+        var fitDot=new Microsoft.UI.Xaml.Shapes.Ellipse{Style=Token("MasonDotNeutral"),VerticalAlignment=VerticalAlignment.Center};
+        var fitDevice=Muted("",12);fitDevice.TextWrapping=TextWrapping.NoWrap;fitDevice.HorizontalAlignment=HorizontalAlignment.Right;
+        var fitFill=new Border{Style=Token("MasonFitFillNeutral")};
+        var fitBar=new Grid{Height=6};fitBar.ColumnDefinitions.Add(new(){Width=new GridLength(0,GridUnitType.Star)});fitBar.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
+        var fitTrack=new Border{Style=Token("MasonFitTrack")};Grid.SetColumnSpan(fitTrack,2);fitBar.Children.Add(fitTrack);fitBar.Children.Add(fitFill);
+        void Bar(double part){part=double.IsFinite(part)?Math.Clamp(part,0,1):0;fitBar.ColumnDefinitions[0].Width=new GridLength(part,GridUnitType.Star);fitBar.ColumnDefinitions[1].Width=new GridLength(1-part,GridUnitType.Star);fitFill.Visibility=part>0?Visibility.Visible:Visibility.Collapsed;}
+        var fitDetail=Muted("",12);var fitBasis=Text("",12);var recommendation=Muted("",12);
+        int Context()=>ladder.Tokens;
         Button? applyRecommendation=null,connectionEdit=null;FrameworkElement? fileOptions=null;
-        var fitPanel=Stack(fitTitle,fitDetail,recommendation);
+        var fitHeader=new Grid{ColumnSpacing=8};fitHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});fitHeader.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});fitHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        Grid.SetColumn(fitTitle,1);Grid.SetColumn(fitDevice,2);fitHeader.Children.Add(fitDot);fitHeader.Children.Add(fitTitle);fitHeader.Children.Add(fitDevice);
+        var fitBody=Stack(fitHeader,fitBar,fitDetail);fitBody.Spacing=8;
+        var fitPanel=new Border{Child=fitBody,Style=Token("MasonInsetCard"),CornerRadius=new CornerRadius(8)};
+        // Filled in where the panel is laid out; declared here so UpdateFit and Selection can reach them.
+        var ladderSection=new StackPanel{Spacing=8};
+        var suggestionRow=new Grid{ColumnSpacing=8};
+        Button? start=null;DropDownButton? draftDrawer=null;
+        LocalModel? Chosen()=>(list.SelectedItem as LibraryEntry)?.File?.Model;
+        bool Serving(LocalModel m)=>modelServing.Running.Any(x=>x.Owner.IsRunning&&x.Model.Path.Equals(m.Path,StringComparison.OrdinalIgnoreCase));
+        var useCoding=ActionRow("","Use for coding",(_,_)=>{if(aiOperation==null&&(list.SelectedItem as LibraryEntry)?.ChatProfileId is {} id)openCodeWithModel?.Invoke(id);});
+        var openChat=ActionRow("","Open in chat",(_,_)=>{if(aiOperation==null&&(list.SelectedItem as LibraryEntry)?.ChatProfileId is {} id)openNativeChat?.Invoke(id);});
+        var copyId=ActionRow("","Copy model ID",(_,_)=>{});
+        copyId.Button.Click+=(_,_)=>{if(Chosen() is not {} m)return;ChatCopy(Directory.Exists(m.Path)?Path.GetFileName(m.Path):Path.GetFileNameWithoutExtension(m.Path));copyId.Note.Text="Copied";};
+        var showFolder=ActionRow("","Show in folder",(_,_)=>
+        {
+            if(Chosen() is not {} m)return;
+            try{System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe","/select,\""+m.Path+"\""){UseShellExecute=true});}
+            catch(Exception e) when(e is System.ComponentModel.Win32Exception or InvalidOperationException){activity.IsOpen=true;activity.Severity=InfoBarSeverity.Error;activity.Message="Could not open File Explorer: "+e.Message;}
+        });
+        var viewHub=ActionRow("","View on Hugging Face",async(_,_)=>{if(Chosen() is {} m&&RepositoryOf(m) is {} repo)await Windows.System.Launcher.LaunchUriAsync(HubClient.ModelPage(repo));});
+        var deleteModel=ActionRow("","Delete",async(_,_)=>
+        {
+            if(Chosen() is not {} m||aiOperation!=null||Serving(m))return;
+            string name=ModelLibraryCard.FriendlyName(m.Name);
+            if(!await ConfirmRecycle(name,m.Size))return;
+            try
+            {
+                foreach(var file in ModelFiles(m))
+                {
+                    if(Directory.Exists(file))Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(file,Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+                    else Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(file,Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+                }
+            }
+            catch(Exception e) when(e is IOException or UnauthorizedAccessException or OperationCanceledException){await Notice("Delete model",e.Message);return;}
+            bool Same(LocalModel x)=>x.Path.Equals(m.Path,StringComparison.OrdinalIgnoreCase);
+            discovered=discovered.Where(x=>!Same(x)).ToArray();memoryProfiles.Remove(m.Path);
+            foreach(var key in registeredDownloads.Keys.ToArray())registeredDownloads[key]=registeredDownloads[key].Where(x=>!Same(x)).ToArray();
+            refreshModelLibrary?.Invoke();
+            activity.IsOpen=true;activity.Severity=InfoBarSeverity.Success;activity.Message="Moved "+name+" to the Recycle Bin.";
+        });
+        var actionList=Stack(useCoding.Button,openChat.Button,copyId.Button,showFolder.Button,viewHub.Button,deleteModel.Button);actionList.Spacing=0;actionList.Margin=new Thickness(-10,0,-10,0);
+        var footerFacts=Muted("",12);footerFacts.VerticalAlignment=VerticalAlignment.Center;footerFacts.TextTrimming=TextTrimming.CharacterEllipsis;footerFacts.TextWrapping=TextWrapping.NoWrap;
         int startupStage=0;LocalModel? startupModel=null;var startupStages=StageRail("Inspect","Load","Check","Ready");var startupDetail=Text("",12);var startupElapsed=Text("",11);var startupProgress=BrandControl(new ProgressBar{Height=4,Visibility=Visibility.Collapsed});var startupClock=new DispatcherTimer{Interval=TimeSpan.FromSeconds(1)};DateTimeOffset? startupAt=null;
         var startupCancel=Button("Cancel startup",(_,_)=>aiOperation?.Cancel());startupCancel.IsEnabled=false;
         Guid? startupChatProfile = null;
@@ -255,21 +307,44 @@ public sealed partial class MainWindow
         {
             if(list.ItemsSource is IEnumerable<LibraryEntry> entries)foreach(var card in entries.Select(e=>e.File).OfType<ModelLibraryCard>())card.Fit=CardFit(card.Model);
             var model=(list.SelectedItem as LibraryEntry)?.File?.Model;
+            bool chat=model?.Task=="Chat";
             fitPanel.Visibility=model?.Launchable==true?Visibility.Visible:Visibility.Collapsed;
-            contextChoice.Visibility=model?.Launchable==true?Visibility.Visible:Visibility.Collapsed;
+            ladderSection.Visibility=model?.Launchable==true&&chat?Visibility.Visible:Visibility.Collapsed;
+            suggestionRow.Visibility=Visibility.Collapsed;
             if(model==null || !model.Launchable)return;
             var profile=memoryProfiles.GetValueOrDefault(model.Path);
             bool live=modelServing.Running.Any(x=>x.Model.Path==model.Path&&x.Owner.IsRunning);
-            if(model.Launchable&&(!double.IsFinite(contextChoice.Value)||contextChoice.Value<64||contextChoice.Value!=Math.Truncate(contextChoice.Value))){fitTitle.Text="Enter a valid context window";fitDetail.Text="Use a whole number of at least 64 tokens.";return;}
-            var fit=ModelMemory.Assess(profile,gpuSample,model.Task=="Chat"?Context():512);
-            fitTitle.Text=live?"Running · memory is already in use":device.SelectedIndex==1?"CPU selected · no GPU allocation":fit.State;
-            fitDetail.Text=live?"The free VRAM reading already includes this server. Stop it before estimating a new load.":device.SelectedIndex==1?"CPU serving uses system RAM. Available system RAM is not checked here.":fit.Detail;
+            bool cpu=device.SelectedIndex==1;
+            if(chat)
+            {
+                var steps=ModelLadder.Steps(profile).Select(tokens=>
+                {
+                    var step=ModelMemory.Assess(profile,gpuSample,tokens);
+                    string memory=step.LowGiB is {} low?(step.Estimated?$"{low:0.0}–{step.HighGiB:0.0} GiB, ":$"at least {low:0.0} GiB, "):"";
+                    return (tokens,ModelLadder.Memory(step),ModelLadder.Tone(step),$"{tokens:N0} context tokens, {memory}{step.State}");
+                }).ToArray();
+                bool muted=cpu||live;
+                var shown=model.Path+"|"+muted+"|"+string.Join(";",steps.Select(s=>s.Item1+s.Item2+s.Item3));
+                if(shown!=ladderShown){ladderShown=shown;ladder.Set(steps,ladder.Tokens,muted);}
+                ladderMax.Text=profile is {ContextDeclared:true}?$"max {profile.MaxContext:N0}":"max not declared";
+            }
+            int tokensShown=chat?Context():512;
+            var fit=ModelMemory.Assess(profile,gpuSample,tokensShown);
+            var tone=live||cpu?FitTone.Muted:ModelLadder.Tone(fit);
+            fitDot.Style=Token(ToneDot(tone));fitFill.Style=Token(ToneFill(tone));
+            fitTitle.Text=live?"Running · memory is already in use":cpu?"CPU · system RAM":fit.State;
+            fitDevice.Text=cpu||live?"":ModelLadder.Device(gpuSample);
+            Bar(live||cpu||fit.FreeGiB is not >0||fit.HighGiB is not {} high?0:high/fit.FreeGiB.Value);
+            fitDetail.Text=live?"The free memory reading already includes this model. Stop it before estimating a new load.":ModelLadder.Detail(fit,tokensShown,model.Architecture,cpu);
+            if(!chat)fitDetail.Text=fitDetail.Text.Replace(" at 512 "," at 512 input tokens ");
             var suggested=ModelMemory.Recommend(profile,gpuSample);
-            recommendation.Text=live?"":suggested.Text;
-            if(model.Task!="Chat"){fitDetail.Text=fitDetail.Text.Replace("context tokens","input tokens (planning cap)");recommendation.Text=recommendation.Text.Replace("context tokens","input tokens (planning cap)");}
+            recommendation.Text=suggested.Text;
+            suggestionRow.Visibility=!live&&chat?Visibility.Visible:Visibility.Collapsed;
+            if(start!=null&&start.Content is string label&&label.StartsWith("Start & connect"))start.Content=StartLabel(model);
             fitBasis.Text=(profile==null||!profile.ContextDeclared?"Model capacity unavailable. ":$"Model capacity: {profile.MaxContext:N0} tokens. ")+(profile?.Unknown??profile?.Basis??"Metadata unavailable")+". Based on metadata from the last scan and current driver readings. Estimates include runtime headroom, not model quality or speed. Other apps can change free memory before Start. GGUF prompt batch 256 / microbatch 128; one request at a time. Context includes prompt, reasoning and output. Restart the model to apply a different loaded window.";
-            if(applyRecommendation!=null){applyRecommendation.IsEnabled=!live&&aiOperation==null;applyRecommendation.Visibility=live?Visibility.Collapsed:Visibility.Visible;}
+            if(applyRecommendation!=null){applyRecommendation.IsEnabled=!live&&aiOperation==null;}
         }
+        string StartLabel(LocalModel? model)=>model?.Task=="Chat"?"Start & connect · "+ModelLadder.Label(Context()):"Start & connect";
         void ProfilesChanged() { refreshAiConnectionList?.Invoke(); refreshCodeProfiles?.Invoke(); }
         void ResetStoppedProfile(ServedModel server)
         {
@@ -278,17 +353,31 @@ public sealed partial class MainWindow
             ProfilesChanged();
         }
         Action? adaptive=null;
-        Button? start=null;
         void Selection()
         {
             var card=(list.SelectedItem as LibraryEntry)?.File;var m=card?.Model;
             modelTitle.Text=card?.Title ?? "Choose a model"; modelFacts.Text=m==null ? "Select a card to see serving options." : $"{card!.Task} · {m.Format} · {m.Size}";modelPath.Text=m?.Path ?? "";exactName.Text=m?.Name??"";
+            var repository=m==null?null:RepositoryOf(m);
+            modelOrg.Text=repository?.Split('/')[0]??"";modelOrg.Visibility=modelOrg.Text.Length>0?Visibility.Visible:Visibility.Collapsed;
+            modelChips.Children.Clear();
+            if(m!=null)foreach(var chip in new[]{QuantOf(m),m.Format,m.Size}.Where(x=>!string.IsNullOrEmpty(x)))modelChips.Children.Add(Badge(chip!));
+            modelChips.Visibility=m!=null?Visibility.Visible:Visibility.Collapsed;modelFacts.Visibility=m!=null?Visibility.Collapsed:Visibility.Visible;
             var connection=(list.SelectedItem as LibraryEntry)?.Connection;
             if(connection!=null){modelTitle.Text=connection.Name;modelFacts.Text=connection.Model+"\n"+connection.Endpoint;modelPath.Text=connection.Endpoint;exactName.Text=connection.Model;}
             if(connectionEdit!=null)connectionEdit.Visibility=connection!=null?Visibility.Visible:Visibility.Collapsed;
             if(fileOptions!=null)fileOptions.Visibility=m!=null?Visibility.Visible:Visibility.Collapsed;
             shownModel=m;shownVerdict=m==null?null:ModelCompatibility.Assess(m,runtimeFacts);
-            verdictPanel.Visibility=m==null?Visibility.Collapsed:Visibility.Visible;
+            verdictPanel.Visibility=m==null||shownVerdict?.Readiness==ModelReadiness.Ready?Visibility.Collapsed:Visibility.Visible;
+            // Actions: chat ones need a checked connection; file ones need a file, and Delete needs it stopped.
+            var chatProfile=(list.SelectedItem as LibraryEntry)?.ChatProfileId;bool live=m!=null&&Serving(m);
+            useCoding.Button.IsEnabled=openChat.Button.IsEnabled=chatProfile!=null&&aiOperation==null;
+            useCoding.Note.Text=chatProfile==null&&m?.Task=="Chat"&&m.Launchable?"after start":"";
+            useCoding.Button.Visibility=openChat.Button.Visibility=chatProfile!=null||m?.Task=="Chat"?Visibility.Visible:Visibility.Collapsed;
+            foreach(var row in new[]{copyId,showFolder,deleteModel})row.Button.Visibility=m!=null?Visibility.Visible:Visibility.Collapsed;
+            copyId.Note.Text="";
+            viewHub.Button.Visibility=repository!=null?Visibility.Visible:Visibility.Collapsed;
+            deleteModel.Button.IsEnabled=m!=null&&!live&&aiOperation==null;deleteModel.Note.Text=m?.Size??"";
+            footerFacts.Text=m==null?"":string.Join(" · ",new[]{m.Architecture,m.Format=="GGUF"?"llama.cpp "+runtimeFacts.BuildLabel:""}.Where(x=>x.Length>0));
             if(shownVerdict!=null&&m!=null)
             {
                 verdictTitle.Text=shownVerdict.RoleLabel+" · "+shownVerdict.Badge;
@@ -303,12 +392,16 @@ public sealed partial class MainWindow
             draftChoice.ItemsSource=draftOptions.Select(x=>x==null?"No draft model":ModelLibraryCard.FriendlyName(x.Name)+" · "+x.Size+(x.Role==AgentRole.Draft?" · draft":"")).ToArray();draftChoice.SelectedIndex=draftOptions.Length>0?0:-1;
             adapterChoice.ItemsSource=adapterOptions.Select(x=>x==null?"No adapter":ModelLibraryCard.FriendlyName(x.Name)+" · "+x.Size).ToArray();adapterChoice.SelectedIndex=adapterOptions.Length>0?0:-1;
             draftChoice.Visibility=draftOptions.Length>1?Visibility.Visible:Visibility.Collapsed;adapterChoice.Visibility=adapterOptions.Length>1?Visibility.Visible:Visibility.Collapsed;
+            if(draftDrawer!=null)draftDrawer.Visibility=draftOptions.Length>1||adapterOptions.Length>1?Visibility.Visible:Visibility.Collapsed;
+            selectedPurpose.Visibility=connection!=null?Visibility.Visible:Visibility.Collapsed;
             selectedPurpose.Text=connection==null?card?.Purpose??"":string.Join("\n",connection.Checks.GroupBy(c=>c.Capability).Select(g=>g.Last()).Select(c=>c.Capability+" · "+c.State+" · "+c.At.LocalDateTime.ToString("g")));
-            if(start!=null) { start.IsEnabled=m?.Launchable==true && aiOperation==null && !modelServing.Running.Any(x=>x.Model.Path==m.Path&&x.Model.AdapterPath==m.AdapterPath&&x.Owner.IsRunning);start.Visibility=m?.Launchable==true?Visibility.Visible:Visibility.Collapsed;start.Content=m!=null&&readable&&!ModelServing.HasRuntime(m,settings)?"Set up runtime":"Start & connect"; }
-            device.Visibility=m?.Launchable==true?Visibility.Visible:Visibility.Collapsed;
-            if(m?.Task=="Chat"&&memoryProfiles.TryGetValue(m.Path,out var capacity)){contextChoice.Maximum=capacity.ContextDeclared?capacity.MaxContext:int.MaxValue;if(contextChoice.Value>contextChoice.Maximum)contextChoice.Value=contextChoice.Maximum;}
+            if(start!=null) { start.IsEnabled=m?.Launchable==true && aiOperation==null && !modelServing.Running.Any(x=>x.Model.Path==m.Path&&x.Model.AdapterPath==m.AdapterPath&&x.Owner.IsRunning);start.Visibility=m?.Launchable==true?Visibility.Visible:Visibility.Collapsed;start.Content=m!=null&&readable&&!ModelServing.HasRuntime(m,settings)?"Set up runtime":StartLabel(m); }
+            device.View.Visibility=m?.Launchable==true?Visibility.Visible:Visibility.Collapsed;
             UpdateFit();adaptive?.Invoke();
-            selectedStatus.Text=m==null?"":State(m);
+            var served=m==null?null:modelServing.Running.FirstOrDefault(x=>x.Owner.IsRunning&&x.Model.Path.Equals(m.Path,StringComparison.OrdinalIgnoreCase));
+            bool starting=m!=null&&startupModel?.Path==m.Path;
+            selectedStatus.Text=m==null?"":served!=null?"Running · "+served.Profile.Endpoint:starting?State(m):shownVerdict?.Readiness==ModelReadiness.Ready&&m.Launchable?"Ready to start · "+shownVerdict.RoleLabel:State(m);
+            statusDot.Style=Token(served!=null||(shownVerdict?.Readiness==ModelReadiness.Ready&&m?.Launchable==true&&!starting)?"MasonDotSuccess":starting?"MasonDotAccent":"MasonDotNeutral");
             selectedRuntime.Text=m?.Launchable==true?(ModelAdapters.IsQuantized(m)?"Runs with GPT-QModel · packed 4-bit weights":ModelAdapters.UsesPython(m)?"Runs with Python · PyTorch + Transformers":"Runs with llama.cpp · GGUF")+(File.Exists(ModelAdapters.IsQuantized(m)?quantizedPython.Text:ModelAdapters.UsesPython(m)?python.Text:llama.Text)?" · runtime selected":" · choose a runtime in Runtime setup"):"";
             launchDetail.Text=m==null?"":m.Launchable?m.Support+"\nStart checks the model and saves a connection the agent can use. Models run locally.":m.Support;
         }
@@ -381,7 +474,7 @@ public sealed partial class MainWindow
             using var ct=new CancellationTokenSource();activity.IsOpen=false;aiOperation=ct;start!.IsEnabled=false;scanProgress.Visibility=Visibility.Visible;if(cancelScan!=null)cancelScan.Visibility=Visibility.Visible;activity.Severity=InfoBarSeverity.Informational;activity.Message="Starting "+card.Title+"… Checking the server before saving its connection.";
             startupCancel.IsEnabled=true;startupAt=DateTimeOffset.UtcNow;startupElapsed.Text="Elapsed · 00:00";startupClock.Start();startupStage=0;foreach(var (label,index) in new[]{"Inspect","Load","Check","Ready"}.Select((label,index)=>(label,index)))startupStages.Label(index,label);startupStages.Set(0);startupHud.Visibility=Visibility.Visible;startupDetail.Text="Inspecting · "+card.Title;startupProgress.Visibility=Visibility.Visible;startupProgress.IsIndeterminate=Fluent.MotionOn;
             startupChatProfile = null; startupChat.Visibility = Visibility.Collapsed;
-            device.IsEnabled=false;contextChoice.IsEnabled=false;if(applyRecommendation!=null)applyRecommendation.IsEnabled=false;startupModel=m;Render();Selection();
+            device.IsEnabled=false;ladder.IsEnabled=false;if(applyRecommendation!=null)applyRecommendation.IsEnabled=false;startupModel=m;Render();Selection();
             try
             {
                 // Starting a model is a read of runtime selection, never a settings write.
@@ -417,7 +510,7 @@ public sealed partial class MainWindow
                 if (m.Task == "Chat" && probe.State == "Passed") { startupChatProfile = served.Profile.Id; startupChat.Visibility = Visibility.Visible; startupDetail.Text = "Chat ready · " + card.Title + ". Use for coding to start a conversation."; }
             }
             catch(Exception e){startupStages.Set(startupStage);startupStages.Label(Math.Min(3,startupStage),(new[]{"Inspect","Load","Check","Ready"})[Math.Min(3,startupStage)]+(e is OperationCanceledException?" stopped":" failed"));activity.IsOpen=true;activity.Severity=e is OperationCanceledException?InfoBarSeverity.Warning:InfoBarSeverity.Error;activity.Message=e is OperationCanceledException?"Startup cancelled; the owned process tree was stopped.":"Could not start model: "+e.Message;startupDetail.Text=activity.Message;}
-            finally{startupModel=null;startupCancel.IsEnabled=false;startupClock.Stop();startupProgress.Visibility=Visibility.Collapsed;aiOperation=null;device.IsEnabled=true;contextChoice.IsEnabled=true;scanProgress.Visibility=Visibility.Collapsed;if(cancelScan!=null)cancelScan.Visibility=Visibility.Collapsed;Render();Selection();}
+            finally{startupModel=null;startupCancel.IsEnabled=false;startupClock.Stop();startupProgress.Visibility=Visibility.Collapsed;aiOperation=null;device.IsEnabled=true;ladder.IsEnabled=true;scanProgress.Visibility=Visibility.Collapsed;if(cancelScan!=null)cancelScan.Visibility=Visibility.Collapsed;Render();Selection();}
         },true);
         var library=new Grid { ColumnSpacing=12,RowSpacing=12 };
         library.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});library.RowDefinitions.Add(new(){Height=new GridLength(0)});
@@ -427,28 +520,46 @@ public sealed partial class MainWindow
         var browse=new Grid{RowSpacing=10};browse.RowDefinitions.Add(new(){Height=GridLength.Auto});browse.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});browse.RowDefinitions.Add(new(){Height=GridLength.Auto});browse.Children.Add(Stack(runningCard,searchRow,collectionStatus));Grid.SetRow(browseBody,1);browse.Children.Add(browseBody);Grid.SetRow(startupHud,2);browse.Children.Add(startupHud);
         var backToLibrary=Button("Back to library",(_,_)=>list.SelectedIndex=-1);
         backToLibrary.Content=Row(MotifIcon(Fluent.Motif.Back,14),new TextBlock{Text="Back to library",VerticalAlignment=VerticalAlignment.Center});Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(backToLibrary,"Back to library");
-        device.Width=180;
-        applyRecommendation=Button("Use recommended settings",(_,_)=>
+        applyRecommendation=Button("Use suggested",(_,_)=>
         {
-            var model=(list.SelectedItem as LibraryEntry)?.File?.Model;if(model==null || aiOperation!=null)return;
+            var model=Chosen();if(model==null || aiOperation!=null)return;
             var suggested=ModelMemory.Recommend(memoryProfiles.GetValueOrDefault(model.Path),gpuSample);
-            device.SelectedIndex=suggested.Gpu?0:1;contextChoice.Value=suggested.Context;UpdateFit();
+            ladder.Select(suggested.Context,false);device.SelectedIndex=suggested.Gpu?0:1;UpdateFit();
         });
-        fitPanel.Children.Add(applyRecommendation);
-        fitPanel.Children.Add(new Expander {Header="How this estimate works",Content=fitBasis,HorizontalAlignment=HorizontalAlignment.Stretch});
-        device.SelectionChanged+=(_,_)=>UpdateFit();contextChoice.ValueChanged+=(_,_)=>UpdateFit();
+        applyRecommendation.VerticalAlignment=VerticalAlignment.Center;
+        recommendation.VerticalAlignment=VerticalAlignment.Center;
+        suggestionRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});suggestionRow.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        Grid.SetColumn(applyRecommendation,1);suggestionRow.Children.Add(recommendation);suggestionRow.Children.Add(applyRecommendation);
+        device.Changed+=_=>UpdateFit();ladder.Changed+=_=>UpdateFit();
+        // "Context length · memory use (?)  max 32,768" over the ladder.
+        var ladderTitle=new TextBlock{VerticalAlignment=VerticalAlignment.Center};
+        ladderTitle.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run{Text="Context length",FontWeight=Microsoft.UI.Text.FontWeights.SemiBold});
+        var memoryUse=Muted("· memory use",13);memoryUse.VerticalAlignment=VerticalAlignment.Center;
+        var estimateHelp=SubtleIconButton("","How the memory estimate works",(_,_)=>{});estimateHelp.Width=estimateHelp.Height=28;
+        fitBasis.MaxWidth=320;estimateHelp.Flyout=new Flyout{Content=new ScrollViewer{Content=fitBasis,MaxHeight=360}};
+        var ladderHeader=new Grid{ColumnSpacing=6};ladderHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});ladderHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});ladderHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});ladderHeader.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
+        ladderMax.VerticalAlignment=VerticalAlignment.Center;ladderMax.HorizontalAlignment=HorizontalAlignment.Right;
+        Grid.SetColumn(memoryUse,1);Grid.SetColumn(estimateHelp,2);Grid.SetColumn(ladderMax,3);
+        foreach(var part in new FrameworkElement[]{ladderTitle,memoryUse,estimateHelp,ladderMax})ladderHeader.Children.Add(part);
+        ladderSection.Children.Add(ladderHeader);ladderSection.Children.Add(ladder.View);
         connectionEdit=Button("Edit saved connection",(_,_)=>{if((list.SelectedItem as LibraryEntry)?.Connection is {} profile){selectManagedAiConnection?.Invoke(profile.Id);Navigate("AI connections");}});
-        contextChoice.Width=double.NaN;contextChoice.HorizontalAlignment=HorizontalAlignment.Stretch;
-        fileOptions=Stack(FormGrid(300,device,contextChoice),draftChoice,adapterChoice,start,fitPanel,selectedRuntime,selectedStatus,launchDetail,new Expander { Header="Model files & compatibility",Content=Stack(exactName,modelPath),HorizontalAlignment=HorizontalAlignment.Stretch },runtimeSettings);
-        var detailsChat = Button("Use for coding", (_, _) => { if (aiOperation == null && (list.SelectedItem as LibraryEntry)?.ChatProfileId is {} id) openCodeWithModel?.Invoke(id); }, true);
-        detailsChat.Visibility = Visibility.Collapsed;
-        list.SelectionChanged += (_, _) => detailsChat.Visibility = (list.SelectedItem as LibraryEntry)?.ChatProfileId != null ? Visibility.Visible : Visibility.Collapsed;
-        // Chat-capable models can open either workspace with the connection already selected.
-        var detailsTalk = Button("Open in chat", (_, _) => { if (aiOperation == null && (list.SelectedItem as LibraryEntry)?.ChatProfileId is {} id) openNativeChat?.Invoke(id); });
-        var detailsOpen = Row(detailsChat, detailsTalk);
-        detailsOpen.Visibility = Visibility.Collapsed;
-        list.SelectionChanged += (_, _) => detailsOpen.Visibility = detailsChat.Visibility;
-        var detailContents=Stack(backToLibrary,modelTitle,modelFacts,verdictPanel,detailsOpen,connectionEdit,selectedPurpose,fileOptions);
+        // GPU | CPU beside the primary Start & connect.
+        var startRow=new Grid{ColumnSpacing=10};startRow.ColumnDefinitions.Add(new(){Width=GridLength.Auto});startRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});
+        start!.HorizontalAlignment=HorizontalAlignment.Stretch;start.MinHeight=40;Grid.SetColumn(start,1);
+        startRow.Children.Add(device.View);startRow.Children.Add(start);
+        fileOptions=Stack(ladderSection,fitPanel,suggestionRow,startRow);
+        // Footer: architecture and runtime, with the less common options in drawers.
+        var draftBody=Stack(draftChoice,adapterChoice);draftBody.Width=320;
+        var runtimeBody=Stack(selectedRuntime,launchDetail,exactName,modelPath,runtimeSettings);runtimeBody.Width=360;
+        var draftButton=DrawerButton("Draft & adapter",draftBody);draftDrawer=draftButton;var runtimeDrawer=DrawerButton("Runtime",runtimeBody);
+        var footerRow=new Grid{ColumnSpacing=8};footerRow.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});footerRow.ColumnDefinitions.Add(new(){Width=GridLength.Auto});footerRow.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        Grid.SetColumn(draftButton,1);Grid.SetColumn(runtimeDrawer,2);footerRow.Children.Add(footerFacts);footerRow.Children.Add(draftButton);footerRow.Children.Add(runtimeDrawer);
+        var footer=Stack(new Border{Style=Token("MasonDivider")},footerRow);footer.Margin=new Thickness(0,4,0,0);
+        var statusRow=Row(statusDot,selectedStatus);
+        var heading=Stack(modelOrg,modelTitle,modelChips,statusRow,modelFacts);heading.Spacing=6;
+        var actionsDivider=new Border{Style=Token("MasonDivider")};
+        list.SelectionChanged+=(_,_)=>{bool file=Chosen()!=null;footer.Visibility=actionsDivider.Visibility=file?Visibility.Visible:Visibility.Collapsed;};
+        var detailContents=Stack(backToLibrary,heading,verdictPanel,connectionEdit,selectedPurpose,fileOptions,actionsDivider,actionList,footer);detailContents.Spacing=14;
         var detail=Card(detailContents);
         var hint=Card(selectionHint);
         var detailBody=new Grid();detailBody.Children.Add(hint);detailBody.Children.Add(detail);
@@ -474,7 +585,7 @@ public sealed partial class MainWindow
             if(aiOperation!=null||(list.SelectedItem as LibraryEntry)?.File?.Model is not {} chosen||chosen.Task!="Chat"||chosen.Path==fittedFor)return;
             if(memoryProfiles.GetValueOrDefault(chosen.Path) is not {} profile)return;
             var suggested=ModelMemory.Recommend(profile,gpuSample);fittedFor=chosen.Path;
-            device.SelectedIndex=suggested.Gpu?0:1;contextChoice.Value=suggested.Context;
+            device.SelectedIndex=suggested.Gpu?0:1;ladder.Select(suggested.Context,false);
         };
         list.SelectionChanged+=(_,_)=>Selection();search.TextChanged+=(_,_)=>Render();task.SelectionChanged+=(_,_)=>Render();sort.SelectionChanged+=(_,_)=>Render();resourceKind.SelectionChanged+=(_,_)=>Render();
         running.SelectionChanged+=(_,_)=> { if(running.SelectedItem is ServedModel s) { serverSummary.Text=$"{s.Model.Task} · {s.Profile.Name}\n{s.Profile.Endpoint} · {(!s.Owner.IsRunning ? "Stopped unexpectedly" : "Running locally")}\n"+string.Join(" · ",s.Profile.Checks.Select(x=>$"{x.Capability}: {x.State}")); serverDetail.Content=DetailList(("Model",s.Model.Name,false),("Endpoint",s.Profile.Endpoint,true),("Model ID",s.Profile.Model,true),("Context",(s.Options?.ContextTokens??4096).ToString("N0")+" tokens requested",false),("Runs",s.Owner.Embedded?"Inside Mason Agent · no separate server process":"Own process · PID "+s.Owner.ProcessId,false),("Runtime log",s.Log,true),("Checks",string.Join("\n",s.Profile.Checks.Select(x=>$"{x.Capability}: {x.State} · {x.Detail}")),false)); } };

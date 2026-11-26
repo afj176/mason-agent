@@ -146,7 +146,7 @@ internal sealed partial class Interactive
         var text = new StringBuilder();
         while (true)
         {
-            Term.Line();
+            Term.Line(text.Length == 0 ? ModelStatusLine() ?? "" : "");
             Term.Write(text.Length == 0 ? Term.Paint(Term.Dim, ModeName().Split(" · ")[^1] + " ") + Term.Paint(Term.Accent + Term.Bold, "› ") : Term.Paint(Term.Dim, "  … "));
             var line = Console.ReadLine();
             if (line == null)
@@ -535,7 +535,7 @@ internal sealed partial class Interactive
             ("/resume [number]", "List this folder's sessions, or continue one"),
             ("/model [number|name]", "List running and saved connections, or switch model"),
             ("/models", "List the models on this computer and what each is for"),
-            ("/models start NUMBER|NAME", "Start a coding model here (add cpu, or a context size)"),
+            ("/models start NUMBER|NAME [16k] [cpu]", "Choose a context and start a coding model here; a size skips the picker"),
             ("/models stop", "Stop the model this session started"),
             ("/models search TEXT", "Search Hugging Face"),
             ("/models download REPO [BUILD]", "List a repository's builds, or download one"),

@@ -19,7 +19,15 @@ struct LocalModel {
     bool startable() const;
     /// The mmproj file beside a vision model, if any.
     std::string projector() const;
+    /// What it is to the agent, in a few words: "Coding agent", "Coding agent · vision", "Code search · embeddings".
+    std::string role_label() const;
+    /// The Hugging Face repository it came from (OWNER/NAME), when the path says: Mason's downloads or the
+    /// Hugging Face cache. Empty when not known.
+    std::string repository() const;
 };
+
+/// Runs a small helper program and returns what it printed, or nothing when it is missing or fails.
+std::string program_output(const std::vector<std::string>& arguments);
 
 fs::path download_folder();
 /// Folders where GGUF files usually are: Mason's own downloads, the Hugging Face cache, LM Studio and llama.cpp's cache.
@@ -71,11 +79,17 @@ std::string check(const LocalModel& model, bool cpu_only = false, const CancelTo
 
 /// One llama-server process owned by this app or command line session. It stops when stopped, when this object goes
 /// away, and when the owning process exits for any reason.
+/// The steps of starting a model, in order, as the command line shows them.
+inline const char* const kStartStages[] = {"inspect", "load", "check", "ready"};
+
 class ModelServer {
 public:
     /// Starts the model and waits until the server lists it, up to five minutes. Progress carries the last log line while it loads.
+    /// A context of 0 uses the suggestion for this computer's free memory. `stage` hears each step as it begins:
+    /// 0 inspect, 1 load, 2 check, 3 ready.
     static std::unique_ptr<ModelServer> start(const LocalModel& model, const std::string& runtime, int context, bool cpu_only,
-                                              const std::function<void(const std::string&)>& progress, const CancelToken& cancel = nullptr);
+                                              const std::function<void(const std::string&)>& progress, const CancelToken& cancel = nullptr,
+                                              const std::function<void(int)>& stage = nullptr);
     ~ModelServer();
     ModelServer(const ModelServer&) = delete;
     ModelServer& operator=(const ModelServer&) = delete;
@@ -85,10 +99,12 @@ public:
     LocalModel model;
     ModelEndpoint endpoint;
     int context = 0;
+    bool cpu_only = false;
     fs::path log;
 private:
     ModelServer() = default;
-    static std::unique_ptr<ModelServer> start_transformers(const LocalModel& model, int context, bool cpu_only, const std::function<void(const std::string&)>& progress, const CancelToken& cancel);
+    static std::unique_ptr<ModelServer> start_transformers(const LocalModel& model, int context, bool cpu_only, const std::function<void(const std::string&)>& progress, const CancelToken& cancel,
+                                                           const std::function<void(int)>& stage);
     int pid_ = 0;
 };
 
@@ -104,6 +120,7 @@ struct Preferences {
     std::optional<ModelEndpoint> last_endpoint;
     std::string last_model_path;
     int last_context = 0;
+    bool last_cpu = false;
     /// The Python that serves Transformers models, when the user chose one.
     std::string python;
     static Preferences load();

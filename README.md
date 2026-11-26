@@ -113,7 +113,7 @@ Type a request and each tool call prints as it finishes. Approvals take one key:
 | `/new` · `/resume` · `/compact` · `/status` | Start, continue, shrink or inspect a session |
 | `/model` | Switch between running models and saved connections |
 | `/models` | The models on this computer and what each can do for the agent |
-| `/models start` · `/models stop` | Run a GGUF coding model with llama.cpp for this session |
+| `/models start` · `/models stop` | Pick a context size with the memory each needs, then run a GGUF coding model with llama.cpp for this session. `/models start 1 16k` skips the picker |
 | `/models search TEXT` · `/models download REPO` | Find a model on Hugging Face, see its builds and which fit, download one |
 | `/models setup` · `/models runtime` | Suggest and download a model that fits; install llama.cpp for your GPU |
 | `/rules` · `/agent` · `/commands` | Saved approvals, and your agents and commands from `.mason/` |

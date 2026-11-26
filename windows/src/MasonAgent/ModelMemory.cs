@@ -16,9 +16,12 @@ public sealed record ModelLaunchOptions(int ContextTokens=2048)
     }
 }
 public sealed record ModelMemoryProfile(double WeightBytes,double KvBytesPerToken,double WorkspaceBytes,int MaxContext,string Basis,string? Unknown=null,double WorkspacePerToken=0,bool ContextDeclared=true);
-public sealed record ModelFit(string State,string Detail,double? LowGiB=null,double? HighGiB=null)
+/// <summary>A fit verdict. <see cref="Estimated"/> is false when only the weights are known (a lower bound), and
+/// <see cref="FreeGiB"/>/<see cref="SpareGiB"/> are set whenever a usable memory reading was compared.</summary>
+public sealed record ModelFit(string State,string Detail,double? LowGiB=null,double? HighGiB=null,double? FreeGiB=null,double? SpareGiB=null,bool Estimated=true)
 {
-    public string Summary=>LowGiB.HasValue?$"{State} · {LowGiB:0.0}–{HighGiB:0.0} GiB estimated":State;
+    public const string Fits="Likely fits",Tight="Tight fit",TooLarge="Too large for free memory",Unverified="Fit unverified",Waiting="Waiting for a memory reading";
+    public string Summary=>LowGiB.HasValue?(Estimated?$"{State} · {LowGiB:0.0}–{HighGiB:0.0} GiB estimated":$"{State} · {LowGiB:0.0}+ GiB"):State;
 }
 
 /// <summary>Bounded, metadata-only estimates for the actual single-request serving routes. Never reads tensor payloads.</summary>
@@ -97,8 +100,9 @@ public static class ModelMemory
         var architecture=values.GetValueOrDefault("general.architecture") as string??"";
         bool contextDeclared=values.TryGetValue(architecture+".context_length",out var declared)&&declared is not string and not bool&&double.IsFinite(Convert.ToDouble(declared))&&Convert.ToDouble(declared)>=64;
         int capacity=contextDeclared?(int)Math.Clamp(Convert.ToDouble(declared),64,int.MaxValue):4096;
-        ModelMemoryProfile Unavailable(string why)=>Unknown(why) with {MaxContext=capacity,ContextDeclared=contextDeclared};
-        if(architecture is not ("qwen35" or "llama" or "qwen2" or "qwen3" or "gemma" or "gemma2" or "gemma3" or "phi2" or "phi3" or "mistral" or "gptneox" or "gpt2"))return Unavailable("This GGUF architecture needs a runtime-specific memory estimate.");
+        // The weights are still known when the context cost is not, so a lower bound can be compared with free memory.
+        ModelMemoryProfile Unavailable(string why)=>Unknown(why) with {MaxContext=capacity,ContextDeclared=contextDeclared,WeightBytes=SplitBytes(file,input.Length)};
+        if(architecture is not ("qwen35" or "llama" or "qwen2" or "qwen3" or "gemma" or "gemma2" or "gemma3" or "phi2" or "phi3" or "mistral" or "gptneox" or "gpt2" or "qwen2moe" or "qwen3moe"))return Unavailable("This GGUF architecture needs a runtime-specific memory estimate.");
         double N(string key,double fallback=0){var v=values.GetValueOrDefault(architecture+"."+key);if(v==null || v is string or bool)return fallback;var n=Convert.ToDouble(v);return double.IsFinite(n)&&n>0?n:fallback;}
         var layers=N("block_count");var heads=N("attention.head_count");var kvHeads=N("attention.head_count_kv",heads);var hidden=N("embedding_length");
         var keyLength=N("attention.key_length",heads>0?hidden/heads:0);var valueLength=N("attention.value_length",keyLength);
@@ -115,33 +119,122 @@ public static class ModelMemory
             var stateBytes=recurrent*(state*inner+(kernel-1)*(inner+2*groups*state))*4*2;
             return new(input.Length,(attention+mtp)*kvHeads*(keyLength+valueLength)*2,GiB*.75+stateBytes,capacity,$"Qwen hybrid: {attention:0} full-attention + {recurrent:0} recurrent layers; {mtp:0} optional prediction blocks budgeted conservatively. FP16 KV + two FP32 recurrent-state allowances; one slot, no speculative decoding",ContextDeclared:contextDeclared);
         }
-        return new(input.Length,layers*kvHeads*(keyLength+valueLength)*2,GiB*.75,capacity,"GGUF file size, FP16 KV cache and bounded prompt batching",ContextDeclared:contextDeclared);
+        return new(SplitBytes(file,input.Length),layers*kvHeads*(keyLength+valueLength)*2,GiB*.75,capacity,"GGUF file size, FP16 KV cache and bounded prompt batching",ContextDeclared:contextDeclared);
+    }
+    /// <summary>The bytes of every part of a split GGUF ("-00001-of-00003"), or the one file's size.</summary>
+    static double SplitBytes(string file,long first)
+    {
+        var match=System.Text.RegularExpressions.Regex.Match(Path.GetFileName(file),@"^(?<stem>.+)-00001-of-(?<count>\d{5})\.gguf$",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if(!match.Success)return first;
+        int count=int.Parse(match.Groups["count"].Value);double total=0;
+        for(int part=1;part<=count;part++)
+        {
+            var path=Path.Combine(Path.GetDirectoryName(file)??"",$"{match.Groups["stem"].Value}-{part:00000}-of-{match.Groups["count"].Value}.gguf");
+            if(!File.Exists(path))return first;
+            total+=new FileInfo(path).Length;
+        }
+        return total;
     }
     public static ModelFit Assess(ModelMemoryProfile? profile,GpuSample? sample,int context,DateTimeOffset? now=null)
     {
         if(profile==null)return new("Estimate unavailable","Scan the library to read model metadata.");
-        if(profile.Unknown!=null)return new("Estimate unavailable",profile.Unknown);
+        bool estimated=profile.Unknown==null;
+        if(!estimated && profile.WeightBytes<=0)return new("Estimate unavailable",profile.Unknown!);
         var tokens=Math.Min(context,profile.MaxContext);var cache=profile.KvBytesPerToken*tokens;
         var workspace=profile.WorkspaceBytes+profile.WorkspacePerToken*tokens;
-        double low=(profile.WeightBytes+cache+workspace)/GiB;
-        double high=(profile.WeightBytes*1.12+cache*1.15+workspace*1.5)/GiB;
-        var range=$"Estimated {low:0.0}–{high:0.0} GiB at {tokens:N0} context tokens.";
-        if(sample==null || sample.Error!=null || (now??DateTimeOffset.Now)-sample.At>TimeSpan.FromSeconds(15))return new("Waiting for GPU reading",range+" A fresh driver reading is needed.",low,high);
-        if(sample.Adapters.Length!=1 || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CUDA_VISIBLE_DEVICES")))return new("Estimate unavailable",range+" GPU mapping is ambiguous; capacity is never pooled across adapters.",low,high);
+        double low=estimated?(profile.WeightBytes+cache+workspace)/GiB:profile.WeightBytes/GiB;
+        double high=estimated?(profile.WeightBytes*1.12+cache*1.15+workspace*1.5)/GiB:low;
+        var range=estimated?$"Estimated {low:0.0}–{high:0.0} GiB at {tokens:N0} context tokens.":$"The weights alone are {low:0.0} GiB.";
+        if(sample==null || sample.Error!=null || (now??DateTimeOffset.Now)-sample.At>TimeSpan.FromSeconds(15))return new(ModelFit.Waiting,range+" A fresh driver reading is needed.",low,high,Estimated:estimated);
+        if(sample.Adapters.Length!=1 || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CUDA_VISIBLE_DEVICES")))return new("Estimate unavailable",range+" GPU mapping is ambiguous; capacity is never pooled across adapters.",low,high,Estimated:estimated);
         var gpu=sample.Adapters[0];
-        if(!gpu.FreeMiB.HasValue || !gpu.TotalMiB.HasValue || gpu.TotalMiB<=0 || gpu.FreeMiB<0 || gpu.FreeMiB>gpu.TotalMiB)return new("GPU memory unavailable",range+" The driver did not report usable free memory.",low,high);
+        if(!gpu.FreeMiB.HasValue || !gpu.TotalMiB.HasValue || gpu.TotalMiB<=0 || gpu.FreeMiB<0 || gpu.FreeMiB>gpu.TotalMiB)return new("GPU memory unavailable",range+" The driver did not report usable free memory.",low,high,Estimated:estimated);
         double free=gpu.FreeMiB.Value/1024,reserve=Math.Max(.5,gpu.TotalMiB.Value/1024*.05);
-        string state=high+reserve<=free?"Likely fits":low+reserve<=free?"Tight fit":"Too large for available VRAM";
-        return new(state,$"{range} {free:0.0} GiB free; {reserve:0.0} GiB kept spare. Estimate, not a guarantee.",low,high);
+        if(!estimated)
+            return low+reserve>free
+                ?new(ModelFit.TooLarge,$"{range} {free:0.0} GiB is free. {profile.Unknown}",low,high,free,reserve,false)
+                :new(ModelFit.Unverified,$"{range} {profile.Unknown} Fit is checked when it starts.",low,high,free,reserve,false);
+        string state=high+reserve<=free?ModelFit.Fits:low+reserve<=free?ModelFit.Tight:ModelFit.TooLarge;
+        return new(state,$"{range} {free:0.0} GiB free; {reserve:0.0} GiB kept spare. Estimate, not a guarantee.",low,high,free,reserve);
     }
     public static (bool Gpu,int Context,string Text) Recommend(ModelMemoryProfile? profile,GpuSample? sample)
     {
-        // Largest window that likely fits, up to the model's declared capacity. 32K is the ceiling: beyond it
+        // Largest ladder step that likely fits, up to the model's declared capacity. 32K is the ceiling: beyond it
         // prompt processing on one consumer GPU gets slow enough that a bigger default would not help.
         int cap=Math.Clamp(profile?.MaxContext??4096,64,32768);
-        foreach(var context in new[]{32768,16384,8192,4096,2048,1024,512}.Select(c=>Math.Min(c,cap)).Distinct())
-            if(Assess(profile,sample,context).State=="Likely fits")return (true,context,$"Suggested: GPU · {context:N0} context tokens");
+        foreach(var context in ModelLadder.Steps(profile).Where(c=>c<=cap).Reverse().Concat(new[]{1024,512}.Where(c=>c<=cap)))
+            if(Assess(profile,sample,context).State==ModelFit.Fits)return (true,context,$"Suggested: {ModelLadder.Label(context)} on GPU · largest likely fit");
         int start=Math.Min(2048,cap);var fit=Assess(profile,sample,Math.Min(512,cap));
-        return fit.State is "Tight fit" or "Too large for available VRAM"?(false,start,"Suggested: CPU · GPU headroom is limited. System RAM is not checked."):(true,start,$"Suggested starting point: GPU · {start:N0} context tokens. Fit is unverified.");
+        if(fit.State==ModelFit.TooLarge)return (false,start,fit.Estimated?"Suggested: CPU · GPU headroom is limited":"Suggested: CPU · weights exceed free memory");
+        if(fit.State==ModelFit.Tight)return (false,start,"Suggested: CPU · GPU headroom is limited");
+        return (true,start,$"Suggested starting point: GPU · {ModelLadder.Label(start)} · fit unverified");
     }
+}
+
+public enum FitTone{Fits,Tight,TooLarge,Muted}
+
+/// <summary>The context sizes offered for a model and the words shown for each fit, shared by the Library panel and the CLI.</summary>
+public static class ModelLadder
+{
+    static readonly int[] Candidates=[2048,4096,8192,16384,32768,65536,131072,262144];
+    /// <summary>Up to six context sizes: powers of two up to the declared capacity (32K when none is declared), plus the capacity itself when it is not one of them.</summary>
+    public static int[] Steps(ModelMemoryProfile? profile)
+    {
+        bool declared=profile is {ContextDeclared:true};
+        int max=declared?profile!.MaxContext:32768;
+        var steps=Candidates.Where(c=>c<=max).ToList();
+        if(steps.Count==0)steps.Add(Math.Max(64,max));
+        else if(declared&&max>steps[^1])steps.Add(max);
+        return steps.Skip(Math.Max(0,steps.Count-6)).ToArray();
+    }
+    /// <summary>"16K" for 16,384; a capacity in whole thousands reads in thousands, so 128,000 is "128K" (not 125K).</summary>
+    public static string Label(int tokens)=>tokens<1000?tokens.ToString():tokens%1000==0?$"{tokens/1000}K":$"{Math.Round(tokens/1024.0):0}K";
+    /// <summary>Reads 16384, 16k or 16K. Returns null for anything else.</summary>
+    public static int? Parse(string text)
+    {
+        text=text.Trim();
+        if(text.EndsWith("k",StringComparison.OrdinalIgnoreCase)&&int.TryParse(text[..^1],out var k)&&k>0&&k<=1024)return k*1024;
+        return int.TryParse(text,out var n)&&n>=512?n:null;
+    }
+    public static FitTone Tone(ModelFit fit)=>fit.State switch{ModelFit.Fits=>FitTone.Fits,ModelFit.Tight=>FitTone.Tight,ModelFit.TooLarge=>FitTone.TooLarge,_=>FitTone.Muted};
+    /// <summary>The memory shown under a step: the low estimate, the weights as a lower bound, or a dash.</summary>
+    public static string Memory(ModelFit fit)=>fit.LowGiB is not {} low?"— GiB":fit.Estimated?$"{low:0.0} GiB":$"{low:0.0}+ GiB";
+    /// <summary>The fit card's one-line explanation.</summary>
+    public static string Detail(ModelFit fit,int tokens,string architecture,bool cpu)
+    {
+        if(cpu)return "Runs from system RAM. Available RAM is not checked here, and CPU turns are much slower.";
+        string label=Label(tokens),arch=architecture.Length>0?architecture:"this architecture";
+        string range=fit.LowGiB.HasValue?$"{fit.LowGiB:0.0}–{fit.HighGiB:0.0} GiB at {label}":"";
+        return fit.State switch
+        {
+            ModelFit.Fits=>$"{range} · {fit.SpareGiB:0.0} GiB kept spare. An estimate, not a guarantee.",
+            ModelFit.Tight=>$"{range} · other apps could push it over. Try a smaller context or close apps using the GPU.",
+            ModelFit.TooLarge when fit.Estimated=>$"{range} · more than the {fit.FreeGiB:0.0} GiB free.",
+            ModelFit.TooLarge=>$"The weights alone are {fit.LowGiB:0.0} GiB and {fit.FreeGiB:0.0} GiB is free. Context memory for {arch} is not estimated yet.",
+            ModelFit.Unverified=>$"The weights are {fit.LowGiB:0.0} GiB. Context memory for {arch} is not estimated, so fit is checked when it starts.",
+            _=>fit.Detail
+        };
+    }
+    /// <summary>"RTX 4070 · 8.2 GiB free", from the one adapter Assess compares against.</summary>
+    public static string Device(GpuSample? sample)
+    {
+        if(sample is not {Error:null,Adapters.Length:1})return "GPU memory unavailable";
+        var gpu=sample.Adapters[0];
+        return gpu.FreeMiB is {} free?$"{Short(gpu.Name)} · {free/1024:0.0} GiB free":Short(gpu.Name);
+    }
+    /// <summary>The quantisation in a GGUF file name, such as Q4_K_M, IQ4_XS or UD-Q4_K_XL.</summary>
+    public static string? Quant(LocalModel model)
+    {
+        var match=System.Text.RegularExpressions.Regex.Match(Path.GetFileNameWithoutExtension(model.Path),@"(?<![A-Za-z0-9])((UD-)?(IQ\d_[A-Z0-9_]+|Q\d(_[A-Z0-9]+)*)|BF16|F16|F32)(?![A-Za-z0-9])",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success?match.Value.ToUpperInvariant():null;
+    }
+    /// <summary>The Hugging Face repository a local file came from: a Mason download record or the hub cache folder name.</summary>
+    public static string? Repository(LocalModel model)
+    {
+        if(System.Text.RegularExpressions.Regex.IsMatch(model.Source,@"^[\w.-]+/[\w.-]+$"))return model.Source;
+        var cache=System.Text.RegularExpressions.Regex.Match(model.Path,@"models--(?<org>[^\\/]+?)--(?<name>[^\\/]+)");
+        return cache.Success?cache.Groups["org"].Value+"/"+cache.Groups["name"].Value:null;
+    }
+    /// <summary>"NVIDIA GeForce RTX 4070 Laptop GPU" → "RTX 4070 Laptop GPU".</summary>
+    public static string Short(string name)=>System.Text.RegularExpressions.Regex.Replace(name,@"^(NVIDIA\s+)?(GeForce\s+)?","",System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
 }

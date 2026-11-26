@@ -54,6 +54,7 @@ internal static class ModelCatalogChecks
             return stream.ToArray();
         }
         var folder = Directory.CreateDirectory(Path.Combine(root, "catalog-" + Guid.NewGuid().ToString("N"))).FullName;
+        ModelLadderChecks.Run(Directory.CreateDirectory(Path.Combine(root, "ladder-" + Guid.NewGuid().ToString("N"))).FullName, check);
         File.WriteAllBytes(Path.Combine(folder, "code-model.gguf"), Gguf(("general.architecture", "bert"), ("bert.pooling_type", 1u)));
         File.WriteAllBytes(Path.Combine(folder, "ranker.gguf"), Gguf(("general.architecture", "qwen3"), ("qwen3.pooling_type", 4u)));
         File.WriteAllBytes(Path.Combine(folder, "tune.gguf"), Gguf(("general.architecture", "llama"), ("general.type", "adapter"), ("adapter.type", "lora")));

@@ -85,6 +85,71 @@ enum Term {
     }
     static func drainKeys() { while key() != nil {} }
 
+    /// True when output goes to a terminal, so lines can be redrawn in place (with or without colour).
+    static let tty = isatty(1) != 0
+    /// Terminal rows; 24 when it does not say.
+    static var height: Int {
+        var size = winsize()
+        return ioctl(1, UInt(TIOCGWINSZ), &size) == 0 && size.ws_row > 0 ? Int(size.ws_row) : 24
+    }
+    /// The highlighted row or cell: Mason's accent as the background.
+    static let selected = "\u{1B}[48;2;195;194;255m\u{1B}[38;2;23;26;43m\u{1B}[1m"
+
+    enum Key: Equatable { case up, down, left, right, enter, escape, interrupt, character(Character), other }
+    /// Waits for one key in raw mode and names it; arrows arrive as escape sequences.
+    static func readKey() -> Key {
+        while true {
+            guard let byte = key() else { continue }
+            switch byte {
+            case 27:
+                guard let next = key() else { return .escape }
+                guard next == 91 || next == 79, let final = key() else { drainKeys(); return .escape }
+                switch final {
+                case 65: return .up
+                case 66: return .down
+                case 67: return .right
+                case 68: return .left
+                default: drainKeys(); return .other
+                }
+            case 13, 10: return .enter
+            case 3: return .interrupt
+            case 32..<127: return .character(Character(UnicodeScalar(byte)))
+            default: drainKeys(); return .other
+            }
+        }
+    }
+
+    /// Writes raw text, for drawing that moves the cursor itself.
+    static func emit(_ text: String) {
+        lock.lock(); defer { lock.unlock() }
+        put(text)
+    }
+    /// Replaces the line the cursor is on, without ending it.
+    static func redrawLine(_ text: String) { emit("\r\u{1B}[2K" + text) }
+    /// Replaces the line the cursor is on and ends it.
+    static func finishLine(_ text: String) { emit("\r\u{1B}[2K" + text + newline) }
+    /// Replaces the `previous` lines just written with `lines`, cursor ending below them.
+    static func redraw(_ lines: [String], previous: Int) {
+        var text = previous > 0 ? "\u{1B}[\(previous)A\r\u{1B}[J" : ""
+        for line in lines { text += line + newline }
+        emit(text)
+    }
+    /// Rewrites one line `up` lines above the cursor and returns to where the cursor was.
+    static func rewrite(up: Int, _ text: String) {
+        guard up > 0 else { return }
+        emit("\u{1B}[\(up)A\r\u{1B}[2K" + text + "\r\u{1B}[\(up)B")
+    }
+    /// Words wrapped to a width, for text printed under a picker that is redrawn by line count.
+    static func wrap(_ text: String, _ width: Int) -> [String] {
+        var lines: [String] = [], current = ""
+        for word in text.split(separator: " ") {
+            if !current.isEmpty, current.count + 1 + word.count > width { lines.append(current); current = "" }
+            current += (current.isEmpty ? "" : " ") + word
+        }
+        if !current.isEmpty { lines.append(current) }
+        return lines
+    }
+
     /// Markdown for a terminal: fenced code, headings, bullets, bold and inline code. Other syntax is left as written.
     static func markdown(_ text: String) -> [String] {
         var code = false

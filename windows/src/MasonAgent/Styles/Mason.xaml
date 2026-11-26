@@ -98,6 +98,12 @@
     <Style x:Key="MasonDotCaution" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource SystemFillColorCautionBrush}"/></Style>
     <Style x:Key="MasonDotCritical" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource SystemFillColorCriticalBrush}"/></Style>
     <Style x:Key="MasonDotNeutral" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource TextFillColorTertiaryBrush}"/></Style>
+    <!-- Model fit bar fill, one per fit tone. -->
+    <Style x:Key="MasonFitFillSuccess" TargetType="Border"><Setter Property="Height" Value="6"/><Setter Property="CornerRadius" Value="3"/><Setter Property="Background" Value="{ThemeResource SystemFillColorSuccessBrush}"/></Style>
+    <Style x:Key="MasonFitFillCaution" TargetType="Border"><Setter Property="Height" Value="6"/><Setter Property="CornerRadius" Value="3"/><Setter Property="Background" Value="{ThemeResource SystemFillColorCautionBrush}"/></Style>
+    <Style x:Key="MasonFitFillCritical" TargetType="Border"><Setter Property="Height" Value="6"/><Setter Property="CornerRadius" Value="3"/><Setter Property="Background" Value="{ThemeResource SystemFillColorCriticalBrush}"/></Style>
+    <Style x:Key="MasonFitFillNeutral" TargetType="Border"><Setter Property="Height" Value="6"/><Setter Property="CornerRadius" Value="3"/><Setter Property="Background" Value="{ThemeResource TextFillColorTertiaryBrush}"/></Style>
+    <Style x:Key="MasonFitTrack" TargetType="Border"><Setter Property="Height" Value="6"/><Setter Property="CornerRadius" Value="3"/><Setter Property="Background" Value="{ThemeResource ControlAltFillColorSecondaryBrush}"/></Style>
     <Style x:Key="MasonDotAccent" TargetType="Ellipse"><Setter Property="Width" Value="8"/><Setter Property="Height" Value="8"/><Setter Property="Fill" Value="{ThemeResource AccentFillColorDefaultBrush}"/></Style>
 
     <!-- Code badge: a path, hash, size or key cap in Cascadia Mono. -->

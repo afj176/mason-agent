@@ -58,6 +58,11 @@ final class CLI {
     var home: URL { store.folder.deletingLastPathComponent() }
     var endpointName = ""
     var server: ModelServer?
+    /// How this session's model runs, for the status line: on the CPU only, and the high memory estimate.
+    var serverCpu = false
+    var serverEstimate: Double?
+    /// A key typed while the model list waited for a choice; it starts the next request.
+    var typeAhead = ""
     var listed: [LocalModel] = []
     var found: [HubModel] = []
     let current = Box<Task<Void, Never>?>(nil)
@@ -189,8 +194,12 @@ final class CLI {
         var text = ""
         while true {
             Term.line()
-            Term.write(text.isEmpty ? prompt : Term.paint(Term.dim, "  … "))
-            guard let line = readLine() else { return text.isEmpty ? nil : text }
+            if text.isEmpty, let footer = modelStatusLine() { Term.line(footer) }
+            let seed = text.isEmpty ? typeAhead : ""
+            typeAhead = ""
+            Term.write((text.isEmpty ? prompt : Term.paint(Term.dim, "  … ")) + seed)
+            guard let read = readLine() else { return text.isEmpty ? (seed.isEmpty ? nil : seed) : text }
+            let line = seed + read
             if line.hasSuffix("\\") { text += line.dropLast() + "\n"; continue }
             return (text + line).trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -638,7 +647,7 @@ final class CLI {
             ("/rules [revoke NUMBER]", "Saved always-allow rules for this project"),
             ("/model [number]", "List running model servers, or switch to one"),
             ("/models", "List the models on this computer and what each is for"),
-            ("/models start NUMBER|NAME", "Start a coding model here (add cpu, or a context size)"),
+            ("/models start NUMBER|NAME [SIZE] [cpu]", "Start a coding model here; without a size such as 16k, choose one in the picker"),
             ("/models stop", "Stop the model this session started"),
             ("/models start FOLDER", "Serve a folder of Transformers weights through Python (PyTorch)"),
             ("/models check NUMBER|FOLDER · python [PATH]", "Check a Transformers folder; choose the Python that serves them"),
@@ -814,7 +823,7 @@ final class CLI {
         case "start": try await startNamed(argument)
         case "stop":
             guard let running = server else { Term.line(Term.paint(Term.dim, "  This session has not started a model.")); break }
-            running.stop(); server = nil
+            running.stop(); server = nil; serverEstimate = nil
             if endpoint?.url == running.endpoint.url { endpoint = nil }
             Term.line(Term.paint(Term.dim, "  Stopped \(running.model.name)."))
         case "python":
@@ -840,29 +849,124 @@ final class CLI {
         }
     }
 
+    // MARK: models: list, picker, start
+
+    /// The line shown above the prompt while a model this session started is running.
+    func modelStatusLine() -> String? {
+        guard let running = server, running.isRunning else { return nil }
+        var facts = ModelMemory.label(running.context) + " · " + (serverCpu ? "CPU" : "GPU")
+        if !serverCpu, let high = serverEstimate { facts += " · ~\(ModelMemory.one(high)) GiB" }
+        return "  " + Term.paint(Term.green, "●") + " " + Term.paint(Term.bold, running.model.name) + "  " + Term.paint(Term.dim, facts) + "  "
+            + Term.paint(Term.dim, hostAndPort(running.endpoint.url)) + "  " + Term.paint(Term.dim, "/models stop")
+    }
+
+    func hostAndPort(_ url: String) -> String {
+        guard let parsed = URL(string: url), let host = parsed.host else { return url }
+        return parsed.port.map { "\(host):\($0)" } ?? host
+    }
+
+    /// The fit colour for a state; muted for anything that is not a judgement.
+    func tone(_ state: FitState?) -> String {
+        switch state {
+        case .likelyFits?: return Term.green
+        case .tight?: return Term.yellow
+        case .tooLarge?: return Term.red
+        default: return Term.dim
+        }
+    }
+
+    /// What the agent does with a model, in the list's words.
+    func agentUse(_ model: LocalModel) -> String {
+        switch model.role {
+        case .coding: return "coding"
+        case .vision: return "coding · vision"
+        case .projector: return "vision companion"
+        case .embeddings, .reranker: return "code search"
+        }
+    }
+
     func listModels() async throws {
-        listed = try await busy("Looking for models on this computer") { _ in ModelLibrary.scan() }
+        let found = try await busy("Looking for models on this computer") { progress -> (models: [LocalModel], profiles: [ModelMemoryProfile], build: String?) in
+            let models = ModelLibrary.scan()
+            progress("Reading model metadata")
+            let profiles = models.prefix(40).map { $0.role == .projector ? ModelMemoryProfile(weightBytes: Double($0.bytes), kvBytesPerToken: 0, workspaceBytes: 0, maxContext: 4096) : ModelMemory.read($0) }
+            return (models, profiles, LlamaRuntime.find().flatMap { LlamaRuntime.build(at: $0) })
+        }
+        listed = found.models
         guard !listed.isEmpty else {
             Term.line(Term.paint(Term.dim, "  No model files were found on this Mac."))
             Term.line(Term.paint(Term.dim, "  /models setup suggests one that fits and downloads it · /models search TEXT looks on Hugging Face."))
             return
         }
+        let memory = MemoryReading.unified(), shown = Array(listed.prefix(40))
+        let runtime = LlamaRuntime.find() == nil ? "llama.cpp not installed" : "llama.cpp " + (found.build ?? "installed")
         Term.line()
-        for (index, model) in listed.prefix(40).enumerated() {
+        Term.line("  " + Term.paint(Term.bold, "On this computer") + Term.paint(Term.dim, " · \(runtime) · \(memory.label) · ") + ModelMemory.one(memory.freeGiB)
+                  + Term.paint(Term.dim, " of \(ModelMemory.one(memory.totalGiB)) GiB free"))
+        Term.line()
+        let nameWidth = min(40, max(5, shown.map(\.name.count).max() ?? 5))
+        Term.line(Term.paint(Term.dim, "   #  " + "Model".padding(toLength: nameWidth, withPad: " ", startingAt: 0) + "Size".leftPad(9) + "  " + "Agent use".padding(toLength: 18, withPad: " ", startingAt: 0) + "GPU fit"))
+        // Each row in plain text and in colour, the same width, so a chosen row can be drawn highlighted in place.
+        var plain: [String] = [], styled: [String] = []
+        for (index, model) in shown.enumerated() {
             let running = server?.model.path == model.path && server?.isRunning == true
-            let fit = model.startable ? (MemoryFit.fits(weights: model.bytes) ? "" : Term.paint(Term.yellow, "  larger than the memory available")) : ""
-            Term.line("  \(Term.paint(Term.dim, String(index + 1).leftPad(2)))  \(model.startable ? Term.paint(Term.bold, Term.clip(model.name, 52)) : Term.clip(model.name, 52))" + Term.paint(Term.dim, "  \(model.size) · \(model.source)") + (running ? Term.paint(Term.green, "  ● running here") : fit))
-            Term.line(Term.paint(Term.dim, "      " + model.verdict))
+            let summary = running ? FitSummary(marks: [("●", .likelyFits)], note: "running here") : ModelMemory.summary(found.profiles[index], memory: memory, role: model.role)
+            let number = String(index + 1).leftPad(4), name = Term.clip(model.name, nameWidth).padding(toLength: nameWidth, withPad: " ", startingAt: 0)
+            let size = model.size.leftPad(9), use = agentUse(model).padding(toLength: 18, withPad: " ", startingAt: 0)
+            let gap = String(repeating: " ", count: max(2, 7 - summary.marks.count))
+            let lead = number + "  " + name + size + "  " + use
+            let note = Term.clip(summary.note, max(8, Term.width - 1 - lead.count - summary.marks.count - gap.count))
+            plain.append(lead + summary.symbols + gap + note)
+            let shownName: String = model.startable ? Term.paint(Term.bold, name) : name
+            let symbols: String = summary.marks.map { Term.paint(tone($0.state), $0.symbol) }.joined()
+            var row: String = Term.paint(Term.dim, number) + "  " + shownName + size
+            row += "  " + use + symbols + gap + Term.paint(Term.dim, note)
+            styled.append(row)
         }
-        if listed.count > 40 { Term.line(Term.paint(Term.dim, "      … and \(listed.count - 40) more files")) }
-        Term.line(Term.paint(Term.dim, "  Start a coding model with /models start NUMBER (add cpu, or a context size such as 16384)."))
+        styled.forEach { Term.line($0) }
+        var below = 0
+        if listed.count > 40 { Term.line(Term.paint(Term.dim, "      … and \(listed.count - 40) more files")); below += 1 }
+        Term.line(); below += 1
+        // Choosing with the arrow keys redraws rows in place, so it needs a terminal tall enough to show them all.
+        let choosing = Term.interactive && Term.tty && shown.count + below + 6 < Term.height
+        if choosing {
+            Term.line(Term.paint(Term.dim, "  ↑↓ choose  ⏎ open  · or type ") + "/models start 1 16k" + Term.paint(Term.dim, " to skip the picker"))
+        } else {
+            Term.line(Term.paint(Term.dim, "  Start one with ") + "/models start NUMBER" + Term.paint(Term.dim, ", adding a size such as 16k or cpu to skip the picker."))
+        }
+        below += 1
+        guard choosing else { return }
+        Term.raw(true)
+        var chosen: Int?
+        func up(_ row: Int) -> Int { shown.count - row + below }
+        func draw(_ row: Int, highlighted: Bool) { Term.rewrite(up: up(row), highlighted ? Term.paint(Term.selected, plain[row]) : styled[row]) }
+        var open = false
+        loop: while true {
+            switch Term.readKey() {
+            case .down:
+                if let row = chosen { draw(row, highlighted: false) }
+                chosen = chosen.map { min(shown.count - 1, $0 + 1) } ?? 0
+                draw(chosen!, highlighted: true)
+            case .up:
+                if let row = chosen { draw(row, highlighted: false) }
+                chosen = chosen.map { max(0, $0 - 1) } ?? shown.count - 1
+                draw(chosen!, highlighted: true)
+            case .enter: open = chosen != nil; break loop
+            case .character(let character): typeAhead = String(character); break loop
+            default: break loop
+            }
+        }
+        if let row = chosen { draw(row, highlighted: false) }
+        Term.raw(false)
+        if open, let row = chosen { try await choose(shown[row], context: nil, cpu: nil) }
     }
 
     func startNamed(_ argument: String) async throws {
-        var words = argument.split(separator: " ").map(String.init), cpu = false, context: Int?
+        var words = argument.split(separator: " ").map(String.init), cpu: Bool?, context: Int?
         for word in words.dropFirst() {
             if word.lowercased() == "cpu" { cpu = true; words.removeAll { $0 == word } }
-            else if let tokens = Int(word), tokens >= 512 { context = tokens; words.removeAll { $0 == word } }
+            else if word.lowercased() == "gpu" { cpu = false; words.removeAll { $0 == word } }
+            else if let tokens = ModelMemory.parseContext(word), tokens >= 512 { context = tokens; words.removeAll { $0 == word } }
         }
         let wanted = words.joined(separator: " ")
         guard !wanted.isEmpty else { throw MasonError("Use /models start NUMBER or NAME. /models lists them.") }
@@ -872,12 +976,155 @@ final class CLI {
         else if wanted.hasPrefix("/") || wanted.hasPrefix("~") { model = try TransformersRuntime.model(at: wanted) }
         else if let match = listed.first(where: { $0.startable && $0.name.localizedCaseInsensitiveContains(wanted) }) { model = match }
         else { throw MasonError("No model on this computer matches \"\(wanted)\". /models lists them.") }
-        guard model.startable else { throw MasonError("\(model.name) cannot be started here: \(model.verdict).") }
-        _ = try await start(model, context: context, cpuOnly: cpu)
+        try await choose(model, context: context, cpu: cpu)
     }
 
-    /// Starts a model with llama.cpp and makes it this session's model.
-    func start(_ model: LocalModel, context: Int? = nil, cpuOnly: Bool = false) async throws -> Bool {
+    /// Step 2 or 4 of the flow: the picker when no size was typed, or a question when the typed size is tight or too large.
+    func choose(_ model: LocalModel, context: Int?, cpu: Bool?) async throws {
+        guard model.startable else { throw MasonError("\(model.name) cannot be started here: \(model.verdict).") }
+        let profile = try await busy("Reading \(model.name)") { _ in ModelMemory.read(model) }
+        let memory = MemoryReading.unified()
+        if let context {
+            guard let answer = cpu == true ? (context, true) : askAboutFit(profile, memory: memory, context: context) else { return }
+            _ = try await start(model, context: answer.0, cpuOnly: answer.1, profile: profile)
+            return
+        }
+        guard let picked = pick(model, profile: profile, memory: memory, cpu: cpu) else { Term.line(Term.paint(Term.dim, "  Not started.")); return }
+        _ = try await start(model, context: picked.context, cpuOnly: picked.cpu, profile: profile)
+    }
+
+    /// For a typed size: nothing to ask when it likely fits (or the fit cannot be judged). Tight or too large asks
+    /// whether to start anyway, use the suggested size or the CPU, or cancel. nil means do not start.
+    func askAboutFit(_ profile: ModelMemoryProfile, memory: MemoryReading, context: Int) -> (Int, Bool)? {
+        let fit = ModelMemory.assess(profile, memory: memory, context: context)
+        guard fit.state == .tight || fit.state == .tooLarge else { return (context, false) }
+        let suggestion = ModelMemory.recommend(profile, memory: memory)
+        let gpuStep = suggestion.gpu && ModelMemory.assess(profile, memory: memory, context: suggestion.context).state == .likelyFits ? suggestion.context : nil
+        let name = ModelMemory.label(context), free = ModelMemory.one(fit.freeGiB ?? 0), spare = ModelMemory.one(fit.spareGiB ?? 0)
+        let title = fit.state == .tight ? "◐ Tight fit at \(name)" : "✕ Too large at \(name)"
+        let needed = fit.lowGiB.flatMap { low in fit.highGiB.map { "\(ModelMemory.one(low))–\(ModelMemory.one($0)) GiB needed" } } ?? "\(ModelMemory.one(fit.weightsGiB))+ GiB for the weights alone"
+        Term.line("  " + Term.paint(tone(fit.state), title) + Term.paint(Term.dim, " · \(needed), \(free) GiB free, \(spare) kept spare"))
+        guard Term.interactive else { Term.line(Term.paint(Term.dim, "  Not started: there is no terminal to ask.")); return nil }
+        let other = gpuStep.map { Term.paint(Term.accent, "s") + " use \(ModelMemory.label($0)) instead   " } ?? Term.paint(Term.accent, "c") + " use CPU   "
+        let options = "    " + Term.paint(Term.accent, "y") + " start anyway   " + other + Term.paint(Term.accent, "n") + " cancel  " + Term.paint(Term.accent, "›") + " "
+        Term.write(options)
+        Term.raw(true)
+        defer { Term.raw(false) }
+        while true {
+            switch Term.readKey() {
+            case .character("y"), .character("Y"): Term.finishLine(options + "y"); return (context, false)
+            case .character("s"), .character("S"): if let step = gpuStep { Term.finishLine(options + "s"); return (step, false) }
+            case .character("c"), .character("C"): if gpuStep == nil { Term.finishLine(options + "c"); return (context, true) }
+            case .character("n"), .character("N"), .escape, .interrupt: Term.finishLine(options + "n"); return nil
+            default: break
+            }
+        }
+    }
+
+    /// The context picker. Not a terminal: it prints once and takes the suggestion without asking.
+    func pick(_ model: LocalModel, profile: ModelMemoryProfile, memory: MemoryReading, cpu startOnCpu: Bool?) -> (context: Int, cpu: Bool)? {
+        let steps = ModelMemory.ladder(profile), suggestion = ModelMemory.recommend(profile, memory: memory)
+        var index = steps.lastIndex(where: { $0 <= suggestion.context }) ?? 0
+        var cpu = startOnCpu ?? !suggestion.gpu, explained = false
+        func lines() -> [String] {
+            let fits = steps.map { ModelMemory.assess(profile, memory: memory, context: $0) }
+            var facts = [profile.sizeLabel, model.quantization, model.format, profile.architecture].filter { !$0.isEmpty }
+            if profile.contextDeclared { facts.append("max " + ModelMemory.label(profile.maxContext)) }
+            facts.append("\(model.size) on disk")
+            func cell(_ text: String, _ style: String, selected: Bool, width: Int = 7) -> String {
+                if !selected { return Term.paint(style, text.leftPad(width)) + String(repeating: " ", count: 8 - width) }
+                let pad = String(repeating: " ", count: max(0, width - text.count - 1))
+                return pad + (Term.styled ? Term.paint(Term.selected, " " + text + " ") : "[" + text + "]") + String(repeating: " ", count: max(0, 7 - width))
+            }
+            let context = steps.enumerated().map { cell(ModelMemory.label($1), "", selected: $0 == index) }.joined()
+            let gib = fits.enumerated().map { item -> String in
+                let text = ModelMemory.stepMemory(item.element).replacingOccurrences(of: " GiB", with: "")
+                return cell(text, cpu ? Term.dim : tone(item.element.state), selected: item.offset == index)
+            }.joined()
+            let marks = fits.enumerated().map { item -> String in
+                let symbol: String
+                switch item.element.state {
+                case .likelyFits: symbol = "●"
+                case .tight: symbol = "◐"
+                case .tooLarge: symbol = "○"
+                default: symbol = "?"
+                }
+                return cell(symbol, cpu ? Term.dim : tone(item.element.state), selected: item.offset == index && Term.styled, width: 6)
+            }.joined()
+            var out = ["  " + Term.paint(Term.bold, model.name), Term.paint(Term.dim, "  " + facts.joined(separator: " · ")), "",
+                       "  " + Term.paint(Term.dim, "Context ") + context, "  " + Term.paint(Term.dim, "GiB     ") + gib, "  " + Term.paint(Term.dim, "Fit     ") + marks, ""]
+            let fit = fits[index]
+            if cpu {
+                out += ["  " + Term.paint(Term.dim, "CPU      ") + "runs from system RAM · not checked here", ""]
+            } else {
+                let total = max(memory.totalGiB, 0.001), free = memory.freeGiB
+                func cells(_ value: Double) -> Int { max(0, Int((value / total * 30).rounded())) }
+                let other = min(29, cells(total - free))
+                let used = min(29 - other, cells(fit.lowGiB ?? fit.weightsGiB))
+                let margin = min(29 - other - used, cells((fit.highGiB ?? 0) - (fit.lowGiB ?? 0)))
+                let rest = 29 - other - used - margin
+                let bar = Term.paint(Term.dim, String(repeating: "█", count: other)) + Term.paint(Term.accent, String(repeating: "█", count: used))
+                    + Term.paint(Term.yellow, String(repeating: "▒", count: margin)) + Term.paint(Term.dim, String(repeating: "░", count: rest) + "│")
+                let amount = fit.lowGiB.flatMap { low in fit.highGiB.map { "\(ModelMemory.one(low))–\(ModelMemory.one($0)) of \(ModelMemory.one(free)) GiB" } }
+                    ?? "weights \(ModelMemory.one(fit.weightsGiB)) of \(ModelMemory.one(free)) GiB"
+                out += ["  " + Term.paint(Term.dim, "GPU      ") + bar + "  " + Term.paint(tone(fit.state) + Term.bold, fit.state.rawValue.lowercased()) + Term.paint(Term.dim, " · " + amount),
+                        Term.paint(Term.dim, "           other apps  model + cache   margin  spare")]
+            }
+            out += ["", "  " + Term.paint(Term.accent, "←→") + Term.paint(Term.dim, " context   ") + Term.paint(Term.accent, "g") + Term.paint(Term.dim, " GPU  ")
+                    + Term.paint(Term.accent, "c") + Term.paint(Term.dim, " CPU   ") + Term.paint(Term.accent, "?") + Term.paint(Term.dim, " how this is estimated   ")
+                    + Term.paint(Term.accent, "⏎") + Term.paint(Term.dim, " start   ") + Term.paint(Term.accent, "esc") + Term.paint(Term.dim, " back")]
+            if explained { out += [""] + Term.wrap(ModelMemory.explanation(profile), max(30, Term.width - 6)).map { "  " + Term.paint(Term.dim, $0) } }
+            return out
+        }
+        Term.line()
+        guard Term.interactive, Term.tty, !steps.isEmpty else {
+            lines().forEach { Term.line($0) }
+            Term.line(Term.paint(Term.dim, "  " + suggestion.text))
+            return (suggestion.context, !suggestion.gpu)
+        }
+        Term.raw(true)
+        defer { Term.raw(false) }
+        var drawn = lines()
+        Term.redraw(drawn, previous: 0)
+        while true {
+            switch Term.readKey() {
+            case .left: index = max(0, index - 1)
+            case .right: index = min(steps.count - 1, index + 1)
+            case .character("g"), .character("G"): cpu = false
+            case .character("c"), .character("C"): cpu = true
+            case .character("?"): explained = true
+            case .enter: return (steps[index], cpu)
+            case .escape, .interrupt, .character("q"): return nil
+            default: continue
+            }
+            let next = lines()
+            Term.redraw(next, previous: drawn.count)
+            drawn = next
+        }
+    }
+
+    /// The stage line of step 3: done stages ticked, the current one spinning (or crossed out when it failed).
+    func stageLine(_ stage: ModelStartStage, frame: Int, seconds: Int, failed: Bool, finished: Bool) -> String {
+        let all = ModelStartStage.allCases, at = all.firstIndex(of: stage) ?? 0
+        var plain: [String] = [], styled: [String] = []
+        for (index, step) in all.enumerated() {
+            let name = step.rawValue
+            if (finished && !failed) || index < at { plain.append("✓ " + name); styled.append(Term.paint(Term.green, "✓ " + name)) }
+            else if index == at {
+                let mark = failed ? "✗" : String(Array("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")[frame % 10])
+                plain.append(mark + " " + name); styled.append(Term.paint(failed ? Term.red : Term.accent, mark + " " + name))
+            } else { plain.append("· " + name); styled.append(Term.paint(Term.dim, "· " + name)) }
+        }
+        let clock = String(format: "%d:%02d", seconds / 60, seconds % 60) + (finished ? "" : " · esc cancels")
+        let left = "  " + plain.joined(separator: "   ")
+        let gap = String(repeating: " ", count: max(2, Term.width - 1 - left.count - clock.count))
+        return "  " + styled.joined(separator: "   ") + gap + Term.paint(Term.dim, clock)
+    }
+
+    func endStage(_ line: String) { if Term.tty { Term.finishLine(line) } else { Term.line(line) } }
+
+    /// Step 3: starts a model with llama.cpp (or Python for Transformers folders) behind a stage line, and makes it this session's model.
+    func start(_ model: LocalModel, context: Int? = nil, cpuOnly: Bool = false, profile known: ModelMemoryProfile? = nil) async throws -> Bool {
         // Transformers weights run through Python, not llama.cpp.
         var runtime = model.transformers ? "" : LlamaRuntime.find()
         if runtime == nil {
@@ -885,16 +1132,40 @@ final class CLI {
             runtime = try await installRuntime(force: false)
         }
         guard let runtime else { return false }
-        server?.stop(); server = nil
-        do {
-            let started = try await busy("Starting \(model.name)") { progress in try await ModelServer.start(model, runtime: runtime, context: context, cpuOnly: cpuOnly, progress: progress) }
-            server = started
+        server?.stop(); server = nil; serverEstimate = nil
+        let profile = known ?? ModelMemory.read(model), memory = MemoryReading.unified()
+        let tokens = context ?? ModelMemory.recommend(profile, memory: memory).context
+        Term.line("  " + Term.paint(Term.bold, "Starting \(model.name)") + Term.paint(Term.dim, " · \(ModelMemory.label(tokens)) · \(cpuOnly ? "CPU" : "GPU")"))
+        let stage = Box(ModelStartStage.inspect), result = Box<Result<ModelServer, Error>?>(nil), began = Date()
+        let task = Task {
+            do { result.value = .success(try await ModelServer.start(model, runtime: runtime, context: tokens, cpuOnly: cpuOnly, stage: { stage.value = $0 }, progress: { _ in })) }
+            catch { result.value = .failure(error) }
+        }
+        current.value = task
+        Term.raw(true)
+        var frame = 0
+        while result.value == nil {
+            if let key = Term.key(), key == 3 || (key == 27 && Term.wasEscapeAlone()) { task.cancel() }
+            frame += 1
+            if Term.tty { Term.redrawLine(stageLine(stage.value, frame: frame, seconds: Int(Date().timeIntervalSince(began)), failed: false, finished: false)) }
+        }
+        current.value = nil
+        let seconds = Int(Date().timeIntervalSince(began))
+        switch result.value! {
+        case .success(let started):
+            endStage(stageLine(.ready, frame: frame, seconds: seconds, failed: false, finished: true))
+            Term.raw(false)
+            server = started; serverCpu = cpuOnly
+            serverEstimate = ModelMemory.assess(profile, memory: memory, context: started.context).highGiB
             use(started.endpoint, name: model.name)
-            var preferences = Preferences.load(); preferences.lastModelPath = model.path; preferences.lastContext = started.context; preferences.save()
-            Term.line(Term.paint(Term.green, "  ✓ \(model.name) is running") + Term.paint(Term.dim, "  ·  \(started.context) context · stops when you leave mason"))
+            var preferences = Preferences.load(); preferences.lastModelPath = model.path; preferences.lastContext = started.context; preferences.lastCpuOnly = cpuOnly; preferences.save()
+            Term.line("  " + Term.paint(Term.green, "✓ Ready") + Term.paint(Term.dim, " · \(hostAndPort(started.endpoint.url)) · ") + "this session now codes with \(model.name)")
             return true
-        } catch let error as MasonError {
-            Term.line(Term.paint(Term.red, "  ✗ \(model.name) did not start. ") + error.description)
+        case .failure(let error):
+            endStage(stageLine(stage.value, frame: frame, seconds: seconds, failed: true, finished: true))
+            Term.raw(false)
+            if error is CancellationError { throw error }
+            Term.line(Term.paint(Term.red, "  ✗ \(model.name) did not start. ") + ((error as? MasonError)?.description ?? error.localizedDescription))
             return false
         }
     }
@@ -989,7 +1260,7 @@ final class CLI {
                 let size = ((try? FileManager.default.attributesOfItem(atPath: URL(fileURLWithPath: path).resolvingSymlinksInPath().path))?[.size] as? NSNumber)?.int64Value ?? 0
                 let model = LocalModel(name: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent, path: path, bytes: size, source: "Last used")
                 Term.line(Term.paint(Term.dim, "  Nothing is answering yet, so Mason is starting the model you used last."))
-                if try await start(model, context: preferences.lastContext) { return }
+                if try await start(model, context: preferences.lastContext, cpuOnly: preferences.lastCpuOnly ?? false) { return }
             }
             listed = try await busy("Looking for models on this computer") { _ in ModelLibrary.scan() }
             let choices = Array(listed.filter(\.startable).prefix(12))

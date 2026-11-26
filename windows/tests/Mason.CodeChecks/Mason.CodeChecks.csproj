@@ -20,6 +20,7 @@
     <Compile Include="../../src/MasonAgent/ModelDiscovery.cs" Link="ModelDiscovery.cs" />
     <Compile Include="../../src/MasonAgent/ModelAdapters.cs" Link="ModelAdapters.cs" />
     <Compile Include="../../src/MasonAgent/LlamaRuntime.cs" Link="LlamaRuntime.cs" />
+    <Compile Include="../../src/MasonAgent/ModelMemory.cs" Link="ModelMemory.cs" />
     <EmbeddedResource Include="../../scripts/ModelAdapters.json" LogicalName="Mason.ModelAdapters.json" />
   </ItemGroup>
 </Project>
