@@ -89,7 +89,7 @@ std::vector<DiffLine> visible_rows(const std::vector<DiffLine>& rows) {
 
 }  // namespace
 
-MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : controller_(controller), models_(controller) {
+MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : controller_(controller), models_(controller), chat_(controller) {
     auto provider = Gtk::CssProvider::create();
     provider->load_from_data(kStyle);
     Gtk::StyleContext::add_provider_for_display(Gdk::Display::get_default(), provider, GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -217,6 +217,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     // ---- content: Code and Models ----
     stack_ = ADW_VIEW_STACK(adw_view_stack_new());
     adw_view_stack_add_titled_with_icon(stack_, GTK_WIDGET(session_stack_.gobj()), "code", "Code", "utilities-terminal-symbolic");
+    adw_view_stack_add_titled_with_icon(stack_, GTK_WIDGET(chat_.gobj()), "chat", "Chat", "user-available-symbolic");
     adw_view_stack_add_titled_with_icon(stack_, GTK_WIDGET(models_.gobj()), "models", "Models", "applications-science-symbolic");
     GtkWidget* switcher = adw_view_switcher_new();
     adw_view_switcher_set_stack(ADW_VIEW_SWITCHER(switcher), stack_);
@@ -284,6 +285,7 @@ void MainWindow::refresh() {
     refresh_composer();
     refresh_changes();
     models_.refresh();
+    chat_.refresh();
     const Session* session = controller_.session();
     session_stack_.set_visible_child(session ? "session" : "empty");
     adw_navigation_page_set_title(content_page_, session ? session->title.c_str() : "Mason Agent");
@@ -393,7 +395,9 @@ Gtk::Widget* MainWindow::activity_widget(const Activity& activity) {
     return expander;
 }
 
-Gtk::Widget* MainWindow::answer_widget(const std::string& text) {
+Gtk::Widget* MainWindow::answer_widget(const std::string& text) { return answer_view(text); }
+
+Gtk::Widget* answer_view(const std::string& text) {
     auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
     std::string prose, code;
     bool in_code = false;

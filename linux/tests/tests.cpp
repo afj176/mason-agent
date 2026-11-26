@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "agent.hpp"
+#include "chat.hpp"
 #include "models.hpp"
 
 using namespace mason;
@@ -570,11 +571,67 @@ static void test_mcp() {
     CHECK(session.activities[count - 2].state == "denied" && session.activities[count - 1].state == "failed");
 }
 
+static void test_chat() {
+    Sandbox box;
+    fs::create_directories(box.home);
+    ChatStore store(box.home);
+    ChatConversation conversation = store.create();
+    std::ofstream(box.home / "notes.txt", std::ios::binary) << "line one\n```\nfenced\n```";
+    std::ofstream(box.home / "image.bin", std::ios::binary) << std::string("\xFF\xFE\x00\x01", 4);
+    std::ofstream(box.home / "large.txt", std::ios::binary) << std::string(ChatAttachment::kMaxBytes + 1, 'x');
+    CHECK_THROWS(ChatAttachment::from_file(box.home / "image.bin"));
+    CHECK_THROWS(ChatAttachment::from_file(box.home / "large.txt"));
+    const ChatAttachment notes = ChatAttachment::from_file(box.home / "notes.txt");
+
+    // A chat is saved, carries attachments and offers no tools.
+    ScriptedModel model;
+    model.replies = {say("It has a fenced block."), say("Second answer.")};
+    std::string streamed;
+    chat::send(conversation, "What is in this file?", {notes}, model, store, [&](const std::string& text) { streamed += text; });
+    CHECK(streamed == "It has a fenced block." && conversation.title == "What is in this file?");
+    CHECK(conversation.messages.size() == 3 && conversation.messages[0].content.find("no tools") != std::string::npos);
+    CHECK(conversation.messages[1].content.find("Attached file notes.txt:\n````\nline one") != std::string::npos);  // a longer fence around a file with a fence
+    chat::send(conversation, "And again?", {}, model, store, nullptr);
+    CHECK(model.seen[1].size() == 4 && model.seen[1].back().role == "user");
+    {
+        ChatStore reloaded(box.home);
+        CHECK(reloaded.conversations().size() == 1 && reloaded.conversations()[0].messages.size() == 5 && reloaded.conversations()[0].model == "scripted");
+    }
+
+    // A failed request keeps the question, and the next message joins it.
+    ChatConversation second = store.create();
+    ScriptedModel empty;
+    CHECK_THROWS(chat::send(second, "Hello?", {}, empty, store, nullptr));
+    CHECK(second.messages.size() == 2 && second.messages[1].role == "user");
+    ScriptedModel answers;
+    answers.replies = {say("Yes.")};
+    chat::send(second, "Still there?", {}, answers, store, nullptr);
+    CHECK(second.messages.size() == 3 && second.messages[1].content.find("Hello?") != std::string::npos && second.messages[1].content.find("Still there?") != std::string::npos);
+    CHECK_THROWS(chat::send(second, "   ", {}, answers, store, nullptr));
+
+    // A long chat is compacted before the next answer.
+    ChatConversation busy = store.create();
+    ScriptedModel four;
+    for (int number = 1; number <= 4; number++) four.replies.push_back(say("Answer."));
+    for (int number = 1; number <= 4; number++) chat::send(busy, "Question " + std::to_string(number), {}, four, store, nullptr);
+    busy.prompt_tokens = 900;
+    ScriptedModel full;
+    full.window = 1000;
+    full.replies = {say("Earlier: four questions were answered."), say("Answer 5.")};
+    chat::send(busy, "Question 5", {}, full, store, nullptr);
+    bool continued = false;
+    for (const ChatMessage& message : full.seen[1]) continued = continued || message.content.find("four questions were answered") != std::string::npos;
+    CHECK(busy.compactions == 1 && continued && !busy.archived.empty() && full.seen[1].back().content.find("Question 5") != std::string::npos);
+
+    store.remove(conversation.id);
+    CHECK(ChatStore(box.home).conversations().size() == 2);
+}
+
 int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

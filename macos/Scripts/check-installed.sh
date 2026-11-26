@@ -58,4 +58,17 @@ sleep 2
 screencapture -x "$SHOTS/3-done.png" || true
 [ "$(cat hello.txt)" = "hello from the stub model" ] || { echo "The app did not write hello.txt after approval."; exit 1; }
 kill -0 $APP_PID
-echo "Installed Mason Agent passed: PATH, sandboxed command, undo, compaction, and an approved edit through the app."
+
+echo "--- app, chat ---"
+# New Chat (Shift-Command-N) opens the Chat pane with the message box focused.
+osascript -e 'tell application "System Events" to keystroke "n" using {command down, shift down}'
+sleep 2
+osascript -e 'tell application "System Events" to keystroke "say hello"' -e 'delay 1' \
+          -e 'tell application "System Events" to keystroke return using command down'
+for _ in $(seq 1 30); do grep -rqs "Summary: the stub" "$MASON_DATA_HOME/chats" && break; sleep 0.5; done
+sleep 1
+screencapture -x "$SHOTS/4-chat.png" || true
+grep -rqs "say hello" "$MASON_DATA_HOME/chats" || { echo "The app did not save the chat message."; exit 1; }
+grep -rqs "Summary: the stub" "$MASON_DATA_HOME/chats" || { echo "The chat did not get an answer from the model."; exit 1; }
+kill -0 $APP_PID
+echo "Installed Mason Agent passed: PATH, sandboxed command, undo, compaction, an approved edit through the app, and a chat."

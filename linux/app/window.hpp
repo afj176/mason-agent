@@ -15,6 +15,8 @@ std::string inline_markup(const std::string& text);
 void clear(Gtk::Box& box);
 /// A small label styled as secondary text.
 Gtk::Label* dim_label(const std::string& text);
+/// A model's answer: prose with headings, bullets and inline code, and fenced code as scrollable blocks.
+Gtk::Widget* answer_view(const std::string& text);
 
 /// The Models page: running servers, the llama.cpp runtime, local model files and Hugging Face.
 class ModelsPage : public Gtk::ScrolledWindow {
@@ -29,6 +31,29 @@ private:
     std::string shown_;  ///< A fingerprint of what is displayed, so unchanged state does not rebuild the page.
     Gtk::Label* status_label_ = nullptr;  ///< Owned by the page; reset whenever the page is rebuilt.
     Gtk::ProgressBar* progress_ = nullptr;
+};
+
+/// The Chat page: saved conversations, the selected one, and a message box. Chat has no tools.
+class ChatPage : public Gtk::Box {
+public:
+    explicit ChatPage(Controller& controller);
+    void refresh();
+
+private:
+    void refresh_buttons();
+    void choose_files();
+
+    Controller& controller_;
+    Gtk::ListBox list_;
+    Gtk::Box transcript_{Gtk::Orientation::VERTICAL, 16};
+    Gtk::ScrolledWindow transcript_scroll_;
+    Gtk::Box attachments_{Gtk::Orientation::HORIZONTAL, 6};
+    Gtk::TextView draft_;
+    Gtk::Button attach_{"Attach…"}, send_{"Send"}, stop_{"Stop"};
+    Gtk::Label model_label_;
+    Gtk::Label* live_label_ = nullptr;  ///< Owned by the transcript and reset when it is rebuilt.
+    bool updating_ = false;
+    std::string list_shown_, transcript_shown_, attachments_shown_;
 };
 
 class MainWindow {
@@ -67,6 +92,7 @@ private:
     Gtk::ScrolledWindow changes_scroll_;
     Gtk::Stack session_stack_;
     ModelsPage models_;
+    ChatPage chat_;
     Gtk::Label* live_label_ = nullptr;  ///< Shows the model's streamed words; owned by the transcript and reset when it is rebuilt.
     bool updating_ = false;
     std::string sidebar_shown_, transcript_shown_, changes_shown_;

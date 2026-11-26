@@ -15,6 +15,13 @@ Controller::Controller() {
         const std::string message = error.what();
         post([this, message] { notice.emit("Mason could not open its data folder: " + message); });
     }
+    try {
+        chat_store_ = std::make_unique<ChatStore>();
+        chats_ = chat_store_->conversations();
+        if (!chats_.empty()) chat_selection = chats_.front().id;
+    } catch (const std::exception&) {
+        // Chat stays empty when its folder cannot be opened; the coding sessions are unaffected.
+    }
     runtime_path = llama::find();
     refresh_models(true);
 }
@@ -23,6 +30,7 @@ Controller::~Controller() {
     *alive_ = false;
     if (run_cancel_) run_cancel_->store(true);
     if (model_cancel_) model_cancel_->store(true);
+    if (chat_cancel_) chat_cancel_->store(true);
     {
         // A request waiting for an approval must not wait forever.
         std::lock_guard<std::mutex> guard(approval_lock_);
@@ -31,6 +39,7 @@ Controller::~Controller() {
     approval_answered_.notify_all();
     if (run_thread_.joinable()) run_thread_.join();
     if (model_thread_.joinable()) model_thread_.join();
+    if (chat_thread_.joinable()) chat_thread_.join();
     server_.reset();
 }
 
@@ -247,6 +256,108 @@ void Controller::answer(bool allow, const std::string& always_prefix) {
     }
     approval_answered_.notify_all();
     changed.emit();
+}
+
+// ---- chat ------------------------------------------------------------------------------------------------------
+
+const ChatConversation* Controller::chat() const {
+    for (const ChatConversation& item : chats_) {
+        if (item.id == chat_selection) return &item;
+    }
+    return nullptr;
+}
+
+void Controller::select_chat(const std::string& id) {
+    if (chat_running || id == chat_selection) return;
+    chat_selection = id;
+    changed.emit();
+}
+
+void Controller::new_chat() {
+    if (!chat_store_ || chat_running) return;
+    // Reuse an untouched chat rather than collecting empty ones.
+    for (const ChatConversation& item : chats_) {
+        if (item.messages.size() <= 1) { chat_selection = item.id; changed.emit(); return; }
+    }
+    try {
+        const ChatConversation created = chat_store_->create();
+        chats_ = chat_store_->conversations();
+        chat_selection = created.id;
+        changed.emit();
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+}
+
+void Controller::remove_chat(const std::string& id) {
+    if (!chat_store_) return;
+    if (chat_running && id == chat_selection) { notice.emit("Stop the answer before deleting this chat."); return; }
+    chat_store_->remove(id);
+    chats_ = chat_store_->conversations();
+    if (chat_selection == id) chat_selection = chats_.empty() ? "" : chats_.front().id;
+    changed.emit();
+}
+
+void Controller::attach_to_chat(const std::string& path) {
+    if (chat_attachments.size() >= ChatAttachment::kMaxPerMessage) { notice.emit("Attach at most 5 files to one message."); return; }
+    try {
+        ChatAttachment file = ChatAttachment::from_file(path);
+        for (const ChatAttachment& existing : chat_attachments) {
+            if (existing.name == file.name) return;
+        }
+        chat_attachments.push_back(std::move(file));
+        changed.emit();
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+}
+
+void Controller::detach_from_chat(const std::string& name) {
+    chat_attachments.erase(std::remove_if(chat_attachments.begin(), chat_attachments.end(), [&](const ChatAttachment& file) { return file.name == name; }), chat_attachments.end());
+    changed.emit();
+}
+
+void Controller::send_chat(const std::string& text) {
+    const ChatConversation* current = chat();
+    if (!current || chat_running || !chat_store_) return;
+    if (trim(text).empty() && chat_attachments.empty()) return;
+    if (!endpoint) {
+        notice.emit("No model is running. Open Models to start one, or start your own local server.");
+        return;
+    }
+    if (chat_thread_.joinable()) chat_thread_.join();
+    chat_running = true;
+    chat_live.clear();
+    chat_cancel_ = make_cancel();
+    const std::vector<ChatAttachment> files = chat_attachments;
+    chat_attachments.clear();
+    const ModelEndpoint target = *endpoint;
+    const CancelToken cancel = chat_cancel_;
+    changed.emit();
+    chat_thread_ = std::thread([this, working = *current, text, files, target, cancel]() mutable {
+        std::string problem;
+        try {
+            OpenAIClient model(target);
+            chat::send(working, text, files, model, *chat_store_, [this](const std::string& piece) {
+                post([this, piece] { chat_live += piece; changed.emit(); });
+            }, cancel);
+        } catch (const Cancelled&) {
+        } catch (const std::exception& error) {
+            problem = error.what();
+        }
+        post([this, problem] {
+            // The store has the conversation as far as it got: with the answer, or with the question alone.
+            chats_ = chat_store_->conversations();
+            chat_running = false;
+            chat_live.clear();
+            changed.emit();
+            if (!problem.empty()) notice.emit(problem);
+        });
+    });
+}
+
+void Controller::stop_chat() {
+    if (chat_cancel_) chat_cancel_->store(true);
 }
 
 void Controller::compact() {

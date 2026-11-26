@@ -31,7 +31,7 @@ Permission permission_from_key(const std::string& key) {
     return Permission::ReviewEdits;
 }
 
-static json message_json(const ChatMessage& message) {
+json message_json(const ChatMessage& message) {
     json item = {{"role", message.role}, {"content", message.content}};
     if (!message.tool_calls.empty()) {
         item["toolCalls"] = json::array();
@@ -41,7 +41,7 @@ static json message_json(const ChatMessage& message) {
     return item;
 }
 
-static ChatMessage message_from_json(const json& item) {
+ChatMessage message_from_json(const json& item) {
     ChatMessage message{item.value("role", ""), item.value("content", ""), {}, item.value("toolCallId", "")};
     for (const json& call : item.value("toolCalls", json::array())) message.tool_calls.push_back({call.value("id", ""), call.value("name", ""), call.value("arguments", "{}")});
     return message;

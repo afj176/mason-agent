@@ -7,8 +7,10 @@ public enum Compaction {
     public static let threshold = 0.75
     static let transcriptLimit = 48_000
 
-    public static func needed(_ session: Session, window: Int?) -> Bool {
-        guard let window, window > 0, let used = session.promptTokens else { return false }
+    public static func needed(_ session: Session, window: Int?) -> Bool { needed(promptTokens: session.promptTokens, window: window) }
+
+    public static func needed(promptTokens: Int?, window: Int?) -> Bool {
+        guard let window, window > 0, let used = promptTokens else { return false }
         return Double(used) >= Double(window) * threshold
     }
 
