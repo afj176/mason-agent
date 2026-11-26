@@ -98,7 +98,10 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
             prompt = get("prompt");
         }
         const fs::path profile = values.count("profile") ? fs::absolute(values["profile"]).lexically_normal() : data_home() / "cli-runs" / new_id();
-        if ((profile.string() + "/").rfind(workspace.root() + "/", 0) == 0) throw Error("Keep the journal outside the project.");
+        // Compared as real paths, so a link cannot hide a journal inside the project. The journal may not exist yet.
+        std::error_code ignored;
+        const std::string real = fs::weakly_canonical(profile, ignored).string(), root = fs::weakly_canonical(workspace.root(), ignored).string();
+        if (((real.empty() ? profile.string() : real) + "/").rfind((root.empty() ? workspace.root() : root) + "/", 0) == 0) throw Error("Keep the journal outside the project.");
         std::unique_ptr<OpenAIClient> owned;
         if (!model) {
             owned = std::make_unique<OpenAIClient>(ModelEndpoint{validated_endpoint(get("endpoint")), get("model"), ""});

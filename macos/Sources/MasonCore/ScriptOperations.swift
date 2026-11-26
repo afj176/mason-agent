@@ -129,7 +129,12 @@ public enum ScriptOperations {
             default:
                 let prompt = try values["prompt-file"].map { try String(contentsOfFile: $0, encoding: .utf8) } ?? get("prompt")
                 let profile = values["profile"].map { URL(fileURLWithPath: $0).standardizedFileURL } ?? DataHome.url.appendingPathComponent("cli-runs").appendingPathComponent(UUID().uuidString)
-                guard !(profile.path + "/").hasPrefix(workspace.root.path + "/") else { throw MasonError("Keep the journal outside the project.") }
+                // Compared as real paths, so a link (such as /var on macOS) cannot hide a journal inside the project.
+                // The journal may not exist yet: resolve the part of its path that does.
+                var existing = profile, rest: [String] = []
+                while !FileManager.default.fileExists(atPath: existing.path), existing.path != "/" { rest.insert(existing.lastPathComponent, at: 0); existing.deleteLastPathComponent() }
+                let real = ([realPath(existing.path)] + rest).joined(separator: "/")
+                guard !(real + "/").hasPrefix(realPath(workspace.root.path) + "/") else { throw MasonError("Keep the journal outside the project.") }
                 let chosen: ChatModel
                 if let model { chosen = model } else {
                     chosen = try OpenAIClient(ModelEndpoint(url: try ModelEndpoint.validated(try get("endpoint")).absoluteString, model: try get("model")))
