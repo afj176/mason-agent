@@ -26,7 +26,7 @@ std::string report(const DerivedReceipt& receipt);
 std::vector<std::string> units(const std::string& request);
 /// Works out what can be checked. `model` (may be null) is asked only when some requirement has no exact check and
 /// the request is about pages.
-DerivedPlan prepare(const std::string& request, const Workspace& workspace, ChatModel* model, const CancelToken& cancel = nullptr);
+DerivedPlan prepare(const std::string& request, const Workspace& workspace, ChatModel* model, const CancelToken& cancel = nullptr, bool require_sandbox = false);
 /// Runs every check. Browser checks are marked not run where there is no browser.
 std::vector<DerivedResult> verify(const DerivedPlan& plan, const Workspace& workspace, bool require_sandbox = false, const CancelToken& cancel = nullptr);
 }  // namespace derived

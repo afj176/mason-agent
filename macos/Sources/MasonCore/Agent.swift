@@ -302,7 +302,7 @@ public final class Agent {
                     try? store.save(session)
                     return
                 }
-                let made = await Derived.prepare(input, workspace: workspace, model: model)
+                let made = await Derived.prepare(input, workspace: workspace, model: model, requireSandbox: true)
                 if !made.checks.isEmpty {
                     plan = made
                     session.messages[session.messages.count - 1].content += "\n\n" + made.brief

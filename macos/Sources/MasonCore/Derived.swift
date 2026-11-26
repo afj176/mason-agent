@@ -50,6 +50,7 @@ public struct DerivedCheck: Codable, Equatable {
         case "browser_heading": return "\(path) shows a heading that reads “\(expected)”"
         case "browser_text": return "\(path) shows “\(expected)”"
         case "browser_click": return "in \(path), clicking “\(target)” makes “\(expected)” appear"
+        case "project_test": return "the project's test “\(target)” passes when the workflow \(path) runs (its test files are pinned: they must stay as they are)"
         default: return "\(path): \(feature)"
         }
     }
@@ -170,7 +171,7 @@ public enum Derived {
 
     /// Works out what can be checked. `model` is asked only when some requirement has no exact check and the request
     /// is about pages or text documents.
-    public static func prepare(_ request: String, workspace: Workspace, model: ChatModel?) async -> DerivedPlan {
+    public static func prepare(_ request: String, workspace: Workspace, model: ChatModel?, requireSandbox: Bool = false) async -> DerivedPlan {
         var plan = DerivedPlan()
         // A contract given with the request belongs to this request: its scenarios are the checks.
         if let fence = request.range(of: "```mason.acceptance.json") {
@@ -184,10 +185,18 @@ public enum Derived {
             return plan
         }
         plan.units = Array(units(request).prefix(64))
+        // A requirement the project names a test for is checked by that test. A request that is one such requirement
+        // as a whole stays whole.
+        let named = (try? ProjectTests.load(workspace)) ?? []
+        if ProjectTests.bound(request, in: named) != nil, !plan.units.contains(where: { ProjectTests.bound($0, in: named) != nil }) { plan.units = [request.trimmingCharacters(in: .whitespacesAndNewlines)] }
         guard !plan.units.isEmpty, plan.units.count <= 32 else { return plan }
+        for (index, unit) in plan.units.enumerated() {
+            if let test = ProjectTests.bound(unit, in: named) { plan.checks.append(await ProjectTests.check(test, unit: index + 1, workspace: workspace, requireSandbox: requireSandbox)) }
+        }
+        let tested = Set(plan.checks.map(\.unit))
         var seen = Set<String>()
         let pages = Rx.matches(pagePattern, in: request, options: [.caseInsensitive]).map { $0[0] }.filter { seen.insert($0.lowercased()).inserted }
-        plan.checks = plan.units.enumerated().compactMap { explicit($1, unit: $0 + 1, pages: pages) }
+        plan.checks += plan.units.enumerated().compactMap { tested.contains($0 + 1) ? nil : explicit($1, unit: $0 + 1, pages: pages) }
         let open = plan.units.indices.filter { index in !plan.checks.contains { $0.unit == index + 1 } }
         let aboutPages = !pages.isEmpty || workspace.exists("index.html") || Rx.found(#"\.(?:txt|md|csv)\b"#, in: request)
         guard !open.isEmpty, aboutPages, let model else { return plan }
@@ -210,6 +219,10 @@ public enum Derived {
         var results: [DerivedResult] = []
         for check in plan.checks {
             try Task.checkCancellation()
+            if check.kind == "project_test" {
+                results.append(await ProjectTests.verify(check, workspace: workspace, requireSandbox: requireSandbox))
+                continue
+            }
             if check.kind == "document_text" {
                 let content = (try? workspace.read(check.path)) ?? nil
                 results.append(DerivedResult(check: check, state: content?.contains(check.expected) == true ? "passed" : "failed", detail: content == nil ? "\(check.path) does not exist." : content!.contains(check.expected) ? "" : "The file does not contain it."))

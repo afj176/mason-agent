@@ -30,6 +30,9 @@ extern const char* const kUsage;
 /// `identity` false leaves a commit to carry the user's own name.
 std::string git(const Workspace& workspace, const std::vector<std::string>& arguments, const std::string& index = "", bool identity = true);
 
+/// A short name for a text's exact content (FNV-1a), so something that has changed is not taken for what it was.
+std::string fingerprint(const std::string& text);
+
 /// Adds a worktree for a new branch at `destination`, which must be a new folder outside the project. Returns its path.
 std::string create_worktree(const Workspace& project, const std::string& destination, const std::string& branch, const std::string& revision = "HEAD");
 

@@ -23,6 +23,7 @@
 #include "delivery.hpp"
 #include "background.hpp"
 #include "roles.hpp"
+#include "project_tests.hpp"
 #include "shell.hpp"
 #include "models.hpp"
 
@@ -1131,6 +1132,55 @@ static void test_extra_tools() {
         roles::command("reviewer off", box.home);
         roles::command("trace off", box.home);
         CHECK(roles::reviewer(main_model, &workspace, box.home)->complete({}, {}, [](const std::string&) {}, nullptr).text == "from the main model");  // without a reviewer the main model reviews
+    }
+
+    // A project's own test is pinned and is the evidence for its requirement.
+    {
+        Sandbox box;
+        box.write("mason.workflows.json", R"({"version": 1, "workflows": {"test": {"executable": "sh", "arguments": ["run-tests.sh"]}}})");
+        box.write("run-tests.sh", "if grep -q 'a + b' calc.py; then echo 'ok 1 - adds'; else echo 'not ok 1 - adds'; fi\necho 'ok 2 - other'\n");
+        fs::create_directories(box.project / ".mason");
+        box.write(".mason/tests.json", R"([{"requirement": "Make add return the sum", "workflow": "test", "format": "tap", "report": "", "test": "adds", "testFiles": ["run-tests.sh"], "inputs": ["calc.py"]}])");
+        const Workspace workspace(box.project.string());
+        CHECK(project_tests::load(workspace).size() == 1 && project_tests::load(workspace)[0].test == "adds");
+
+        const DerivedPlan plan = derived::prepare("Make add return the sum.", workspace, nullptr);
+        CHECK(plan.checks.size() == 1 && plan.checks[0].kind == "project_test");
+        if (plan.checks.size() == 1) {
+            bool baseline_failed = false;
+            for (const auto& step : plan.checks[0].steps) baseline_failed = baseline_failed || step == std::vector<std::string>{"baseline", "failed"};
+            CHECK(baseline_failed);  // the baseline is run before any work
+            std::vector<DerivedResult> results = derived::verify(plan, workspace);
+            CHECK(results[0].state == "failed" && results[0].detail.find("baseline: failed; now: failed") != std::string::npos);
+            box.write("calc.py", "def add(a, b):\n    return a + b\n");
+            results = derived::verify(plan, workspace);
+            CHECK(results[0].state == "passed" && results[0].detail.find("baseline: failed; now: passed") != std::string::npos);
+            // Making the test itself say yes is not passing it.
+            box.write("calc.py", "def add(a, b):\n    return a - b\n");
+            box.write("run-tests.sh", "echo 'ok 1 - adds'\n");
+            results = derived::verify(plan, workspace);
+            CHECK(results[0].state == "failed" && results[0].detail.find("pinned") != std::string::npos);
+        }
+        bool bound_other = false;
+        for (const DerivedCheck& check : derived::prepare("Rename the function.", workspace, nullptr).checks) bound_other = bound_other || check.kind == "project_test";
+        CHECK(!bound_other);  // only the stated requirement is bound
+        box.write(".mason/tests.json", R"([{"requirement": "x", "workflow": "missing", "format": "tap", "test": "t", "testFiles": ["a"], "inputs": ["b"]}])");
+        bool refused = false;
+        try { project_tests::load(workspace); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // a test must name a workflow the project has
+
+        using Outcomes = std::map<std::string, std::string>;
+        CHECK(project_tests::outcomes("junit", R"(<testsuite><testcase classname="Price" name="discount"/><testcase classname="Price" name="tax &amp; total"><failure message="no"/></testcase><testcase name="later"><skipped/></testcase></testsuite>)") ==
+              (Outcomes{{"discount", "passed"}, {"Price.discount", "passed"}, {"tax & total", "failed"}, {"Price.tax & total", "failed"}, {"later", "skipped"}}));
+        CHECK(project_tests::outcomes("trx", R"(<UnitTestResult testName="Adds" outcome="Passed" /><UnitTestResult testName="Subtracts" outcome="Failed">)") == (Outcomes{{"Adds", "passed"}, {"Subtracts", "failed"}}));
+        CHECK(project_tests::outcomes("go-json", "{\"Action\":\"run\",\"Test\":\"TestAdd\"}\n{\"Action\":\"pass\",\"Test\":\"TestAdd\"}\n{\"Action\":\"fail\",\"Test\":\"TestSub\"}\n{\"Action\":\"pass\"}") ==
+              (Outcomes{{"TestAdd", "passed"}, {"TestSub", "failed"}}));
+        CHECK(project_tests::outcomes("flutter-json", "{\"type\":\"testStart\",\"test\":{\"id\":1,\"name\":\"adds\"}}\n{\"type\":\"testDone\",\"testID\":1,\"result\":\"success\",\"skipped\":false}\n{\"type\":\"testStart\",\"test\":{\"id\":2,\"name\":\"draws\"}}\n{\"type\":\"testDone\",\"testID\":2,\"result\":\"failure\"}") ==
+              (Outcomes{{"adds", "passed"}, {"draws", "failed"}}));
+        const Outcomes tap = project_tests::outcomes("tap", "TAP version 13\n    ok 1 - inner\nok 1 - suite discount\nnot ok 2 - tax\nok 3 - later # SKIP not yet\nok 4 - tax\n");
+        CHECK(tap == (Outcomes{{"inner", "passed"}, {"suite discount", "passed"}, {"tax", "failed"}, {"later", "skipped"}}));
+        CHECK(project_tests::outcome_of("discount", tap) == std::optional<std::string>("passed"));  // a name is found at the end of a longer one
+        CHECK(!project_tests::outcome_of("missing", tap));
     }
 
     // A job runs in the background and stops when the request ends.

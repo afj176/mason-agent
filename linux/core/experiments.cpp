@@ -31,16 +31,6 @@ std::string real(const std::string& path) {
     return resolved.empty() ? path : resolved.string();
 }
 
-/// A short name for a patch's exact text (FNV-1a), so a hunk that has changed is not applied by an old name.
-std::string fingerprint(const std::string& text) {
-    uint64_t hash = 0xcbf29ce484222325ULL;
-    for (unsigned char byte : text) { hash ^= byte; hash *= 0x00000100000001b3ULL; }
-    static const char* digits = "0123456789abcdef";
-    std::string name;
-    do { name.insert(name.begin(), digits[hash & 15]); hash >>= 4; } while (hash != 0);
-    return name.size() > 8 ? name.substr(name.size() - 8) : name;
-}
-
 void save(const std::vector<Experiment>& all, const fs::path& home) {
     json list = json::array();
     for (const Experiment& item : all) {
@@ -53,6 +43,15 @@ void save(const std::vector<Experiment>& all, const fs::path& home) {
 bool same(const Experiment& a, const Experiment& b) { return a.parent == b.parent && a.name == b.name && a.path == b.path; }
 
 }  // namespace
+
+std::string fingerprint(const std::string& text) {
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    for (unsigned char byte : text) { hash ^= byte; hash *= 0x00000100000001b3ULL; }
+    static const char* digits = "0123456789abcdef";
+    std::string name;
+    do { name.insert(name.begin(), digits[hash & 15]); hash >>= 4; } while (hash != 0);
+    return name.size() > 8 ? name.substr(name.size() - 8) : name;
+}
 
 std::string git(const Workspace& workspace, const std::vector<std::string>& arguments, const std::string& index, bool identity) {
     const Removed printed{fs::temp_directory_path() / ("mason-git-" + new_id())};

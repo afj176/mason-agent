@@ -521,6 +521,51 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertEqual(answer.text, "from the main model", "without a reviewer the main model reviews")
     }
 
+    func testAProjectsOwnTestIsPinnedAndIsTheEvidenceForItsRequirement() async throws {
+        func put(_ name: String, _ text: String) throws {
+            let file = folder.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try put("mason.workflows.json", #"{"version": 1, "workflows": {"test": {"executable": "sh", "arguments": ["run-tests.sh"]}}}"#)
+        try put("run-tests.sh", "if grep -q 'a + b' calc.py; then echo 'ok 1 - adds'; else echo 'not ok 1 - adds'; fi\necho 'ok 2 - other'\n")
+        try put(".mason/tests.json", #"[{"requirement": "Make add return the sum", "workflow": "test", "format": "tap", "report": "", "test": "adds", "testFiles": ["run-tests.sh"], "inputs": ["calc.py"]}]"#)
+        let workspace = try Workspace(path: folder.path)
+        XCTAssertEqual(try ProjectTests.load(workspace).map(\.test), ["adds"])
+
+        let plan = await Derived.prepare("Make add return the sum.", workspace: workspace, model: nil)
+        XCTAssertEqual(plan.checks.map(\.kind), ["project_test"])
+        XCTAssertEqual(ProjectTests.value(plan.checks[0], "baseline"), ["failed"], "the baseline is run before any work")
+        var results = try await Derived.verify(plan, workspace: workspace)
+        XCTAssertEqual(results[0].state, "failed")
+        XCTAssertTrue(results[0].detail.contains("baseline: failed; now: failed"), results[0].detail)
+        try put("calc.py", "def add(a, b):\n    return a + b\n")
+        results = try await Derived.verify(plan, workspace: workspace)
+        XCTAssertEqual(results[0].state, "passed", results[0].detail)
+        XCTAssertTrue(results[0].detail.contains("baseline: failed; now: passed"), results[0].detail)
+        // Making the test itself say yes is not passing it.
+        try put("calc.py", "def add(a, b):\n    return a - b\n")
+        try put("run-tests.sh", "echo 'ok 1 - adds'\n")
+        results = try await Derived.verify(plan, workspace: workspace)
+        XCTAssertEqual(results[0].state, "failed")
+        XCTAssertTrue(results[0].detail.contains("pinned"), results[0].detail)
+        let other = await Derived.prepare("Rename the function.", workspace: workspace, model: nil)
+        XCTAssertFalse(other.checks.contains { $0.kind == "project_test" }, "only the stated requirement is bound")
+        try put(".mason/tests.json", #"[{"requirement": "x", "workflow": "missing", "format": "tap", "test": "t", "testFiles": ["a"], "inputs": ["b"]}]"#)
+        XCTAssertThrowsError(try ProjectTests.load(workspace), "a test must name a workflow the project has")
+
+        let junit = #"<testsuite><testcase classname="Price" name="discount"/><testcase classname="Price" name="tax &amp; total"><failure message="no"/></testcase><testcase name="later"><skipped/></testcase></testsuite>"#
+        XCTAssertEqual(ProjectTests.outcomes(format: "junit", text: junit), ["discount": "passed", "Price.discount": "passed", "tax & total": "failed", "Price.tax & total": "failed", "later": "skipped"])
+        XCTAssertEqual(ProjectTests.outcomes(format: "trx", text: #"<UnitTestResult testName="Adds" outcome="Passed" /><UnitTestResult testName="Subtracts" outcome="Failed">"#), ["Adds": "passed", "Subtracts": "failed"])
+        XCTAssertEqual(ProjectTests.outcomes(format: "go-json", text: "{\"Action\":\"run\",\"Test\":\"TestAdd\"}\n{\"Action\":\"pass\",\"Test\":\"TestAdd\"}\n{\"Action\":\"fail\",\"Test\":\"TestSub\"}\n{\"Action\":\"pass\"}"), ["TestAdd": "passed", "TestSub": "failed"])
+        let flutter = "{\"type\":\"testStart\",\"test\":{\"id\":1,\"name\":\"adds\"}}\n{\"type\":\"testDone\",\"testID\":1,\"result\":\"success\",\"skipped\":false}\n{\"type\":\"testStart\",\"test\":{\"id\":2,\"name\":\"draws\"}}\n{\"type\":\"testDone\",\"testID\":2,\"result\":\"failure\"}"
+        XCTAssertEqual(ProjectTests.outcomes(format: "flutter-json", text: flutter), ["adds": "passed", "draws": "failed"])
+        let tap = ProjectTests.outcomes(format: "tap", text: "TAP version 13\n    ok 1 - inner\nok 1 - suite discount\nnot ok 2 - tax\nok 3 - later # SKIP not yet\nok 4 - tax\n")
+        XCTAssertEqual(tap, ["inner": "passed", "suite discount": "passed", "tax": "failed", "later": "skipped"])
+        XCTAssertEqual(ProjectTests.outcome(of: "discount", in: tap), "passed", "a name is found at the end of a longer one")
+        XCTAssertNil(ProjectTests.outcome(of: "missing", in: tap))
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

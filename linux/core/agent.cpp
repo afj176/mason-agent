@@ -847,7 +847,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                 store_.save(session);
                 return;
             }
-            DerivedPlan made = derived::prepare(input, *workspace, &model_, cancel);
+            DerivedPlan made = derived::prepare(input, *workspace, &model_, cancel, true);
             if (!made.checks.empty()) {
                 session.messages.back().content += "\n\n" + made.brief();
                 plan = std::move(made);
