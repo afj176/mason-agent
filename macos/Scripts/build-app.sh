@@ -6,8 +6,11 @@
 # Run on a Mac with Xcode's command line tools. The build is signed ad hoc, not notarized.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VERSION="${VERSION:-$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' ../windows/src/MasonAgent/MasonAgent.csproj | head -1)}"
-[ -n "$VERSION" ] || { echo "Set VERSION."; exit 1; }
+# The Mac's version lives in its own source, Sources/MasonCore/Version.swift.
+OWN="$(sed -n 's/.*static let current = "\(.*\)".*/\1/p' Sources/MasonCore/Version.swift | head -1)"
+[ -n "$OWN" ] || { echo "Sources/MasonCore/Version.swift has no version."; exit 1; }
+VERSION="${VERSION:-$OWN}"
+[ "$VERSION" = "$OWN" ] || { echo "Sources/MasonCore/Version.swift says $OWN but the build asks for $VERSION. Run scripts/version.sh set $VERSION first."; exit 1; }
 ARCHS="${ARCHS:---arch arm64 --arch x86_64}"
 
 swift build -c release $ARCHS

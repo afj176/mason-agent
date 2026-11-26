@@ -1,0 +1,65 @@
+# Every pull request merged into main becomes a release. Its label says how the version moves:
+#   release: patch   2.2.1 → 2.2.2 (the default when a pull request has no release label)
+#   release: minor   2.2.1 → 2.3.0
+#   release: major   2.2.1 → 3.0.0
+#   release: skip    no new version and no release (documentation, CI and similar changes)
+# The new version is written to each platform's own file by scripts/version.sh, committed to main and tagged vX.Y.Z,
+# and then release.yml builds Windows, macOS and Linux and publishes them. The website reads the latest release.
+name: Release on merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+# One release at a time, in merge order, so two merges never take the same version number.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    if: "github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'release: skip')"
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - id: bump
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          part=patch
+          case ",$LABELS," in
+            *",release: major,"*) part=major ;;
+            *",release: minor,"*) part=minor ;;
+          esac
+          before="$(bash scripts/version.sh)"
+          next="$(bash scripts/version.sh bump "$part")"
+          if git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then echo "::error::Tag v$next already exists."; exit 1; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Version $next" -m "Released by #$NUMBER ($TITLE): $part bump from $before."
+          git tag -a "v$next" -m "Mason Agent $next"
+          git push origin HEAD:main "v$next"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "### Mason Agent $next" >> "$GITHUB_STEP_SUMMARY"
+          echo "#$NUMBER, $part bump from $before. Tagged v$next; the release builds next." >> "$GITHUB_STEP_SUMMARY"
+
+  # A tag pushed with the workflow's own token does not start other workflows, so the release is called directly.
+  release:
+    needs: version
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      ref: v${{ needs.version.outputs.version }}
+    permissions:
+      contents: write

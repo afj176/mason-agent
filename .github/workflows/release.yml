@@ -1,6 +1,6 @@
 # Builds the Windows installer and portable ZIP, and the macOS and Linux packages, and attaches them to a GitHub Release.
-# Nothing is published unless the Windows build passes its model qualification, so a release always carries all three.
-# Push a tag such as v1.2.3, or run it by hand from the Actions tab with a version number.
+# A merged pull request runs this through release-on-merge.yml after it bumps the version and pushes the tag.
+# It can also run from a pushed tag such as v1.2.3, or by hand from the Actions tab with a version number.
 # Each release carries versioned files plus stable-named copies, so the website's download buttons
 # can always point at releases/latest/download/<name>.
 name: Release
@@ -13,6 +13,16 @@ on:
       version:
         description: Version to build (for example 1.2.3)
         required: true
+  workflow_call:
+    inputs:
+      version:
+        description: Version to build, such as 1.2.3
+        required: true
+        type: string
+      ref:
+        description: The tag to build, such as v1.2.3
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -25,13 +35,16 @@ jobs:
   packages:
     uses: ./.github/workflows/packages.yml
     with:
-      version: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version || github.ref_name }}
+      version: ${{ inputs.version || github.ref_name }}
+      ref: ${{ inputs.ref }}
 
   build:
     needs: [packages]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -41,7 +54,8 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $v = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ github.event.inputs.version }}' } else { '${{ github.ref_name }}'.TrimStart('v') }
+          $v = '${{ inputs.version }}'
+          if (-not $v) { $v = '${{ github.ref_name }}'.TrimStart('v') }
           if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3, got '$v'" }
           "value=$v" >> $env:GITHUB_OUTPUT
 
