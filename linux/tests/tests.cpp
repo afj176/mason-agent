@@ -1290,6 +1290,62 @@ static void test_extra_tools() {
         }
     }
 
+    // A policy switches tools off, and hooks gate the work.
+    {
+        Sandbox box;
+        const Workspace workspace(box.project.string());
+        box.write("mason.workflows.json", R"J({"version": 1, "workflows": {"lint": {"executable": "sh", "arguments": ["-c", "! grep -q TODO calc.py"], "events": ["afterEdit"]}, "gate": {"executable": "sh", "arguments": ["-c", "grep -q 'a + b' calc.py"], "beforeVerify": true}, "deploy": {"executable": "sh", "arguments": ["-c", "touch deployed"]}}})J");
+        CHECK(workflows::load(workspace)["gate"].events == std::vector<std::string>{"beforeVerify"});
+        CHECK(policies::command("", workspace, box.home).find("no policy") != std::string::npos);
+        policies::command("disable run_shell start_job", workspace, box.home);
+        policies::command("workflows lint gate", workspace, box.home);
+        const std::string described = policies::command("hooks on", workspace, box.home);
+        CHECK(described.find("tools off   run_shell, start_job") != std::string::npos && described.find("workflows   gate, lint") != std::string::npos && described.find("hooks       on") != std::string::npos);
+        {
+            SessionStore store(box.home);
+            Session session = store.create(workspace.root(), Permission::Auto);
+            ScriptedModel model;
+            model.replies = {call("run_shell", {{"command", "touch made"}}), call("run_workflow", {{"name", "deploy"}}), call("write_file", {{"path", "calc.py"}, {"content", "# TODO\ndef add(a, b):\n    return a - b\n"}}), say("Done."),
+                             call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Fixed.")};
+            Agent agent(store, model, [](const ApprovalRequest&) { return true; }, quiet);
+            agent.set_hooks_need_sandbox(false);
+            agent.derives_checks = false;
+            agent.run(session, "Fix add");
+            CHECK(session.activities.size() >= 2 && session.activities[0].result.find("does not allow run_shell") != std::string::npos && session.activities[1].result.find("does not allow the workflow deploy") != std::string::npos);
+            CHECK(!fs::exists(box.project / "made") && !fs::exists(box.project / "deployed"));
+            bool after_edit = false, gate = false;
+            for (const ChatMessage& message : session.messages) {
+                after_edit = after_edit || (message.role == "tool" && message.content.find("The hook lint (afterEdit) failed") != std::string::npos);
+                gate = gate || (message.role == "user" && message.content.find("The hook gate (beforeVerify) failed") != std::string::npos);
+            }
+            CHECK(after_edit);  // an afterEdit hook's failure is on the edit's result
+            CHECK(gate);        // a failed gate goes back to the model
+            CHECK(session.state == "Completed" && session.turns.back().answer == "Fixed.");
+        }
+        {
+            // A gate that keeps failing blocks completion.
+            SessionStore store(box.home);
+            Session stuck = store.create(workspace.root(), Permission::Auto);
+            ScriptedModel model;
+            model.replies = {call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a - b\n"}}), say("Done."), say("Done."), say("Done."), say("Done.")};
+            Agent agent(store, model, [](const ApprovalRequest&) { return true; }, quiet);
+            agent.set_hooks_need_sandbox(false);
+            agent.derives_checks = false;
+            agent.run(stuck, "Fix add");
+            CHECK(stuck.state == "Stopped" && stuck.detail.find("hook still fails") != std::string::npos);
+        }
+        policies::command("clear", workspace, box.home);
+        CHECK(!policies::load(box.home, workspace.root()));
+        ProjectPolicy lapsed{"old", fs::weakly_canonical(box.project).string(), {"read_file"}, std::nullopt, std::time(nullptr) - 60, false};
+        policies::set(lapsed, box.home, workspace.root());
+        CHECK(!policies::load(box.home, workspace.root()));  // a lapsed policy is not in force
+        lapsed.expires = 0;
+        policies::set(lapsed, box.home, workspace.root());
+        bool refused = false;
+        try { policies::load(box.home, workspace.root())->check("read_file"); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+    }
+
     // A job runs in the background and stops when the request ends.
     {
         Sandbox box;

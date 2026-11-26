@@ -663,6 +663,60 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertTrue(String(decoding: buffer[0..<max(0, count)], as: UTF8.self).hasPrefix("HTTP/1.1 502"), "a public name that points at a private address is not connected to")
     }
 
+    func testAPolicySwitchesToolsOffAndHooksGateTheWork() async throws {
+        let workspace = try Workspace(path: folder.path)
+        try #"{"version": 1, "workflows": {"lint": {"executable": "sh", "arguments": ["-c", "! grep -q TODO calc.py"], "events": ["afterEdit"]}, "gate": {"executable": "sh", "arguments": ["-c", "grep -q 'a + b' calc.py"], "beforeVerify": true}, "deploy": {"executable": "sh", "arguments": ["-c", "touch deployed"]}}}"#
+            .write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(try ProjectWorkflows.load(workspace).workflows["gate"]?.events, ["beforeVerify"])
+        XCTAssertTrue(try Policies.command("", workspace: workspace, home: home).contains("no policy"))
+        _ = try Policies.command("disable run_shell start_job", workspace: workspace, home: home)
+        _ = try Policies.command("workflows lint gate", workspace: workspace, home: home)
+        let described = try Policies.command("hooks on", workspace: workspace, home: home)
+        XCTAssertTrue(described.contains("tools off   run_shell, start_job") && described.contains("workflows   gate, lint") && described.contains("hooks       on"), described)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(".mason/policy.json").path), "the policy is not kept in the project")
+
+        var (store, session) = try session(.auto)
+        let model = ScriptedModel([
+            call("run_shell", ["command": "touch made"]),
+            call("run_workflow", ["name": "deploy"]),
+            call("write_file", ["path": "calc.py", "content": "# TODO\ndef add(a, b):\n    return a - b\n"]),
+            ModelReply(text: "Done."),
+            call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a + b\n"]),
+            ModelReply(text: "Fixed."),
+        ])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        agent.hooksNeedSandbox = false
+        agent.derivesChecks = false
+        await agent.run(&session, request: "Fix add")
+        XCTAssertFalse(model.seen.first?.contains { $0.role == "system" && $0.content.contains("run_shell") } ?? false)
+        XCTAssertTrue(session.activities[0].result.contains("does not allow run_shell"), session.activities[0].result)
+        XCTAssertTrue(session.activities[1].result.contains("does not allow the workflow deploy"), session.activities[1].result)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("made").path) || FileManager.default.fileExists(atPath: folder.appendingPathComponent("deployed").path))
+        let afterEdit = session.messages.first { $0.role == "tool" && $0.content.contains("The hook lint (afterEdit) failed") }
+        XCTAssertNotNil(afterEdit, "an afterEdit hook's failure is on the edit's result")
+        XCTAssertTrue(session.messages.contains { $0.role == "user" && $0.content.contains("The hook gate (beforeVerify) failed") }, "a failed gate goes back to the model")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.turns.last?.answer, "Fixed.")
+
+        // A gate that keeps failing blocks completion.
+        var (store2, stuck) = try self.session(.auto)
+        let giving = Agent(store: store2, model: ScriptedModel([call("write_file", ["path": "calc.py", "content": "def add(a, b):\n    return a - b\n"]), ModelReply(text: "Done."), ModelReply(text: "Done."), ModelReply(text: "Done."), ModelReply(text: "Done.")]), approve: { _ in true }, emit: { _ in })
+        giving.hooksNeedSandbox = false
+        giving.derivesChecks = false
+        await giving.run(&stuck, request: "Fix add")
+        XCTAssertEqual(stuck.state, "Stopped")
+        XCTAssertTrue(stuck.detail.contains("hook still fails"), stuck.detail)
+
+        _ = try Policies.command("clear", workspace: workspace, home: home)
+        XCTAssertNil(Policies.load(home: home, workspace: folder.path))
+        var lapsed = ProjectPolicy(name: "old", workspace: realPath(folder.path), disabledTools: ["read_file"], workflows: nil, expires: Date().addingTimeInterval(-60), hooks: false)
+        try Policies.set(lapsed, home: home, workspace: folder.path)
+        XCTAssertNil(Policies.load(home: home, workspace: folder.path), "a lapsed policy is not in force")
+        lapsed.expires = nil
+        try Policies.set(lapsed, home: home, workspace: folder.path)
+        XCTAssertThrowsError(try Policies.load(home: home, workspace: folder.path)?.check("read_file"))
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

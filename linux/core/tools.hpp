@@ -15,6 +15,8 @@ struct ProjectWorkflow {
     std::string executable;
     std::vector<std::string> arguments;
     std::string directory = ".";
+    /// When the workflow runs by itself as a hook: afterEdit, beforeVerify. (afterPlan is accepted and not used here.)
+    std::vector<std::string> events;
 };
 
 namespace workflows {

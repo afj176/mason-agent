@@ -3,7 +3,13 @@ import Foundation
 /// Named commands a project defines in `mason.workflows.json`, such as its tests or its linter:
 /// `{"version": 1, "workflows": {"test": {"executable": "python3", "arguments": ["-m", "unittest"], "directory": "."}}}`
 public struct ProjectWorkflows {
-    public struct Workflow: Equatable { public let executable: String; public let arguments: [String]; public let directory: String }
+    public struct Workflow: Equatable {
+        public let executable: String
+        public let arguments: [String]
+        public let directory: String
+        /// When the workflow runs by itself as a hook: afterEdit, beforeVerify. (afterPlan is accepted and not used here.)
+        public var events: [String] = []
+    }
     public let workflows: [String: Workflow]
 
     public static func load(_ workspace: Workspace) throws -> ProjectWorkflows {
@@ -21,7 +27,10 @@ public struct ProjectWorkflows {
             }
             let directory = item["directory"] as? String ?? "."
             if directory != "." { _ = try workspace.resolve(directory) }
-            found[name] = Workflow(executable: executable, arguments: arguments, directory: directory)
+            var events = item["events"] as? [String] ?? []
+            if item["beforeVerify"] as? Bool == true, !events.contains("beforeVerify") { events.append("beforeVerify") }
+            guard events.allSatisfy({ ["afterPlan", "afterEdit", "beforeVerify"].contains($0) }) else { throw MasonError("The workflow \(name) names an event other than afterEdit or beforeVerify.") }
+            found[name] = Workflow(executable: executable, arguments: arguments, directory: directory, events: events)
         }
         return ProjectWorkflows(workflows: found)
     }

@@ -820,7 +820,13 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     }
     session.comments.clear();
     if (session.title == "New session") session.title = utf8_length(input) > 55 ? utf8_prefix(input, 55) + "…" : input;
-    const std::vector<ToolSpec> offered = offered_tools(session, *workspace);
+    policy_ = policies::load(store_.home(), workspace->root());
+    std::vector<ToolSpec> offered = offered_tools(session, *workspace);
+    // A tool the user's policy switches off is not offered at all.
+    if (policy_) {
+        offered.erase(std::remove_if(offered.begin(), offered.end(), [&](const ToolSpec& tool) { return std::find(policy_->disabled_tools.begin(), policy_->disabled_tools.end(), tool.name) != policy_->disabled_tools.end(); }),
+                      offered.end());
+    }
     offered_names_.clear();
     for (const ToolSpec& tool : offered) offered_names_.push_back(tool.name);
     std::string prompt = system_prompt(session);
@@ -859,6 +865,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         bool finished = false, asked = false, baseline_taken = false;
         std::optional<CommandResult> baseline;
         int repairs = 0;
+        std::string blocked;
         static const std::set<std::string> changing = {"edit_file", "write_file", "apply_edits", "run_shell", "run_command", "run_workflow", "start_job", "start_terminal"};
         pending_question_.reset();
         // In Auto, Mason works out what it can check for itself before the work starts.
@@ -893,6 +900,18 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
             session.messages.push_back({"assistant", reply.text, reply.tool_calls, ""});
             if (reply.tool_calls.empty()) {
                 session.turns.back().answer = reply.text;
+                // The project's own gate comes first: a beforeVerify hook that fails goes back to the model, and blocks completion if it keeps failing.
+                const std::string gate = run_hooks("beforeVerify", *workspace, session, cancel);
+                if (!gate.empty()) {
+                    if (repairs < kRepairLimit) {
+                        repairs++;
+                        session.messages.push_back({"user", "Before finishing, Mason ran the project's hooks and this failed:\n" + gate + "\nFix it, then answer again.", {}, ""});
+                        store_.save(session);
+                        continue;
+                    }
+                    blocked = "The project's hook still fails, so this is not finished.\n" + gate;
+                    break;
+                }
                 // The model says it is done. If the project can be verified and files changed, Mason checks for itself.
                 if (auto receipt = verify(*workspace, session, baseline, repairs, cancel)) {
                     session.turns.back().verification = receipt;
@@ -930,7 +949,12 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                     baseline_taken = true;
                     baseline = verify_run(*workspace, session, cancel);
                 }
-                const std::string result = perform(call, *workspace, session, cancel);
+                std::string result = perform(call, *workspace, session, cancel);
+                // After an edit, the project's afterEdit hooks say at once whether it broke something.
+                if ((call.name == "edit_file" || call.name == "write_file" || call.name == "apply_edits") && result.rfind("Error:", 0) != 0) {
+                    const std::string failure = run_hooks("afterEdit", *workspace, session, cancel);
+                    if (!failure.empty()) result += "\n[" + failure + "]";
+                }
                 session.messages.push_back({"tool", result, {}, call.id});
                 store_.save(session);
                 if (pending_question_) break;
@@ -944,7 +968,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
             }
         }
         session.state = asked ? "Needs your answer" : finished ? "Completed" : "Stopped";
-        session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : "Stopped after " + std::to_string(kActionLimit) + " steps. Send another message to continue.";
+        session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : !blocked.empty() ? utf8_prefix(blocked, 600) : "Stopped after " + std::to_string(kActionLimit) + " steps. Send another message to continue.";
     } catch (const Cancelled&) {
         session.state = "Stopped";
         session.detail = "Stopped. Completed edits are kept.";
@@ -972,6 +996,37 @@ void Agent::close_open_calls(Session& session) {
             insert_at++;
         }
     }
+}
+
+std::string Agent::run_hooks(const std::string& event, const Workspace& workspace, const Session& session, const CancelToken& cancel) {
+    if (!policy_ || !policy_->hooks || session.permission != Permission::Auto || session.ask_only || (hooks_need_sandbox_ && !shell::sandbox_available())) return "";
+    std::map<std::string, ProjectWorkflow> found;
+    try {
+        found = workflows::load(workspace);
+    } catch (const std::exception&) {
+        return "";
+    }
+    std::string failures;
+    for (const auto& [name, workflow] : found) {
+        if (std::find(workflow.events.begin(), workflow.events.end(), event) == workflow.events.end()) continue;
+        try {
+            policy_->check("run_workflow", name);
+        } catch (const Error&) {
+            continue;
+        }
+        emit_({AgentEvent::Kind::Status, "Running the " + name + " hook", {}});
+        try {
+            const CommandResult result = shell::run(workflows::command_line(workflow), workspace, hooks_need_sandbox_, 120, cancel);
+            if (result.exit_code != 0 || result.timed_out) {
+                failures += (failures.empty() ? "" : "\n") + ("The hook " + name + " (" + event + ") failed with exit " + std::to_string(result.exit_code) + ":\n" + (utf8_length(result.output) > 1500 ? utf8_suffix(result.output, 1500) : result.output));
+            }
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception&) {
+            failures += (failures.empty() ? "" : "\n") + ("The hook " + name + " could not run.");
+        }
+    }
+    return failures;
 }
 
 NetworkRelay* Agent::relay(const Session& session) {
@@ -1029,6 +1084,7 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
     };
     const bool read_only = session.ask_only || session.permission == Permission::ReadOnly;
     try {
+        if (policy_) policy_->check(call.name, text("name").value_or(""));
         if (call.name == "list_files") {
             const FileListing listing = workspace.files(text("path").value_or("."), 800);
             return finish("completed", listing.paths.empty() ? "No files." : join(listing.paths, "\n") + (listing.truncated ? "\n[Listing clipped at 800 files.]" : ""));

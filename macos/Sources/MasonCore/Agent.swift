@@ -85,6 +85,24 @@ public final class Agent {
     var offeredNames: [String] = []
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     var pendingQuestion: String?
+    /// The project's policy, read when a request starts.
+    var policy: ProjectPolicy?
+    /// Hooks run only inside the sandbox. Tests on a computer without one turn this off.
+    var hooksNeedSandbox = true
+
+    /// Runs the project's workflows marked for an event, when the user's policy turns hooks on, and only in Auto.
+    /// Returns what failed, or nil.
+    func runHooks(_ event: String, in workspace: Workspace, session: Session) async -> String? {
+        guard policy?.hooks == true, session.permission == .auto, !session.askOnly, !hooksNeedSandbox || Shell.sandboxAvailable, let found = try? ProjectWorkflows.load(workspace) else { return nil }
+        var failures: [String] = []
+        for (name, workflow) in found.workflows.sorted(by: { $0.key < $1.key }) where workflow.events.contains(event) {
+            do { try policy?.check("run_workflow", workflow: name) } catch { continue }
+            emit(.status("Running the \(name) hook"))
+            guard let result = try? await Shell.run(ProjectWorkflows.commandLine(workflow), in: workspace, sandboxed: hooksNeedSandbox) else { failures.append("The hook \(name) could not run."); continue }
+            if result.exitCode != 0 || result.timedOut { failures.append("The hook \(name) (\(event)) failed with exit \(result.exitCode):\n" + String(result.output.suffix(1500))) }
+        }
+        return failures.isEmpty ? nil : failures.joined(separator: "\n")
+    }
     /// The relay this request's sandboxed commands may reach hosts through, once one has been needed.
     var network: NetworkRelay?
 
@@ -304,8 +322,11 @@ public final class Agent {
         session.comments = nil
         if session.title == "New session" { session.title = input.count > 55 ? String(input.prefix(55)) + "…" : input }
         let servers = Mcp.enabled(home: home)
-        let offered = Agent.tools + Agent.extraTools(session: session, workspace: workspace, semantic: semanticModels != nil, presents: present != nil)
+        policy = Policies.load(home: home, workspace: workspace.root.path)
+        let everything = Agent.tools + Agent.extraTools(session: session, workspace: workspace, semantic: semanticModels != nil, presents: present != nil)
             + Agent.desktopTools(for: session, available: (desktop ?? Desktop.system) != nil) + (servers.isEmpty ? [] : Agent.mcpTools)
+        // A tool the user's policy switches off is not offered at all.
+        let offered = everything.filter { !(policy?.disabledTools.contains($0.name) ?? false) }
         lastObservation = []
         offeredNames = offered.map(\.name)
         var prompt = Agent.systemPrompt(session, servers: servers)
@@ -342,6 +363,7 @@ public final class Agent {
                     session.messages[session.messages.count - 1].content += "\n\n" + made.brief
                 }
             }
+            var blocked: String?
             let window = await model.contextWindow()
             for _ in 0..<Agent.actionLimit {
                 try Task.checkCancellation()
@@ -357,6 +379,17 @@ public final class Agent {
                 session.messages.append(ChatMessage(role: "assistant", content: reply.text, toolCalls: reply.toolCalls.isEmpty ? nil : reply.toolCalls))
                 if reply.toolCalls.isEmpty {
                     session.turns[session.turns.count - 1].answer = reply.text
+                    // The project's own gate comes first: a beforeVerify hook that fails goes back to the model, and blocks completion if it keeps failing.
+                    if let failure = await runHooks("beforeVerify", in: workspace, session: session) {
+                        if repairs < Agent.repairLimit {
+                            repairs += 1
+                            session.messages.append(ChatMessage(role: "user", content: "Before finishing, Mason ran the project's hooks and this failed:\n\(failure)\nFix it, then answer again."))
+                            try? store.save(session)
+                            continue
+                        }
+                        blocked = "The project's hook still fails, so this is not finished.\n" + failure
+                        break
+                    }
                     // The model says it is done. If the project can be verified and files changed, Mason checks for itself.
                     if let receipt = try await verify(workspace, session: &session, baseline: baseline, repairs: repairs) {
                         session.turns[session.turns.count - 1].verification = receipt
@@ -391,7 +424,11 @@ public final class Agent {
                         baselineTaken = true
                         baseline = await verifyRun(workspace, session: session)
                     }
-                    let result = await perform(call, in: workspace, session: &session)
+                    var result = await perform(call, in: workspace, session: &session)
+                    // After an edit, the project's afterEdit hooks say at once whether it broke something.
+                    if ["edit_file", "write_file", "apply_edits"].contains(call.name), !result.hasPrefix("Error:"), let failure = await runHooks("afterEdit", in: workspace, session: session) {
+                        result += "\n[" + failure + "]"
+                    }
                     session.messages.append(ChatMessage(role: "tool", content: result, toolCallId: call.id))
                     try? store.save(session)
                     if pendingQuestion != nil { break }
@@ -405,7 +442,7 @@ public final class Agent {
                 }
             }
             session.state = asked ? "Needs your answer" : finished ? "Completed" : "Stopped"
-            session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : "Stopped after \(Agent.actionLimit) steps. Send another message to continue."
+            session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : blocked.map { String($0.prefix(600)) } ?? "Stopped after \(Agent.actionLimit) steps. Send another message to continue."
         } catch is CancellationError {
             session.state = "Stopped"; session.detail = "Stopped. Completed edits are kept."
         } catch {
@@ -483,6 +520,7 @@ public final class Agent {
         }
         let readOnly = session.askOnly || session.permission == .readOnly
         do {
+            try policy?.check(call.name, workflow: text("name"))
             switch call.name {
             case "list_files":
                 let listing = try workspace.files(under: text("path") ?? ".", limit: 800)

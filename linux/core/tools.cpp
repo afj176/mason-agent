@@ -40,6 +40,16 @@ std::map<std::string, ProjectWorkflow> load(const Workspace& workspace) {
         if (!valid) throw Error("The workflow " + item.key() + " in mason.workflows.json is not valid.");
         if (value.contains("directory") && value["directory"].is_string()) workflow.directory = value["directory"].get<std::string>();
         if (workflow.directory != ".") workspace.resolve(workflow.directory);
+        if (value.contains("events") && value["events"].is_array()) {
+            for (const json& event : value["events"]) {
+                const std::string name = event.is_string() ? event.get<std::string>() : "";
+                if (name != "afterPlan" && name != "afterEdit" && name != "beforeVerify") throw Error("The workflow " + item.key() + " names an event other than afterEdit or beforeVerify.");
+                workflow.events.push_back(name);
+            }
+        }
+        if (value.contains("beforeVerify") && value["beforeVerify"].is_boolean() && value["beforeVerify"].get<bool>() && std::find(workflow.events.begin(), workflow.events.end(), "beforeVerify") == workflow.events.end()) {
+            workflow.events.push_back("beforeVerify");
+        }
         found[item.key()] = std::move(workflow);
     }
     return found;
