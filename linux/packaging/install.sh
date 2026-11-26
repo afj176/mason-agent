@@ -12,6 +12,7 @@ if [ "${1:-}" = "--uninstall" ]; then
     rm -f "$prefix/bin/mason" "$prefix/bin/mason-agent" "$desktop" \
           "$prefix/share/metainfo/site.masonagent.MasonAgent.metainfo.xml" \
           "$prefix/share/icons/hicolor/512x512/apps/site.masonagent.MasonAgent.png"
+    rm -rf "$prefix/share/mason-agent"
     echo "Mason Agent was removed from $prefix. Your sessions and models in ~/.local/share/MasonAgent were left alone."
     exit 0
 fi
@@ -20,6 +21,9 @@ mkdir -p "$prefix/bin" "$prefix/share/applications" "$prefix/share/metainfo" "$p
 install -m755 "$here/bin/mason" "$here/bin/mason-agent" "$prefix/bin/"
 install -m644 "$here/share/metainfo/site.masonagent.MasonAgent.metainfo.xml" "$prefix/share/metainfo/"
 install -m644 "$here/share/icons/hicolor/512x512/apps/site.masonagent.MasonAgent.png" "$prefix/share/icons/hicolor/512x512/apps/"
+# The Python program that serves Transformers weights; mason looks for it beside its own bin folder.
+mkdir -p "$prefix/share/mason-agent/transformers"
+install -m644 "$here/share/mason-agent/transformers/Serve-Transformers.py" "$here/share/mason-agent/transformers/ModelAdapters.json" "$prefix/share/mason-agent/transformers/"
 # The menu entry starts the app by its full path, so it works even when ~/.local/bin is not on PATH for the desktop session.
 sed "s|^Exec=mason-agent|Exec=$prefix/bin/mason-agent|" "$here/share/applications/site.masonagent.MasonAgent.desktop" > "$desktop"
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$prefix/share/applications" >/dev/null 2>&1 || true

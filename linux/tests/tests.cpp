@@ -3,6 +3,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <thread>
 #include <csignal>
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -1160,6 +1161,62 @@ static void test_planning() {
     }
 }
 
+static void test_transformers() {
+    // A stand-in for Python: it writes the status file the real server writes, then serves the stub model.
+    Sandbox box;
+    const fs::path folder = box.base / "hub" / "models--acme--tiny-coder" / "snapshots" / "abc", scripts = box.base / "scripts";
+    fs::create_directories(folder);
+    fs::create_directories(scripts);
+    for (const char* name : {"config.json", "tokenizer_config.json", "tokenizer.json"}) std::ofstream(folder / name) << "{}";
+    std::ofstream(folder / "model.safetensors") << std::string(4096, '\0');
+    std::ofstream(scripts / "Serve-Transformers.py") << "# stand-in";
+    const fs::path stub = fs::path(__FILE__).parent_path().parent_path().parent_path() / "macos" / "Tests" / "stub-model.py";
+    const fs::path python = box.base / "fake-python";
+    std::ofstream(python) << "#!/bin/sh\n"
+                             "while [ $# -gt 0 ]; do case \"$1\" in --model-id) id=\"$2\"; shift;; --port) port=\"$2\"; shift;; --manifest) manifest=\"$2\"; shift;; --model-dir) dir=\"$2\"; shift;; --check-only) check=1;; esac; shift; done\n"
+                             "if [ -f \"$dir/broken\" ]; then printf '{\"status\": \"Tokenizer files are missing. Use the complete local model folder.\", \"error\": true}' > \"$manifest\"; exit 1; fi\n"
+                             "printf '{\"status\": \"Setup ready.\", \"contextTokens\": 2048}' > \"$manifest\"\n"
+                             "[ -n \"$check\" ] && exit 0\n"
+                             "STUB_NAME=\"$id\" exec python3 '" + stub.string() + "' \"$port\"\n";
+    fs::permissions(python, fs::perms::owner_all);
+    setenv("MASON_TRANSFORMERS_DIR", scripts.c_str(), 1);
+    setenv("MASON_PYTHON", python.c_str(), 1);
+    setenv("MASON_DATA_HOME", (box.base / "data").c_str(), 1);
+
+    const std::vector<LocalModel> listed = scan_models({{"Hugging Face cache", box.base / "hub"}});
+    CHECK(listed.size() == 1 && listed[0].name == "acme/tiny-coder" && listed[0].transformers && listed[0].startable() && listed[0].bytes == 4096);
+    CHECK(listed[0].verdict() == "Coding agent · Transformers weights · runs through Python with PyTorch");
+    CHECK_THROWS(transformers::model_at(box.base.string()));  // a folder without weights is not a model
+    CHECK(transformers::model_at(folder.string()).name == "acme/tiny-coder");
+    if (listed.empty() || !fs::exists(stub) || access("/usr/bin/python3", X_OK) != 0) {
+        std::cout << "  (python3 or the stub model is missing: serving was not run)\n";
+    } else {
+        CHECK(starts_with(transformers::check(listed[0]), "Setup ready. Context: 2048 tokens."));
+        {
+            const std::unique_ptr<ModelServer> server = ModelServer::start(listed[0], "", 0, false, nullptr);
+            CHECK(server->context == 2048);  // the context the server settled on
+            const auto names = OpenAIClient::models(server->endpoint.url);
+            CHECK(names && *names == std::vector<std::string>{server->endpoint.model});
+            const std::string url = server->endpoint.url;
+            server->stop();
+            bool gone = false;
+            for (int i = 0; i < 40 && !gone; i++) {
+                gone = !OpenAIClient::models(url, "", 0.3);
+                if (!gone) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            CHECK(gone);  // stopping ends the Python process
+        }
+        // What the Python program reports is what the user is told.
+        std::ofstream(folder / "broken") << "";
+        std::string said;
+        try { ModelServer::start(listed[0], "", 0, false, nullptr); } catch (const Error& error) { said = error.what(); }
+        CHECK(said == "Tokenizer files are missing. Use the complete local model folder.");
+    }
+    unsetenv("MASON_TRANSFORMERS_DIR");
+    unsetenv("MASON_PYTHON");
+    unsetenv("MASON_DATA_HOME");
+}
+
 static void test_verification() {
     const auto approve = [](const ApprovalRequest&) { return true; };
     const auto edit = [] { return std::deque<ModelReply>{call("write_file", {{"path", "calc.py"}, {"content", "def add(a, b):\n    return a + b\n"}}), say("Done.")}; };
@@ -1250,7 +1307,7 @@ int main() {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models},
     };
     for (const auto& [name, function] : tests) {

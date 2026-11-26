@@ -26,6 +26,7 @@ std::string LocalModel::projector() const {
 }
 
 std::string LocalModel::role() const {
+    if (transformers) return "coding";
     const std::string lower = to_lower(name);
     if (starts_with(lower, "mmproj") || lower.find("-mmproj") != std::string::npos) return "projector";
     if (lower.find("rerank") != std::string::npos) return "reranker";
@@ -34,6 +35,7 @@ std::string LocalModel::role() const {
 }
 
 std::string LocalModel::verdict() const {
+    if (transformers) return "Coding agent · Transformers weights · runs through Python with PyTorch";
     const std::string kind = role();
     if (kind == "coding") return "Coding agent · runs in llama.cpp as a chat model";
     if (kind == "vision") return "Coding agent · vision · runs in llama.cpp with its projector";
@@ -81,6 +83,13 @@ std::vector<LocalModel> scan_models(const std::vector<std::pair<std::string, fs:
             if (ignored || size <= 1'000'000) continue;
             found[real.string()] = LocalModel{file.stem().string(), file.string(), static_cast<int64_t>(size), source};
             if (found.size() >= limit) break;
+        }
+        // Folders of Transformers weights: a config, a tokenizer and safetensors files.
+        for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, failure), end; !failure && it != end && found.size() < limit; it.increment(failure)) {
+            if (it->path().filename() != "config.json" || !transformers::is_model_folder(it->path().parent_path())) continue;
+            std::error_code ignored;
+            const fs::path real = fs::canonical(it->path().parent_path(), ignored);
+            if (!ignored) found[real.string()] = transformers::describe(it->path().parent_path(), source);
         }
     }
     std::vector<LocalModel> models;
@@ -260,6 +269,7 @@ std::string last_lines(const fs::path& log, size_t count) {
 std::unique_ptr<ModelServer> ModelServer::start(const LocalModel& model, const std::string& runtime, int context, bool cpu_only,
                                                 const std::function<void(const std::string&)>& progress, const CancelToken& cancel) {
     if (!model.startable()) throw Error(model.name + " is not a chat model: " + model.verdict() + ".");
+    if (model.transformers) return start_transformers(model, context, cpu_only, progress, cancel);
     int port = 0;
     for (int candidate = 18310; candidate < 18330 && port == 0; candidate++) {
         if (!OpenAIClient::models("http://127.0.0.1:" + std::to_string(candidate), "", 0.4)) port = candidate;
@@ -289,6 +299,178 @@ std::unique_ptr<ModelServer> ModelServer::start(const LocalModel& model, const s
         std::this_thread::sleep_for(std::chrono::milliseconds(700));
     }
     throw Error(model.name + " did not finish loading in five minutes. Log: " + server->log.string());
+}
+
+// ---- Transformers weights through Python ------------------------------------------------------------------------
+
+namespace transformers {
+
+namespace {
+
+struct Status {
+    std::string text;
+    bool failed = false;
+    int context = 0;
+};
+
+Status read_status(const fs::path& manifest) {
+    Status found;
+    try {
+        const json object = json::parse(read_file(manifest), nullptr, false);
+        if (!object.is_object()) return found;
+        found.text = object.value("status", "");
+        found.failed = object.value("error", false);
+        found.context = object.value("contextTokens", 0);
+    } catch (const std::exception&) {
+        // Not written yet.
+    }
+    return found;
+}
+
+std::vector<std::string> command(const LocalModel& model, const std::string& program, const fs::path& scripts, const std::string& alias, const std::string& where, int port, int context,
+                                 const fs::path& manifest, bool check_only = false) {
+    std::vector<std::string> arguments = {program, "-I", "-B", (scripts / "Serve-Transformers.py").string(), "--model-dir", model.path, "--model-id", alias, "--device", where,
+                                          "--port", std::to_string(port), "--context", std::to_string(context), "--manifest", manifest.string()};
+    if (check_only) arguments.push_back("--check-only");
+    return arguments;
+}
+
+bool executable(const std::string& path) {
+    std::error_code failure;
+    return access(path.c_str(), X_OK) == 0 && !fs::is_directory(path, failure);
+}
+
+}  // namespace
+
+fs::path script_folder() {
+    std::vector<fs::path> candidates;
+    if (const char* named = std::getenv("MASON_TRANSFORMERS_DIR"); named && *named) candidates.push_back(named);
+    std::error_code failure;
+    const fs::path program = fs::read_symlink("/proc/self/exe", failure);
+    if (!failure) candidates.push_back(program.parent_path().parent_path() / "share" / "mason-agent" / "transformers");
+    candidates.push_back("/usr/share/mason-agent/transformers");
+    for (const fs::path& candidate : candidates) {
+        if (fs::exists(candidate / "Serve-Transformers.py", failure)) return candidate;
+    }
+    return {};
+}
+
+std::string python() {
+    std::vector<std::string> candidates;
+    if (const char* named = std::getenv("MASON_PYTHON"); named && *named) candidates.push_back(named);
+    if (const std::string chosen = Preferences::load().python; !chosen.empty()) candidates.push_back(chosen);
+    const char* path = std::getenv("PATH");
+    for (const std::string& folder : split(std::string(path ? path : "") + ":/usr/local/bin:/usr/bin", ':', false)) candidates.push_back(folder + "/python3");
+    for (const std::string& candidate : candidates) {
+        if (executable(candidate)) return candidate;
+    }
+    return "";
+}
+
+std::string device(bool cpu_only) {
+    if (cpu_only) return "cpu";
+    return executable("/usr/bin/nvidia-smi") || executable("/usr/local/bin/nvidia-smi") ? "cuda" : "cpu";
+}
+
+bool is_model_folder(const fs::path& folder) {
+    std::error_code failure;
+    if (!fs::exists(folder / "config.json", failure) || !fs::exists(folder / "tokenizer_config.json", failure)) return false;
+    for (fs::directory_iterator it(folder, failure), end; !failure && it != end; it.increment(failure)) {
+        if (it->path().extension() == ".safetensors") return true;
+    }
+    return false;
+}
+
+LocalModel describe(const fs::path& folder, const std::string& source) {
+    LocalModel model;
+    model.name = folder.filename().string();
+    // In the Hugging Face cache the repository is named by a folder above: models--org--name/snapshots/…
+    for (const fs::path& part : folder) {
+        if (starts_with(part.string(), "models--")) model.name = replace_all(part.string().substr(8), "--", "/");
+    }
+    model.path = folder.string();
+    model.source = source;
+    model.transformers = true;
+    std::error_code failure;
+    for (fs::directory_iterator it(folder, failure), end; !failure && it != end; it.increment(failure)) {
+        if (it->path().extension() != ".safetensors") continue;
+        std::error_code ignored;
+        const auto size = fs::file_size(fs::canonical(it->path(), ignored), ignored);
+        if (!ignored) model.bytes += static_cast<int64_t>(size);
+    }
+    return model;
+}
+
+LocalModel model_at(const std::string& path) {
+    fs::path folder = starts_with(path, "~") ? fs::path(home_dir()) / path.substr(path.size() > 1 ? 2 : 1) : fs::path(path);
+    std::error_code failure;
+    folder = fs::weakly_canonical(folder, failure);
+    if (failure || !is_model_folder(folder)) throw Error(folder.string() + " is not a Transformers model folder: it needs config.json, tokenizer files and .safetensors weights.");
+    return describe(folder, "Folder");
+}
+
+std::string check(const LocalModel& model, bool cpu_only, const CancelToken& cancel) {
+    const fs::path scripts = script_folder();
+    if (scripts.empty()) throw Error("The Transformers server that ships with Mason was not found.");
+    const std::string program = python();
+    if (program.empty()) throw Error("No python3 was found. Install Python with PyTorch and Transformers, or choose one with /models python PATH.");
+    const fs::path manifest = fs::temp_directory_path() / ("mason-transformers-" + new_id().substr(0, 12) + ".json");
+    const fs::path log = fs::temp_directory_path() / ("mason-transformers-" + new_id().substr(0, 12) + ".log");
+    const int pid = shell::spawn_owned(command(model, program, scripts, "check", device(cpu_only), 18399, 8192, manifest, true), log);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+    bool stopped = false;
+    while (shell::is_running(pid)) {
+        if (is_cancelled(cancel) || std::chrono::steady_clock::now() > deadline) { stopped = true; break; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    shell::stop_owned(pid);
+    const Status found = read_status(manifest);
+    std::error_code ignored;
+    fs::remove(manifest, ignored);
+    fs::remove(log, ignored);
+    check_cancel(cancel);
+    if (stopped) throw Error("The check did not finish in two minutes.");
+    if (found.failed || found.text.empty()) throw Error(found.text.empty() ? program + " could not run the check." : found.text);
+    return found.text + (found.context > 0 ? " Context: " + std::to_string(found.context) + " tokens." : "") + " Python: " + program + ".";
+}
+
+}  // namespace transformers
+
+/// Serves a folder of Transformers weights with the Python program that ships with Mason. Loading large weights can
+/// take minutes, so this waits up to fifteen.
+std::unique_ptr<ModelServer> ModelServer::start_transformers(const LocalModel& model, int context, bool cpu_only, const std::function<void(const std::string&)>& progress, const CancelToken& cancel) {
+    const fs::path scripts = transformers::script_folder();
+    if (scripts.empty()) throw Error("The Transformers server that ships with Mason was not found.");
+    const std::string program = transformers::python();
+    if (program.empty()) throw Error("No python3 was found. Install Python with PyTorch and Transformers, or choose one with /models python PATH.");
+    int port = 0;
+    for (int candidate = 18310; candidate < 18330 && port == 0; candidate++) {
+        if (!OpenAIClient::models("http://127.0.0.1:" + std::to_string(candidate), "", 0.4)) port = candidate;
+    }
+    if (port == 0) throw Error("Ports 18310–18329 on this computer are all in use.");
+    const std::string alias = "mason-" + new_id().substr(0, 8);
+    const fs::path folder = data_home() / "model-servers";
+    fs::create_directories(folder);
+    const fs::path manifest = folder / (alias + ".json");
+    std::unique_ptr<ModelServer> server(new ModelServer());
+    server->model = model;
+    server->endpoint = {"http://127.0.0.1:" + std::to_string(port) + "/", alias, ""};
+    server->context = context > 0 ? context : 8192;
+    server->log = folder / (alias + ".log");
+    server->pid_ = shell::spawn_owned(transformers::command(model, program, scripts, alias, transformers::device(cpu_only), port, server->context, manifest), server->log);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(15);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (is_cancelled(cancel)) throw Cancelled();  // the server stops when `server` is destroyed
+        const transformers::Status found = transformers::read_status(manifest);
+        if (!server->running() || found.failed) throw Error(found.text.empty() ? "Python stopped while loading " + model.name + ". " + last_lines(server->log, 4) : found.text);
+        if (const auto listed = OpenAIClient::models(server->endpoint.url, "", 1); listed && std::find(listed->begin(), listed->end(), alias) != listed->end()) {
+            if (found.context > 0) server->context = found.context;
+            return server;
+        }
+        if (progress) progress(found.text);
+        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+    }
+    throw Error(model.name + " did not finish loading in fifteen minutes. Log: " + server->log.string());
 }
 
 ModelServer::~ModelServer() { stop(); }
@@ -329,6 +511,7 @@ Preferences Preferences::load() {
         }
         preferences.last_model_path = saved.value("lastModelPath", "");
         preferences.last_context = saved.value("lastContext", 0);
+        preferences.python = saved.value("python", "");
     } catch (const Error&) {
         // Nothing remembered yet.
     }
@@ -337,6 +520,7 @@ Preferences Preferences::load() {
 
 void Preferences::save() const {
     json saved = {{"lastModelPath", last_model_path}, {"lastContext", last_context}};
+    if (!python.empty()) saved["python"] = python;
     if (last_endpoint) saved["lastEndpoint"] = {{"url", last_endpoint->url}, {"model", last_endpoint->model}};
     try { write_file_atomic(data_home() / "preferences.json", saved.dump(1)); } catch (const Error&) {}
 }

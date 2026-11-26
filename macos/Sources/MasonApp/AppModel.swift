@@ -444,7 +444,8 @@ final class AppModel: ObservableObject {
 
     func start(_ model: LocalModel, context: Int? = nil) {
         guard modelBusy == nil else { return }
-        guard let runtime = runtimePath else { notice = "Install llama.cpp first; it runs GGUF models."; return }
+        // Transformers weights run through Python, not llama.cpp.
+        guard let runtime = model.transformers ? "" : runtimePath else { notice = "Install llama.cpp first; it runs GGUF models."; return }
         modelBusy = "Starting \(model.name)…"
         server?.stop(); server = nil
         modelTask = Task {

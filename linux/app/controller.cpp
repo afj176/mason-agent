@@ -806,7 +806,8 @@ void Controller::refresh_models(bool start_last_if_needed) {
 }
 
 void Controller::start_model(const LocalModel& model, int context) {
-    if (runtime_path.empty()) {
+    // Transformers weights run through Python, not llama.cpp.
+    if (runtime_path.empty() && !model.transformers) {
         notice.emit("Install llama.cpp first; it runs GGUF models.");
         return;
     }

@@ -551,6 +551,8 @@ final class CLI {
             ("/models", "List the models on this computer and what each is for"),
             ("/models start NUMBER|NAME", "Start a coding model here (add cpu, or a context size)"),
             ("/models stop", "Stop the model this session started"),
+            ("/models start FOLDER", "Serve a folder of Transformers weights through Python (PyTorch)"),
+            ("/models check NUMBER|FOLDER · python [PATH]", "Check a Transformers folder; choose the Python that serves them"),
             ("/models search TEXT", "Search Hugging Face"),
             ("/models download REPO [BUILD]", "List a repository's builds, or download one"),
             ("/models setup", "Suggest coding models that fit this Mac and download one"),
@@ -726,6 +728,21 @@ final class CLI {
             running.stop(); server = nil
             if endpoint?.url == running.endpoint.url { endpoint = nil }
             Term.line(Term.paint(Term.dim, "  Stopped \(running.model.name)."))
+        case "python":
+            var preferences = Preferences.load()
+            if !argument.isEmpty {
+                let path = (argument as NSString).expandingTildeInPath
+                guard FileManager.default.isExecutableFile(atPath: path) else { throw MasonError("\(path) is not a program.") }
+                preferences.python = path; preferences.save()
+            }
+            Term.line(Term.paint(Term.dim, "  Transformers models run with ") + (TransformersRuntime.python() ?? Term.paint(Term.yellow, "no python3 found")) + Term.paint(Term.dim, "  ·  it needs PyTorch and Transformers installed"))
+        case "check":
+            if listed.isEmpty { listed = ModelLibrary.scan() }
+            let model: LocalModel
+            if let number = Int(argument), number >= 1, number <= listed.count { model = listed[number - 1] } else { model = try TransformersRuntime.model(at: argument) }
+            guard model.transformers else { throw MasonError("\(model.name) is a GGUF file; /models check is for Transformers folders.") }
+            let said = try await busy("Checking \(model.name)") { _ in try await TransformersRuntime.check(model) }
+            Term.line(Term.paint(Term.green, "  ✓ ") + said)
         case "search": try await search(argument)
         case "download": try await download(argument)
         case "setup": try await setup()
@@ -763,6 +780,7 @@ final class CLI {
         if listed.isEmpty { listed = ModelLibrary.scan() }
         let model: LocalModel
         if let number = Int(wanted), number >= 1, number <= listed.count { model = listed[number - 1] }
+        else if wanted.hasPrefix("/") || wanted.hasPrefix("~") { model = try TransformersRuntime.model(at: wanted) }
         else if let match = listed.first(where: { $0.startable && $0.name.localizedCaseInsensitiveContains(wanted) }) { model = match }
         else { throw MasonError("No model on this computer matches \"\(wanted)\". /models lists them.") }
         guard model.startable else { throw MasonError("\(model.name) cannot be started here: \(model.verdict).") }
@@ -771,7 +789,8 @@ final class CLI {
 
     /// Starts a model with llama.cpp and makes it this session's model.
     func start(_ model: LocalModel, context: Int? = nil, cpuOnly: Bool = false) async throws -> Bool {
-        var runtime = LlamaRuntime.find()
+        // Transformers weights run through Python, not llama.cpp.
+        var runtime = model.transformers ? "" : LlamaRuntime.find()
         if runtime == nil {
             Term.line(Term.paint(Term.yellow, "  llama.cpp is not installed yet; it runs GGUF models."))
             runtime = try await installRuntime(force: false)

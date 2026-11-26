@@ -1175,6 +1175,59 @@ func XCTAssertThrowsErrorAsync<T>(_ expression: @autoclosure () async throws -> 
     do { _ = try await expression(); XCTFail("expected an error. " + message, file: file, line: line) } catch {}
 }
 
+final class TransformersTests: XCTestCase {
+    /// A stand-in for Python: it writes the status file the real server writes, then serves the stub model.
+    func testAFolderOfTransformersWeightsIsListedCheckedAndServed() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-tf-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let folder = base.appendingPathComponent("hub/models--acme--tiny-coder/snapshots/abc"), scripts = base.appendingPathComponent("scripts")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        for name in ["config.json", "tokenizer_config.json", "tokenizer.json"] { try "{}".write(to: folder.appendingPathComponent(name), atomically: true, encoding: .utf8) }
+        try Data(count: 4096).write(to: folder.appendingPathComponent("model.safetensors"))
+        try "# stand-in".write(to: scripts.appendingPathComponent("Serve-Transformers.py"), atomically: true, encoding: .utf8)
+        let stub = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("stub-model.py").path
+        let python = base.appendingPathComponent("fake-python")
+        try """
+        #!/bin/sh
+        while [ $# -gt 0 ]; do case "$1" in --model-id) id="$2"; shift;; --port) port="$2"; shift;; --manifest) manifest="$2"; shift;; --model-dir) dir="$2"; shift;; --check-only) check=1;; esac; shift; done
+        if [ -f "$dir/broken" ]; then printf '{"status": "Tokenizer files are missing. Use the complete local model folder.", "error": true}' > "$manifest"; exit 1; fi
+        printf '{"status": "Setup ready.", "contextTokens": 2048}' > "$manifest"
+        [ -n "$check" ] && exit 0
+        STUB_NAME="$id" exec python3 '\(stub)' "$port"
+        """.write(to: python, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: python.path)
+        setenv("MASON_TRANSFORMERS_DIR", scripts.path, 1); setenv("MASON_PYTHON", python.path, 1); setenv("MASON_DATA_HOME", base.appendingPathComponent("home").path, 1)
+        defer { unsetenv("MASON_TRANSFORMERS_DIR"); unsetenv("MASON_PYTHON"); unsetenv("MASON_DATA_HOME") }
+
+        let listed = ModelLibrary.scan([("Hugging Face cache", base.appendingPathComponent("hub"))])
+        XCTAssertEqual(listed.map(\.name), ["acme/tiny-coder"])
+        let model = listed[0]
+        XCTAssertTrue(model.transformers && model.startable)
+        XCTAssertEqual(model.bytes, 4096)
+        XCTAssertEqual(model.verdict, "Coding agent · Transformers weights · runs through Python with PyTorch")
+        XCTAssertThrowsError(try TransformersRuntime.model(at: base.path), "a folder without weights is not a model")
+        XCTAssertEqual(try TransformersRuntime.model(at: folder.path).name, "acme/tiny-coder")
+
+        let checked = try await TransformersRuntime.check(model)
+        XCTAssertTrue(checked.hasPrefix("Setup ready. Context: 2048 tokens."), checked)
+
+        let server = try await ModelServer.start(model, runtime: "", progress: { _ in })
+        XCTAssertEqual(server.context, 2048, "the context the server settled on")
+        let names = await OpenAIClient.models(at: server.endpoint.url)
+        XCTAssertEqual(names, [server.endpoint.model])
+        server.stop()
+        for _ in 0..<40 where await OpenAIClient.models(at: server.endpoint.url, timeout: 0.3) != nil { try await Task.sleep(nanoseconds: 200_000_000) }
+        let after = await OpenAIClient.models(at: server.endpoint.url, timeout: 0.3)
+        XCTAssertNil(after, "stopping ends the Python process")
+
+        // What the Python program reports is what the user is told.
+        try "".write(to: folder.appendingPathComponent("broken"), atomically: true, encoding: .utf8)
+        do { _ = try await ModelServer.start(model, runtime: "", progress: { _ in }); XCTFail("expected an error") }
+        catch { XCTAssertEqual("\(error)", "Tokenizer files are missing. Use the complete local model folder.") }
+    }
+}
+
 #if os(macOS)
 /// Runs real commands under the Auto sandbox. These only run on a Mac, where sandbox-exec exists.
 final class SandboxTests: XCTestCase {

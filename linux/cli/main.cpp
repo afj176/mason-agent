@@ -575,6 +575,8 @@ private:
             {"/models", "List the models on this computer and what each is for"},
             {"/models start NUMBER|NAME", "Start a coding model here (add cpu, or a context size)"},
             {"/models stop", "Stop the model this session started"},
+            {"/models start FOLDER", "Serve a folder of Transformers weights through Python (PyTorch)"},
+            {"/models check NUMBER|FOLDER · python [PATH]", "Check a Transformers folder; choose the Python that serves them"},
             {"/models search TEXT", "Search Hugging Face"},
             {"/models download REPO [BUILD]", "List a repository's builds, or download one"},
             {"/models setup", "Suggest coding models that fit this computer and download one"},
@@ -853,6 +855,24 @@ private:
         const std::string verb = to_lower(rest.substr(0, space)), argument = space == std::string::npos ? "" : trim(rest.substr(space + 1));
         if (verb.empty() || verb == "list") list_models();
         else if (verb == "start") start_named(argument);
+        else if (verb == "python") {
+            if (!argument.empty()) {
+                if (access(argument.c_str(), X_OK) != 0) throw Error(argument + " is not a program.");
+                Preferences preferences = Preferences::load();
+                preferences.python = argument;
+                preferences.save();
+            }
+            const std::string found = transformers::python();
+            term::line(paint(term::dim, "  Transformers models run with ") + (found.empty() ? paint(term::yellow, "no python3 found") : found) + paint(term::dim, "  ·  it needs PyTorch and Transformers installed"));
+        }
+        else if (verb == "check") {
+            if (listed_.empty()) listed_ = scan_models();
+            const int number = std::atoi(argument.c_str());
+            const LocalModel model = number >= 1 && std::to_string(number) == argument && static_cast<size_t>(number) <= listed_.size() ? listed_[static_cast<size_t>(number) - 1] : transformers::model_at(argument);
+            if (!model.transformers) throw Error(model.name + " is a GGUF file; /models check is for Transformers folders.");
+            const std::string said = busy<std::string>("Checking " + model.name, [&](const auto&, const CancelToken& cancel) { return transformers::check(model, false, cancel); });
+            term::line(paint(term::green, "  ✓ ") + said);
+        }
         else if (verb == "stop") {
             if (!server_) { term::line(paint(term::dim, "  This session has not started a model.")); return; }
             const std::string name = server_->model.name;
@@ -888,6 +908,8 @@ private:
         term::line(paint(term::dim, "  Start a coding model with /models start NUMBER (add cpu, or a context size such as 16384)."));
     }
 
+    LocalModel named_folder_;
+
     void start_named(const std::string& argument) {
         std::vector<std::string> words = split(argument, ' ', false);
         bool cpu = false;
@@ -903,7 +925,10 @@ private:
         const LocalModel* model = nullptr;
         const int number = std::atoi(wanted.c_str());
         if (number >= 1 && std::to_string(number) == wanted && static_cast<size_t>(number) <= listed_.size()) model = &listed_[static_cast<size_t>(number) - 1];
-        else {
+        else if (starts_with(wanted, "/") || starts_with(wanted, "~")) {
+            named_folder_ = transformers::model_at(wanted);
+            model = &named_folder_;
+        } else {
             for (const LocalModel& candidate : listed_) {
                 if (candidate.startable() && contains_ci(candidate.name, wanted)) { model = &candidate; break; }
             }
@@ -916,7 +941,8 @@ private:
     /// Starts a model with llama.cpp and makes it this session's model.
     bool start(const LocalModel& chosen, int context = 0, bool cpu_only = false) {
         const LocalModel model = chosen;  // `listed_` may change while this runs
-        std::string runtime = llama::find();
+        // Transformers weights run through Python, not llama.cpp.
+        std::string runtime = model.transformers ? "python" : llama::find();
         if (runtime.empty()) {
             term::line(paint(term::yellow, "  llama.cpp is not installed yet; it runs GGUF models."));
             runtime = install_runtime(false);

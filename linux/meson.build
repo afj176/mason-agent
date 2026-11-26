@@ -20,6 +20,9 @@ core_dep = declare_dependency(link_with: core, include_directories: include_dire
 version_define = '-DMASON_VERSION="' + meson.project_version() + '"'
 executable('mason', files('cli/main.cpp'), dependencies: core_dep, cpp_args: version_define, install: true)
 
+# The Python program that serves Transformers weights, and the list of architectures it accepts.
+install_data('../windows/scripts/Serve-Transformers.py', '../windows/scripts/ModelAdapters.json', install_dir: get_option('datadir') / 'mason-agent' / 'transformers')
+
 tests = executable('mason-tests', files('tests/tests.cpp'), dependencies: core_dep)
 test('engine', tests, timeout: 120)
 
