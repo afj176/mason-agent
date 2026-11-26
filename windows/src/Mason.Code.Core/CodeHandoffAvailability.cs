@@ -13,7 +13,7 @@ internal static class CodeHandoffAvailability
 
     static Result Probe()
     {
-        if(!OperatingSystem.IsWindows()||RuntimeInformation.ProcessArchitecture!=Architecture.X64||RuntimeInformation.OSArchitecture!=Architecture.X64)
+        if(RuntimeInformation.ProcessArchitecture!=Architecture.X64||RuntimeInformation.OSArchitecture!=Architecture.X64)
             return new(false,"Git Bash Auto requires native x64 Windows.");
         try
         {

@@ -4,6 +4,9 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Runtime.Versioning;
 
+// The Windows engine: only the Windows app and CLI build it, and both run on Windows alone.
+[assembly: SupportedOSPlatform("windows")]
+
 namespace Mason.Code;
 
 /// <summary>Fresh Windows LPAC identity, workspace-only writes, isolated environment and no network capabilities.</summary>
@@ -442,7 +445,16 @@ public sealed partial class CodeSandbox : IDisposable
     [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(IntPtr handle,int type,uint information,IntPtr owner,IntPtr group,IntPtr dacl,IntPtr sacl);
     [DllImport("ntdll.dll")] static extern int NtSetSecurityObject(IntPtr handle,uint information,IntPtr descriptor);
     [StructLayout(LayoutKind.Sequential)] struct ObjectSecurity { public int Length; public IntPtr Descriptor; [MarshalAs(UnmanagedType.Bool)] public bool Inherit; }
-    [DllImport("kernel32.dll",EntryPoint="CreateFileW",CharSet=CharSet.Unicode,SetLastError=true)] static extern Microsoft.Win32.SafeHandles.SafeFileHandle OpenDirectory(string path,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
+    static Microsoft.Win32.SafeHandles.SafeFileHandle OpenDirectory(string path,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template)=>CreateFileNative(NativePath(path),access,share,security,disposition,flags,template);
+    // Raw CreateFileW is limited to MAX_PATH unless the path carries the \\?\ prefix,
+    // while .NET file APIs accept long paths. Prefix full paths so both agree.
+    internal static string NativePath(string path)
+    {
+        if(path.StartsWith(@"\\?\",StringComparison.Ordinal)||path.StartsWith(@"\\.\",StringComparison.Ordinal))return path;
+        path=Path.GetFullPath(path);
+        return path.StartsWith(@"\\",StringComparison.Ordinal)?@"\\?\UNC\"+path[2..]:@"\\?\"+path;
+    }
+    [DllImport("kernel32.dll",EntryPoint="CreateFileW",CharSet=CharSet.Unicode,SetLastError=true)] static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileNative(string path,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle handle,System.Text.StringBuilder path,uint length,uint flags);
     [DllImport("kernel32.dll",EntryPoint="GetShortPathNameW",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetShortPathName(string path,System.Text.StringBuilder shortPath,uint length);
     [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();

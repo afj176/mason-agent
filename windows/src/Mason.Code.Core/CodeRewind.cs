@@ -69,7 +69,7 @@ public static class CodeRewind
                 if(edit.ExternalChange)throw new IOException("Another editor changed this file between Mason edits: "+edit.Path);
                 var desired=edit.Before==null?null:CodeWorkspace.Bytes(edit.Before,edit.Bom);
                 if(!File.Exists(path) && desired==null && turn.RewindPending)continue;
-                var handle=CreateFileW(path,0xC0000000u|(desired==null?0x10000u:0),0,IntPtr.Zero,3,0,IntPtr.Zero);
+                var handle=CreateFileW(CodeSandbox.NativePath(path),0xC0000000u|(desired==null?0x10000u:0),0,IntPtr.Zero,3,0,IntPtr.Zero);
                 if(handle.IsInvalid){handle.Dispose();throw new IOException("Cannot lock "+edit.Path,new Win32Exception(Marshal.GetLastWin32Error()));}
                 var file=new FileStream(handle,FileAccess.ReadWrite);
                 locked.Add((edit,file,desired));

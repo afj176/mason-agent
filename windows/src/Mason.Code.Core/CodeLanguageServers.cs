@@ -102,7 +102,7 @@ public static class CodeLanguageServers
 
     internal static string? Find(string name, string home, string? workspace = null)
     {
-        string[] endings = OperatingSystem.IsWindows() ? [".exe", ".cmd", ".bat"] : [""];
+        string[] endings = [".exe", ".cmd", ".bat"];
         if (Path.IsPathRooted(name)) return File.Exists(name) ? name : null;
         foreach (var folder in SearchFolders(home, workspace))
             foreach (var ending in endings)
@@ -220,7 +220,7 @@ public static class CodeLanguageServers
         try { return Key(parsed.LocalPath); } catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return null; }
     }
 
-    internal static string Key(string file) { var full = Path.GetFullPath(file); return OperatingSystem.IsWindows() ? full.ToLowerInvariant() : full; }
+    internal static string Key(string file) { var full = Path.GetFullPath(file); return full.ToLowerInvariant(); }
 
     static string? Relative(string uri, CodeWorkspace scope)
     {

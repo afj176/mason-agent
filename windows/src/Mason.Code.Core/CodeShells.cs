@@ -32,7 +32,7 @@ public static class CodeShells
         return candidates.FirstOrDefault(File.Exists);
     }
     static IEnumerable<string> SearchPath() => (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).Select(p => p.Trim('"')).Where(Path.IsPathFullyQualified);
-    public static CodeShellKind Recommended()=>OperatingSystem.IsWindows()&&CodeSandboxTools.GitBashAutoAvailable&&Find(CodeShellKind.GitBash)!=null?CodeShellKind.GitBash:CodeShellKind.CommandPrompt;
+    public static CodeShellKind Recommended()=>CodeSandboxTools.GitBashAutoAvailable&&Find(CodeShellKind.GitBash)!=null?CodeShellKind.GitBash:CodeShellKind.CommandPrompt;
     public static CodeShellKind Effective(CodeSession session)=>session.Shell==CodeShellKind.Recommended?Recommended():session.Shell;
     public static string? Unavailable(CodeSession session)
     {
@@ -40,10 +40,10 @@ public static class CodeShells
         if(kind==CodeShellKind.Direct)return null;
         if(session.Permission==CodePermission.Auto&&kind==CodeShellKind.PowerShell)
         {
-            if(!OperatingSystem.IsWindows()||!CodeSandboxTools.PowerShellAutoAvailable)return "PowerShell Auto requires optional administrator logging setup in Environment.";
+            if(!CodeSandboxTools.PowerShellAutoAvailable)return "PowerShell Auto requires optional administrator logging setup in Environment.";
             if(!string.Equals(Path.GetFileName(session.ShellExecutable),"pwsh.exe",StringComparison.OrdinalIgnoreCase))return "Auto requires PowerShell 7 (pwsh.exe). Windows PowerShell 5 is not supported.";
         }
-        if(session.Permission==CodePermission.Auto&&kind==CodeShellKind.GitBash&&(!OperatingSystem.IsWindows()||!CodeSandboxTools.GitBashAutoAvailable))return "Git Bash has not passed local Auto compatibility checks.";
+        if(session.Permission==CodePermission.Auto&&kind==CodeShellKind.GitBash&&!CodeSandboxTools.GitBashAutoAvailable)return "Git Bash has not passed local Auto compatibility checks.";
         var path=session.Shell==CodeShellKind.Recommended?Find(kind):session.ShellExecutable;
         return path==null||!File.Exists(path)?Name(kind)+" is not installed or its saved executable is unavailable.":null;
     }
@@ -71,7 +71,6 @@ public static class CodeShells
         (Effective(session)==CodeShellKind.GitBash?DescribeGitAuto():"");
     static string DescribeGitAuto()
     {
-        if(!OperatingSystem.IsWindows())return " Git Bash Auto requires Windows.";
         return CodeSandboxTools.GitBashAutoAvailable?
             " Git Bash Auto is available for this validated local runtime. From Python/Node, resolve bash.exe from the sandbox PATH and pass its full path to subprocess APIs; a bare bash can select Windows' WSL launcher before PATH.":
             " Git Bash Auto is unavailable: "+CodeSandboxTools.GitBashAutoUnavailableReason+" Use reviewed mode or direct Python/Node/Command Prompt.";

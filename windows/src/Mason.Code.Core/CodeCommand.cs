@@ -51,7 +51,6 @@ public static class CodeCommand
     }
     static async Task<CodeCommandResult> RunCore(string executable,IReadOnlyList<string> arguments,string directory,CancellationToken cancellation,string? sandboxWorkspace,CodeNetworkAccess? network,TimeSpan? timeout,Action<Func<string>>? observeLog,Action<Func<int,bool>>? observeOwner,CodeTerminalInput? terminal)
     {
-        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("This command host currently supports Windows.");
         cancellation.ThrowIfCancellationRequested();
         using var sandbox = sandboxWorkspace == null ? null : new CodeSandbox(sandboxWorkspace,executable,cancellation);
         cancellation.ThrowIfCancellationRequested();
@@ -185,7 +184,7 @@ public static class CodeCommand
     {
         if(arguments.Any(a=>a.Contains('\0')))throw new ArgumentException("Command arguments cannot contain NUL characters.");
         var systemCmd=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"cmd.exe");
-        if(OperatingSystem.IsWindows()&&Path.GetFullPath(executable).Equals(systemCmd,StringComparison.OrdinalIgnoreCase))
+        if(Path.GetFullPath(executable).Equals(systemCmd,StringComparison.OrdinalIgnoreCase))
         {
             if(arguments.Count==1&&arguments[0]=="/?")return Quote(executable)+" /?";
             int command=-1;
