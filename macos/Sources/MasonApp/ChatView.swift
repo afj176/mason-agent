@@ -142,7 +142,11 @@ struct ChatView: View {
             }
         }
         .padding(16)
-        .onAppear { focused = true }
-        .onChange(of: model.chatSelection) { _, _ in focused = true }
+        // The message box takes the keyboard whenever a chat is shown. The short wait lets the pane finish appearing;
+        // asking for focus in the same pass as the switch is ignored.
+        .task(id: model.chatSelection) {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            focused = true
+        }
     }
 }
