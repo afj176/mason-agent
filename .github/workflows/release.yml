@@ -51,6 +51,17 @@ jobs:
           fsutil 8dot3name set $drive 0
           fsutil 8dot3name query $drive
 
+      # The sandbox checks add permissions to their test folders. The runner's work folder carries an access list in a
+      # non-canonical order, which Windows refuses to modify, so the checkout folder gets the standard one instead.
+      - name: Standard permissions on the work folder
+        shell: pwsh
+        run: |
+          $folder = $env:GITHUB_WORKSPACE
+          New-Item -ItemType Directory -Force $folder | Out-Null
+          icacls $folder /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "${env:USERNAME}:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"
+          if ($LASTEXITCODE -ne 0) { throw "icacls failed: $LASTEXITCODE" }
+          (Get-Acl $folder).AreAccessRulesCanonical
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
