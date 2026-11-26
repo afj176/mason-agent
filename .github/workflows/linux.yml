@@ -21,7 +21,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential meson ninja-build pkg-config \
-            libcurl4-openssl-dev nlohmann-json3-dev libgtkmm-4.0-dev libadwaita-1-dev libatspi2.0-dev bubblewrap dpkg-dev xvfb
+            libcurl4-openssl-dev nlohmann-json3-dev libgtkmm-4.0-dev libadwaita-1-dev libatspi2.0-dev libwebkitgtk-6.0-dev bubblewrap dpkg-dev xvfb
       - name: Build, test and package
         run: linux/packaging/build-packages.sh
       - name: Install the package and run the command line

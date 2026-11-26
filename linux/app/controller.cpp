@@ -469,6 +469,7 @@ void Controller::send(const std::string& text) {
                         }
                     });
                 });
+            agent.set_presenter([this](const std::string& kind, const std::string& path, int line) { post([this, kind, path, line] { present.emit(kind, path, line); }); });
             { std::lock_guard<std::mutex> guard(agent_lock_); active_agent_ = &agent; }
             agent.run(working, input, cancel);
             { std::lock_guard<std::mutex> guard(agent_lock_); active_agent_ = nullptr; }

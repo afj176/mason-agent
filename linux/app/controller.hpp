@@ -34,6 +34,8 @@ public:
     sigc::signal<void()> changed;
     /// A short message for the user (a toast).
     sigc::signal<void(const std::string&)> notice;
+    /// The model asks to show the user a file at a line ("file") or one of the project's pages ("page").
+    sigc::signal<void(const std::string& kind, const std::string& path, int line)> present;
 
     // ---- sessions ----
     const std::vector<Session>& sessions() const { return sessions_; }

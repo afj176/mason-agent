@@ -2,7 +2,7 @@
 # Installs Mason Agent for the current user, without administrator rights:
 #   ~/.local/bin/mason and ~/.local/bin/mason-agent, plus the menu entry and icon under ~/.local/share.
 # Run it from the extracted archive:  ./install.sh        Remove everything again with:  ./install.sh --uninstall
-# The programs need GTK 4, gtkmm 4.10+, libadwaita 1.4+ and libcurl from your distribution; bubblewrap enables Auto.
+# The programs need GTK 4, gtkmm 4.10+, libadwaita 1.4+, WebKitGTK 6.0 and libcurl from your distribution; bubblewrap enables Auto.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 prefix="${PREFIX:-$HOME/.local}"
@@ -41,7 +41,7 @@ case ":$PATH:" in
        echo "    export PATH=\"$prefix/bin:\$PATH\"" ;;
 esac
 missing=""
-for library in libgtkmm-4.0.so.0 libadwaita-1.so.0 libcurl.so.4; do
+for library in libgtkmm-4.0.so.0 libadwaita-1.so.0 libwebkitgtk-6.0.so.4 libcurl.so.4; do
     ldconfig -p 2>/dev/null | grep -q "$library" || missing="$missing $library"
 done
 [ -z "$missing" ] || echo "These libraries were not found; install them with your package manager before starting Mason Agent:$missing"

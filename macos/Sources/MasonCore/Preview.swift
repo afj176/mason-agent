@@ -58,11 +58,18 @@ public enum Preview {
             }
             return parts.join(' > ');
           }
-          var armed = false, marked = null, old = '';
+          var armed = false, box = null;
+          // The element under the pointer is framed by a box laid over it, so the element itself is never changed.
           function mark(element) {
-            if (marked) marked.style.outline = old;
-            marked = element;
-            if (element) { old = element.style.outline; element.style.outline = '2px solid #e8590c'; }
+            if (!element) { if (box) box.style.display = 'none'; return; }
+            if (!box) {
+              box = document.createElement('div');
+              box.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #e8590c;border-radius:2px;box-sizing:border-box';
+              (document.body || document.documentElement).appendChild(box);
+            }
+            var place = element.getBoundingClientRect();
+            box.style.display = 'block';
+            box.style.left = place.left + 'px'; box.style.top = place.top + 'px'; box.style.width = place.width + 'px'; box.style.height = place.height + 'px';
           }
           document.addEventListener('mouseover', function (event) { if (armed) mark(event.target); }, true);
           document.addEventListener('click', function (event) {
