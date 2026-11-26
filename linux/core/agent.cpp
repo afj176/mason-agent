@@ -4,6 +4,7 @@
 #include "derived.hpp"
 #include "navigation.hpp"
 #include "planning.hpp"
+#include "roles.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -157,7 +158,9 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_desktop(const 
         if (task.empty() || utf8_length(task) > 2000) throw Error("desktop_visual needs a task of up to 2,000 characters.");
         std::shared_ptr<DesktopVision> seer = vision_;
         if (!seer) {
-            if (const auto* client = dynamic_cast<OpenAIClient*>(&model_)) seer = std::make_shared<ModelVision>(client->endpoint());
+            // The model chosen for pictures, or else the one doing the work.
+            const std::optional<ModelEndpoint> chosen = roles::load(store_.home()).visual;
+            if (const std::optional<ModelEndpoint> endpoint = chosen ? chosen : roles::endpoint_of(model_)) seer = std::make_shared<ModelVision>(*endpoint);
         }
         if (!seer) throw Error("No vision model is available to look at the window.");
         const std::optional<DesktopFrame> frame = automation->frame(window);

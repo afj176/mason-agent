@@ -3,7 +3,9 @@
 #include "agent.hpp"
 #include "background.hpp"
 #include "experiments.hpp"
+#include "desktop.hpp"
 #include "navigation.hpp"
+#include "roles.hpp"
 #include "shell.hpp"
 
 #include <fstream>
@@ -18,6 +20,7 @@ const std::set<std::string>& names() {
 
 const char* const kUsage =
     "mason exec --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto] [--profile PATH] [--resume SESSION_ID]\n"
+    "                   [--visual-model ID [--visual-endpoint URL]] [--trace-dir FOLDER]\n"
     "mason map --workspace PATH --query NAME\n"
     "mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics\n"
     "mason git-status --workspace PATH\n"
@@ -181,7 +184,15 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
         }
         session->ask_only = !automatic;
         event("run.started", {{"id", session->id}, {"workspace", workspace.root()}, {"profile", profile.string()}, {"model", values.count("model") ? values["model"] : ""}, {"mode", automatic ? "build" : "ask"}});
-        Agent agent(store, *model,
+        std::unique_ptr<RoleModel> traced = roles::implementer(*model, &workspace, data_home());
+        if (values.count("trace-dir")) {
+            const fs::path place = fs::absolute(values["trace-dir"]).lexically_normal();
+            fs::create_directories(place);
+            std::error_code unused;
+            if ((fs::weakly_canonical(place, unused).string() + "/").rfind(fs::weakly_canonical(workspace.root(), unused).string() + "/", 0) == 0) throw Error("Keep decision traces outside the project.");
+            traced = std::make_unique<RoleModel>(*model, "implementer", 0, place);
+        }
+        Agent agent(store, traced ? static_cast<ChatModel&>(*traced) : *model,
                     [&](const ApprovalRequest& request) {
                         event("approval.required", {{"tool", request.tool}, {"title", request.title}, {"subject", request.subject}});
                         return false;
@@ -190,6 +201,9 @@ int run(const std::vector<std::string>& arguments, const std::function<void(cons
                         if (change.kind != AgentEvent::Kind::ActivityFinished) return;
                         event("tool.result", {{"tool", change.activity.tool}, {"subject", change.activity.subject}, {"state", change.activity.state}, {"result", change.activity.result}});
                     });
+        if (values.count("visual-model")) {
+            agent.set_vision(std::make_shared<ModelVision>(ModelEndpoint{validated_endpoint(values.count("visual-endpoint") ? values["visual-endpoint"] : get("endpoint")), values["visual-model"], ""}));
+        }
         agent.run(*session, prompt, cancel);
         event("run.finished", {{"id", session->id}, {"state", session->state}, {"detail", session->detail}, {"answer", session->turns.empty() ? "" : session->turns.back().answer}});
         return session->state == "Completed" ? 0 : 2;

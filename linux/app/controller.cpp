@@ -1,4 +1,5 @@
 #include "controller.hpp"
+#include "roles.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -208,12 +209,14 @@ void Controller::review_changes() {
     plan_cancel_ = make_cancel();
     changed.emit();
     const std::shared_ptr<bool> alive = alive_;
-    plan_thread_ = std::thread([this, alive, working = *current, target = *endpoint, cancel = plan_cancel_] {
+    plan_thread_ = std::thread([this, alive, working = *current, target = *endpoint, cancel = plan_cancel_, home = store_->home()] {
         ReviewFindings found;
         std::string problem;
         try {
             OpenAIClient model(target);
-            found = review::findings(working, Workspace(working.workspace), model, cancel);
+            const Workspace folder(working.workspace);
+            const std::unique_ptr<RoleModel> reviewer = roles::reviewer(model, &folder, home);
+            found = review::findings(working, folder, *reviewer, cancel);
         } catch (const Cancelled&) {
             problem = "The review was stopped.";
         } catch (const std::exception& error) {

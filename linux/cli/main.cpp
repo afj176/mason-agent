@@ -20,6 +20,7 @@
 #include "experiments.hpp"
 #include "delivery.hpp"
 #include "background.hpp"
+#include "roles.hpp"
 #include "models.hpp"
 #include "terminal.hpp"
 
@@ -225,7 +226,9 @@ private:
         const CancelToken cancel = make_cancel();
         const size_t first_activity = session_.activities.size(), turns_before = session_.turns.size();
         const auto started = std::chrono::steady_clock::now();
-        Agent agent(store_, model, [&](const ApprovalRequest& request) { return feed.ask(request); }, [&](const AgentEvent& event) { feed.push(event); });
+        // With tracing on, every call to the model is written down.
+        const std::unique_ptr<RoleModel> traced = roles::implementer(model, &workspace_, store_.home());
+        Agent agent(store_, traced ? static_cast<ChatModel&>(*traced) : model, [&](const ApprovalRequest& request) { return feed.ask(request); }, [&](const AgentEvent& event) { feed.push(event); });
         std::thread worker([&] {
             agent.run(session_, input, cancel);
             std::lock_guard<std::mutex> guard(feed.lock);
@@ -539,6 +542,10 @@ private:
             for (const std::string& line : split(experiments::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
             return true;
         }
+        if (name == "/roles" || name == "/role") {
+            for (const std::string& line : split(roles::command(rest, store_.home()), '\n')) term::line("  " + line);
+            return true;
+        }
         if (name == "/task" || name == "/tasks") {
             const std::string said = background::command(rest, workspace_, endpoint, session_.permission == Permission::Auto && !session_.ask_only, background::own_program(), store_.home());
             for (const std::string& line : split(said, '\n')) term::line("  " + line);
@@ -579,7 +586,8 @@ private:
         if (name == "/review") {
             if (!endpoint) throw Error("No model is running. /models lists the ones on this computer.");
             OpenAIClient model(*endpoint);
-            const ReviewFindings found = busy<ReviewFindings>("Reviewing what this session changed", [&](const auto&, const CancelToken& cancel) { return review::findings(session_, workspace_, model, cancel); });
+            const std::unique_ptr<RoleModel> reviewer = roles::reviewer(model, &workspace_, store_.home());
+            const ReviewFindings found = busy<ReviewFindings>("Reviewing what this session changed", [&](const auto&, const CancelToken& cancel) { return review::findings(session_, workspace_, *reviewer, cancel); });
             for (const ReviewComment& item : found.comments) {
                 if (session_.comments.size() < review::kLimit) session_.comments.push_back(item);
             }
@@ -649,6 +657,7 @@ private:
             {"/commands", "List your custom slash commands"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
+            {"/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"},
             {"/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"},
             {"/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"},
             {"/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"},

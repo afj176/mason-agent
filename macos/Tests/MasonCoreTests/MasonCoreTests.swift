@@ -486,6 +486,41 @@ final class MasonCoreTests: XCTestCase {
         XCTAssertThrowsError(try BackgroundTasks.status("../../etc", home: home), "an id is never a path")
     }
 
+    func testARoleCountsItsCallsWritesATraceAndIsChosenByCommand() async throws {
+        let trace = home.appendingPathComponent("traces")
+        let limited = RoleModel(ScriptedModel([ModelReply(text: "one"), ModelReply(text: "two"), ModelReply(text: "three")]), role: "reviewer", limit: 2, trace: trace)
+        let first = try await limited.complete(messages: [ChatMessage(role: "user", content: "Look")], tools: []) { _ in }
+        _ = try await limited.complete(messages: [ChatMessage(role: "user", content: "Again")], tools: []) { _ in }
+        XCTAssertEqual(first.text, "one")
+        do { _ = try await limited.complete(messages: [], tools: []) { _ in }; XCTFail("the third call is past the limit") } catch {}
+        let written = try FileManager.default.contentsOfDirectory(atPath: trace.path).sorted()
+        XCTAssertEqual(written.count, 2)
+        let record = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: trace.appendingPathComponent(written[0]))) as? [String: Any])
+        XCTAssertEqual(record["role"] as? String, "reviewer")
+        XCTAssertEqual((record["reply"] as? [String: Any])?["text"] as? String, "one")
+        XCTAssertEqual(((record["messages"] as? [[String: Any]])?.first)?["content"] as? String, "Look")
+
+        XCTAssertTrue(try Roles.command("", home: home).contains("reviewer  the model doing the work"))
+        XCTAssertTrue(try Roles.command("reviewer http://127.0.0.1:8081 judge", home: home).contains("judge at http://127.0.0.1:8081"))
+        XCTAssertThrowsError(try Roles.command("visual http://example.com seer", home: home), "a role's model is on this computer, like any other")
+        _ = try Roles.command("limit 3", home: home)
+        _ = try Roles.command("trace \(trace.path)", home: home)
+        let roles = Roles.load(home: home)
+        XCTAssertEqual(roles.reviewer?.model, "judge")
+        XCTAssertEqual(roles.limit, 3)
+        let workspace = try Workspace(path: folder.path)
+        let main = ScriptedModel([ModelReply(text: "from the main model")])
+        XCTAssertEqual(Roles.reviewer(main: main, workspace: workspace, home: home).name, "judge", "the chosen reviewer reviews")
+        XCTAssertTrue(Roles.implementer(main, workspace: workspace, home: home) is RoleModel, "with tracing on, the working model is written down")
+        _ = try Roles.command("trace \(folder.appendingPathComponent("t").path)", home: home)
+        XCTAssertFalse(Roles.implementer(main, workspace: workspace, home: home) is RoleModel, "a trace folder inside the project is not used")
+        _ = try Roles.command("reviewer off", home: home)
+        _ = try Roles.command("trace off", home: home)
+        let fallback = Roles.reviewer(main: main, workspace: workspace, home: home)
+        let answer = try await fallback.complete(messages: [], tools: []) { _ in }
+        XCTAssertEqual(answer.text, "from the main model", "without a reviewer the main model reviews")
+    }
+
     func testAJobRunsInTheBackgroundAndStopsWhenTheRequestEnds() async throws {
         var (store, session) = try session(.workspaceEdits)
         var asked: [String] = []

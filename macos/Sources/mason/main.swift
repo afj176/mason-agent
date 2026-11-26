@@ -209,7 +209,7 @@ final class CLI {
         }
         let feed = RunFeed(), box = Box(session), started = Date()
         let firstActivity = session.activities.count, turnsBefore = session.turns.count
-        let agent = Agent(store: store, model: model, approve: { request in await withCheckedContinuation { feed.ask(request, $0) } }, emit: feed.push)
+        let agent = Agent(store: store, model: Roles.implementer(model, workspace: workspace), approve: { request in await withCheckedContinuation { feed.ask(request, $0) } }, emit: feed.push)
         let task = Task { var working = box.value; await agent.run(&working, request: input); box.value = working; feed.done = true }
         current.value = task
         Term.line()
@@ -501,6 +501,8 @@ final class CLI {
             }
         case "/experiment", "/experiments":
             for line in try await Experiments.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/roles", "/role":
+            for line in try Roles.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/task", "/tasks":
             for line in try BackgroundTasks.command(rest, workspace: workspace, endpoint: endpoint, auto: session.permission == .auto && !session.askOnly, program: ScriptOperations.ownProgram).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/deliver":
@@ -539,7 +541,7 @@ final class CLI {
         case "/review":
             guard let endpoint, let model = try? OpenAIClient(endpoint) else { throw MasonError("No model is running. /models lists the ones on this computer.") }
             let current = session, folder = workspace
-            let found = try await busy("Reviewing what this session changed") { _ in try await Review.findings(current, workspace: folder, model: model) }
+            let found = try await busy("Reviewing what this session changed") { _ in try await Review.findings(current, workspace: folder, model: Roles.reviewer(main: model, workspace: folder)) }
             session.comments = Array(((session.comments ?? []) + found.comments).prefix(Review.limit))
             if session.comments?.isEmpty == true { session.comments = nil }
             try store.save(session)
@@ -598,6 +600,7 @@ final class CLI {
             ("/commands", "List your custom slash commands"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
+            ("/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"),
             ("/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"),
             ("/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"),
             ("/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"),

@@ -22,6 +22,7 @@
 #include "experiments.hpp"
 #include "delivery.hpp"
 #include "background.hpp"
+#include "roles.hpp"
 #include "shell.hpp"
 #include "models.hpp"
 
@@ -1088,6 +1089,48 @@ static void test_extra_tools() {
         refused = false;
         try { background::status("../../etc", box.home); } catch (const Error&) { refused = true; }
         CHECK(refused);  // an id is never a path
+    }
+
+    // A role counts its calls, writes a trace, and is chosen by command.
+    {
+        Sandbox box;
+        const fs::path trace = box.home / "traces";
+        ScriptedModel three;
+        three.replies = {say("one"), say("two"), say("three")};
+        RoleModel limited(three, "reviewer", 2, trace);
+        const ModelReply first = limited.complete({ChatMessage{"user", "Look", {}, ""}}, {}, [](const std::string&) {}, nullptr);
+        limited.complete({ChatMessage{"user", "Again", {}, ""}}, {}, [](const std::string&) {}, nullptr);
+        CHECK(first.text == "one");
+        bool refused = false;
+        try { limited.complete({}, {}, [](const std::string&) {}, nullptr); } catch (const Error&) { refused = true; }
+        CHECK(refused);  // the third call is past the limit
+        std::vector<fs::path> written;
+        for (const auto& entry : fs::directory_iterator(trace)) written.push_back(entry.path());
+        std::sort(written.begin(), written.end());
+        CHECK(written.size() == 2);
+        if (written.size() == 2) {
+            const json record = json::parse(read_file(written[0]));
+            CHECK(record["role"] == "reviewer" && record["reply"]["text"] == "one" && record["messages"][0]["content"] == "Look");
+        }
+        CHECK(roles::command("", box.home).find("reviewer  the model doing the work") != std::string::npos);
+        CHECK(roles::command("reviewer http://127.0.0.1:8081 judge", box.home).find("judge at http://127.0.0.1:8081") != std::string::npos);
+        refused = false;
+        try { roles::command("visual http://example.com seer", box.home); } catch (const std::exception&) { refused = true; }
+        CHECK(refused);  // a role's model is on this computer, like any other
+        roles::command("limit 3", box.home);
+        roles::command("trace " + trace.string(), box.home);
+        const ModelRoles chosen = roles::load(box.home);
+        CHECK(chosen.reviewer && chosen.reviewer->model == "judge" && chosen.limit == 3);
+        const Workspace workspace(box.project.string());
+        ScriptedModel main_model;
+        main_model.replies = {say("from the main model")};
+        CHECK(roles::reviewer(main_model, &workspace, box.home)->name() == "judge");  // the chosen reviewer reviews
+        CHECK(roles::implementer(main_model, &workspace, box.home) != nullptr);  // with tracing on, the working model is written down
+        roles::command("trace " + (box.project / "t").string(), box.home);
+        CHECK(roles::implementer(main_model, &workspace, box.home) == nullptr);  // a trace folder inside the project is not used
+        roles::command("reviewer off", box.home);
+        roles::command("trace off", box.home);
+        CHECK(roles::reviewer(main_model, &workspace, box.home)->complete({}, {}, [](const std::string&) {}, nullptr).text == "from the main model");  // without a reviewer the main model reviews
     }
 
     // A job runs in the background and stops when the request ends.

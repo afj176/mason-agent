@@ -26,7 +26,7 @@ extension AppModel {
         reviewing = true
         Task {
             do {
-                let found = try await Review.findings(current, workspace: workspace, model: client)
+                let found = try await Review.findings(current, workspace: workspace, model: Roles.reviewer(main: client, workspace: workspace))
                 if var latest = sessions.first(where: { $0.id == current.id }) {
                     latest.comments = Array(((latest.comments ?? []) + found.comments).prefix(Review.limit))
                     if latest.comments?.isEmpty == true { latest.comments = nil }

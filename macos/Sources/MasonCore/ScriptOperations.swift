@@ -66,6 +66,7 @@ public enum ScriptOperations {
 
     public static let usage = """
         mason exec --workspace PATH --endpoint URL --model ID --prompt TEXT [--auto] [--profile PATH] [--resume SESSION_ID]
+                   [--visual-model ID [--visual-endpoint URL]] [--trace-dir FOLDER]
         mason map --workspace PATH --query NAME
         mason symbol --workspace PATH --path FILE --line N --column N --mode definitions|references|diagnostics
         mason git-status --workspace PATH
@@ -193,7 +194,14 @@ public enum ScriptOperations {
                 }
                 session.askOnly = !auto
                 event("run.started", ["id": session.id.uuidString, "workspace": workspace.root.path, "profile": profile.path, "model": values["model"] ?? "", "mode": auto ? "build" : "ask"])
-                let agent = Agent(store: store, model: chosen, approve: { request in
+                var working = Roles.implementer(chosen, workspace: workspace)
+                if let folder = values["trace-dir"] {
+                    let place = URL(fileURLWithPath: folder).standardizedFileURL
+                    try FileManager.default.createDirectory(at: place, withIntermediateDirectories: true)
+                    guard !(realPath(place.path) + "/").hasPrefix(realPath(workspace.root.path) + "/") else { throw MasonError("Keep decision traces outside the project.") }
+                    working = RoleModel(chosen, role: "implementer", trace: place)
+                }
+                let agent = Agent(store: store, model: working, approve: { request in
                     event("approval.required", ["tool": request.tool, "title": request.title, "subject": request.subject])
                     return false
                 }, emit: { change in
@@ -201,6 +209,9 @@ public enum ScriptOperations {
                         event("tool.result", ["tool": activity.tool, "subject": activity.subject, "state": "\(activity.state)", "result": activity.result])
                     }
                 })
+                if let visual = values["visual-model"] {
+                    agent.vision = ModelVision(ModelEndpoint(url: try ModelEndpoint.validated(try values["visual-endpoint"] ?? get("endpoint")).absoluteString, model: visual))
+                }
                 await agent.run(&session, request: prompt)
                 event("run.finished", ["id": session.id.uuidString, "state": session.state, "detail": session.detail, "answer": session.turns.last?.answer ?? ""])
                 return session.state == "Completed" ? 0 : 2
