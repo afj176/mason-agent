@@ -75,6 +75,7 @@ public sealed partial class MainWindow
                 "BorderThickness='1,1,1,0' CornerRadius='12,12,0,0' Padding='14,12,14,26'");
             Tray.Child = content;
             Tray.Visibility = Visibility.Collapsed;
+            Tray.ActualThemeChanged += (_, _) => { if (IsOpen) Render(); };
             Tray.KeyDown += (_, e) => { if (e.Key == VirtualKey.Escape && editing == null) { e.Handled = true; Close(); } };
             AutomationProperties.SetName(Tray, "Notes");
             undoTimer.Tick += (_, _) => { undoTimer.Stop(); undo = null; Render(); };
@@ -222,12 +223,11 @@ public sealed partial class MainWindow
             else if (notes.Length > 0)
             {
                 int sent = notes.Where(n => CodeNotes.Current(at.Scope, n)).Take(CodeNotes.Limit).Count();
-                var footer = new Grid();
-                footer.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); footer.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+                // Left-aligned: the Notes tab covers the tray's bottom-right corner.
                 var summary = Muted($"{sent} of {notes.Length} sent · up to {CodeNotes.Limit}", 12); summary.VerticalAlignment = VerticalAlignment.Center;
-                var clearAll = new HyperlinkButton { Content = "Clear all", Padding = new Thickness(4, 0, 4, 0) };
+                var clearAll = new HyperlinkButton { Content = "Clear all", Padding = new Thickness(4, 0, 4, 0), FontSize = 12 };
                 clearAll.Click += (_, _) => { confirmClear = true; Render(); };
-                footer.Children.Add(summary); Grid.SetColumn(clearAll, 1); footer.Children.Add(clearAll);
+                var footer = Row(summary, clearAll); footer.Spacing = 10;
                 content.Children.Add(footer);
             }
 
@@ -264,8 +264,10 @@ public sealed partial class MainWindow
         FrameworkElement Card(NotesPlace at, ProjectNote note)
         {
             bool current = CodeNotes.Current(at.Scope, note);
-            var card = new Border { Style = Token("MasonRowCard"), MinHeight = 0, Padding = new Thickness(0, 7, 6, 7), Opacity = current ? 1 : .72 };
-            if (!current) card.BorderBrush = (Brush)Application.Current.Resources["SystemFillColorCautionBrush"];
+            var card = new Border { Style = Token("MasonRowCard"), MinHeight = 0, Padding = new Thickness(0, 7, 6, 7) };
+            // The status palette's amber reads on both the light and the dark tray.
+            var caution = new SolidColorBrush(ThemePalette.Caution(Tray.ActualTheme == ElementTheme.Dark));
+            if (!current) card.BorderBrush = caution;
             var pin = current ? ThemedBorder("Background='{ThemeResource AccentFillColorDefaultBrush}' Width='4' CornerRadius='2' Margin='8,1,0,1'")
                               : ThemedBorder("Background='{ThemeResource ControlStrongFillColorDefaultBrush}' Width='4' CornerRadius='2' Margin='8,1,0,1'");
             var grid = new Grid { ColumnSpacing = 10 };
@@ -297,7 +299,7 @@ public sealed partial class MainWindow
             if (current) meta.Children.Add(Muted(NoteAge(note.Saved), 12));
             else
             {
-                var warn = new TextBlock { Text = $"{note.Source} changed · not sent", Style = Token("MasonCaption"), Foreground = (Brush)Application.Current.Resources["SystemFillColorCautionBrush"] };
+                var warn = new TextBlock { Text = $"{note.Source} changed · not sent", Style = Token("MasonCaption"), Foreground = caution };
                 var keep = new HyperlinkButton { Content = "Keep anyway", Padding = new Thickness(2, 0, 2, 0), FontSize = 12 };
                 keep.Click += (_, _) => Act(() => CodeNotes.Refresh(at.Home, at.Scope, note.Id));
                 var drop = new HyperlinkButton { Content = "Remove", Padding = new Thickness(2, 0, 2, 0), FontSize = 12 };
