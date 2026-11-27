@@ -414,12 +414,18 @@ struct Composer: View {
                 .labelsHidden().fixedSize().disabled(model.running)
                 .help("What Mason may do without asking. Auto runs commands in the macOS sandbox, limited to this project, with network access off.")
                 Button { model.pane = .models } label: { Label(model.endpoint == nil ? "No model running" : model.endpointName, systemImage: "cpu").lineLimit(1) }
-                    .buttonStyle(.plain).chip()
+                    .buttonStyle(.plain).chip().layoutPriority(1)
                     .help(model.endpoint == nil ? "No model is running. Open Models to start one." : "Running at \(model.endpoint?.url ?? "")")
                 WindowMenu(session: session)
                 SessionStatusChips(session: session)
                 Spacer()
-                if !model.running { Text("⌘Return to send").font(.caption).foregroundStyle(Brand.muted) }
+                // With Moments open the request box is narrow: the hint goes when it no longer fits, rather than wrapping a letter per line.
+                if !model.running {
+                    ViewThatFits(in: .horizontal) {
+                        Text("⌘Return to send").font(.caption).foregroundStyle(Brand.muted).lineLimit(1).fixedSize()
+                        Color.clear.frame(width: 0, height: 0)
+                    }
+                }
                 if model.running {
                     if model.waitingFollowUps > 0 { Text("\(model.waitingFollowUps) waiting").font(.caption).foregroundStyle(.secondary) }
                     let empty = model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
