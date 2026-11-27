@@ -60,7 +60,9 @@ public sealed partial class MainWindow
                 facts.Children.Add(observed);
             }
             if (view == CodeWorkspaceView.Workbench && allPassed)
-                header.Children.Add(MascotImage(MoodReady, 96, "checks passed"));
+                header.Children.Add(MascotImage(PoseChecks, 96, "checks passed"));
+            else if (view == CodeWorkspaceView.Workbench && plan.Checks.Count > 0)
+                header.Children.Add(MascotImage(PoseFailed, 80, "a check failed"));
             else if (view == CodeWorkspaceView.Notebook && allPassed)
             {
                 var glyph = new FontIcon { Glyph = "\uE73E", FontSize = 22, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 7, 0, 0) };

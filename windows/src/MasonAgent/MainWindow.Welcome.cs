@@ -5,7 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace Mason;
 
-// Empty and first-run states for Code and Chat. These are the only places Mortar appears at
+// Empty and first-run states for Code and Chat. These are the only places a pose appears at
 // hero size; everything they say describes behaviour the app already has.
 public sealed partial class MainWindow
 {
@@ -96,8 +96,8 @@ public sealed partial class MainWindow
 
     /// <summary>
     /// Turns an existing "nothing here" panel (title, explanation, buttons) into a centred empty state
-    /// with Mortar above it. The panel and its children keep their identity, so callers that update
-    /// the texts or toggle visibility keep working. Returns Mortar's image so the mood can follow the state.
+    /// with a pose above it. The panel and its children keep their identity, so callers that update
+    /// the texts or toggle visibility keep working. Returns the pose image so it can follow the state.
     /// </summary>
     static Image EmptyState(StackPanel panel, string mood, string meaning)
     {
@@ -113,15 +113,15 @@ public sealed partial class MainWindow
             text.HorizontalAlignment = HorizontalAlignment.Center;
             if (text.FontSize < 18) text.Opacity = .8;
         }
-        var mortar = MascotImage(mood, 96, meaning);
-        mortar.HorizontalAlignment = HorizontalAlignment.Center;
-        panel.Children.Insert(0, mortar);
+        var pose = MascotImage(mood, 96, meaning);
+        pose.HorizontalAlignment = HorizontalAlignment.Center;
+        panel.Children.Insert(0, pose);
         panel.Children.Add(actions);
         panel.Spacing = 10; panel.MaxWidth = 520;
         panel.HorizontalAlignment = HorizontalAlignment.Center;
         panel.VerticalAlignment = VerticalAlignment.Center;
         panel.Margin = new Thickness(16, 28, 16, 28);
-        return mortar;
+        return pose;
     }
 
     /// <summary>First run: no project yet. One primary action, and what to expect after it.</summary>
@@ -161,7 +161,7 @@ public sealed partial class MainWindow
         models.Padding = new Thickness(0, 4, 0, 4);
 
         return WelcomeHost(640,
-            Centered(MascotImage(MoodWelcome, 148, "glad you're here")),
+            Centered(MascotImage(PoseFirstLaunch, 148, "switching on the lamp for your first project")),
             WelcomeTitle("Bring a project into focus."),
             WelcomeBody("Add a folder and Mason Agent keeps its conversations, files and changes together."),
             add, models, facts);
@@ -179,7 +179,7 @@ public sealed partial class MainWindow
         actions.HorizontalAlignment = HorizontalAlignment.Center;
 
         return WelcomeHost(560,
-            Centered(MascotImage(MoodWorking, 124, "ready to start")),
+            Centered(MascotImage(PoseOpenProject, 124, "opening the project")),
             WelcomeTitle("Start a session in " + project.Name, 26),
             WelcomeBody("This project has no sessions yet. Its files are untouched; start a conversation when you're ready."),
             actions);
@@ -191,7 +191,7 @@ public sealed partial class MainWindow
         var browse = CodeLink("Browse workspace files", (_, _) => browseFiles());
         browse.HorizontalAlignment = HorizontalAlignment.Center;
         return WelcomeHost(520,
-            Centered(MascotImage(MoodChecking, 104, "ready to look")),
+            Centered(MascotImage(PoseListening, 104, "listening")),
             WelcomeTitle("What would you like to change?", 26),
             WelcomeBody("Ask about this project or describe a change. Files, changes and previews open beside the conversation when there is something to show."),
             PromptList(fill,
@@ -205,7 +205,7 @@ public sealed partial class MainWindow
     Grid ChatWelcome(Action<string> fill)
     {
         return WelcomeHost(520,
-            Centered(MascotImage(MoodReady, 132, "ready")),
+            Centered(MascotImage(PoseListening, 132, "listening")),
             WelcomeTitle("Make the next move clear."),
             WelcomeBody("Think a problem through, or attach a document and ask about it. Chat uses the model you choose; conversations are saved on this computer."),
             PromptList(fill,

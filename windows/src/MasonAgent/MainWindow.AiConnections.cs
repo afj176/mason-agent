@@ -21,6 +21,8 @@ public sealed partial class MainWindow
         var key = new PasswordBox { Header="API key (optional)" };
         var remember = BrandControl(new CheckBox { Content="Remember API key for this Windows account" });
         var report = new TextBox { IsReadOnly=true, AcceptsReturn=true, TextWrapping=TextWrapping.Wrap, MinHeight=150 };
+        // Shown once the saved connection has passed a check for some use.
+        var connectedPose = MascotImage(PoseConnected, 72, "connection verified"); connectedPose.HorizontalAlignment = HorizontalAlignment.Left; connectedPose.Visibility = Visibility.Collapsed;
         List<AiEndpointProfile> saved;
         bool readable=true;
         try { saved=Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []; }
@@ -47,6 +49,7 @@ public sealed partial class MainWindow
             }
             if (!readable) { report.Text="AI settings could not be read. The existing file is preserved. Repair ai-connections.json before saving."; return; }
             var ready=selected?.Checks.Where(x=>x.State=="Passed" && x.Capability!=AiCapability.Models).Select(x=>Purpose(x.Capability)).ToArray() ?? [];
+            connectedPose.Visibility=ready.Length>0?Visibility.Visible:Visibility.Collapsed;
             report.Text=(ready.Length>0 ? "Ready for: "+string.Join("; ",ready) : "Nothing verified yet. Test & save runs the checks for the use you chose.")+"\n\n"+
                 string.Join("\n\n",Shown().Select(c=> {
                     var r=selected?.Checks.LastOrDefault(x=>x.Capability==c);
@@ -165,7 +168,7 @@ public sealed partial class MainWindow
         var sampling=new Expander{Header="Coding generation",HorizontalAlignment=HorizontalAlignment.Stretch,HorizontalContentAlignment=HorizontalAlignment.Stretch,
             Content=Stack(Muted("Applied to the coding agent's actions with this connection. Reviews and checks keep deterministic settings. Save the connection to keep changes.",12),FormGrid(temperature,topP,topK,minP,repeat,seed),resetSampling)};
         var editor=ScrollPage(Stack(editHeading,Text("A connection points the agent at a model server running on this PC. Mason doesn't start or stop servers it didn't launch.",13),fields,sampling,editStatus,ScrollTools(mutations)));
-        var capabilityPanel=ScrollPage(Stack(Text("Dated results from short synthetic requests. No project content is sent.",12),capabilityRows,ScrollTools(probes),stop,new Expander{Header="Check details",Content=report,HorizontalAlignment=HorizontalAlignment.Stretch,IsExpanded=true},
+        var capabilityPanel=ScrollPage(Stack(Text("Dated results from short synthetic requests. No project content is sent.",12),connectedPose,capabilityRows,ScrollTools(probes),stop,new Expander{Header="Check details",Content=report,HorizontalAlignment=HorizontalAlignment.Stretch,IsExpanded=true},
             Text("Used by",15),usedBy));
         refreshAiConnectionUsage=()=>
         {

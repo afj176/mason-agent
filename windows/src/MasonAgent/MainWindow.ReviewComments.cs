@@ -100,7 +100,7 @@ public sealed partial class MainWindow
         var add = Button("Add to review", (_, _) => { if (SaveNote()) flyout.Hide(); });
         var send = Button("Send review", async (_, _) => { if (!SaveNote()) return; flyout.Hide(); await sendReview(); }, true);
         var cancel = CodeLink("Cancel", (_, _) => { finished = true; flyout.Hide(); });
-        var body = Stack(Row(MascotImage("mark-this-line", 48, "marking this line"), feedback), note, Row(cancel, add, send));
+        var body = Stack(Row(MascotImage(PoseEditing, 48, "marking this line"), feedback), note, Row(cancel, add, send));
         body.MaxWidth = Math.Clamp(anchor.XamlRoot.Size.Width - 72, 230, 370);
         flyout.Content = body;
         add.IsEnabled = send.IsEnabled = false;

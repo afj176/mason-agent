@@ -157,7 +157,7 @@ public sealed partial class MainWindow
                             try
                             {
                                 if (await new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme, Title = "Restore the session's original file?", Content = path + " will be restored only if its bytes still match this session's last edit. Later edits are protected.", PrimaryButtonText = "Restore", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close }.ShowAsync() != ContentDialogResult.Primary) return;
-                                scope.Restore(change); revision = ""; entry.Refresh?.Invoke(); refresh(); // refresh also updates the toolbar's change count
+                                scope.Restore(change); restoredAt = DateTimeOffset.Now; refreshStatusPose?.Invoke(); revision = ""; entry.Refresh?.Invoke(); refresh(); // refresh also updates the toolbar's change count
                             }
                             catch (Exception error) { caption.Text = error.Message; }
                             finally { dialogOpen = false; }

@@ -303,29 +303,40 @@ public sealed partial class MainWindow
         transcriptBody = new Grid { RowSpacing = 10, Padding = new Thickness(10, 0, 10, 8), MaxWidth = 960 };
         transcriptBody.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto }); transcriptBody.RowDefinitions.Add(new() { Height = GridLength.Auto });
         transcriptBody.Children.Add(transcriptScroll); Grid.SetRow(approvalHost, 1); transcriptBody.Children.Add(approvalHost);
-        // Mortar mirrors the session's recorded state (working, waiting on you, done, in trouble).
-        // He is hidden for states without a matching still and while the intro already shows him.
-        stateMood = new Image { Width = 40, Height = 40, Stretch = Stretch.Uniform, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
+        // The pose mirrors the session's recorded state. While it runs, the latest tool call says whether it is
+        // reading, editing or running checks, and planning between calls. Hidden for states without a pose
+        // and while the intro already shows one.
+        stateMood = new Image { Height = 46, Stretch = Stretch.Uniform, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
+        (string, string) RunningPose()
+        {
+            if (session!.RepairingFile != null) return (PoseEditing, "repairing " + session.RepairingFile);
+            var latest = session.Activities.LastOrDefault();
+            var pose = latest is { State: "Pending" or "Running" } ? PoseForTool(latest.Tool) : PosePlanning;
+            return (pose, pose switch { PoseReading => "reading files", PoseEditing => "editing", PoseChecks => "running checks", _ => "planning" });
+        }
         void ShowMood()
         {
+            bool restored = (DateTimeOffset.Now - restoredAt).TotalSeconds < 30;
             var (mood, meaning) = session == null || session.Turns.Count == 0 ? ("", "") : session.State switch
             {
-                "Running" when session.RepairingFile != null => ("on-the-mend", "repairing " + session.RepairingFile),
-                "Running" => (MoodWorking, "working on it"),
-                "Awaiting review" or "Waiting for input" => (MoodChecking, "waiting for you"),
-                // "Well played" when the session left reviewable changes, "we're good" when it only answered.
-                "Completed" => session.Changes.Any(c => !c.Restored) ? (MoodPleased, "finished with changes") : (MoodDone, "finished"),
-                "Failed" or "Blocked" or "Needs verification" => (MoodTrouble, "ran into a problem"),
+                "Running" => RunningPose(),
+                _ when restored => (PoseRestored, "files restored"),
+                "Awaiting review" => (PoseApproval, "waiting for your decision"),
+                "Waiting for input" => (PoseListening, "waiting for your answer"),
+                // Ready to review when the session left reviewable changes; connected and calm when it only answered.
+                "Completed" => session.Changes.Any(c => !c.Restored) ? (PoseReview, "ready to review") : (PoseConnected, "finished"),
+                "Failed" or "Blocked" or "Needs verification" => (PoseFailed, "a check failed"),
                 _ => ("", "")
             };
             stateMood.Visibility = mood.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (mood == shownMood) return;
             shownMood = mood;
             if (mood.Length == 0) return;
-            stateMood.Source = MascotSource(mood, 40);
-            AutomationProperties.SetName(stateMood, "Mortar: " + meaning);
+            stateMood.Source = PoseSource(mood, 46);
+            AutomationProperties.SetName(stateMood, "Mason Agent: " + meaning);
             FadeIn(stateMood);
         }
+        refreshStatusPose = ShowMood;
         state.VerticalAlignment = VerticalAlignment.Center;
         state.TextWrapping = TextWrapping.Wrap;
         var progressRow = new Grid { ColumnSpacing = 8 };
@@ -360,7 +371,7 @@ public sealed partial class MainWindow
             sessionTools.Flyout.Hide();
             var list=string.Join("\n",turn.Edits.Select(e=>(e.Before==null?"Remove created file · ":"Restore · ")+e.Path));
             if(await new ContentDialog{XamlRoot=root.XamlRoot,Title="Rewind this turn’s file edits?",Content=list,PrimaryButtonText="Rewind files",CloseButtonText="Cancel"}.ShowAsync()!=ContentDialogResult.Primary)return;
-            try{CodeRewind.Apply(store,session,turn.Id);state.Text=session.Detail;RenderTranscript();RenderTabs();}catch(Exception e){state.Text=e.Message;}
+            try{CodeRewind.Apply(store,session,turn.Id);restoredAt=DateTimeOffset.Now;state.Text=session.Detail;RenderTranscript();RenderTabs();}catch(Exception e){state.Text=e.Message;}
         });
         // G3: undo or redo everything a request changed, including files changed by commands (workspace snapshots).
         async Task UndoRequest(bool redo)
@@ -385,6 +396,7 @@ public sealed partial class MainWindow
             try{
                 if(await new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title=redo?"Redo this request?":"Undo this request?",Content=content,PrimaryButtonText=redo?"Redo":"Undo",CloseButtonText="Cancel",DefaultButton=ContentDialogButton.Primary}.ShowAsync()!=ContentDialogResult.Primary)return;
                 var result=redo?CodeRewind.Redo(store,session,turn.Id):CodeRewind.Undo(store,session,turn.Id);
+                restoredAt=DateTimeOffset.Now;
                 state.Text=session.Detail;RenderTranscript();RenderTabs();_=RefreshWorkspaceFiles(session);
             }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
         }
@@ -1008,7 +1020,7 @@ public sealed partial class MainWindow
                         if (turn.Role == "assistant")
                         {
                             var name = Text("Mason Agent", 15); name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; name.VerticalAlignment = VerticalAlignment.Center;
-                            speaker = Row(MortarImage(28), name); speaker.Spacing = 12;
+                            speaker = Row(AppIconImage(28), name); speaker.Spacing = 12;
                         }
                         var content = Stack(speaker, body); content.Spacing = 10; container = content;
                     }
@@ -1052,7 +1064,7 @@ public sealed partial class MainWindow
                     if (!continues)
                     {
                         var liveName = Text("Mason Agent", 15); liveName.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; liveName.VerticalAlignment = VerticalAlignment.Center;
-                        var identity = Row(MortarImage(28), liveName); identity.Spacing = 12; container = Stack(identity, text);
+                        var identity = Row(AppIconImage(28), liveName); identity.Spacing = 12; container = Stack(identity, text);
                     }
                     if (animateNew && !shownLive) FadeIn(container);
                     frame = (continues, container, text, "");
@@ -1224,7 +1236,8 @@ public sealed partial class MainWindow
             var kind = current.State switch { "Running" => TaskbarStatus.Kind.Working, "Awaiting review" or "Waiting for input" => TaskbarStatus.Kind.NeedsYou, "Failed" or "Blocked" => TaskbarStatus.Kind.Failed, _ => TaskbarStatus.Kind.None };
             TaskbarStatus.Show(window, kind);
             if (codeReflectedState == "Running" && current.State is "Completed" or "Failed" or "Blocked" or "Needs verification")
-                Notifications.Show(current.State == "Completed" ? "Mason finished" : "Mason stopped: " + current.State, current.Title + " · " + current.Detail, window);
+                Notifications.Show(current.State == "Completed" ? "Mason finished" : "Mason stopped: " + current.State, current.Title + " · " + current.Detail, window,
+                    current.State != "Completed" ? PoseFailed : current.Changes.Any(c => !c.Restored) ? PoseReview : PoseConnected);
             codeReflectedState = current.State;
         }
         void RefreshRun()
@@ -1268,11 +1281,11 @@ public sealed partial class MainWindow
             always.Flyout = new Flyout { Content = Stack(new TextBlock { Text = "Always allow " + toolName, Style = Token("MasonBodyStrong") }, rule, ruleNote, saveRule) };
             AutomationProperties.SetName(always, "Always allow " + toolName + " in this project");
             AutomationProperties.SetName(allow, "Allow " + toolName + " once"); AutomationProperties.SetName(decline, "Decline " + toolName);
-            var icon = new Border { Style = Token("MasonAccentTile"), Child = new FontIcon { Glyph = "\uE7BA", FontSize = 18, Foreground = (Brush)Application.Current.Resources["TextOnAccentFillColorPrimaryBrush"] } };
+            var icon = MascotImage(PoseApproval, 70, "waiting for your decision");
             var heading = new StackPanel { Spacing = 0, VerticalAlignment = VerticalAlignment.Center };
             heading.Children.Add(new TextBlock { Text = "Review " + toolName, Style = Token("MasonBodyLargeStrong") });
             heading.Children.Add(new TextBlock { Text = "Mason is waiting for your decision", Style = Token("MasonCaptionSecondary") });
-            var approvalBody = Stack(Row(icon, heading), detail);
+            var approvalHead = Row(icon, heading); approvalHead.Spacing = 14; var approvalBody = Stack(approvalHead, detail);
             if (request.Jpeg != null)
             {
                 using var bytes = new MemoryStream(Convert.FromBase64String(request.Jpeg));
@@ -1286,7 +1299,7 @@ public sealed partial class MainWindow
             approvalHost.Content = approvalCard; FadeIn(approvalCard);
             var window = WinRT.Interop.WindowNative.GetWindowHandle(this);
             TaskbarStatus.Show(window, TaskbarStatus.Kind.NeedsYou);
-            Notifications.Show("Mason needs your review", (owner?.Title ?? "Coding session") + " · " + request.Description, window);
+            Notifications.Show("Mason needs your review", (owner?.Title ?? "Coding session") + " · " + request.Description, window, PoseApproval);
             try { return await completion.Task; }
             finally { approvalHost.Content = null; pendingApproval = null; TaskbarStatus.Show(window, codeOperation != null ? TaskbarStatus.Kind.Working : TaskbarStatus.Kind.None); }
         }
