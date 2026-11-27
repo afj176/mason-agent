@@ -1,11 +1,11 @@
-// Scenes: consecutive tool calls of one kind, shown together as one step of a run in the app's Activity panel.
+// Scenes: consecutive tool calls of one kind, shown together as one step of a run in the app's Moments panel.
 // The grouping, the labels a person reads, and what a command's output says (exit code, test counts, failing lines).
 #pragma once
 #include "session.hpp"
 
 namespace mason::scenes {
 
-/// What kind of work a run of tool calls was, which picks how the Activity panel shows it.
+/// What kind of work a run of tool calls was, which picks how Moments shows it.
 enum class Kind { Read, Edit, Command, Page, Other };
 
 /// Consecutive calls of one kind. `first` is the index of the first call in the session's activities.
@@ -33,6 +33,9 @@ Kind kind_of(const std::string& tool);
 bool is_search(const std::string& tool);
 /// Groups consecutive calls of the same kind. Every call belongs to exactly one scene, in order.
 std::vector<Scene> group(const std::vector<Activity>& activities);
+/// The same, with a new scene started at each of `breaks` (call indices, such as where each request began), so no
+/// scene spans two requests.
+std::vector<Scene> group(const std::vector<Activity>& activities, const std::vector<size_t>& breaks);
 /// A path written the same way each time: forward slashes, no leading "./" or "/".
 std::string normalize(const std::string& path);
 /// The project path a call worked on, normalised, or nothing when the call is not about one file.
@@ -51,5 +54,46 @@ bool command_failed(const Activity& activity);
 std::vector<std::pair<std::string, int>> folders(const std::vector<Activity>& activities);
 /// Index of the first call of the latest request, so a run's summary covers only what that request did.
 size_t request_start(const Session& session);
+
+// ---- Moments: the side panel's feed of what the run did, newest first ----
+
+/// Each file as the session changed it, from its original to now. Requests that were undone are left out.
+std::vector<FileChange> kept_changes(const Session& session);
+
+/// Something a run made, for the shelf beside Moments: a file it created or changed, or a page it checked.
+struct Made {
+    std::string label;   ///< The file's name, or the page followed by " page".
+    std::string target;  ///< The file's path as its change keeps it, or the page as the call named it.
+    bool page = false, created = false;
+    size_t activity = 0;  ///< Index of the latest call that made it.
+    bool operator==(const Made&) const = default;
+};
+/// What the calls from index `from` on made, newest first and each once: edited files that have a kept change (not
+/// deleted ones), and pages checked or previewed. At most `limit`.
+std::vector<Made> made_so_far(const std::vector<Activity>& activities, size_t from, const std::vector<FileChange>& changes, size_t limit = 6);
+/// How a page is named on the shelf: "about.html page", "/about.html page", or the host for a site's root.
+std::string page_label(const std::string& page);
+
+/// Where a request began in the calls, and what it said.
+struct Asked {
+    size_t position = 0;
+    std::string text;
+    bool operator==(const Asked&) const = default;
+};
+/// Each request of the session that said something, with the index of its first call (clamped to `count` calls).
+std::vector<Asked> requests(const Session& session, size_t count);
+
+/// One entry of the feed: a "You asked" line (an index into the requests) or a scene (an index into the scenes).
+struct FeedEntry {
+    bool asked = false;
+    size_t index = 0;
+    bool operator==(const FeedEntry&) const = default;
+};
+/// The feed, newest first. A request's line sits just below its first scene, so it reads as where that request began.
+std::vector<FeedEntry> feed(const std::vector<Scene>& scenes, const std::vector<Asked>& asked);
+
+/// The facts line of the end-of-run card: "2 files changed · +18 −2 · 1 command · 8 steps".
+/// The line counts are left out when no file changed, and the commands when none ran.
+std::string end_facts(size_t files, int added, int removed, int commands, size_t steps);
 
 }  // namespace mason::scenes

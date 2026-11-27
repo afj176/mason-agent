@@ -3690,12 +3690,96 @@ static void test_scenes() {
     CHECK(request_start(two) == mixed.size());
 }
 
+/// Moments: what the shelf lists, where each "You asked" line sits in the feed, the end card's facts, and the session bar's chips.
+static void test_moments() {
+    using namespace mason::scenes;
+    auto activity = [](const std::string& tool, const std::string& subject, const std::string& state = "completed") {
+        Activity item;
+        item.tool = tool;
+        item.subject = subject;
+        item.state = state;
+        return item;
+    };
+    // Kept changes: later edits of a file replace its after side, and undone requests are left out.
+    Session session;
+    session.turns.resize(3);
+    FileChange first{"src/app.py", std::string("a\n"), "b\n"};
+    FileChange made{"notes.md", std::nullopt, "hi\n"};
+    session.turns[0].changes = {first, made};
+    FileChange again{"src/app.py", std::string("b\n"), "c\n"};
+    session.turns[1].changes = {again};
+    FileChange gone{"old.txt", std::string("x\n"), ""};
+    gone.after_missing = true;
+    session.turns[2].changes = {gone, FileChange{"undone.txt", std::nullopt, "u\n"}};
+    session.turns[2].undone = true;
+    std::vector<FileChange> kept = kept_changes(session);
+    CHECK(kept.size() == 2 && kept[0].path == "src/app.py" && kept[0].before == std::string("a\n") && kept[0].after == "c\n" && kept[1].created());
+    kept.push_back(gone);
+
+    // Made so far: newest first, each once, only files with a kept change that still exists, and pages.
+    const std::vector<Activity> calls = {activity("read_file", "src/app.py"), activity("write_file", "notes.md"), activity("edit_file", "./src/app.py"),
+                                         activity("check_page", "index.html"), activity("edit_file", "src/app.py"), activity("edit_file", "old.txt"),
+                                         activity("edit_file", "never.txt", "failed"), activity("open_preview", "http://127.0.0.1:8000/about.html?x=1"),
+                                         activity("check_page", "broken.html", "failed")};
+    const std::vector<Made> shelf = made_so_far(calls, 0, kept);
+    CHECK(shelf.size() == 4);
+    CHECK(shelf[0] == (Made{"/about.html page", "http://127.0.0.1:8000/about.html?x=1", true, false, 7}));
+    CHECK(shelf[1] == (Made{"app.py", "src/app.py", false, false, 4}));
+    CHECK(shelf[2] == (Made{"index.html page", "index.html", true, false, 3}));
+    CHECK(shelf[3] == (Made{"notes.md", "notes.md", false, true, 1}));
+    // Only the latest run's calls, and at most the limit.
+    CHECK(made_so_far(calls, 4, kept).size() == 2 && made_so_far(calls, 0, kept, 1).size() == 1 && made_so_far(calls, 99, kept).empty());
+    CHECK(page_label("http://localhost:5173/") == "localhost:5173" && page_label("site/docs/guide.html") == "guide.html page");
+
+    // Requests: each that said something, at its first call, clamped to the calls there are.
+    Session asked;
+    asked.turns.resize(3);
+    asked.turns[0].request = "  Read the project ";
+    asked.turns[0].first_activity = 0;
+    asked.turns[1].request = "Add a test";
+    asked.turns[1].first_activity = 3;
+    asked.turns[2].request = "Now fix it";
+    asked.turns[2].first_activity = 12;
+    const std::vector<Asked> said = requests(asked, 5);
+    CHECK(said == (std::vector<Asked>{{0, "Read the project"}, {3, "Add a test"}, {5, "Now fix it"}}));
+    asked.turns[1].request = "   ";
+    CHECK(requests(asked, 5).size() == 2);
+
+    // The feed, newest first: a request's line sits just below its first scene; a request with no calls yet is on top.
+    const std::vector<Scene> run = {{Kind::Read, 0, 2}, {Kind::Edit, 2, 1}, {Kind::Read, 3, 1}, {Kind::Command, 4, 1}};
+    const std::vector<FeedEntry> lines = feed(run, said);
+    CHECK(lines == (std::vector<FeedEntry>{{true, 2}, {false, 3}, {false, 2}, {true, 1}, {false, 1}, {false, 0}, {true, 0}}));
+    CHECK(feed({}, {}).empty() && feed({}, {{0, "Hi"}}) == (std::vector<FeedEntry>{{true, 0}}));
+    // Reads at the end of one request and the start of the next are two scenes, so each request's line sits between them.
+    const std::vector<Activity> reads = {activity("read_file", "a.py"), activity("read_file", "b.py"), activity("read_file", "a.py"), activity("edit_file", "a.py")};
+    CHECK(group(reads).size() == 2 && group(reads, {0, 2}) == (std::vector<Scene>{{Kind::Read, 0, 2}, {Kind::Read, 2, 1}, {Kind::Edit, 3, 1}}));
+    CHECK(group(reads, {9}) == group(reads));
+
+    // The end card's facts.
+    CHECK(end_facts(2, 18, 2, 1, 8) == "2 files changed · +18 −2 · 1 command · 8 steps");
+    CHECK(end_facts(0, 0, 0, 0, 1) == "0 files changed · 1 step");
+    CHECK(end_facts(1, 3, 0, 4, 5) == "1 file changed · +3 −0 · 4 commands · 5 steps");
+
+    // The session bar's chips: a published pull request, and background tasks still going.
+    DeliveryDraft draft;
+    CHECK(!delivery::pull_request(std::nullopt) && !delivery::pull_request(draft));
+    draft.url = " https://github.com/o/r/pull/7 ";
+    CHECK(delivery::pull_request(draft) == std::string("https://github.com/o/r/pull/7"));
+    std::vector<std::pair<BackgroundTask, TaskStatus>> tasks(4);
+    tasks[0].second.state = "Running";
+    tasks[1].second.state = "Waiting for approval";
+    tasks[2].second.state = "Completed";
+    tasks[3].second.state = "Failed";
+    CHECK(background::active_count(tasks) == 2 && background::chip_label(2) == "2 background" && background::chip_label(0).empty());
+    CHECK(background::active_count({}) == 0);
+}
+
 int main(int argc, char** argv) {
     // Inside the sandbox this program is started as the forwarder to Mason's network relay.
     if (const auto forwarded = mason::network::maybe_forward(argc, argv)) return *forwarded;
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
-        {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"repeat stop", test_repeat_stop}, {"run endings", test_run_endings}, {"scenes", test_scenes}, {"stuck models and the time limit", test_stuck_and_time_limit},{"commands and rules", test_commands_and_rules},
+        {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"repeat stop", test_repeat_stop}, {"run endings", test_run_endings}, {"scenes", test_scenes}, {"moments", test_moments},{"stuck models and the time limit", test_stuck_and_time_limit},{"commands and rules", test_commands_and_rules},
         {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };

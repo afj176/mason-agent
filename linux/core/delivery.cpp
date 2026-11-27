@@ -322,4 +322,9 @@ Said command(const std::string& rest, const Workspace& workspace, const fs::path
     return {kUsage, ""};
 }
 
+std::optional<std::string> pull_request(const std::optional<DeliveryDraft>& draft) {
+    if (!draft || trim(draft->url).empty()) return std::nullopt;
+    return trim(draft->url);
+}
+
 }  // namespace mason::delivery

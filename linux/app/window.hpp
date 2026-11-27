@@ -106,6 +106,8 @@ class SettingsPage : public Gtk::ScrolledWindow {
 public:
     explicit SettingsPage(Controller& controller);
     void refresh();
+    /// Rebuilds the page and scrolls to one of its sections: "pull-request" or "background".
+    void show_section(const std::string& section);
 
 private:
     Controller& controller_;
@@ -118,6 +120,9 @@ private:
     GtkWidget* mode_row_ = nullptr;
     std::vector<std::pair<Gtk::ToggleButton*, const theme::Family*>> family_buttons_;
     bool showing_appearance_ = false;
+    /// The sections the session bar's chips open. Owned by the page; reset whenever it is rebuilt.
+    GtkWidget* delivery_group_ = nullptr;
+    GtkWidget* task_group_ = nullptr;
 };
 
 /// The Chat page: saved conversations, the selected one, and a message box. Chat has no tools.
@@ -200,8 +205,8 @@ private:
     void choose_export(const std::string& id, const std::string& title, bool sanitize);
     void choose_import(const std::string& workspace);
     std::string comments_shown_;
-    /// The side panel shows the changes, the plan, the project's files or its pages.
-    std::string panel_ = "changes";
+    /// The side panel shows Moments (the run as a feed), the changes, the plan, the project's files or its pages.
+    std::string panel_ = "moments";
     bool adding_milestone_ = false;
     /// The Files panel: the list, or one file being read.
     std::string file_open_;
@@ -225,18 +230,33 @@ private:
     void show_page(const std::string& page);
     void open_address(const std::string& address);
     void element_picked(const std::string& message);
-    /// The Activity panel (activity_panel.cpp): the run as scenes, a lens for the chosen one, and a strip of every scene.
+    /// Moments (activity_panel.cpp): the run as a feed, newest first, with a card for each thing a step made and a
+    /// quiet line for the rest. Opening a moment shows its change, report or reads in the panel.
     void refresh_activity();
-    /// Opens the Activity panel on the scene that holds this call, or following the run when the id is empty.
+    /// Opens Moments on the scene that holds this call, or on the feed when the id is empty.
     void show_activity(const std::string& activity_id);
-    std::string activity_scene_;  ///< "" follows the run; else "plan", "end" or the id of a call in the chosen scene.
+    /// Shows Moments: the feed when `location` is empty, else "end" or "<call id>" or "<call id>|<path>" opened.
+    void show_moments(const std::string& location);
+    std::string activity_scene_;  ///< What Moments has open: "" for the feed, "end", a call's id, or "<call id>|<path>".
     bool activity_raw_ = false;   ///< Show each call's subject and result exactly as kept.
-    double activity_scroll_ = 0;  ///< Where the lens was scrolled, kept while the same scene is rebuilt.
+    double activity_scroll_ = 0;  ///< Where Moments was scrolled, kept while the same view is rebuilt.
     std::string activity_scroll_scene_;
     sigc::connection activity_scroll_watch_;
+    /// The side panel: its header over whichever panel is shown. The header stays put while the panel scrolls.
+    Gtk::Box side_{Gtk::Orientation::VERTICAL, 0};
+    /// The header: "Moments" (and Live while a request runs) or "← Moments", then a shelf of chips for the other
+    /// panels and for what the latest run made. Rebuilt only when what it shows changes.
+    Gtk::Box surface_{Gtk::Orientation::HORIZONTAL, 8};
+    std::string surface_shown_;
+    std::string panel_session_;  ///< The session the side panel was last shown for.
+    void refresh_surface();
+    /// The session bar's chips: the published pull request, and background tasks still going. Read every few seconds.
+    Gtk::Button pr_chip_, tasks_chip_;
+    std::string chips_project_;
+    sigc::connection chips_timer_;
+    void refresh_chips(bool force);
     std::string observing_;  ///< The milestone whose observation is being written.
     void refresh_plan();
-    Gtk::Widget* panel_switch();
     Gtk::ScrolledWindow changes_scroll_;
     Gtk::Stack session_stack_;
     ModelsPage models_;

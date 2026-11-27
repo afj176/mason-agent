@@ -57,5 +57,10 @@ void detach();
 /// The /task command, shared by the command line and the app. Returns what to tell the user.
 std::string command(const std::string& rest, const Workspace& workspace, const std::optional<ModelEndpoint>& endpoint, bool automatic, const std::string& program, const fs::path& home);
 
+/// How many of these tasks are still going (starting, running, or waiting for an answer).
+int active_count(const std::vector<std::pair<BackgroundTask, TaskStatus>>& tasks);
+/// The session bar's chip for running tasks, "2 background", or empty when none is going.
+std::string chip_label(int active);
+
 }  // namespace background
 }  // namespace mason

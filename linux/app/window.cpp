@@ -1,6 +1,9 @@
 #include "harness.hpp"
 #include "window.hpp"
 
+#include "background.hpp"
+#include "delivery.hpp"
+
 #include <array>
 
 #include <algorithm>
@@ -332,14 +335,19 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     conversation->set_size_request(420, -1);
 
     changes_.set_margin(12);
+    changes_.set_margin_top(4);
     changes_scroll_.set_child(changes_);
-    changes_scroll_.set_size_request(420, -1);
-    changes_scroll_.set_visible(false);
+    changes_scroll_.set_vexpand(true);
+    surface_.add_css_class("surface-header");
+    side_.append(surface_);
+    side_.append(changes_scroll_);
+    side_.set_size_request(380, -1);
+    side_.set_visible(false);
     conversation_overlay_.set_child(*conversation);
     build_notes();
     auto* paned = Gtk::make_managed<Gtk::Paned>(Gtk::Orientation::HORIZONTAL);
     paned->set_start_child(conversation_overlay_);
-    paned->set_end_child(changes_scroll_);
+    paned->set_end_child(side_);
     paned->set_resize_start_child(true);
     paned->set_shrink_start_child(false);
     paned->set_shrink_end_child(false);
@@ -381,9 +389,9 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(switcher), ADW_VIEW_SWITCHER_POLICY_WIDE);
 
     changes_toggle_.set_icon_name("view-dual-symbolic");
-    changes_toggle_.set_tooltip_text("Show the files this session changed");
+    changes_toggle_.set_tooltip_text("Show Moments: what Mason did, and the files, changes and pages it made (Ctrl+Alt+V)");
     changes_toggle_.signal_toggled().connect([this] {
-        changes_scroll_.set_visible(changes_toggle_.get_active());
+        side_.set_visible(changes_toggle_.get_active());
         refresh_changes();
     });
     model_button_.signal_clicked().connect([this] { adw_view_stack_set_visible_child_name(stack_, "models"); });
@@ -416,8 +424,30 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     appearance_button->set_menu_model(appearance_menu);
     appearance_button->insert_action_group("look", look);
 
+    // The session bar's chips: the project's published pull request, and its background tasks while any is going.
+    // Each opens its section of Settings.
+    pr_chip_.set_label("Pull request");
+    pr_chip_.add_css_class("session-chip");
+    pr_chip_.set_tooltip_text("This project's pull request and its checks, in Settings");
+    pr_chip_.set_visible(false);
+    pr_chip_.signal_clicked().connect([this] {
+        adw_view_stack_set_visible_child_name(stack_, "settings");
+        settings_.show_section("pull-request");
+    });
+    tasks_chip_.add_css_class("session-chip");
+    tasks_chip_.add_css_class("session-chip-live");
+    tasks_chip_.set_tooltip_text("Background tasks running for this project, in Settings");
+    tasks_chip_.set_visible(false);
+    tasks_chip_.signal_clicked().connect([this] {
+        adw_view_stack_set_visible_child_name(stack_, "settings");
+        settings_.show_section("background");
+    });
+    chips_timer_ = Glib::signal_timeout().connect_seconds([this] { refresh_chips(true); return true; }, 4);
+
     GtkWidget* header = adw_header_bar_new();
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), switcher);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header), GTK_WIDGET(pr_chip_.gobj()));
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header), GTK_WIDGET(tasks_chip_.gobj()));
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), GTK_WIDGET(appearance_button->gobj()));
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), GTK_WIDGET(changes_toggle_.gobj()));
 
@@ -489,6 +519,12 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
             open_notes(false);
             return true;
         }
+        // Ctrl+Alt+V shows and hides the side panel (Moments), as it shows and hides the viewer on Windows.
+        const Gdk::ModifierType viewer = Gdk::ModifierType::CONTROL_MASK | Gdk::ModifierType::ALT_MASK;
+        if ((key == GDK_KEY_v || key == GDK_KEY_V) && (state & viewer) == viewer && on_code) {
+            changes_toggle_.set_active(!changes_toggle_.get_active());
+            return true;
+        }
         return false;
     }, false);
     Glib::wrap(GTK_WINDOW(window_), true)->add_controller(shortcuts);
@@ -510,6 +546,28 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
 }
 
 void MainWindow::present() { gtk_window_present(GTK_WINDOW(window_)); }
+
+void MainWindow::refresh_chips(bool force) {
+    const Session* session = controller_.session();
+    const std::string project = session ? session->workspace : "";
+    // The draft and the tasks are files on disk: read when the project changes and every few seconds, not on every update.
+    if (!force && project == chips_project_) return;
+    chips_project_ = project;
+    std::optional<std::string> pull_request;
+    int active = 0;
+    if (!project.empty() && !controller_.home().empty()) {
+        try {
+            const Workspace workspace(project);
+            pull_request = delivery::pull_request(delivery::current(workspace, controller_.home()));
+            active = background::active_count(background::all(&workspace, controller_.home()));
+        } catch (const std::exception&) {
+        }
+    }
+    pr_chip_.set_visible(pull_request.has_value());
+    if (pull_request) pr_chip_.set_tooltip_text("Pull request " + *pull_request + " and its checks, in Settings");
+    tasks_chip_.set_visible(active > 0);
+    tasks_chip_.set_label(background::chip_label(active));
+}
 
 void MainWindow::open_project() {
     auto dialog = Gtk::FileDialog::create();
@@ -534,7 +592,15 @@ void MainWindow::refresh() {
     refresh_notes();
     refresh_transcript();
     refresh_composer();
+    if (const Session* now = controller_.session(); (now ? now->id : "") != panel_session_) {
+        // Another session opens the side panel on Moments, its feed.
+        panel_session_ = now ? now->id : "";
+        panel_ = "moments";
+        activity_scene_.clear();
+        changes_shown_.clear();
+    }
     refresh_changes();
+    refresh_chips(false);
     models_.refresh();
     chat_.refresh();
     settings_.refresh();
@@ -918,11 +984,11 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
         summary->add_css_class("summary-line");
         line->append(*summary);
         if (!activities.empty()) {
-            // Opens the Activity panel on this request's first scene.
-            auto* view = Gtk::make_managed<Gtk::Button>("View activity");
+            // Opens Moments on this request's first scene.
+            auto* view = Gtk::make_managed<Gtk::Button>("View in Moments");
             view->add_css_class("flat");
             view->add_css_class("changed-link");
-            view->set_tooltip_text("Show what Mason did, step by step, in the Activity panel");
+            view->set_tooltip_text("Show what Mason did, step by step, in Moments");
             const std::string first = activities.front().id;
             view->signal_clicked().connect([this, first] { Glib::signal_idle().connect_once([this, first] { show_activity(first); }); });
             line->append(*view);
@@ -1100,6 +1166,10 @@ void MainWindow::refresh_composer() {
     const Session* session = controller_.session();
     const bool was_updating = updating_;
     updating_ = true;
+    // While a request runs, Ctrl+Enter queues and Steer, Queue and Stop take the room: the hint and the Window menu
+    // (which cannot change mid-request) give way, so the request box keeps its width and the side panel stays on screen.
+    composer_hint_.set_visible(!controller_.running);
+    window_button_.set_visible(!controller_.running);
     if (session) permission_.set_selected(session->ask_only ? 0 : static_cast<guint>(session->permission));
     updating_ = was_updating;
     permission_.set_sensitive(!controller_.running);
@@ -1157,39 +1227,6 @@ void MainWindow::refresh_composer() {
     run_queued_.set_label("Run " + std::to_string(queued) + " Queued");
 }
 
-/// Linked buttons at the top of the side panel: the session's changes, its plan, the project's files, or its pages.
-Gtk::Widget* MainWindow::panel_switch() {
-    auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
-    box->add_css_class("linked");
-    box->add_css_class("panel-switch");
-    box->set_hexpand(true);
-    Gtk::ToggleButton* first = nullptr;
-    const std::vector<std::array<std::string, 3>> panels = {
-        {"changes", "Changes", "The files this session changed"},
-        {"activity", "Activity", "What Mason did, one scene at a time: reads, edits, commands and page checks"},
-        {"plan", "Plan", "Milestones: the steps of the work, the files each covers and how each is checked"},
-        {"files", "Files", "The project's files, to read"},
-        {"website", "Website", "The project's pages: look at one, and pick an element to tell Mason about"},
-    };
-    for (const auto& panel : panels) {
-        const std::string id = panel[0];
-        auto* button = Gtk::make_managed<Gtk::ToggleButton>(panel[1]);
-        if (first) button->set_group(*first);
-        else first = button;
-        button->set_active(panel_ == id);
-        button->set_tooltip_text(panel[2]);
-        button->signal_toggled().connect([this, button, id] {
-            if (!button->get_active() || panel_ == id) return;
-            panel_ = id;
-            changes_shown_.clear();
-            // Rebuilding the panel removes this button, so it happens after the click is over.
-            Glib::signal_idle().connect_once([this] { refresh_changes(); });
-        });
-        box->append(*button);
-    }
-    return box;
-}
-
 void MainWindow::choose_export(const std::string& id, const std::string& title, bool sanitize) {
     auto dialog = Gtk::FileDialog::create();
     dialog->set_title(sanitize ? "Export a Sanitized Copy" : "Export Session");
@@ -1240,9 +1277,6 @@ void MainWindow::refresh_plan() {
     if (fingerprint == changes_shown_) return;
     changes_shown_ = fingerprint;
     clear(changes_);
-    auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    bar->append(*panel_switch());
-    changes_.append(*bar);
     if (!session) return;
     if (rows.empty() && !adding_milestone_) {
         auto* empty = dim_label("No milestones yet. Break the work into steps. Each names the files it covers and how it is checked: a project workflow, or what you saw yourself. Mason is told the plan with every request.");
@@ -1393,9 +1427,15 @@ void MainWindow::refresh_plan() {
 
 void MainWindow::refresh_changes() {
     if (!changes_toggle_.get_active()) return;
+    refresh_surface();
+    if (panel_ != "moments") {
+        // Moments keeps its place only while it stays shown.
+        activity_scroll_watch_.disconnect();
+        activity_scroll_scene_ = "-";
+    }
     const Session* session = controller_.session();
     std::vector<FileChange> merged;
-    if (panel_ == "activity") { refresh_activity(); return; }
+    if (panel_ == "moments") { refresh_activity(); return; }
     if (panel_ == "plan") { refresh_plan(); return; }
     if (panel_ == "files") { refresh_files(); return; }
     if (panel_ == "website") { refresh_website(); return; }
@@ -1414,9 +1454,10 @@ void MainWindow::refresh_changes() {
     if (fingerprint == changes_shown_) return;
     changes_shown_ = fingerprint;
     clear(changes_);
-    changes_.append(*panel_switch());
     auto* bar = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    auto* heading = Gtk::make_managed<Gtk::Label>("");
+    auto* heading = Gtk::make_managed<Gtk::Label>("Changes");
+    heading->add_css_class("viewer-where");
+    heading->set_xalign(0);
     heading->set_hexpand(true);
     // Icons keep the bar inside a narrow panel; each has a tooltip and a name for screen readers.
     auto* undo = Gtk::make_managed<Gtk::Button>();

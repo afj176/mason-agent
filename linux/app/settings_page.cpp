@@ -261,6 +261,7 @@ void SettingsPage::refresh() {
     for (const Schedule& schedule : all_schedules) print += schedule.id + (schedule.enabled ? "1" : "0") + schedule.last_outcome + std::to_string(schedule.last_run) + "|";
     if (print == shown_) return;
     shown_ = print;
+    delivery_group_ = task_group_ = nullptr;
     clear(content_);
 
     auto report = [&c](const std::function<void()>& work) {
@@ -529,6 +530,7 @@ void SettingsPage::refresh() {
 
     // ---- pull request ----
     AdwPreferencesGroup* delivery_group = group(content_, "Pull request", "One commit made from the hunks you choose, without touching your files, index or branches. Publishing pushes it to a new branch and opens a draft pull request through gh.");
+    delivery_group_ = GTK_WIDGET(delivery_group);
     if (draft) {
         AdwActionRow* line = row(delivery_group, draft->title, "Onto " + draft->base + "  ·  commit " + draft->commit.substr(0, 12) + "  ·  " + std::to_string(draft->paths.size()) + (draft->paths.size() == 1 ? " file" : " files") +
                                                                  (draft->url.empty() ? "\nNot published" : "\n" + draft->url));
@@ -545,6 +547,7 @@ void SettingsPage::refresh() {
 
     // ---- background tasks ----
     AdwPreferencesGroup* task_group = group(content_, "Background tasks", "Requests that keep running after you close Mason. Outside Auto, a task waits here before each edit and command.");
+    task_group_ = GTK_WIDGET(task_group);
     if (tasks.empty()) row(task_group, "No background tasks", "Start one below. It uses the model that is running now and this session's permission.");
     for (const auto& [task, status] : tasks) {
         const std::string id = task.id;
@@ -561,6 +564,25 @@ void SettingsPage::refresh() {
     entry_row(task_group, "Start a background task", "What to do", "Start", [run](const std::string& text) { run("/task", "start " + text); });
     AdwActionRow* refresh_row = row(task_group, "Tasks run on their own", "This list is read when the page is opened.");
     button(refresh_row, "Refresh", [this] { shown_.clear(); refresh(); });
+}
+
+void SettingsPage::show_section(const std::string& section) {
+    // Tasks run on their own, so the page is read again before it is shown.
+    shown_.clear();
+    refresh();
+    // Once laid out, the section's top is scrolled to. The first frames may come before the page has its size.
+    // The section is looked up each frame, as a rebuild of the page replaces it.
+    auto frames = std::make_shared<int>(0);
+    GtkWidget* page = GTK_WIDGET(page_.gobj());
+    const Glib::RefPtr<Gtk::Adjustment> adjustment = get_vadjustment();
+    add_tick_callback([this, section, page, adjustment, frames](const Glib::RefPtr<Gdk::FrameClock>&) {
+        GtkWidget* target = section == "background" ? task_group_ : delivery_group_;
+        graphene_rect_t bounds;
+        if (target && adjustment->get_upper() > 0 && gtk_widget_compute_bounds(target, page, &bounds)) {
+            adjustment->set_value(std::max(0.0, static_cast<double>(bounds.origin.y) + page_.get_margin_top() - 12));
+        }
+        return ++*frames < 6;
+    });
 }
 
 }  // namespace mason::app

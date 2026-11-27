@@ -1,12 +1,15 @@
-// The Activity panel of the side panel: the run shown as scenes. Consecutive calls of one kind form a scene, and each
-// kind has its own lens: a diff for edits, a summary-first terminal for commands, a map for reads, the page for browser
-// checks, the plan, and a receipt when the run ends. The panel follows the newest scene until the user picks another.
-// Every fact the inline rows show (state, subject, result, skipped repeats) is still under Step details or Raw.
+// Moments: the side panel's feed of what the run did, newest first. A step that made something (a file, a change, a
+// command's report, a page check) is a card with Open; reading and other steps are quiet one-line moments, and each
+// request begins with a "You asked" line. Opening a change, a report or a set of reads shows it here with its lens:
+// a diff for edits, a summary-first terminal for commands, a map for reads, the page for checks, and a receipt for
+// the end of a run. Every fact the inline rows show (state, subject, result, skipped repeats) is under Step details or Raw.
+// The panel's header (refresh_surface) carries "Moments" or the way back to it, and the shelf.
 #include "window.hpp"
 
 #include "scenes.hpp"
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <set>
 
@@ -17,16 +20,13 @@ namespace {
 using scenes::Kind;
 using scenes::Scene;
 
-const char* const kPlan = "plan";
 const char* const kEnd = "end";
 
-/// What a lens can open: a file in the Files panel, another panel, a project page, or Settings.
+/// What a moment can open: a file in the Files panel, another panel, a project page, a Settings section, or another
+/// moment ("end", "<call id>" or "<call id>|<path>").
 struct Opener {
-    std::function<void(const std::string&)> file, panel, page;
-    std::function<void()> settings;
+    std::function<void(const std::string&)> file, panel, page, settings, moment;
 };
-
-std::string key_of(const Scene& scene) { return "s" + std::to_string(scene.first); }
 
 std::string clip(const std::string& text, size_t limit) { return utf8_length(text) > limit ? utf8_prefix(text, limit - 1) + "…" : text; }
 
@@ -94,19 +94,7 @@ Gtk::Button* link_button(const std::string& text, const std::function<void()>& a
     return button;
 }
 
-/// Each file as the session changed it, from its original to now: requests that were undone are left out.
-std::vector<FileChange> merged_changes(const Session& session) {
-    std::vector<FileChange> merged;
-    for (const Turn& turn : session.turns) {
-        if (turn.undone) continue;
-        for (const FileChange& change : turn.changes) {
-            auto existing = std::find_if(merged.begin(), merged.end(), [&](const FileChange& item) { return item.path == change.path; });
-            if (existing != merged.end()) { existing->after = change.after; existing->after_blob = change.after_blob; existing->after_missing = change.after_missing; }
-            else merged.push_back(change);
-        }
-    }
-    return merged;
-}
+std::vector<FileChange> merged_changes(const Session& session) { return scenes::kept_changes(session); }
 
 DiffCounts counts_of(const FileChange& change) { return change.opaque() ? DiffCounts{} : diff_counts(change.before, change.deleted() ? "" : change.after); }
 
@@ -157,12 +145,13 @@ Gtk::Widget* call_card(const Activity& activity, bool raw) {
     return box;
 }
 
-/// `live` is true when the scene belongs to the request that is still running.
-void edit_lens(const Session& session, const std::vector<Activity>& activities, const Scene& scene, bool live, Gtk::Box& body, const Opener& open) {
+/// `live` is true when the scene belongs to the request that is still running. `only` limits it to one file.
+void edit_lens(const Session& session, const std::vector<Activity>& activities, const Scene& scene, bool live, Gtk::Box& body, const Opener& open, const std::string& only = "") {
     const std::vector<FileChange> changes = merged_changes(session);
     std::vector<std::string> paths;
     for (size_t i = scene.first; i <= scene.last(); i++) {
-        if (const auto path = scenes::path_of(activities[i]); path && std::find(paths.begin(), paths.end(), *path) == paths.end()) paths.push_back(*path);
+        const auto path = scenes::path_of(activities[i]);
+        if (path && (only.empty() || *path == only) && std::find(paths.begin(), paths.end(), *path) == paths.end()) paths.push_back(*path);
     }
     for (const std::string& path : paths) {
         const Activity* last = nullptr;
@@ -213,7 +202,7 @@ void edit_lens(const Session& session, const std::vector<Activity>& activities, 
             body.append(*mono(clip(last->result, 800)));
         }
     }
-    for (size_t i = scene.first; i <= scene.last(); i++) {
+    for (size_t i = scene.first; i <= scene.last() && only.empty(); i++) {
         if (!scenes::path_of(activities[i])) body.append(*call_card(activities[i], false));
     }
     if (!changes.empty()) {
@@ -375,31 +364,6 @@ void page_lens(const std::vector<Activity>& activities, const Scene& scene, Gtk:
     }
 }
 
-void plan_lens(const std::vector<MilestoneStatus>& milestones, Gtk::Box& body, const Opener& open) {
-    auto* title = Gtk::make_managed<Gtk::Label>("Plan");
-    title->set_xalign(0);
-    title->add_css_class("title-3");
-    body.append(*title);
-    for (const MilestoneStatus& status : milestones) {
-        auto* box = card();
-        auto* top = row(8);
-        auto* mark = Gtk::make_managed<Gtk::Image>();
-        mark->set_from_icon_name(status.done() ? "emblem-ok-symbolic" : "media-record-symbolic");
-        if (status.done()) mark->add_css_class("success");
-        auto* name = text_label(status.item.title);
-        name->set_hexpand(true);
-        top->append(*mark);
-        top->append(*name);
-        top->append(*pill(status.state, status.done() ? "done" : status.state == "Ready" ? "ready" : status.state == "Blocked" ? "blocked" : "recheck"));
-        box->append(*top);
-        if (!status.reason.empty()) box->append(*dim_label(status.reason));
-        body.append(*box);
-    }
-    auto* line = row(6);
-    line->append(*link_button("Open the plan", [open] { open.panel("plan"); }));
-    body.append(*line);
-}
-
 void receipt_lens(const Session& session, const std::vector<Activity>& activities, Gtk::Box& body, const Opener& open) {
     const RunEnding& ending = *session.ending;
     const std::optional<EndingStyle> look = ending_style(ending.code);
@@ -494,10 +458,10 @@ void receipt_lens(const Session& session, const std::vector<Activity>& activitie
         actions->add_css_class("viewer-actions");
         auto* review = Gtk::make_managed<Gtk::Button>("Review all changes");
         review->signal_clicked().connect([open] { Glib::signal_idle().connect_once([open] { open.panel("changes"); }); });
-        auto* ship = Gtk::make_managed<Gtk::Button>("Commit and open a pull request…");
+        auto* ship = Gtk::make_managed<Gtk::Button>("Commit & open pull request…");
         ship->add_css_class("suggested-action");
         ship->set_tooltip_text("Settings has the pull request steps: review against a branch, draft from the hunks, publish");
-        ship->signal_clicked().connect([open] { open.settings(); });
+        ship->signal_clicked().connect([open] { Glib::signal_idle().connect_once([open] { open.settings("pull-request"); }); });
         review->set_halign(Gtk::Align::START);
         ship->set_halign(Gtk::Align::START);
         actions->append(*review);
@@ -506,14 +470,476 @@ void receipt_lens(const Session& session, const std::vector<Activity>& activitie
     }
 }
 
+
+// ---- the feed ----
+
+/// The square glyph at the start of a card, tinted by what the moment was: good, accent, bad, search or neutral.
+Gtk::Label* badge(const std::string& glyph, const std::string& tone) {
+    auto* label = Gtk::make_managed<Gtk::Label>(glyph);
+    label->add_css_class("moment-badge");
+    label->add_css_class("badge-" + tone);
+    label->set_valign(Gtk::Align::CENTER);
+    label->set_halign(Gtk::Align::CENTER);
+    return label;
+}
+
+/// A card's top line: the badge, the title, and any pills after it.
+Gtk::Box* moment_title(const std::string& glyph, const std::string& tone, const std::string& title, const std::vector<Gtk::Widget*>& extras) {
+    auto* line = row(10);
+    line->append(*badge(glyph, tone));
+    auto* name = bold(title);
+    name->add_css_class("moment-title");
+    name->set_ellipsize(Pango::EllipsizeMode::END);
+    name->set_tooltip_text(title);
+    name->set_valign(Gtk::Align::CENTER);
+    line->append(*name);
+    for (Gtk::Widget* extra : extras) {
+        if (!extra) continue;
+        extra->set_valign(Gtk::Align::CENTER);
+        line->append(*extra);
+    }
+    return line;
+}
+
+Gtk::Box* moment_card(bool newest) {
+    auto* box = column(8);
+    box->add_css_class("moment-card");
+    if (newest) box->add_css_class("moment-live");
+    return box;
+}
+
+/// A button that acts after the click is over, since acting rebuilds the panel. Suggested when `primary`.
+Gtk::Button* action_button(const std::string& text, bool primary, const std::function<void()>& action) {
+    auto* button = Gtk::make_managed<Gtk::Button>(text);
+    button->add_css_class("moment-action");
+    if (primary) button->add_css_class("suggested-action");
+    button->signal_clicked().connect([action] { Glib::signal_idle().connect_once(action); });
+    return button;
+}
+
+std::string file_name(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string capitalized(std::string text) {
+    if (!text.empty() && text[0] >= 'a' && text[0] <= 'z') text[0] = static_cast<char>(text[0] - 'a' + 'A');
+    return text;
+}
+
+/// One file an edit scene touched. `live` is true while its request runs: its change is kept only when the request ends.
+Gtk::Widget* edit_moment(const std::vector<FileChange>& changes, const Activity& call, const std::string& path, bool live, bool newest, const Opener& open) {
+    const auto found = live ? changes.end() : std::find_if(changes.begin(), changes.end(), [&](const FileChange& item) { return scenes::normalize(item.path) == path; });
+    const FileChange* change = found == changes.end() ? nullptr : &*found;
+    const std::string name = file_name(path);
+    const std::string moment = call.id + "|" + path;
+    auto* box = moment_card(newest);
+    auto* actions = row(8);
+    if (!change) {
+        const bool failed = scenes::failed(call);
+        const bool writing = call.state == "running";
+        box->append(*moment_title(failed ? "✕" : "✎", failed ? "bad" : "accent", (failed ? "Couldn't change " : writing ? "Changing " : "Edited ") + name,
+                                  {failed ? pill(state_words(call.state), state_tone(call.state)) : writing ? pill("Writing…", "ready") : nullptr}));
+        if (!failed && !writing && live) {
+            auto* note = dim_label("The change shows here when this request ends.");
+            note->add_css_class("caption");
+            box->append(*note);
+        }
+        actions->append(*action_button("Open", newest, [open, moment] { open.moment(moment); }));
+    } else if (change->created()) {
+        const std::string text = change->opaque() ? "" : replace_all(change->after, "\r\n", "\n");
+        const size_t lines = static_cast<size_t>(std::count(text.begin(), text.end(), '\n')) + (text.empty() || text.back() == '\n' ? 0 : 1);
+        auto* count = dim_label(change->opaque() ? "binary or large" : lines == 1 ? "1 line" : std::to_string(lines) + " lines");
+        count->add_css_class("caption");
+        box->append(*moment_title("+", "good", "Created " + name, {count}));
+        std::vector<std::string> head;
+        for (const std::string& line : split(text, '\n')) {
+            if (head.size() == 3) break;
+            if (!trim(line).empty()) head.push_back(clip(replace_all(line, "\t", "    "), 120));
+        }
+        if (!head.empty()) {
+            auto* peek = mono(join(head, "\n"), false);
+            peek->set_ellipsize(Pango::EllipsizeMode::END);
+            peek->add_css_class("moment-peek");
+            box->append(*peek);
+        }
+        const std::string target = change->path;
+        actions->append(*action_button("Open", newest, [open, target] { open.file(target); }));
+        actions->append(*link_button("Diff", [open, moment] { open.moment(moment); }));
+    } else {
+        std::vector<Gtk::Widget*> extras;
+        if (change->deleted()) extras.push_back(pill("deleted", "blocked"));
+        else if (!change->opaque()) {
+            const DiffCounts counts = counts_of(*change);
+            extras.push_back(pill("+" + std::to_string(counts.added), "done"));
+            if (counts.removed > 0) extras.push_back(pill("−" + std::to_string(counts.removed), "danger"));
+        }
+        box->append(*moment_title("✎", "accent", (change->deleted() ? "Deleted " : "Changed ") + name, extras));
+        if (!change->opaque() && !change->deleted()) {
+            for (const DiffLine& line : diff_lines(change->before, change->after)) {
+                if (line.kind != '+' || trim(line.text).empty()) continue;
+                auto* added = mono(clip(trim(line.text), 160), false);
+                added->set_ellipsize(Pango::EllipsizeMode::END);
+                added->add_css_class("moment-added");
+                added->set_halign(Gtk::Align::START);
+                box->append(*added);
+                break;
+            }
+        }
+        actions->append(*action_button("Open", newest, [open, moment] { open.moment(moment); }));
+    }
+    box->append(*actions);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(box->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, ((change && change->created() ? "Created " : "Changed ") + path).c_str(), -1);
+    return box;
+}
+
+/// A command scene as one card: how it went, the test counts as pills and a bar, and the first failing lines.
+Gtk::Widget* command_moment(const std::vector<Activity>& activities, const Scene& scene, bool newest, const Opener& open) {
+    const Activity& call = activities[scene.last()];
+    const scenes::CommandSummary summary = scenes::command(call);
+    const bool failed = scenes::failed(call) || (summary.exit_code && *summary.exit_code != 0) || (summary.failed && *summary.failed > 0);
+    const bool active = call.state == "running";
+    const std::string title = scenes::label(scene, activities);
+    std::vector<Gtk::Widget*> extras;
+    if (summary.passed) extras.push_back(pill(std::to_string(*summary.passed) + " passed", "done"));
+    if (summary.failed && *summary.failed > 0) extras.push_back(pill(std::to_string(*summary.failed) + " failed", "danger"));
+    if (!summary.passed && !summary.failed && summary.exit_code) extras.push_back(pill("exit " + std::to_string(*summary.exit_code), *summary.exit_code == 0 ? "done" : "danger"));
+    if (call.state == "skipped") extras.push_back(pill("Repeat skipped", "recheck"));
+    if (call.state == "denied") extras.push_back(pill("Declined", "danger"));
+    auto* box = moment_card(newest);
+    box->append(*moment_title(active ? "…" : failed ? "✕" : "✓", active ? "accent" : failed ? "bad" : "good", title, extras));
+    const int good = summary.passed.value_or(0), bad = summary.failed.value_or(0);
+    if (summary.passed && good + bad > 0) {
+        // Green for what passed over red for what failed.
+        auto* bar = Gtk::make_managed<Gtk::ProgressBar>();
+        bar->add_css_class("pass-bar");
+        bar->set_fraction(static_cast<double>(good) / (good + bad));
+        gtk_accessible_update_property(GTK_ACCESSIBLE(bar->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, (std::to_string(good) + " passed, " + std::to_string(bad) + " failed").c_str(), -1);
+        box->append(*bar);
+    }
+    for (size_t i = 0; i < summary.failures.size() && i < 3; i++) {
+        auto* line = mono(summary.failures[i], false);
+        line->set_ellipsize(Pango::EllipsizeMode::END);
+        line->add_css_class("failure-line");
+        box->append(*line);
+    }
+    if (active) {
+        auto* waiting = row(8);
+        auto* spinner = Gtk::make_managed<Gtk::Spinner>();
+        spinner->start();
+        waiting->append(*spinner);
+        waiting->append(*dim_label("Running…"));
+        box->append(*waiting);
+    }
+    const std::string id = call.id;
+    auto* actions = row(8);
+    actions->append(*link_button(failed || summary.passed ? "Open the report" : "Open the output", [open, id] { open.moment(id); }));
+    box->append(*actions);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(box->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, (title + (failed ? ", failed" : "")).c_str(), -1);
+    return box;
+}
+
+/// A page check: what was checked, what it found, and the page. Linux keeps no screenshot with a check, so there is none here.
+Gtk::Widget* page_moment(const std::vector<Activity>& activities, const Scene& scene, bool newest, const Opener& open) {
+    std::string page, said;
+    for (size_t i = scene.first; i <= scene.last(); i++) {
+        const Activity& call = activities[i];
+        if ((call.tool == "open_preview" || call.tool == "check_page") && !trim(call.subject).empty()) page = trim(call.subject);
+        if (!trim(call.result).empty()) said = trim(call.result);
+    }
+    const bool failed = scenes::failed(activities[scene.last()]);
+    auto* box = moment_card(newest);
+    box->append(*moment_title("◫", failed ? "bad" : "search", scenes::label(scene, activities), {failed ? pill(state_words(activities[scene.last()].state), "danger") : nullptr}));
+    if (!page.empty()) {
+        auto* where = mono(page, false);
+        where->set_ellipsize(Pango::EllipsizeMode::MIDDLE);
+        box->append(*where);
+    }
+    if (!said.empty()) {
+        auto* found = dim_label(clip(replace_all(said, "\n", " "), 220));
+        found->set_wrap(true);
+        found->set_lines(3);
+        found->set_ellipsize(Pango::EllipsizeMode::END);
+        found->set_xalign(0);
+        box->append(*found);
+    }
+    auto* actions = row(8);
+    if (!page.empty()) actions->append(*action_button("Open page", newest, [open, page] { open.page(page); }));
+    const std::string id = activities[scene.last()].id;
+    actions->append(*link_button("Details", [open, id] { open.moment(id); }));
+    box->append(*actions);
+    return box;
+}
+
+/// Reading, searching and other steps: one quiet line that opens the set.
+Gtk::Widget* quiet_moment(const std::vector<Activity>& activities, const Scene& scene, const Opener& open) {
+    const std::vector<Activity> calls(activities.begin() + static_cast<std::ptrdiff_t>(scene.first), activities.begin() + static_cast<std::ptrdiff_t>(scene.last() + 1));
+    const std::string label = capitalized(scenes::label(scene, activities));
+    std::string detail;
+    if (scene.kind == Kind::Read) {
+        std::vector<std::string> names;
+        for (const auto& [folder, count] : scenes::folders(calls)) {
+            if (names.size() == 3) break;
+            names.push_back(folder);
+        }
+        detail = join(names, ", ");
+    }
+    const bool failed = std::any_of(calls.begin(), calls.end(), [](const Activity& call) { return scenes::failed(call); });
+    auto* line = row(10);
+    auto* dot = Gtk::make_managed<Gtk::Box>();
+    dot->add_css_class("moment-dot");
+    if (failed) dot->add_css_class("moment-dot-failed");
+    dot->set_valign(Gtk::Align::CENTER);
+    line->append(*dot);
+    // The label keeps its words; the folders after it give way when the panel is narrow.
+    auto* name = bold(clip(label, 40));
+    line->append(*name);
+    if (!detail.empty()) {
+        auto* more = dim_label("· " + detail);
+        more->set_ellipsize(Pango::EllipsizeMode::END);
+        more->set_hexpand(true);
+        more->set_xalign(0);
+        line->append(*more);
+    }
+    auto* button = Gtk::make_managed<Gtk::Button>();
+    button->add_css_class("flat");
+    button->add_css_class("quiet-moment");
+    button->set_child(*line);
+    const std::string id = activities[scene.last()].id;
+    button->signal_clicked().connect([open, id] { Glib::signal_idle().connect_once([open, id] { open.moment(id); }); });
+    const std::string spoken = label + (detail.empty() ? "" : ", " + detail);
+    button->set_tooltip_text(spoken);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(button->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, spoken.c_str(), -1);
+    return button;
+}
+
+Gtk::Widget* asked_moment(const std::string& text) {
+    auto* words = dim_label("You asked: " + clip(replace_all(text, "\n", " "), 160));
+    words->set_wrap(true);
+    words->set_lines(2);
+    words->set_ellipsize(Pango::EllipsizeMode::END);
+    words->set_xalign(0);
+    words->add_css_class("asked-moment");
+    return words;
+}
+
+/// The cards a scene shows in the feed: one per file for edits, one for a command or page scene, else a quiet line.
+void scene_moments(const Session& session, const std::vector<FileChange>& changes, const std::vector<Activity>& activities, const Scene& scene, bool running, bool newest,
+                   Gtk::Box& feed, const Opener& open) {
+    switch (scene.kind) {
+        case Kind::Edit: {
+            // Newest first, each file once, as its last call in the scene left it.
+            const bool live = running && scene.last() >= session.activities.size();
+            std::vector<std::string> seen;
+            for (size_t i = scene.last() + 1; i-- > scene.first;) {
+                const auto path = scenes::path_of(activities[i]);
+                if (!path || std::find(seen.begin(), seen.end(), *path) != seen.end()) continue;
+                seen.push_back(*path);
+                feed.append(*edit_moment(changes, activities[i], *path, live, newest, open));
+            }
+            if (seen.empty()) feed.append(*quiet_moment(activities, scene, open));
+            break;
+        }
+        case Kind::Command: feed.append(*command_moment(activities, scene, newest, open)); break;
+        case Kind::Page: feed.append(*page_moment(activities, scene, newest, open)); break;
+        default: feed.append(*quiet_moment(activities, scene, open)); break;
+    }
+}
+
+/// The card on top of the feed when a run has ended: how it ended, what was asked, and what it changed.
+Gtk::Widget* end_moment(const Session& session, const std::vector<Activity>& activities, bool published, const Opener& open) {
+    const RunEnding& ending = *session.ending;
+    const std::optional<EndingStyle> look = ending_style(ending.code);
+    const size_t start = std::min(scenes::request_start(session), activities.size());
+    const std::vector<FileChange> changes = merged_changes(session);
+    int added = 0, removed = 0, commands = 0;
+    for (size_t i = 0; i < changes.size() && i < 40; i++) {
+        const DiffCounts counts = counts_of(changes[i]);
+        added += counts.added;
+        removed += counts.removed;
+    }
+    for (size_t i = start; i < activities.size(); i++) {
+        if (scenes::kind_of(activities[i].tool) == Kind::Command) commands++;
+    }
+    auto* box = column(10);
+    box->add_css_class("moment-card");
+    box->add_css_class("end-moment");
+    auto* top = row(10);
+    top->append(*pill(look ? look->glyph + " " + look->headline : "Run ended", look ? ending_tone(look->tone) : "blocked"));
+    const std::string asked = session.turns.empty() ? "" : trim(session.turns.back().request);
+    auto* title = bold(clip(replace_all(asked.empty() ? (look ? look->headline : "Run ended") : asked, "\n", " "), 90));
+    title->add_css_class("end-title");
+    title->set_ellipsize(Pango::EllipsizeMode::END);
+    title->set_hexpand(true);
+    title->set_valign(Gtk::Align::CENTER);
+    top->append(*title);
+    box->append(*top);
+    const std::string facts = scenes::end_facts(changes.size(), added, removed, commands, activities.size() - start);
+    box->append(*dim_label(facts));
+    // A flow box puts the buttons side by side when they fit and one under the other when they do not.
+    auto* actions = Gtk::make_managed<Gtk::FlowBox>();
+    actions->set_selection_mode(Gtk::SelectionMode::NONE);
+    actions->set_column_spacing(8);
+    actions->set_row_spacing(8);
+    actions->set_max_children_per_line(3);
+    actions->set_homogeneous(false);
+    actions->add_css_class("viewer-actions");
+    auto add = [actions](Gtk::Widget* widget) {
+        widget->set_halign(Gtk::Align::START);
+        actions->append(*widget);
+    };
+    if (!changes.empty()) {
+        add(action_button("Review all changes", false, [open] { open.panel("changes"); }));
+        add(action_button(published ? "Pull request & CI" : "Commit & open pull request…", true, [open] { open.settings("pull-request"); }));
+    }
+    add(link_button("Summary", [open] { open.moment(kEnd); }));
+    box->append(*actions);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(box->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, ((look ? look->headline : "Run ended") + ". " + facts).c_str(), -1);
+    return box;
+}
+
+/// Moments before any step: a pose, what the feed will show, and the kinds of moment.
+Gtk::Widget* empty_moments(bool running) {
+    auto* page = column(14);
+    page->add_css_class("moments-empty");
+    page->set_valign(Gtk::Align::CENTER);
+    page->set_halign(Gtk::Align::CENTER);
+    page->set_vexpand(true);
+    page->set_margin_top(24);
+    page->append(*pose_picture(running ? pose::planning : pose::reading, 132, running ? "planning the first step" : "waiting to read the project"));
+    auto* title = Gtk::make_managed<Gtk::Label>(running ? "Working out the first step" : "Moments show up here");
+    title->add_css_class("moments-empty-title");
+    title->set_wrap(true);
+    title->set_justify(Gtk::Justification::CENTER);
+    page->append(*title);
+    auto* lead = dim_label(running ? "The first thing Mason reads, changes or runs appears here as a moment."
+                                   : "Each thing Mason does becomes a moment, newest first. Open one to see the file, change, test report or page it made.");
+    lead->set_wrap(true);
+    lead->set_justify(Gtk::Justification::CENTER);
+    lead->set_xalign(0.5);
+    lead->set_max_width_chars(46);
+    page->append(*lead);
+    auto* key = Gtk::make_managed<Gtk::Grid>();
+    key->set_column_spacing(12);
+    key->set_row_spacing(8);
+    key->set_margin_top(10);
+    key->set_halign(Gtk::Align::CENTER);
+    const std::vector<std::array<std::string, 3>> rows = {
+        {"+", "good", "A new file · opens the file"},
+        {"✎", "accent", "A change · opens the lines that changed"},
+        {"✓", "good", "Tests and commands · opens the report, failures first"},
+        {"◫", "search", "A page Mason checked · opens the page"},
+        {"•", "neutral", "Reading and searching · a quiet line"},
+    };
+    for (size_t i = 0; i < rows.size(); i++) {
+        auto* tick = badge(rows[i][0], rows[i][1]);
+        tick->add_css_class("key-badge");
+        auto* meaning = dim_label(rows[i][2]);
+        meaning->set_xalign(0);
+        meaning->set_wrap(true);
+        key->attach(*tick, 0, static_cast<int>(i));
+        key->attach(*meaning, 1, static_cast<int>(i));
+    }
+    gtk_accessible_update_property(GTK_ACCESSIBLE(key->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "The kinds of moment", -1);
+    page->append(*key);
+    return page;
+}
+
 }  // namespace
 
-void MainWindow::show_activity(const std::string& activity_id) {
-    panel_ = "activity";
-    activity_scene_ = activity_id;
-    if (!changes_toggle_.get_active()) changes_toggle_.set_active(true);
+void MainWindow::show_activity(const std::string& activity_id) { show_moments(activity_id); }
+
+void MainWindow::show_moments(const std::string& location) {
+    panel_ = "moments";
+    activity_scene_ = location;
     changes_shown_.clear();
-    refresh_changes();
+    if (!changes_toggle_.get_active()) changes_toggle_.set_active(true);
+    else refresh_changes();
+}
+
+void MainWindow::refresh_surface() {
+    const Session* session = controller_.session();
+    const bool running = controller_.running;
+    const bool home = panel_ == "moments" && activity_scene_.empty();
+    // What the latest run made, each with the id of the call that made it.
+    std::vector<std::pair<scenes::Made, std::string>> made;
+    if (session) {
+        std::vector<Activity> activities = session->activities;
+        if (running) activities.insert(activities.end(), controller_.live_activities.begin(), controller_.live_activities.end());
+        for (const scenes::Made& item : scenes::made_so_far(activities, scenes::request_start(*session), scenes::kept_changes(*session))) made.emplace_back(item, activities[item.activity].id);
+    }
+    std::string print = panel_ + (home ? "|home|" : "|back|") + (running ? "run|" : "idle|") + (session ? session->id : "");
+    for (const auto& [item, call] : made) print += "|" + item.label + item.target + call + (item.created ? "+" : "");
+    if (print == surface_shown_) return;
+    surface_shown_ = print;
+    clear(surface_);
+
+    // Left: Moments itself, or the way back to it from anything else.
+    if (home) {
+        auto* title = Gtk::make_managed<Gtk::Label>("Moments");
+        title->add_css_class("surface-title");
+        surface_.append(*title);
+        if (running) {
+            auto* live = pill("● Live", "ready");
+            live->set_tooltip_text("Showing each step as it happens");
+            surface_.append(*live);
+        }
+    } else {
+        auto* back = Gtk::make_managed<Gtk::Button>("← Moments");
+        back->add_css_class("surface-back");
+        back->set_valign(Gtk::Align::CENTER);
+        back->set_tooltip_text("Back to Moments");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(back->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Back to Moments", -1);
+        back->signal_clicked().connect([this] { Glib::signal_idle().connect_once([this] { show_moments(""); }); });
+        surface_.append(*back);
+    }
+
+    // Middle: the shelf. The other panels, the shown one outlined, then what the latest run made.
+    auto* shelf = row(6);
+    const auto chip = [shelf](const std::string& label, bool selected, const std::string& tip, const std::function<void()>& show, bool made_here) {
+        auto* button = Gtk::make_managed<Gtk::Button>();
+        // Clipped here rather than ellipsized, so a chip keeps its width and the shelf scrolls instead of squeezing it.
+        button->set_child(*Gtk::make_managed<Gtk::Label>(clip(label, 24)));
+        button->add_css_class("shelf-chip");
+        if (made_here) button->add_css_class("shelf-made");
+        if (selected) button->add_css_class("shelf-selected");
+        button->set_valign(Gtk::Align::CENTER);
+        button->set_tooltip_text(tip);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(button->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, ((selected ? "Showing " : "Show ") + label).c_str(), -1);
+        button->signal_clicked().connect([show] { Glib::signal_idle().connect_once(show); });
+        shelf->append(*button);
+    };
+    const std::vector<std::array<std::string, 3>> panels = {
+        {"changes", "Changes", "The files this session changed"},
+        {"plan", "Plan", "Milestones: the steps of the work, the files each covers and how each is checked"},
+        {"files", "Files", "The project's files, to read"},
+        {"website", "Website", "The project's pages: look at one, and pick an element to tell Mason about"},
+    };
+    for (const auto& panel : panels) {
+        const std::string id = panel[0];
+        chip(panel[1], panel_ == id, panel[2], [this, id] {
+            panel_ = id;
+            changes_shown_.clear();
+            refresh_changes();
+        }, false);
+    }
+    for (const auto& [item, call] : made) {
+        const std::string target = item.target;
+        if (item.page) chip(item.label, false, "Open " + target, [this, target] { show_page(target); }, true);
+        else if (item.created) chip(item.label, false, "Open " + target + ", which this run created", [this, target] { show_file(target, 1); }, true);
+        else {
+            const std::string location = call + "|" + scenes::normalize(target);
+            chip(item.label, false, "Show what this run changed in " + target, [this, location] { show_moments(location); }, true);
+        }
+    }
+    auto* scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scroll->set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::NEVER);
+    scroll->set_propagate_natural_height(true);
+    scroll->set_hexpand(true);
+    scroll->set_child(*shelf);
+    scroll->add_css_class("surface-shelf");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(scroll->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Panels, and what this run made", -1);
+    surface_.append(*scroll);
 }
 
 void MainWindow::refresh_activity() {
@@ -524,60 +950,28 @@ void MainWindow::refresh_activity() {
         activities = session->activities;
         if (running) activities.insert(activities.end(), controller_.live_activities.begin(), controller_.live_activities.end());
     }
-    const std::vector<MilestoneStatus> milestones = session ? controller_.milestone_status() : std::vector<MilestoneStatus>{};
-    const std::vector<Scene> run = scenes::group(activities);
-    const bool has_plan = !milestones.empty();
-    const bool has_end = session && !running && session->ending && !activities.empty();
-
-    std::string fingerprint = "activity|" + (session ? session->id : "") + (running ? "|run|" : "|idle|") + (activity_raw_ ? "raw|" : "") + activity_scene_ + "|" +
-                              (session && session->ending ? session->ending->code : "") + "|" + std::to_string(milestones.size()) + "|";
+    const bool published = pr_chip_.get_visible();
+    std::string fingerprint = "moments|" + (session ? session->id : "") + (running ? "|run|" : "|idle|") + (activity_raw_ ? "raw|" : "") + (published ? "pr|" : "") + activity_scene_ + "|" +
+                              (session && session->ending ? session->ending->code : "") + "|";
     for (const Activity& activity : activities) fingerprint += activity.id.substr(0, 8) + activity.state + std::to_string(activity.result.size()) + ",";
     if (session) {
-        for (const Turn& turn : session->turns) fingerprint += turn.id.substr(0, 6) + (turn.undone ? "u" : "-") + std::to_string(turn.changes.size());
+        for (const Turn& turn : session->turns) fingerprint += turn.id.substr(0, 6) + (turn.undone ? "u" : "-") + std::to_string(turn.changes.size()) + std::to_string(turn.request.size());
     }
-    for (const MilestoneStatus& status : milestones) fingerprint += status.state;
     if (fingerprint == changes_shown_) return;
     changes_shown_ = fingerprint;
     activity_scroll_watch_.disconnect();
     clear(changes_);
-    changes_.append(*panel_switch());
     if (!session) return;
-
-    // Which scene is shown: the live one while following, else the one the user picked if it still exists.
-    const std::string live = running ? (!run.empty() ? key_of(run.back()) : has_plan ? kPlan : "")
-                             : has_end ? kEnd : !run.empty() ? key_of(run.back()) : has_plan ? kPlan : "";
-    std::string selected = live;
-    bool following = activity_scene_.empty();
-    if (!following) {
-        const auto at = std::find_if(activities.begin(), activities.end(), [&](const Activity& activity) { return activity.id == activity_scene_; });
-        if (activity_scene_ == kEnd && has_end) selected = kEnd;
-        else if (activity_scene_ == kPlan && has_plan) selected = kPlan;
-        else if (at != activities.end()) {
-            const size_t index = static_cast<size_t>(at - activities.begin());
-            for (const Scene& scene : run) {
-                if (scene.contains(index)) selected = key_of(scene);
-            }
-        } else {
-            activity_scene_.clear();
-            following = true;
-        }
+    if (activities.empty()) {
+        changes_.append(*empty_moments(running));
+        return;
     }
-    if (selected == live) following = true;
-    const auto chosen = std::find_if(run.begin(), run.end(), [&](const Scene& scene) { return key_of(scene) == selected; });
-    const Scene* scene = chosen == run.end() ? nullptr : &*chosen;
 
-    const auto choose = [this, live, run, activities](const std::string& key) {
-        if (key == live) activity_scene_.clear();
-        else if (key == kPlan || key == kEnd) activity_scene_ = key;
-        else {
-            activity_scene_.clear();
-            for (const Scene& item : run) {
-                if (key_of(item) == key) activity_scene_ = activities[item.first].id;
-            }
-        }
-        changes_shown_.clear();
-        Glib::signal_idle().connect_once([this] { refresh_changes(); });
-    };
+    // Each request starts its own scenes, so its "You asked" line sits between its steps and the previous request's.
+    const std::vector<scenes::Asked> asked = scenes::requests(*session, activities.size());
+    std::vector<size_t> starts;
+    for (const scenes::Asked& item : asked) starts.push_back(item.position);
+    const std::vector<Scene> run = scenes::group(activities, starts);
     Opener open;
     open.file = [this](const std::string& path) { show_file(path, 1); };
     open.page = [this](const std::string& page) { show_page(page); };
@@ -586,201 +980,132 @@ void MainWindow::refresh_activity() {
         changes_shown_.clear();
         refresh_changes();
     };
-    open.settings = [this] { adw_view_stack_set_visible_child_name(stack_, "settings"); };
-
-    // ---- header: following state, raw switch, related pages; then where we are ----
-    auto* header = row(8);
-    if (following) {
-        auto* state = pill(running ? "● Following" : selected == kEnd ? "Run ended" : "Latest", running ? "ready" : "blocked");
-        state->set_tooltip_text(running ? "Showing each step as it happens" : "Showing the latest step");
-        header->append(*state);
-    } else {
-        auto* jump = Gtk::make_managed<Gtk::Button>("Jump to latest");
-        jump->add_css_class("pill");
-        jump->add_css_class("viewer-jump");
-        jump->set_tooltip_text("Show the latest step and follow the run");
-        jump->signal_clicked().connect([choose, live] { choose(live); });
-        header->append(*jump);
-    }
-    auto* gap = Gtk::make_managed<Gtk::Box>();
-    gap->set_hexpand(true);
-    header->append(*gap);
-    auto* raw = Gtk::make_managed<Gtk::ToggleButton>("Raw");
-    raw->add_css_class("flat");
-    raw->set_active(activity_raw_);
-    raw->set_tooltip_text("Show each call's subject and result exactly as Mason kept them");
-    raw->signal_toggled().connect([this, raw] {
-        activity_raw_ = raw->get_active();
-        changes_shown_.clear();
-        Glib::signal_idle().connect_once([this] { refresh_changes(); });
-    });
-    header->append(*raw);
-    auto* more = Gtk::make_managed<Gtk::MenuButton>();
-    more->set_icon_name("view-more-symbolic");
-    more->add_css_class("flat");
-    more->set_tooltip_text("More about this run");
-    gtk_accessible_update_property(GTK_ACCESSIBLE(more->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "More about this run", -1);
-    auto* popover = Gtk::make_managed<Gtk::Popover>();
-    auto* items = column(2);
-    items->set_margin(6);
-    const std::vector<std::pair<std::string, std::function<void()>>> pages = {
-        {"Plan", [open] { open.panel("plan"); }},
-        {"Changes", [open] { open.panel("changes"); }},
-        {"Model roles and background tasks", [open] { open.settings(); }},
+    open.settings = [this](const std::string& section) {
+        adw_view_stack_set_visible_child_name(stack_, "settings");
+        settings_.show_section(section);
     };
-    for (const auto& [text, action] : pages) {
-        auto* item = Gtk::make_managed<Gtk::Button>(text);
-        item->add_css_class("flat");
-        if (auto* words = dynamic_cast<Gtk::Label*>(item->get_child())) words->set_xalign(0);
-        item->signal_clicked().connect([popover, action] {
-            popover->popdown();
-            Glib::signal_idle().connect_once(action);
-        });
-        items->append(*item);
-    }
-    popover->set_child(*items);
-    more->set_popover(*popover);
-    header->append(*more);
-    changes_.append(*header);
+    open.moment = [this](const std::string& location) { show_moments(location); };
 
-    std::string where = "Nothing has run yet", steps;
-    if (selected == kPlan) where = "Plan";
-    else if (selected == kEnd) {
-        const std::optional<EndingStyle> look = ending_style(session->ending->code);
-        where = look ? look->headline : "Run ended";
-    } else if (scene) {
-        where = scenes::label(*scene, activities);
-        steps = scene->count > 1 ? "Steps " + std::to_string(scene->first + 1) + "–" + std::to_string(scene->last() + 1) + " of " + std::to_string(activities.size())
-                                 : "Step " + std::to_string(scene->first + 1) + " of " + std::to_string(activities.size());
+    // What is open, if anything: "end", "<call id>" or "<call id>|<path>" for one file of an edit.
+    const bool has_end = !running && session->ending.has_value();
+    const Scene* opened = nullptr;
+    std::string opened_path;
+    bool opened_end = false;
+    if (activity_scene_ == kEnd && has_end) opened_end = true;
+    else if (!activity_scene_.empty()) {
+        const size_t bar = activity_scene_.find('|');
+        const std::string id = activity_scene_.substr(0, bar);
+        if (bar != std::string::npos) opened_path = activity_scene_.substr(bar + 1);
+        const auto at = std::find_if(activities.begin(), activities.end(), [&](const Activity& activity) { return activity.id == id; });
+        if (at != activities.end()) {
+            const size_t index = static_cast<size_t>(at - activities.begin());
+            for (const Scene& scene : run) {
+                if (scene.contains(index)) opened = &scene;
+            }
+        }
     }
-    auto* title = Gtk::make_managed<Gtk::Label>(where);
-    title->set_xalign(0);
-    title->set_wrap(true);
-    title->set_lines(2);
-    title->set_ellipsize(Pango::EllipsizeMode::END);
-    title->add_css_class("viewer-where");
-    changes_.append(*title);
-    if (!steps.empty()) {
-        auto* step_line = dim_label(steps);
-        step_line->add_css_class("caption");
-        changes_.append(*step_line);
+    if (!opened && !opened_end && !activity_scene_.empty()) {
+        // What was open is gone (a new session, or an undo): back to the feed, header included.
+        activity_scene_.clear();
+        Glib::signal_idle().connect_once([this] { refresh_surface(); });
     }
 
-    // ---- the lens ----
     auto* body = column(12);
-    body->set_margin_top(4);
     body->set_margin_bottom(8);
     body->set_margin_end(4);
-    if (selected.empty()) {
-        body->append(*dim_label("When Mason reads, edits, runs or checks something, it shows here as it happens."));
-    } else if (selected == kPlan) {
-        plan_lens(milestones, *body, open);
-    } else if (selected == kEnd) {
-        receipt_lens(*session, activities, *body, open);
-    } else if (scene && activity_raw_) {
-        for (size_t i = scene->first; i <= scene->last(); i++) body->append(*call_card(activities[i], true));
-    } else if (scene) {
-        switch (scene->kind) {
-            case Kind::Edit: edit_lens(*session, activities, *scene, running && scene->last() >= session->activities.size(), *body, open); break;
-            case Kind::Command: command_lens(activities, *scene, *body); break;
-            case Kind::Read: read_lens(activities, *scene, *body); break;
-            case Kind::Page: page_lens(activities, *scene, *body, open); break;
-            case Kind::Other:
-                for (size_t i = scene->first; i <= scene->last(); i++) body->append(*call_card(activities[i], false));
-                break;
+    if (opened || opened_end) {
+        // An opened moment: its title, how much has happened since, and Raw.
+        size_t newer = 0;
+        if (opened) {
+            for (const Scene& scene : run) {
+                if (scene.first > opened->last()) newer++;
+            }
         }
-        if (scene->kind != Kind::Other) {
-            auto* details = column(8);
-            for (size_t i = scene->first; i <= scene->last(); i++) details->append(*call_card(activities[i], false));
-            auto* expander = Gtk::make_managed<Gtk::Expander>(scene->count == 1 ? "Step details" : "Step details (" + std::to_string(scene->count) + ")");
-            expander->set_child(*details);
-            body->append(*expander);
+        std::string title_text = opened_end ? (ending_style(session->ending->code) ? ending_style(session->ending->code)->headline : "Run ended")
+                                 : !opened_path.empty() ? file_name(opened_path) : scenes::label(*opened, activities);
+        auto* top = row(8);
+        auto* title = bold(title_text);
+        title->add_css_class("viewer-where");
+        title->set_ellipsize(Pango::EllipsizeMode::END);
+        title->set_hexpand(true);
+        title->set_tooltip_text(opened_path.empty() ? title_text : opened_path);
+        top->append(*title);
+        if (newer > 0) {
+            auto* fresh = Gtk::make_managed<Gtk::Button>(newer == 1 ? "1 new moment" : std::to_string(newer) + " new moments");
+            fresh->add_css_class("pill");
+            fresh->add_css_class("viewer-jump");
+            fresh->set_tooltip_text("Back to Moments, where the newest is on top");
+            fresh->signal_clicked().connect([this] { Glib::signal_idle().connect_once([this] { show_moments(""); }); });
+            top->append(*fresh);
+        } else if (running) {
+            top->append(*pill("● Live", "ready"));
+        }
+        if (!opened_end) {
+            auto* raw = Gtk::make_managed<Gtk::ToggleButton>("Raw");
+            raw->add_css_class("flat");
+            raw->set_active(activity_raw_);
+            raw->set_tooltip_text("Show each call's subject and result exactly as Mason kept them");
+            raw->signal_toggled().connect([this, raw] {
+                activity_raw_ = raw->get_active();
+                changes_shown_.clear();
+                Glib::signal_idle().connect_once([this] { refresh_changes(); });
+            });
+            top->append(*raw);
+        }
+        body->append(*top);
+        if (opened_end) {
+            receipt_lens(*session, activities, *body, open);
+        } else if (activity_raw_) {
+            for (size_t i = opened->first; i <= opened->last(); i++) body->append(*call_card(activities[i], true));
+        } else {
+            const Scene& scene = *opened;
+            switch (scene.kind) {
+                case Kind::Edit: edit_lens(*session, activities, scene, running && scene.last() >= session->activities.size(), *body, open, opened_path); break;
+                case Kind::Command: command_lens(activities, scene, *body); break;
+                case Kind::Read: read_lens(activities, scene, *body); break;
+                case Kind::Page: page_lens(activities, scene, *body, open); break;
+                case Kind::Other:
+                    for (size_t i = scene.first; i <= scene.last(); i++) body->append(*call_card(activities[i], false));
+                    break;
+            }
+            if (scene.kind != Kind::Other) {
+                auto* details = column(8);
+                for (size_t i = scene.first; i <= scene.last(); i++) details->append(*call_card(activities[i], false));
+                auto* expander = Gtk::make_managed<Gtk::Expander>(scene.count == 1 ? "Step details" : "Step details (" + std::to_string(scene.count) + ")");
+                expander->set_child(*details);
+                body->append(*expander);
+            }
+        }
+    } else {
+        // The feed, newest first, with the end of the run on top once it has ended.
+        body->set_spacing(10);
+        if (has_end) body->append(*end_moment(*session, activities, published, open));
+        const std::vector<FileChange> changes = merged_changes(*session);
+        size_t shown = 0;
+        for (const scenes::FeedEntry& entry : scenes::feed(run, asked)) {
+            if (++shown > 120) {
+                body->append(*dim_label("Earlier moments are left out. Each request's steps are in the conversation."));
+                break;
+            }
+            if (entry.asked) body->append(*asked_moment(asked[entry.index].text));
+            else scene_moments(*session, changes, activities, run[entry.index], running, running && entry.index + 1 == run.size(), *body, open);
         }
     }
-    auto* lens = Gtk::make_managed<Gtk::ScrolledWindow>();
-    lens->set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
-    lens->set_vexpand(true);
-    lens->set_min_content_height(160);
-    lens->set_child(*body);
-    changes_.append(*lens);
-    // The same scene rebuilt (a call finished, a result grew) keeps its place; another scene starts at the top.
-    const Glib::RefPtr<Gtk::Adjustment> adjustment = lens->get_vadjustment();
-    if (selected == activity_scroll_scene_ && activity_scroll_ > 0) {
+    changes_.append(*body);
+
+    // The same view rebuilt (a call finished, a result grew) keeps its place; another view starts at the top.
+    const Glib::RefPtr<Gtk::Adjustment> adjustment = changes_scroll_.get_vadjustment();
+    if (activity_scene_ == activity_scroll_scene_ && activity_scroll_ > 0) {
         const double restore = activity_scroll_;
         Glib::signal_idle().connect_once([adjustment, restore] { adjustment->set_value(restore); });
     } else {
         activity_scroll_ = 0;
+        Glib::signal_idle().connect_once([adjustment] { adjustment->set_value(0); });
     }
-    activity_scroll_scene_ = selected;
+    activity_scroll_scene_ = activity_scene_;
     // A plain pointer: the adjustment owns this connection, so holding a reference to it here would keep it alive forever.
     Gtk::Adjustment* watched = adjustment.get();
     activity_scroll_watch_ = adjustment->signal_value_changed().connect([this, watched] { activity_scroll_ = watched->get_value(); });
-
-    // ---- the strip: the shape of the run, one tick per scene, tinted by kind and outcome ----
-    auto* ticks = row(4);
-    ticks->set_margin_bottom(2);
-    Gtk::Button* current = nullptr;
-    const auto tick = [&](const std::string& key, const std::string& text, const std::string& tone, const std::string& tip) {
-        auto* button = Gtk::make_managed<Gtk::Button>(text);
-        button->add_css_class("scene-tick");
-        button->add_css_class("tick-" + tone);
-        const bool shown = key == selected;
-        if (shown) { button->add_css_class("tick-selected"); current = button; }
-        button->set_tooltip_text(tip);
-        gtk_accessible_update_property(GTK_ACCESSIBLE(button->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, (tip + (shown ? ", shown" : "")).c_str(), -1);
-        button->signal_clicked().connect([choose, key] { choose(key); });
-        ticks->append(*button);
-    };
-    if (has_plan) tick(kPlan, "plan", "read", "Plan · " + std::to_string(milestones.size()) + (milestones.size() == 1 ? " step" : " steps"));
-    const size_t shown_ticks = 150;
-    if (run.size() > shown_ticks) ticks->append(*dim_label(std::to_string(run.size() - shown_ticks) + " earlier"));
-    for (size_t s = run.size() > shown_ticks ? run.size() - shown_ticks : 0; s < run.size(); s++) {
-        const Scene& item = run[s];
-        bool failed = false, skipped = false;
-        for (size_t i = item.first; i <= item.last(); i++) {
-            failed = failed || scenes::failed(activities[i]) || (item.kind == Kind::Command && scenes::command_failed(activities[i]));
-            skipped = skipped || activities[i].state == "skipped";
-        }
-        std::string text = "step", tone = "read";
-        switch (item.kind) {
-            case Kind::Read: text = item.count > 1 ? "read×" + std::to_string(item.count) : "read"; tone = "read"; break;
-            case Kind::Edit: text = "edit"; tone = "edit"; break;
-            case Kind::Command: text = "run"; tone = "run"; break;
-            case Kind::Page: text = "page"; tone = "page"; break;
-            case Kind::Other: break;
-        }
-        if (failed) tone = "failed";
-        else if (skipped) tone = "skipped";
-        tick(key_of(item), text, tone, scenes::label(item, activities) + (failed ? " · failed" : skipped ? " · repeat skipped" : ""));
-    }
-    if (has_end) {
-        const std::optional<EndingStyle> look = ending_style(session->ending->code);
-        const std::string tone = !look ? "read" : look->tone == "success" ? "run" : look->tone == "warning" ? "skipped" : look->tone == "danger" ? "failed" : look->tone == "accent" ? "edit" : "read";
-        tick(kEnd, "end", tone, look ? look->headline : "Run ended");
-    }
-    if (ticks->get_first_child()) {
-        auto* strip = Gtk::make_managed<Gtk::ScrolledWindow>();
-        strip->set_policy(Gtk::PolicyType::AUTOMATIC, Gtk::PolicyType::NEVER);
-        strip->add_css_class("scene-strip");
-        strip->set_child(*ticks);
-        gtk_accessible_update_property(GTK_ACCESSIBLE(strip->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Steps of this run", -1);
-        changes_.append(*strip);
-        // Once laid out, the shown tick is scrolled into view. The first frames may come before the strip has its size,
-        // so this is checked over a few frames and then left to the user.
-        if (current) {
-            auto frames = std::make_shared<int>(0);
-            strip->add_tick_callback([strip, ticks, current, frames](const Glib::RefPtr<Gdk::FrameClock>&) {
-                graphene_rect_t bounds;
-                const auto adjustment = strip->get_hadjustment();
-                if (adjustment->get_page_size() > 0 && gtk_widget_compute_bounds(GTK_WIDGET(current->gobj()), GTK_WIDGET(ticks->gobj()), &bounds)) {
-                    const double right = bounds.origin.x + bounds.size.width + 12;
-                    if (right > adjustment->get_value() + adjustment->get_page_size()) adjustment->set_value(right - adjustment->get_page_size());
-                    else if (bounds.origin.x < adjustment->get_value()) adjustment->set_value(std::max(0.0, static_cast<double>(bounds.origin.x) - 12));
-                }
-                return ++*frames < 8;
-            });
-        }
-    }
 }
 
 }  // namespace mason::app
