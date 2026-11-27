@@ -26,6 +26,7 @@ Type a request and each step prints as it finishes. Approvals take one key: `y` 
 | `/models setup` | Install llama.cpp and download a model that fits |
 | `/rules` · `/agent` · `/commands` | Saved approvals, and your agents and commands |
 | `/languages` | The language servers that check your code; install a missing one |
+| `/notes` · `/note TEXT` | The notes Mason reads with every request; add one, `/notes about PATH TEXT`, `/notes remove N`, `/notes clear` |
 | `/theme` | Choose the theme the app and `mason` share |
 | `/help` | Everything else |
 

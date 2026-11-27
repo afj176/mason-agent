@@ -24,6 +24,7 @@ std::string rgba(uint32_t rgb, double alpha) {
 const char* const kHighContrast = R"css(
 @define-color mason_muted @window_fg_color;
 @define-color mason_seam @borders;
+@define-color mason_pane @window_bg_color;
 @define-color mason_fit_good @success_color;
 @define-color mason_fit_tight @warning_color;
 @define-color mason_fit_over @error_color;
@@ -122,6 +123,28 @@ const char* const kWidgets = R"css(
 .model-actions { margin: -6px -10px 0 -10px; }
 .model-footer { border-top: 1px solid @mason_seam; padding-top: 14px; font-size: 12px; color: @mason_muted; }
 .footer-button > button { font-size: 12px; font-weight: normal; padding: 3px 10px; min-height: 0; background: transparent; border: 1px solid @mason_seam; }
+/* Notes: the tab on the request box's top edge, the tray behind it, and Mason's suggestion under an answer. */
+.notes-tab { background: @mason_pane; color: @window_fg_color; border: 1px solid @mason_seam; border-bottom-width: 0; border-radius: 10px 10px 0 0; padding: 3px 10px 3px 12px; min-height: 0; box-shadow: none; font-size: 0.88em; font-weight: 600; }
+.notes-tab:hover { background: mix(@mason_pane, @window_fg_color, 0.06); }
+.notes-tab.open { color: @accent_color; }
+.notes-badge { background: @accent_bg_color; color: @accent_fg_color; border-radius: 999px; padding: 0 6px; font-size: 0.82em; font-weight: 700; }
+.notes-badge.empty { background: alpha(@window_fg_color, 0.10); color: @mason_muted; }
+.notes-tray { background: @mason_pane; border: 1px solid @mason_seam; border-bottom-width: 0; border-radius: 16px 16px 0 0; padding: 14px 16px 12px 16px; box-shadow: 0 -10px 26px alpha(black, 0.10); }
+.notes-title { font-weight: 700; }
+.notes-muted { color: @mason_muted; font-size: 0.9em; }
+.notes-small { font-size: 0.88em; padding: 2px 10px; min-height: 28px; }
+.notes-icon { min-width: 24px; min-height: 24px; padding: 0; }
+.notes-link { color: @accent_color; font-size: 0.9em; padding: 2px 6px; min-height: 0; }
+.notes-about-chip { background: alpha(@accent_bg_color, 0.14); border-radius: 8px; padding: 0 0 0 8px; font-size: 0.88em; }
+.notes-starter { font-size: 0.88em; }
+.notes-confirm { background: alpha(@error_color, 0.08); border: 1px solid alpha(@error_color, 0.35); border-radius: 10px; padding: 6px 6px 6px 12px; }
+.note-card { background: @card_bg_color; border: 1px solid @mason_seam; border-radius: 10px; padding: 6px 4px 6px 4px; }
+.note-text-button { padding: 2px 6px; min-height: 0; font-weight: normal; }
+.note-text-button:hover { background: alpha(@accent_bg_color, 0.08); }
+.note-meta { font-size: 0.82em; color: @mason_muted; margin: 0 6px; }
+.note-card.stale .note-text, .note-card.stale .note-meta { opacity: 0.6; }
+.note-card .notes-small { margin: 2px 0 2px 6px; }
+.suggestion-card { background: @card_bg_color; border: 1px solid alpha(@accent_bg_color, 0.55); border-radius: 14px; padding: 12px 14px; }
 )css";
 
 Glib::RefPtr<Gtk::CssProvider> palette() {
@@ -217,6 +240,7 @@ std::string palette_css(const theme::Family& chosen, bool dark) {
     define("destructive_color", hex(status.critical));
     define("mason_muted", hex(muted));
     define("mason_seam", hex(t.line));
+    define("mason_pane", hex(t.pane));
     define("mason_fit_good", hex(status.success));
     define("mason_fit_tight", hex(status.caution));
     define("mason_fit_over", hex(status.critical));

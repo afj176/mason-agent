@@ -443,6 +443,32 @@ private:
         if (!session_.pending_input.empty()) facts += "  ·  " + std::to_string(session_.pending_input.size()) + " queued, /queue runs them";
         term::line("  " + state + paint(term::dim, "  ·  " + facts));
         if (!session_.detail.empty()) term::line("  " + paint(term::dim, session_.detail));
+        if (turn && !session_.suggested_note.empty()) suggested_note();
+    }
+
+    /// Mason suggested a note with this answer: y keeps it, n dismisses it, Enter leaves it undecided and unsaved.
+    void suggested_note() {
+        const std::string text = session_.suggested_note;
+        term::line();
+        term::line("  " + paint(std::string(term::accent) + term::bold, "Remember this for next time?"));
+        term::line("  “" + text + "”");
+        if (!term::interactive) return;
+        term::write("  " + paint(term::accent, "y") + " remember   " + paint(term::accent, "n") + " dismiss   " + paint(term::dim, "Enter to skip") + "  › ");
+        const std::string answer = to_lower(trim(read_line().value_or("")));
+        if (answer != "y" && answer != "yes" && answer != "n" && answer != "no") return;
+        try {
+            if (answer[0] == 'y') {
+                project_notes::add(text, "", workspace_, store_.home());
+                term::line(paint(term::dim, "  Kept. Mason reads it with every request in this project."));
+            } else {
+                project_notes::dismiss(text, workspace_.root(), store_.home());
+                term::line(paint(term::dim, "  Dismissed. Mason will not suggest it again."));
+            }
+            session_.suggested_note.clear();
+            store_.save(session_);
+        } catch (const std::exception& error) {
+            term::line(paint(term::yellow, std::string("  ") + error.what()));
+        }
     }
 
     // ---- approvals ---------------------------------------------------------------------------------------------
@@ -612,7 +638,24 @@ private:
             return true;
         }
         if (name == "/notes" || name == "/note") {
-            for (const std::string& line : split(project_notes::command(rest, workspace_, store_.home()), '\n')) term::line("  " + line);
+            const std::string given = project_notes::arguments(name, rest);
+            if (given == "clear") {
+                const size_t count = project_notes::load(store_.home(), workspace_.root()).size();
+                if (count > 0) {
+                    if (!term::interactive) { term::line("  Not cleared: there is no terminal to ask."); return true; }
+                    term::write("  Clear all " + std::to_string(count) + (count == 1 ? " note" : " notes") + "? [y/N] ");
+                    const std::string answer = to_lower(trim(read_line().value_or("")));
+                    if (answer != "y" && answer != "yes") { term::line(paint(term::dim, "  Kept them.")); return true; }
+                }
+            }
+            const std::vector<std::string> lines = split(project_notes::command(given, workspace_, store_.home()), '\n');
+            const bool list = !lines.empty() && lines.front() == project_notes::kListTitle;
+            for (size_t i = 0; i < lines.size(); i++) {
+                // The list: its title in bold, each note's time and file dim under it, and the hint dim at the end.
+                if (list && i == 0) term::line("  " + paint(term::bold, lines[i]));
+                else if (list && (starts_with(lines[i], " ") || i + 1 == lines.size())) term::line("  " + paint(term::dim, lines[i]));
+                else term::line("  " + lines[i]);
+            }
             return true;
         }
         if (name == "/generation") {
@@ -745,7 +788,8 @@ private:
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
             {"/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"},
             {"/languages", "The languages in this project and the language server that checks each; install one (see /languages help)"},
-            {"/notes", "Notes kept for this project and given to the model with each request (see /notes help)"},
+            {"/notes", "Notes kept for this project. Mason reads every note, up to 12 (see /notes help)"},
+            {"/note TEXT", "Keep a note for this project"},
             {"/generation", "Temperature, top P and the like, kept for the model in use (see /generation help)"},
             {"/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"},
             {"/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"},

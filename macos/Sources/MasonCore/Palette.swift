@@ -19,7 +19,7 @@ public struct PaletteItem: Equatable, Identifiable {
 public enum Palette {
     /// The commands the request box understands, for the palette to offer.
     public static let commands: [(name: String, detail: String)] = [
-        ("/notes", "Notes kept for this project and given to the model"),
+        ("/notes", "Open Notes: Mason reads every note, up to 12"),
         ("/languages", "The language server that checks each language's edits"),
         ("/generation", "Temperature, top P and the like, for the model in use"),
         ("/experiment", "Try something in a copy of the project"),

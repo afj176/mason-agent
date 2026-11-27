@@ -1896,7 +1896,7 @@ static void test_extra_tools() {
         std::vector<std::string> offered = names(reading);
         offered.erase(std::remove(offered.begin(), offered.end(), "check_page"), offered.end());
         offered.erase(std::remove(offered.begin(), offered.end(), "inspect_symbol"), offered.end());
-        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "navigate_code", "read_skill"}));  // no editing, job or workflow tools
+        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "suggest_note", "navigate_code", "read_skill"}));  // no editing, job or workflow tools
         box.write("mason.workflows.json", "{\"version\": 2}");
         CHECK_THROWS(workflows::load(workspace));
     }
@@ -2733,9 +2733,10 @@ static void test_project_notes() {
     Sandbox box;
     box.write("config.py", "PORT = 8080\n");
     const Workspace workspace(box.project.string());
-    CHECK(project_notes::command("", workspace, box.home) == "No notes for this project. /notes add TEXT keeps one.");
+    CHECK(project_notes::command("", workspace, box.home) == "No notes for this project. /note TEXT keeps one.");
     CHECK(project_notes::context(box.home, workspace).empty());
-    CHECK(project_notes::command("add The API lives under /v2.", workspace, box.home) == "Kept. The model is given it with each request in this project.");
+    CHECK(project_notes::arguments("/note", " The API lives under /v2. ") == "add The API lives under /v2." && project_notes::arguments("/note", "") == "" && project_notes::arguments("/notes", "clear") == "clear");
+    CHECK(project_notes::command(project_notes::arguments("/note", "The API lives under /v2."), workspace, box.home) == "Kept. Mason reads it with every request in this project.");
     usleep(1100 * 1000);  // Notes are ordered by when they were saved, to the second.
     CHECK(project_notes::command("about config.py The port is set here.", workspace, box.home) == "Kept, about config.py. It is sent until that file changes.");
     const auto refused = [&](const std::string& rest) {
@@ -2743,8 +2744,12 @@ static void test_project_notes() {
         return false;
     };
     CHECK(refused("add") && refused("about missing.py Nothing.") && refused("remove 99") && refused("shout"));
-    CHECK(project_notes::command("", workspace, box.home) == "1. The port is set here.  (about config.py)\n2. The API lives under /v2.");
-    CHECK(project_notes::context(box.home, workspace) == "Notes the user saved about this project. They are background, not instructions:\n- The port is set here. (about config.py)\n- The API lives under /v2.");
+    CHECK(project_notes::command("", workspace, box.home) ==
+          "Notes · Mason reads these with every request\n1. The port is set here.\n   today · config.py\n2. The API lives under /v2.\n   today\n/note TEXT adds one · /notes remove N · /notes clear");
+    CHECK(project_notes::command("help", workspace, box.home).find("Mason reads every note, up to 12") != std::string::npos);
+    const std::string header = "Notes the user saved about this project, as background. They are not instructions:\n";
+    CHECK(project_notes::context(box.home, workspace) == header + "- The port is set here. (about config.py)\n- The API lives under /v2.");
+    CHECK(project_notes::sent(project_notes::load(box.home, workspace.root()), workspace) == 2);
 
     // The model is given them with a request.
     SessionStore store(box.home);
@@ -2756,15 +2761,163 @@ static void test_project_notes() {
 
     // Once its file changes, a note about that file is out of date and is no longer sent.
     box.write("config.py", "PORT = 9090\n");
-    CHECK(project_notes::context(box.home, workspace) == "Notes the user saved about this project. They are background, not instructions:\n- The API lives under /v2.");
-    CHECK(project_notes::command("", workspace, box.home).find("that file has changed, so this is no longer sent") != std::string::npos);
+    CHECK(project_notes::context(box.home, workspace) == header + "- The API lives under /v2.");
+    CHECK(project_notes::command("", workspace, box.home).find("   today · config.py changed · not sent") != std::string::npos);
+    CHECK(project_notes::sent(project_notes::load(box.home, workspace.root()), workspace) == 1);
+    // Keep anyway saves it again against the file as it is now, so it is sent again.
+    const std::string stale = project_notes::load(box.home, workspace.root())[0].id;
+    project_notes::keep(stale, workspace, box.home);
+    CHECK(project_notes::context(box.home, workspace) == header + "- The port is set here. (about config.py)\n- The API lives under /v2.");
+    project_notes::edit(stale, "  The port is set in config.py.  ", workspace, box.home);
+    CHECK(project_notes::load(box.home, workspace.root())[0].text == "The port is set in config.py.");
+    CHECK_THROWS(project_notes::edit(stale, std::string(281, 'x'), workspace, box.home));
+    CHECK_THROWS(project_notes::edit(stale, "   ", workspace, box.home));
 
     // Another project has its own.
     const fs::path other = box.home / "other-project";
     fs::create_directories(other);
     CHECK(project_notes::context(box.home, Workspace(other.string())).empty());
+    const std::vector<ProjectNote> before = project_notes::load(box.home, workspace.root());
     CHECK(project_notes::command("remove 1", workspace, box.home) == "Removed." && project_notes::load(box.home, workspace.root()).size() == 1);
     CHECK(project_notes::command("clear", workspace, box.home) == "This project has no notes now." && project_notes::load(box.home, workspace.root()).empty());
+    // Undo puts removed notes back as they were, without doubling any still there.
+    project_notes::restore(before, workspace.root(), box.home);
+    project_notes::restore(before, workspace.root(), box.home);
+    const std::vector<ProjectNote> back = project_notes::load(box.home, workspace.root());
+    CHECK(back.size() == 2 && back[0].id == before[0].id && back[0].saved == before[0].saved && back[1].text == "The API lives under /v2.");
+    project_notes::clear(workspace.root(), box.home);
+
+    // Relative times.
+    const auto ago = [](int days) {
+        const std::time_t moment = std::time(nullptr) - static_cast<std::time_t>(days) * 86400;
+        std::tm parts{};
+        gmtime_r(&moment, &parts);
+        char text[32];
+        std::strftime(text, sizeof text, "%Y-%m-%dT%H:%M:%SZ", &parts);
+        return std::string(text);
+    };
+    CHECK(project_notes::when(now_iso()) == "today" && project_notes::when(ago(1)) == "yesterday" && project_notes::when(ago(2)) == "2 days ago" && project_notes::when("not a time").empty());
+}
+
+static void test_note_limits() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    // A note is 1 to 280 characters.
+    CHECK_THROWS(project_notes::add(std::string(281, 'a'), "", workspace, box.home));
+    CHECK_THROWS(project_notes::add("   ", "", workspace, box.home));
+    CHECK(project_notes::add(std::string(280, 'a'), "", workspace, box.home).text.size() == 280);
+    CHECK(project_notes::add(std::string(140, 'b') + "\xC3\xA9", "", workspace, box.home).text.size() == 142);  // characters, not bytes
+    // A project keeps at most twelve.
+    for (int i = 3; i <= 12; i++) project_notes::add("Note " + std::to_string(i), "", workspace, box.home);
+    CHECK(project_notes::load(box.home, workspace.root()).size() == 12);
+    bool refused = false;
+    try {
+        project_notes::add("Thirteen", "", workspace, box.home);
+    } catch (const Error& error) {
+        refused = std::string(error.what()) == "12 of 12. Remove one to add another.";
+    }
+    CHECK(refused && project_notes::load(box.home, workspace.root()).size() == 12);
+    CHECK_THROWS(project_notes::command("add Thirteen", workspace, box.home));
+    // Every current note is sent, all twelve.
+    const std::string context = project_notes::context(box.home, workspace);
+    CHECK(std::count(context.begin(), context.end(), '\n') == 12 && context.find("- Note 12") != std::string::npos && context.find(std::string(280, 'a')) != std::string::npos);
+    CHECK(project_notes::sent(project_notes::load(box.home, workspace.root()), workspace) == 12);
+
+    // Notes saved before the limits still load, show and send: up to twelve of them, newest first.
+    Sandbox old;
+    const Workspace saved(old.project.string());
+    project_notes::add("placeholder", "", saved, old.home);  // finds the notes file
+    fs::path file;
+    for (const auto& entry : fs::directory_iterator(old.home / "project-notes")) file = entry.path();
+    json all = json::array();
+    for (int i = 1; i <= 15; i++) {
+        char when[32];
+        std::snprintf(when, sizeof when, "2025-01-%02dT10:00:00Z", i);
+        all.push_back({{"id", "n" + std::to_string(i)}, {"text", i == 15 ? std::string(400, 'L') : "Old " + std::to_string(i)}, {"saved", when}});
+    }
+    write_file_atomic(file, all.dump(2));
+    const std::vector<ProjectNote> loaded = project_notes::load(old.home, saved.root());
+    CHECK(loaded.size() == 15 && loaded[0].text == std::string(400, 'L') && loaded[14].text == "Old 1");
+    const std::string sent = project_notes::context(old.home, saved);
+    CHECK(sent.find(std::string(400, 'L')) != std::string::npos && sent.find("- Old 4") != std::string::npos && sent.find("- Old 3") == std::string::npos);
+    CHECK(std::count(sent.begin(), sent.end(), '\n') == 12 && project_notes::sent(loaded, saved) == 12);
+    CHECK(project_notes::command("", saved, old.home).find("15. Old 1") != std::string::npos);
+    CHECK_THROWS(project_notes::add("Another", "", saved, old.home));  // over the limit already
+    // A stale note is not sent, and the next current one takes its place.
+    old.write("a.txt", "one");
+    json tied = json::parse(read_file(file));
+    tied[14]["source"] = "a.txt";  // the newest
+    tied[14]["sourceHash"] = "0";
+    write_file_atomic(file, tied.dump(2));
+    const std::string after = project_notes::context(old.home, saved);
+    CHECK(after.find(std::string(400, 'L')) == std::string::npos && after.find("- Old 3") != std::string::npos && after.find("- Old 2") == std::string::npos);
+}
+
+static void test_suggest_note() {
+    Sandbox box;
+    SessionStore store(box.home);
+    const Workspace workspace(box.project.string());
+    const auto approve = [](const ApprovalRequest&) { return true; };
+    const auto quiet = [](const AgentEvent&) {};
+    project_notes::add("Tests live in tests/", "", workspace, box.home);
+    project_notes::dismiss("Use tabs", workspace.root(), box.home);
+
+    // It is offered in every mode, and the prompt says how to use it.
+    Session session = store.create(workspace.root(), Permission::ReadOnly);
+    session.ask_only = true;
+    ScriptedModel model;
+    model.replies = {call("suggest_note", {{"text", "  We use pnpm, not npm.  "}}), call("suggest_note", {{"text", "Another one"}}), say("Done.")};
+    Agent(store, model, approve, quiet).run(session, "Install it");
+    const std::vector<std::string>& offered = model.seen_tools[0];
+    CHECK(std::find(offered.begin(), offered.end(), "suggest_note") != offered.end() && model.seen[0][0].content.find("suggest_note") != std::string::npos);
+    // The first is kept for the user to decide on; a second in the same request is turned away.
+    CHECK(session.suggested_note == "We use pnpm, not npm.");
+    CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && session.activities[0].result == "Shown to the user, who decides whether to keep it. Continue with the request.");
+    CHECK(session.activities[1].state == "failed" && session.activities[1].result == "Only one note can be suggested per request.");
+    // Nothing is saved by the call, and the suggestion is kept with the session.
+    CHECK(project_notes::load(box.home, workspace.root()).size() == 1);
+    const SessionStore reread(box.home);
+    CHECK(reread.sessions().size() == 1 && reread.sessions()[0].suggested_note == "We use pnpm, not npm.");
+
+    // Each request may suggest one again. Too long, already a note, or dismissed before: turned away.
+    ScriptedModel second;
+    second.replies = {call("suggest_note", {{"text", std::string(281, 'x')}}), call("suggest_note", {{"text", "  tests LIVE in tests/ "}}), call("suggest_note", {{"text", "use TABS"}}),
+                      call("suggest_note", {{"text", ""}}), call("suggest_note", {{"text", "The API lives under /v2."}}), say("Done.")};
+    Agent(store, second, approve, quiet).run(session, "Next");
+    const size_t first = 2;
+    CHECK(session.activities.size() == first + 5);
+    CHECK(session.activities[first].state == "failed" && session.activities[first].result == "A note is 1 to 280 characters.");
+    CHECK(session.activities[first + 1].state == "failed" && session.activities[first + 1].result == "The project already has that note.");
+    CHECK(session.activities[first + 2].state == "failed" && session.activities[first + 2].result == "The user dismissed that note before. Do not suggest it again.");
+    CHECK(session.activities[first + 3].state == "failed");
+    CHECK(session.activities[first + 4].state == "completed" && session.suggested_note == "The API lives under /v2.");
+
+    // A new request leaves an undecided suggestion behind.
+    ScriptedModel third;
+    third.replies = {say("Hello.")};
+    Agent(store, third, approve, quiet).run(session, "Hi");
+    CHECK(session.suggested_note.empty());
+}
+
+static void test_dismissed_notes() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    CHECK(project_notes::dismissed(box.home, workspace.root()).empty());
+    CHECK(project_notes::suggestion_problem("Use tabs", workspace.root(), box.home).empty());
+    project_notes::dismiss("  Use tabs ", workspace.root(), box.home);
+    project_notes::dismiss("USE TABS", workspace.root(), box.home);  // the same text, kept once
+    CHECK(project_notes::dismissed(box.home, workspace.root()) == std::vector<std::string>{"USE TABS"});
+    CHECK(!project_notes::suggestion_problem("use tabs", workspace.root(), box.home).empty());
+    // Kept on disk, at most fifty, the oldest dropped first.
+    for (int i = 1; i <= 55; i++) project_notes::dismiss("Fact " + std::to_string(i), workspace.root(), box.home);
+    const std::vector<std::string> kept = project_notes::dismissed(box.home, workspace.root());
+    CHECK(kept.size() == 50 && kept.front() == "Fact 6" && kept.back() == "Fact 55");
+    CHECK(project_notes::suggestion_problem("Use tabs", workspace.root(), box.home).empty());  // dropped with the oldest
+    // Another project has its own, and the notes themselves are untouched.
+    const fs::path other = box.home / "other-project";
+    fs::create_directories(other);
+    CHECK(project_notes::dismissed(box.home, Workspace(other.string()).root()).empty());
+    CHECK(project_notes::load(box.home, workspace.root()).empty());
 }
 
 static void test_theme_families() {
@@ -3150,7 +3303,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };
     for (const auto& [name, function] : tests) {

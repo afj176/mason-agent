@@ -16,7 +16,7 @@ public sealed partial class MainWindow
 {
     static Style Token(string key) => (Style)Application.Current.Resources[key];
 
-    /// <summary>One of a small set of views (Workbench, Review, Notebook): checked is raised with an accent pill.</summary>
+    /// <summary>One of a small set of views (Workbench, Review): checked is raised with an accent pill.</summary>
     static ToggleButton SegmentToggle(ToggleButton toggle) { toggle.Style = Token("MasonSegmentToggle"); return toggle; }
     /// <summary>Shows or hides a panel: checked takes the subtle fill and accent ink instead of a solid accent block.</summary>
     static ToggleButton ChipToggle(ToggleButton toggle) { toggle.Style = Token("MasonChipToggle"); return toggle; }

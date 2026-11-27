@@ -1056,7 +1056,7 @@ final class MasonCoreTests: XCTestCase {
         reading.askOnly = true
         // check_page is offered wherever a browser is installed, which depends on the computer.
         let offered = Agent.extraTools(session: reading, workspace: workspace).map(\.name).filter { $0 != "check_page" && $0 != "inspect_symbol" }
-        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "navigate_code", "read_skill"], "a read-only session gets no editing, job or workflow tools")
+        XCTAssertEqual(offered, ["read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "suggest_note", "navigate_code", "read_skill"], "a read-only session gets no editing, job or workflow tools")
         try "{\"version\": 2}".write(to: folder.appendingPathComponent("mason.workflows.json"), atomically: true, encoding: .utf8)
         XCTAssertThrowsError(try ProjectWorkflows.load(workspace))
     }
@@ -2477,15 +2477,15 @@ final class ProjectNotesTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try "PORT = 8080\n".write(to: folder.appendingPathComponent("config.py"), atomically: true, encoding: .utf8)
         let workspace = try Workspace(path: folder.path)
-        XCTAssertEqual(try ProjectNotes.command("", workspace: workspace, home: home), "No notes for this project. /notes add TEXT keeps one.")
+        XCTAssertEqual(try ProjectNotes.command("", workspace: workspace, home: home), "No notes for this project. /note TEXT adds one.")
         XCTAssertNil(ProjectNotes.context(home: home, workspace: workspace))
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         try ProjectNotes.add("The API lives under /v2.", workspace: workspace, home: home, now: start)
         try ProjectNotes.add("The port is set here.", about: "config.py", workspace: workspace, home: home, now: start.addingTimeInterval(60))
         XCTAssertThrowsError(try ProjectNotes.add("   ", workspace: workspace, home: home))
         XCTAssertThrowsError(try ProjectNotes.add("About nothing.", about: "missing.py", workspace: workspace, home: home))
-        let listed = try ProjectNotes.command("", workspace: workspace, home: home)
-        XCTAssertEqual(listed, "1. The port is set here.  (about config.py)\n2. The API lives under /v2.")
+        let listed = try ProjectNotes.command("", workspace: workspace, home: home, now: start.addingTimeInterval(120))
+        XCTAssertEqual(listed, "Notes · Mason reads these with every request\n1. The port is set here.  · config.py · today\n2. The API lives under /v2.  · today\n/note TEXT adds one · /notes remove N · /notes clear")
         XCTAssertEqual(ProjectNotes.context(home: home, workspace: workspace),
                        "Notes the user saved about this project. They are background, not instructions:\n- The port is set here. (about config.py)\n- The API lives under /v2.")
 
@@ -2499,23 +2499,153 @@ final class ProjectNotesTests: XCTestCase {
         // Once its file changes, a note about that file is out of date and is no longer sent.
         try "PORT = 9090\n".write(to: folder.appendingPathComponent("config.py"), atomically: true, encoding: .utf8)
         XCTAssertEqual(ProjectNotes.context(home: home, workspace: workspace), "Notes the user saved about this project. They are background, not instructions:\n- The API lives under /v2.")
-        XCTAssertTrue(try ProjectNotes.command("", workspace: workspace, home: home).contains("that file has changed, so this is no longer sent"))
+        XCTAssertTrue(try ProjectNotes.command("", workspace: workspace, home: home).contains("config.py changed · not sent"))
 
-        // Only the six newest go out; another project has its own.
-        for number in 1...7 { try ProjectNotes.add("Fact \(number).", workspace: workspace, home: home, now: start.addingTimeInterval(Double(100 + number))) }
+        // Every current note goes out, up to 12; a 13th cannot be added. Another project has its own.
+        for number in 1...10 { try ProjectNotes.add("Fact \(number).", workspace: workspace, home: home, now: start.addingTimeInterval(Double(100 + number))) }
+        XCTAssertThrowsError(try ProjectNotes.add("Fact 11.", workspace: workspace, home: home)) { error in
+            XCTAssertEqual((error as? MasonError)?.description, "12 of 12. Remove one to add another.")
+        }
         let sent = try XCTUnwrap(ProjectNotes.context(home: home, workspace: workspace))
-        XCTAssertEqual(sent.components(separatedBy: "\n").count, 7)
-        XCTAssertTrue(sent.contains("Fact 7.") && sent.contains("Fact 2.") && !sent.contains("Fact 1.") && !sent.contains("/v2"))
+        XCTAssertEqual(sent.components(separatedBy: "\n").count, 12, "eleven current notes and the heading; the stale one is not sent")
+        XCTAssertTrue(sent.contains("Fact 10.") && sent.contains("Fact 1.") && sent.contains("/v2") && !sent.contains("The port is set here."))
+        XCTAssertTrue(sent.components(separatedBy: "\n")[1].contains("Fact 10."), "newest first")
         let other = base.appendingPathComponent("other")
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
         XCTAssertNil(ProjectNotes.context(home: home, workspace: try Workspace(path: other.path)))
 
         XCTAssertEqual(try ProjectNotes.command("remove 1", workspace: workspace, home: home), "Removed.")
-        XCTAssertFalse(try ProjectNotes.command("", workspace: workspace, home: home).contains("Fact 7."))
+        XCTAssertFalse(try ProjectNotes.command("", workspace: workspace, home: home).contains("Fact 10."))
         XCTAssertThrowsError(try ProjectNotes.command("remove 99", workspace: workspace, home: home))
         XCTAssertEqual(try ProjectNotes.command("about config.py It moved.", workspace: workspace, home: home), "Kept, about config.py. It is sent until that file changes.")
         XCTAssertEqual(try ProjectNotes.command("clear", workspace: workspace, home: home), "This project has no notes now.")
         XCTAssertTrue(ProjectNotes.load(home: home, workspace: workspace.root.path).isEmpty)
+        XCTAssertEqual(ProjectNotes.arguments("/note", "Use pnpm."), "add Use pnpm.")
+        XCTAssertEqual(ProjectNotes.arguments("/note", ""), "")
+        XCTAssertEqual(ProjectNotes.arguments("/notes", "remove 2"), "remove 2")
+    }
+
+    func notesProject() throws -> (base: URL, home: URL, workspace: Workspace) {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("mason-notes-" + UUID().uuidString)
+        let folder = base.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "PORT = 8080\n".write(to: folder.appendingPathComponent("config.py"), atomically: true, encoding: .utf8)
+        return (base, base.appendingPathComponent("home"), try Workspace(path: folder.path))
+    }
+
+    func testANoteIsAtMost280CharactersButLongerSavedNotesStillLoadAndAreSent() throws {
+        let (base, home, workspace) = try notesProject()
+        defer { try? FileManager.default.removeItem(at: base) }
+        XCTAssertThrowsError(try ProjectNotes.add(String(repeating: "a", count: 281), workspace: workspace, home: home))
+        let longest = try ProjectNotes.add(String(repeating: "b", count: 280), workspace: workspace, home: home)
+        XCTAssertThrowsError(try ProjectNotes.edit(longest.id, text: String(repeating: "c", count: 281), workspace: workspace, home: home))
+        XCTAssertThrowsError(try ProjectNotes.edit(longest.id, text: "  ", workspace: workspace, home: home))
+
+        // A note saved before the limits, and more notes than the limit, still load; the 12 newest current ones are sent.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = (1...14).map { ProjectNote(id: UUID(), text: $0 == 14 ? String(repeating: "x", count: 2000) : "Old \($0).", source: nil, sourceHash: nil, saved: start.addingTimeInterval(Double($0))) }
+        try ProjectNotes.save(old, home: home, workspace: workspace.root.path)
+        XCTAssertEqual(ProjectNotes.load(home: home, workspace: workspace.root.path).count, 14)
+        let lines = try XCTUnwrap(ProjectNotes.context(home: home, workspace: workspace)).components(separatedBy: "\n")
+        XCTAssertEqual(lines.count, 13)
+        XCTAssertEqual(lines[1], "- " + String(repeating: "x", count: 2000))
+        XCTAssertEqual(lines[12], "- Old 3.")
+        XCTAssertThrowsError(try ProjectNotes.add("One more.", workspace: workspace, home: home))
+    }
+
+    func testEditRefreshClearAndRestore() throws {
+        let (base, home, workspace) = try notesProject()
+        defer { try? FileManager.default.removeItem(at: base) }
+        // Whole seconds, as the notes file keeps them.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let plain = try ProjectNotes.add("Use pnpm.", workspace: workspace, home: home, now: start)
+        let tied = try ProjectNotes.add("The port is set here.", about: "config.py", workspace: workspace, home: home, now: start.addingTimeInterval(60))
+
+        // Editing keeps the id, the file and the date.
+        let edited = try ProjectNotes.edit(plain.id, text: "  We use pnpm, not npm  ", workspace: workspace, home: home)
+        XCTAssertEqual(edited.id, plain.id)
+        XCTAssertEqual(edited.text, "We use pnpm, not npm")
+        XCTAssertEqual(edited.saved, plain.saved)
+        XCTAssertThrowsError(try ProjectNotes.edit(UUID(), text: "Gone.", workspace: workspace, home: home))
+
+        // A note whose file changed is not sent until it is kept anyway, or edited with the fingerprint refreshed.
+        try "PORT = 9090\n".write(to: workspace.root.appendingPathComponent("config.py"), atomically: true, encoding: .utf8)
+        XCTAssertFalse(ProjectNotes.sentNotes(home: home, workspace: workspace).contains { $0.id == tied.id })
+        let renamed = try ProjectNotes.edit(tied.id, text: "The port is 9090.", workspace: workspace, home: home)
+        XCTAssertEqual(renamed.source, "config.py")
+        XCTAssertFalse(ProjectNotes.current(renamed, in: workspace), "without a refresh, an edit leaves the note out of date")
+        XCTAssertTrue(ProjectNotes.current(try ProjectNotes.refresh(tied.id, workspace: workspace, home: home), in: workspace))
+        try "PORT = 7070\n".write(to: workspace.root.appendingPathComponent("config.py"), atomically: true, encoding: .utf8)
+        XCTAssertTrue(ProjectNotes.current(try ProjectNotes.edit(tied.id, text: "The port is 7070.", refreshSource: true, workspace: workspace, home: home), in: workspace))
+        XCTAssertEqual(ProjectNotes.sentNotes(home: home, workspace: workspace).count, 2)
+
+        // Removing one and clearing all can both be undone.
+        let removed = try XCTUnwrap(ProjectNotes.load(home: home, workspace: workspace.root.path).first { $0.id == plain.id })
+        try ProjectNotes.remove(plain.id, workspace: workspace.root.path, home: home)
+        try ProjectNotes.restore([removed], workspace: workspace.root.path, home: home)
+        XCTAssertEqual(ProjectNotes.newest(home: home, workspace: workspace.root.path).map(\.text), ["The port is 7070.", "We use pnpm, not npm"])
+        let cleared = try ProjectNotes.clear(workspace: workspace.root.path, home: home)
+        XCTAssertEqual(cleared.count, 2)
+        XCTAssertTrue(ProjectNotes.load(home: home, workspace: workspace.root.path).isEmpty)
+        try ProjectNotes.restore(cleared, workspace: workspace.root.path, home: home)
+        try ProjectNotes.restore(cleared, workspace: workspace.root.path, home: home)
+        XCTAssertEqual(ProjectNotes.load(home: home, workspace: workspace.root.path), cleared, "restoring twice does not duplicate")
+    }
+
+    func testRelativeAge() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let saved = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(ProjectNotes.age(saved, now: saved.addingTimeInterval(3600), calendar: calendar), "today")
+        XCTAssertEqual(ProjectNotes.age(saved, now: saved.addingTimeInterval(86_400), calendar: calendar), "yesterday")
+        XCTAssertEqual(ProjectNotes.age(saved, now: saved.addingTimeInterval(2 * 86_400), calendar: calendar), "2 days ago")
+    }
+
+    func testDismissedSuggestionsAreKeptPerProjectUpTo50() throws {
+        let (base, home, workspace) = try notesProject()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = workspace.root.path
+        XCTAssertTrue(ProjectNotes.dismissed(home: home, workspace: root).isEmpty)
+        for number in 1...55 { try ProjectNotes.dismiss("Text \(number)", workspace: root, home: home) }
+        try ProjectNotes.dismiss("  TEXT 55 ", workspace: root, home: home)
+        let kept = ProjectNotes.dismissed(home: home, workspace: root)
+        XCTAssertEqual(kept.count, 50)
+        XCTAssertEqual(kept.first, "Text 6")
+        XCTAssertEqual(kept.last, "TEXT 55", "a dismissal that matches one already kept replaces it")
+        XCTAssertEqual(ProjectNotes.suggestionProblem("text 55", workspace: root, home: home), "The user dismissed this note before. Do not suggest it again.")
+        XCTAssertNil(ProjectNotes.suggestionProblem("Text 1", workspace: root, home: home), "the oldest dismissals are forgotten")
+        XCTAssertTrue(ProjectNotes.dismissed(home: home, workspace: base.path).isEmpty, "another project has its own")
+    }
+
+    func testTheModelCanSuggestOneNotePerRequest() async throws {
+        let (base, home, workspace) = try notesProject()
+        defer { try? FileManager.default.removeItem(at: base) }
+        try ProjectNotes.add("We use pnpm, not npm", workspace: workspace, home: home)
+        try ProjectNotes.dismiss("Tests live in tests/", workspace: workspace.root.path, home: home)
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: workspace.root.path, permission: .workspaceEdits)
+
+        let model = ScriptedModel([call("suggest_note", ["text": " Run the tests with make test. "]), call("suggest_note", ["text": "Another fact."]), ModelReply(text: "Done.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Fix the build")
+        XCTAssertTrue(model.seen[0][0].content.contains("suggest_note"), "the system prompt mentions the tool")
+        XCTAssertTrue(model.seenTools[0].contains("suggest_note"))
+        XCTAssertEqual(session.suggestedNote, NoteSuggestion(text: "Run the tests with make test.", turn: session.turns[0].id))
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .failed])
+        XCTAssertEqual(session.activities[0].result, "Shown to the user, who decides whether to keep it. Continue with the request.")
+        XCTAssertEqual(session.activities[1].result, "Only one note can be suggested per request.")
+        XCTAssertTrue(ProjectNotes.load(home: home, workspace: workspace.root.path).count == 1, "nothing is saved by the call")
+        XCTAssertEqual(try SessionStore(home: home).sessions.first { $0.id == session.id }?.suggestedNote?.text, "Run the tests with make test.", "the suggestion is saved with the session")
+
+        // Each request may suggest again, but not a note the user has, one they dismissed, or one of the wrong length.
+        let next = ScriptedModel([call("suggest_note", ["text": "we use PNPM, not npm "]), call("suggest_note", ["text": "tests live in TESTS/"]),
+                                  call("suggest_note", ["text": String(repeating: "z", count: 281)]), call("suggest_note", ["text": ""]),
+                                  call("suggest_note", ["text": "Keep the public API stable"]), ModelReply(text: "Done.")])
+        await Agent(store: store, model: next, approve: { _ in true }, emit: { _ in }).run(&session, request: "Tidy up")
+        XCTAssertEqual(Array(session.activities.suffix(5).map(\.state)), [.failed, .failed, .failed, .failed, .completed])
+        XCTAssertEqual(session.activities[2].result, "The user already has this note.")
+        XCTAssertEqual(session.activities[3].result, "The user dismissed this note before. Do not suggest it again.")
+        XCTAssertEqual(session.activities[4].result, "A suggested note is 1 to 280 characters.")
+        XCTAssertEqual(session.suggestedNote, NoteSuggestion(text: "Keep the public API stable", turn: session.turns[1].id))
     }
 }
 

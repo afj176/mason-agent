@@ -134,6 +134,10 @@ struct TurnView: View {
                                 .help(receipt.command + (receipt.output.isEmpty ? "" : "\n\n" + String(receipt.output.suffix(600))))
                         }
                     }
+                    if !live, let suggestion = model.session?.suggestedNote, suggestion.turn == turn.id {
+                        // A note the model suggested in this request, for the user to remember or dismiss.
+                        NoteSuggestionCard(suggestion: suggestion)
+                    }
                     if !live, !activities.isEmpty || !turn.changes.isEmpty {
                         // What the request amounted to, in one line, and the way to its changes.
                         HStack(spacing: 10) {
@@ -316,9 +320,16 @@ struct Composer: View {
                     return .handled
                 }
                 .onKeyPress(.escape) {
-                    guard let pending = model.approval else { return .ignored }
-                    model.answer(pending, allow: false)
-                    return .handled
+                    if let pending = model.approval {
+                        model.answer(pending, allow: false)
+                        return .handled
+                    }
+                    // Escape also closes the Notes tray.
+                    if model.notesOpen {
+                        model.closeNotes()
+                        return .handled
+                    }
+                    return .ignored
                 }
             HStack {
                 Picker("Permission", selection: Binding(get: { session.permission }, set: { model.setPermission($0) })) {
@@ -365,11 +376,17 @@ struct Composer: View {
         .padding(12)
         .card(radius: 18)
         .shadow(color: .black.opacity(0.14), radius: 14, y: 6)
+        // The Notes tab and tray sit behind the request box, reaching up from its top edge over the transcript.
+        .background(alignment: .top) {
+            NotesDrawer(session: session)
+                .alignmentGuide(.top) { dimensions in dimensions[.bottom] - NotesDrawer.tuck }
+        }
         .frame(maxWidth: 900)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 16).padding(.bottom, 14).padding(.top, 6)
         .onAppear { focused = true }
         .onChange(of: model.approval == nil) { _, answered in focused = answered }
+        .onChange(of: model.notesOpen) { _, open in if !open { focused = true } }
     }
 }
 

@@ -8,7 +8,7 @@ public static class CodeSchema
     public static IReadOnlySet<string>? Available(IReadOnlyList<CodeMessage> messages)=>messages.FirstOrDefault(m=>m.Role=="system")?.AvailableTools;
     public static IReadOnlySet<string> Available(CodeSession session)
     {
-        var names=new HashSet<string>(["list_files","search_text","read_file","open_file","ask_user","navigate_code"]);
+        var names=new HashSet<string>(["list_files","search_text","read_file","open_file","ask_user","navigate_code","suggest_note"]);
         names.Add("enable_tools");
         if(session.Desktop!=null)names.Add("desktop_visual");
         names.UnionWith(["search_next","read_lines"]);
@@ -73,6 +73,7 @@ public static class CodeSchema
         "run_command"=>"Run an existing .exe with separate exact argument strings from a workspace directory. No implicit shell or shell builtins. Inspect exit code and actual output; unsupported Auto runtimes fail closed.",
         "open_preview"=>"Request a loopback website preview. Unavailable to the agent in Auto. It does not inspect the browser or prove visual correctness.",
         "verify_acceptance"=>"Run the host's pinned feature checks against the current workspace. Web checks use isolated Edge. Use after implementing features. Finish also runs these checks.",
+        "suggest_note"=>"Suggest one short, lasting fact about this project for the user to remember (a convention they corrected, the command that runs the tests, where something lives). The user decides whether to keep it; nothing is saved by this call. At most once per request; never secrets or one-off details.",
         "ask_user"=>"Pause with a specific question only when a missing decision or permission blocks progress. Do not use as a completion signal.",
         _=>throw new InvalidOperationException("Missing native tool description: "+name)
     };
@@ -116,6 +117,7 @@ public static class CodeSchema
         tools.Add(Tool("open_preview", Fields(("url", Text()))));
         tools.Add(Tool("verify_acceptance", Fields()));
         tools.Add(Tool("ask_user", Fields(("question", Text()))));
+        tools.Add(Tool("suggest_note", Fields(("text", new { type = "string", minLength = 1, maxLength = CodeNotes.TextLimit }))));
         object integer=new{type="integer",minimum=1,maximum=1000000};
         tools.Add(Tool("search_next",Fields(("cursor",Text()))));
         tools.Add(Tool("git_status",Fields()));
