@@ -2,7 +2,7 @@
 #   meson setup builddir && meson compile -C builddir && meson test -C builddir
 # Use -Dapp=false to build only the engine and command line (no GTK needed).
 project('mason-agent', 'cpp',
-  version: '2.4.0',
+  version: '2.5.0',
   default_options: ['cpp_std=c++20', 'warning_level=2', 'buildtype=debugoptimized'],
   meson_version: '>= 1.1')
 
