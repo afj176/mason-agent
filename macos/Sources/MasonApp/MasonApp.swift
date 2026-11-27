@@ -35,6 +35,9 @@ struct MasonAgentApp: App {
                 Button("Code") { model.pane = .code }.keyboardShortcut("1")
                 Button("Chat") { model.pane = .chat }.keyboardShortcut("2")
                 Button("Models") { model.pane = .models }.keyboardShortcut("3")
+                // The side panel opens on Moments; ⌥⌘V matches the viewer's Ctrl+Alt+V on Windows.
+                Button(model.showChanges && model.pane == .code ? "Hide Moments" : "Show Moments") { model.pane = .code; model.showChanges.toggle() }
+                    .keyboardShortcut("v", modifiers: [.command, .option])
                 Divider()
                 // New Chat keeps ⌘⇧N, so Notes is ⌥⌘N.
                 Button(model.notesOpen ? "Hide Notes" : "Notes") { model.toggleNotes() }
@@ -101,8 +104,8 @@ struct RootView: View {
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.pane == .code {
-                        Toggle(isOn: $model.showChanges) { Label("Changes", systemImage: "plusminus") }
-                            .help("Show the files this session changed")
+                        Toggle(isOn: $model.showChanges) { Label("Moments", systemImage: "sidebar.right") }
+                            .help("Show what Mason did, as moments you can open (⌥⌘V)")
                     }
                     Button { model.pane = .models } label: {
                         Label(model.endpoint == nil ? "No model" : model.endpointName, systemImage: model.endpoint == nil ? "exclamationmark.triangle" : "cpu")
