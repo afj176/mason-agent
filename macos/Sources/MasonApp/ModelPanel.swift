@@ -95,6 +95,8 @@ struct ModelPanel: View {
                 Circle().fill(running != nil || (item.startable && !starting) ? Brand.fitGood : starting ? Brand.accent : Brand.muted).frame(width: 8, height: 8)
                 Text(status).font(.callout).foregroundStyle(Brand.muted)
             }
+            if running != nil { PoseImage(pose: .connected, height: 64) }
+            else if starting { PoseImage(pose: .loadingModel, height: 64) }
         }
     }
 

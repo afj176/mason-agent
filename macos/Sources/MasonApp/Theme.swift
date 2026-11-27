@@ -1,45 +1,111 @@
 import SwiftUI
 import AppKit
+import CoreText
 import MasonCore
 
-/// How the app looks: Mason's colours in light and dark, the mascot, and the pieces every pane shares.
-enum Brand {
-    /// A colour that follows the window's light or dark appearance.
-    static func adaptive(light: UInt32, dark: UInt32) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            let hex = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-            return NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
-        })
-    }
+/// The theme family on screen, saved as "Family" in appearance.json in Mason's data folder (shared with the mason
+/// command). Choosing one applies it live: every Brand colour reads the family when it is drawn, and the windows
+/// rebuild their views when it changes.
+@MainActor
+final class ThemeStore: ObservableObject {
+    static let shared = ThemeStore()
+    /// The family the colour providers read. Set only on the main actor, read while AppKit draws.
+    /// Loaded on first use, so a colour drawn before the store exists already has the saved family.
+    nonisolated(unsafe) static var current: ThemeFamily = ThemeFamilies.saved(home: DataHome.url)
 
-    static let background = adaptive(light: 0xF8F6F2, dark: 0x171A2B)
-    static let sidebar = adaptive(light: 0xF1EEF6, dark: 0x131626)
-    static let surface = adaptive(light: 0xFFFFFF, dark: 0x24283E)
-    static let accent = adaptive(light: 0x4849A8, dark: 0xC3C2FF)
-    static let onAccent = adaptive(light: 0xFFFFFF, dark: 0x171A2B)
-    static let muted = adaptive(light: 0x535B72, dark: 0xC3C9E0)
-    static let seam = adaptive(light: 0xD9DBE1, dark: 0x3B4059)
-    /// Model fit tones, each paired with its words in the panel. Both shades keep 4.5:1 on the window background.
-    static let fitGood = adaptive(light: 0x1E7A46, dark: 0x86D9AE)
-    static let fitTight = adaptive(light: 0x8A5A00, dark: 0xF2C46D)
-    static let fitOver = adaptive(light: 0xB3261E, dark: 0xF49A8C)
-    static let track = adaptive(light: 0xEDEBF2, dark: 0x1E2236)
+    @Published private(set) var family: ThemeFamily
+    /// Why the last choice could not be saved, or nil. The family still applies until the app quits.
+    @Published private(set) var problem: String?
 
-    private static func resource(_ name: String) -> NSImage? {
-        guard let url = Bundle.main.resourceURL?.appendingPathComponent(name) else { return nil }
-        return NSImage(contentsOf: url)
+    private init() { family = Self.current }
+
+    /// Shows the family and saves it to appearance.json.
+    func choose(_ chosen: ThemeFamily) {
+        guard chosen != family else { return }
+        Self.current = chosen
+        do { try ThemeFamilies.save(chosen, home: DataHome.url); problem = nil } catch { problem = error.localizedDescription }
+        family = chosen
     }
-    /// The mascot's face, for the brand mark and beside Mason's answers. Missing art falls back to a symbol.
-    static let mascotImage: NSImage? = resource("mascot.png")
-    static let welcomeImage: NSImage? = resource("welcome.png")
 }
 
-/// The mascot at a given size.
-struct Mascot: View {
+/// How the app looks: the active theme family's colours in light and dark, the poses, and the pieces every pane shares.
+enum Brand {
+    static func nsColor(_ rgb: UInt32, alpha: CGFloat = 1) -> NSColor {
+        let c = ThemeFamilies.channels(rgb)
+        return NSColor(srgbRed: CGFloat(c.red) / 255, green: CGFloat(c.green) / 255, blue: CGFloat(c.blue) / 255, alpha: alpha)
+    }
+
+    /// A colour worked out from the active family's tokens for the window's light or dark appearance, when it is drawn.
+    static func themed(_ pick: @escaping (ThemeTokens, Bool) -> UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return nsColor(pick(ThemeStore.current.tokens(dark: dark), dark))
+        })
+    }
+    /// A colour that is the same in every family: one shade for light windows, one for dark.
+    static func adaptive(light: UInt32, dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            nsColor(appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light)
+        })
+    }
+    /// Secondary text: the text colour mixed toward the background, as the Windows app derives it.
+    static func secondaryText(_ t: ThemeTokens, dark: Bool) -> UInt32 { ThemeFamilies.mix(t.text, t.background, dark ? 0.22 : 0.28) }
+
+    static let background = themed { t, _ in t.background }
+    static let sidebar = themed { t, _ in t.pane }
+    static let surface = themed { t, _ in t.card }
+    static let seam = themed { t, _ in t.line }
+    static let ink = themed { t, _ in t.text }
+    static let accent = themed { t, _ in t.accent }
+    static let onAccent = themed { t, _ in t.onAccent }
+    static let muted = themed { t, dark in secondaryText(t, dark: dark) }
+    /// The groove behind a meter or a segmented row.
+    static let track = themed { t, _ in ThemeFamilies.mix(t.pane, t.background, 0.4) }
+
+    // Status colours are shared by every family so a failure reads the same in each theme.
+    static let success = adaptive(light: 0x14734A, dark: 0x7EE0A6)
+    static let caution = adaptive(light: 0x8A5A00, dark: 0xF2C66D)
+    static let critical = adaptive(light: 0xAF2323, dark: 0xFF9D94)
+    static let search = adaptive(light: 0x0F6E7A, dark: 0x8FD9E3)
+    /// Model fit tones, each paired with its words in the panel.
+    static let fitGood = success
+    static let fitTight = caution
+    static let fitOver = critical
+
+    /// A file in the app's Resources folder, or nil when it is missing (a build run from the package without bundling).
+    private static func resource(_ path: String) -> NSImage? {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent(path) else { return nil }
+        return NSImage(contentsOf: url)
+    }
+    /// The app icon, for the brand header and beside Mason's answers.
+    static let iconImage: NSImage? = resource("icon.png")
+    private static var poses: [Pose: NSImage] = [:]
+    /// One pose still from Resources/Poses, loaded once.
+    static func image(_ pose: Pose) -> NSImage? {
+        if let cached = poses[pose] { return cached }
+        let loaded = resource("Poses/\(pose.rawValue).png")
+        poses[pose] = loaded
+        return loaded
+    }
+
+    /// Manrope, the brand display face, when the app bundles it; otherwise the system font.
+    static func display(_ size: CGFloat, weight: Font.Weight = .heavy) -> Font {
+        manropeRegistered ? Font.custom("Manrope", size: size).weight(weight) : Font.system(size: size, weight: weight)
+    }
+    private static let manropeRegistered: Bool = {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("Fonts/Manrope.ttf"), FileManager.default.fileExists(atPath: url.path) else { return false }
+        var error: Unmanaged<CFError>?
+        // Already registered (a second window) counts as available.
+        return CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error) || NSFont(name: "Manrope", size: 12) != nil
+    }()
+}
+
+/// The app icon at a given size: the brand mark and the speaker mark beside Mason's answers.
+struct AppIconMark: View {
     let size: CGFloat
     var body: some View {
         Group {
-            if let image = Brand.mascotImage { Image(nsImage: image).resizable().interpolation(.high) }
+            if let image = Brand.iconImage { Image(nsImage: image).resizable().interpolation(.high) }
             else { Image(systemName: "hammer.circle.fill").resizable().foregroundStyle(Brand.accent) }
         }
         .frame(width: size, height: size)
@@ -47,13 +113,43 @@ struct Mascot: View {
     }
 }
 
-/// The line that says who is speaking: "You", or the mascot and "Mason Agent".
+/// The app icon with "Mason Agent" beside it, in Manrope when it is bundled.
+struct BrandHeader: View {
+    var iconSize: CGFloat = 26
+    var textSize: CGFloat = 15
+    var body: some View {
+        HStack(spacing: 8) {
+            AppIconMark(size: iconSize)
+            Text("Mason Agent").font(Brand.display(textSize)).foregroundStyle(Brand.ink)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// One pose still, `height` points tall. Poses are wider than tall, so the width follows the picture.
+struct PoseImage: View {
+    let pose: Pose
+    let height: CGFloat
+    var meaning: String?
+
+    var body: some View {
+        if let image = Brand.image(pose), image.size.height > 0 {
+            Image(nsImage: image).resizable().interpolation(.high)
+                .frame(width: (height * image.size.width / image.size.height).rounded(), height: height)
+                .accessibilityLabel("Mason Agent: " + (meaning ?? pose.meaning))
+        } else {
+            AppIconMark(size: height)
+        }
+    }
+}
+
+/// The line that says who is speaking: "You", or the app icon and "Mason Agent".
 struct Speaker: View {
     let mason: Bool
     var body: some View {
         HStack(spacing: 10) {
             if mason {
-                Mascot(size: 28)
+                AppIconMark(size: 28)
                 Text("Mason Agent").fontWeight(.bold)
             } else {
                 Image(systemName: "person.fill")
@@ -96,6 +192,45 @@ enum AppearanceChoice: String, CaseIterable, Identifiable {
     }
 }
 
+/// The five theme families as cards, each split into the family's light and dark window colours with its accent.
+struct ThemeFamilyPicker: View {
+    @ObservedObject var theme = ThemeStore.shared
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 8) {
+            ForEach(ThemeFamilies.all) { family in
+                let on = family == theme.family
+                Button { theme.choose(family) } label: {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 0) { half(family.light); half(family.dark) }
+                            .frame(height: 34)
+                        Text(family.name).font(.caption).lineLimit(1).truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(on ? Brand.accent : Brand.seam, lineWidth: on ? 2 : 1))
+                    .contentShape(RoundedRectangle(cornerRadius: 6))
+                }
+                .buttonStyle(.plain)
+                .help("\(family.name): light and dark colours")
+                .accessibilityLabel("\(family.name) theme")
+                .accessibilityAddTraits(on ? .isSelected : [])
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Theme")
+    }
+
+    func half(_ tokens: ThemeTokens) -> some View {
+        Color(nsColor: Brand.nsColor(tokens.background))
+            .overlay(alignment: .bottomLeading) {
+                RoundedRectangle(cornerRadius: 3).fill(Color(nsColor: Brand.nsColor(tokens.accent)))
+                    .frame(width: 16, height: 8).padding(.leading, 8).padding(.bottom, 7)
+            }
+    }
+}
+
 /// A quiet line at the bottom of the window: what Mason is doing, and where the session lives.
 struct StatusBar: View {
     @EnvironmentObject var model: AppModel
@@ -127,19 +262,100 @@ struct StatusBar: View {
     }
 }
 
-/// The page shown before any project is open.
+/// The session's state with its pose, about 46 points tall, above the composer: reading, editing, running checks
+/// or planning while it runs; then waiting, ready to review, finished, restored or a failed check.
+struct StatusPose: View {
+    @EnvironmentObject var model: AppModel
+    let session: Session
+
+    var body: some View {
+        // Re-read every few seconds so "restored" gives way once its 30 seconds are over.
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            if let shown = currentPose(at: context.date) {
+                HStack(spacing: 10) {
+                    PoseImage(pose: shown, height: 46)
+                    if model.running { ProgressView().controlSize(.small) }
+                    Text(text).font(.callout).foregroundStyle(Brand.muted).lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: 900)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 20).padding(.top, 4)
+                .transition(.opacity)
+            }
+        }
+    }
+
+    func currentPose(at now: Date) -> Pose? {
+        let tool = model.running ? model.liveActivities.last(where: { $0.state == .running })?.tool : nil
+        let restored = model.restoredAt.map { now.timeIntervalSince($0) < 30 } ?? false
+        let reviewable = session.turns.contains { !$0.undone && !$0.changes.isEmpty }
+        return Pose.forStatus(state: model.running ? "Running" : session.state, hasTurns: !session.turns.isEmpty,
+                              runningTool: tool, restoredRecently: restored, reviewableChanges: reviewable)
+    }
+
+    var text: String {
+        if model.running { return model.liveStatus.isEmpty ? "Working" : model.liveStatus }
+        return session.state + (session.detail.isEmpty ? "" : " · " + session.detail)
+    }
+}
+
+/// A message from Mason in a sheet, with a pose when it reports a problem: needs-attention when the Mac needs the
+/// person to act (a runtime, a download, a model folder), check-failed when something broke.
+struct NoticeSheet: View {
+    @EnvironmentObject var model: AppModel
+    let text: String
+
+    /// Phrases of the notices that ask the person to set something up on this Mac.
+    static let attention = ["no model is running", "needs a running model", "install llama.cpp", "llama.cpp was not installed",
+                            "download did not finish", "hugging face", "model folder", "data folder", "does not include the mason tool"]
+
+    var pose: Pose? {
+        let lower = text.lowercased()
+        if Self.attention.contains(where: { lower.contains($0) }) { return .needsAttention }
+        if let failed = model.lastError, !failed.isEmpty, text.contains(failed) { return .checkFailed }
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                if let shown = pose { PoseImage(pose: shown, height: shown == .needsAttention ? 80 : 66) } else { AppIconMark(size: 48) }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Mason Agent").font(.headline)
+                    if text.count > 600 {
+                        ScrollView {
+                            Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(height: 320)
+                    } else {
+                        Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("OK") { model.notice = nil }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
+}
+
+/// The page shown before any project is open: the first-launch pose until there is a project, then open-project.
 struct WelcomeView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
         VStack(spacing: 14) {
-            if let image = Brand.welcomeImage {
-                Image(nsImage: image).resizable().interpolation(.high).scaledToFit().frame(width: 230, height: 230)
-                    .accessibilityLabel("Mortar, the Mason Agent mascot, holding a wrench")
+            if model.sessions.isEmpty {
+                PoseImage(pose: .firstLaunch, height: 148)
             } else {
-                Mascot(size: 120)
+                PoseImage(pose: .openProject, height: 124)
             }
-            Text("Make the next move clear").font(.system(size: 30, weight: .heavy))
+            Text("Make the next move clear").font(Brand.display(30))
             Text("Open a project folder and ask Mason to read, explain or change it.\nIt runs on your own local model, and asks before each edit and command.")
                 .font(.title3).foregroundStyle(Brand.muted).multilineTextAlignment(.center)
             Button("Open Project…") { model.openFolder() }

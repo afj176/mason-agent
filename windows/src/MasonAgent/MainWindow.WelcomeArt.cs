@@ -65,7 +65,7 @@ public sealed partial class MainWindow
             wall.Visibility = BrandHighContrast ? Visibility.Collapsed : Visibility.Visible;
             if (BrandHighContrast) return;
             bool dark = parallax.ActualTheme == ElementTheme.Dark;
-            var ink = dark ? BrandBright : BrandViolet;
+            var ink = ThemePalette.Accent(dark);
             double peak = dark ? 40 : 44;
             foreach (var (brick, strength, filled) in bricks)
             {

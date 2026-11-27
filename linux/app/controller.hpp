@@ -3,6 +3,7 @@
 #pragma once
 #include "chat.hpp"
 #include "schedules.hpp"
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -64,6 +65,8 @@ public:
     /// Answers the pending approval. A non-empty prefix also saves an always-allow rule for the project.
     void answer(bool allow, const std::string& always_prefix = "");
     void undo(bool redo = false);
+    /// When files were last put back (undo, redo, or a fork that restored them); the session shows the restored pose for a while.
+    std::chrono::steady_clock::time_point restored_at{};
     /// Replaces the conversation so far with a summary from the model. The original messages stay in the session.
     void compact();
     /// "" lists the project's custom agents, a name uses one, "none" goes back to the default.
@@ -123,6 +126,8 @@ public:
     std::string chat_selection;
     bool chat_running = false;
     std::string chat_live;
+    /// Why the last answer did not arrive, until the next message is sent.
+    std::string chat_problem;
     /// Files waiting to go with the next message.
     std::vector<ChatAttachment> chat_attachments;
     void select_chat(const std::string& id);

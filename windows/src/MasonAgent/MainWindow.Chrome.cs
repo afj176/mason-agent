@@ -11,7 +11,7 @@ using Windows.UI.ViewManagement;
 namespace Mason;
 
 /// <summary>
-/// Window chrome: content drawn into the title bar (WinUI TitleBar with Mortar and the wordmark, a search across
+/// Window chrome: content drawn into the title bar (WinUI TitleBar with the app icon and name, a search across
 /// pages, projects, sessions and chats, and the running model), Mica showing through the sidebar and caption area,
 /// the rounded Windows 11 content edge, page transitions and window placement.
 /// </summary>
@@ -43,7 +43,7 @@ public sealed partial class MainWindow
     }
 
     /// <summary>
-    /// Extends the window into the caption area and puts a TitleBar there: workspace switcher, Mortar and the wordmark,
+    /// Extends the window into the caption area and puts a TitleBar there: workspace switcher, the app icon and name,
     /// the search in the middle and the running model on the right. The caption buttons stay the system's own.
     /// </summary>
     FrameworkElement BuildTitleBar(FrameworkElement brand)
@@ -198,10 +198,10 @@ public sealed partial class MainWindow
         }
         root.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         backdrop.SetTheme(dark);
-        var ink = dark ? BrandPaper : BrandInk;
+        var ink = ThemePalette.Ink(dark);
         chrome.ButtonBackgroundColor = chrome.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         chrome.ButtonForegroundColor = chrome.ButtonHoverForegroundColor = chrome.ButtonPressedForegroundColor = ink;
-        chrome.ButtonInactiveForegroundColor = dark ? BrandSilver : BrandMuted;
+        chrome.ButtonInactiveForegroundColor = ThemePalette.Muted(dark);
         chrome.ButtonHoverBackgroundColor = dark ? Color.FromArgb(28, 255, 255, 255) : Color.FromArgb(20, 0, 0, 0);
         chrome.ButtonPressedBackgroundColor = dark ? Color.FromArgb(18, 255, 255, 255) : Color.FromArgb(12, 0, 0, 0);
     }

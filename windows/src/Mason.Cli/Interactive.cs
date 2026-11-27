@@ -35,6 +35,8 @@ internal sealed partial class Interactive
                      [--read-only | --review | --edits | --auto]
           Opens an interactive session in the current folder (or --workspace). Without --endpoint and --model it
           uses the connections saved by Mason Agent. New sessions ask before each edit and command (--review).
+        mason theme [blueprint|evergreen|graphite|kiln|retro-neon]
+          Lists the theme families, or chooses one for the CLI and Mason Agent.
         """;
 
     public static async Task<int> Start(string[] args)
@@ -115,10 +117,22 @@ internal sealed partial class Interactive
 
     void Banner(bool resumed)
     {
+        var lines = new List<string>
+        {
+            Term.Paint(Term.Bold + Term.Accent, "Mason Agent") + Term.Paint(Term.Dim, "  ·  " + scope.Root),
+            Term.Paint(Term.Dim, "model ") + (profile?.DisplayName ?? Term.Paint(Term.Yellow, "none connected")) + Term.Paint(Term.Dim, "  ·  " + ModeName() + "  ·  /help for commands"),
+        };
+        if (resumed) lines.Add(Term.Paint(Term.Dim, "resumed ") + session.Title + Term.Paint(Term.Dim, $"  ·  {session.Turns.Count(t => t.Role == "user")} requests  ·  {session.State}"));
         Term.Line();
-        Term.Line("  " + Term.Paint(Term.Bold + Term.Accent, "Mason Agent") + Term.Paint(Term.Dim, "  ·  " + scope.Root));
-        Term.Line("  " + Term.Paint(Term.Dim, "model ") + (profile?.DisplayName ?? Term.Paint(Term.Yellow, "none connected")) + Term.Paint(Term.Dim, "  ·  " + ModeName() + "  ·  /help for commands"));
-        if (resumed) Term.Line("  " + Term.Paint(Term.Dim, "resumed ") + session.Title + Term.Paint(Term.Dim, $"  ·  {session.Turns.Count(t => t.Role == "user")} requests  ·  {session.State}"));
+        // In a wide colour terminal the app icon sits at the left with the session lines beside its middle.
+        var picture = Term.Picture();
+        if (picture.Length == 0) foreach (var line in lines) Term.Line("  " + line);
+        else
+        {
+            int first = (picture.Length - lines.Count) / 2;
+            for (int row = 0; row < picture.Length; row++)
+                Term.Line("  " + picture[row] + (row >= first && row - first < lines.Count ? "   " + lines[row - first] : ""));
+        }
         if (profile == null && !Term.Interactive) NoModelHelp();
     }
     static void NoModelHelp()
@@ -487,6 +501,7 @@ internal sealed partial class Interactive
                 if (permission == CodePermission.Auto && CodeShells.Unavailable(session) is { } reason) Term.Line(Term.Paint(Term.Yellow, "  " + reason));
                 return true;
             case "/status": Status(); return true;
+            case "/theme": Theme(rest); return true;
             case "/diff" or "/changes": Diff(rest); return true;
             case "/undo" or "/redo": Rewind(name == "/undo"); return true;
             case "/rules": Rules(rest); return true;
@@ -527,6 +542,32 @@ internal sealed partial class Interactive
         return true;
     }
 
+    /// <summary>/theme and "mason theme": lists the families, or saves one to appearance.json for the CLI and the app.</summary>
+    internal static void Theme(string name)
+    {
+        name = name.Trim();
+        if (name.Length > 0)
+        {
+            if (!ThemeFamilies.TryFind(name, out var family))
+            {
+                Term.Line(Term.Paint(Term.Red, "  No theme called " + name + ". ") + "Choose one of: " + string.Join(", ", ThemeFamilies.All.Select(f => f.Slug)) + ".");
+                return;
+            }
+            ThemeFamilies.Save(DataHome(), family);
+            Term.UseTheme(family);
+            Term.Line("  " + Term.Paint(Term.Accent + Term.Bold, "✓") + " Theme set to " + Term.Paint(Term.Accent, family.Name) + Term.Paint(Term.Dim, ". Mason Agent uses it the next time it starts."));
+            return;
+        }
+        Term.Line();
+        foreach (var family in ThemeFamilies.All)
+        {
+            bool current = family == Term.Theme;
+            string swatch = Term.Styled ? $"\x1b[38;2;{(family.Dark.Accent >> 16) & 0xFF};{(family.Dark.Accent >> 8) & 0xFF};{family.Dark.Accent & 0xFF}m■{Term.Reset} \x1b[38;2;{(family.Light.Accent >> 16) & 0xFF};{(family.Light.Accent >> 8) & 0xFF};{family.Light.Accent & 0xFF}m■{Term.Reset}" : "";
+            Term.Line($"  {(current ? Term.Paint(Term.Accent + Term.Bold, "›") : " ")} {swatch} {family.Slug.PadRight(12)}{(current ? Term.Paint(Term.Dim, "current") : "")}");
+        }
+        Term.Line(Term.Paint(Term.Dim, "  /theme NAME chooses one. It is shared with Mason Agent's Appearance setting."));
+    }
+
     static void Help()
     {
         (string, string)[] rows =
@@ -552,6 +593,7 @@ internal sealed partial class Interactive
             ("/commands", "Custom commands from .mason/commands (run as /name arguments)"),
             ("/queue", "Resume input queued before a stop"),
             ("/status", "Session, model, permission and storage"),
+            ("/theme [name]", "List the theme families, or choose one (shared with Mason Agent)"),
             ("/exit", "Leave (Ctrl+C twice also works)"),
         ];
         Term.Line();

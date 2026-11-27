@@ -70,9 +70,10 @@ public static class InterfaceTabs
             if(!tabs.IsLoaded)return;
             bool dark=tabs.ActualTheme==ElementTheme.Dark,contrast=Contrast;
             var transparent=Color.FromArgb(0,0,0,0);
-            var accent=dark?C(195,194,255):C(72,73,168);
-            railBrush.Color=dark?C(36,40,62):C(248,246,242);
-            selectedBrush.Color=kind==TabPresentation.Result?accent:dark?C(36,40,62):C(255,255,255);
+            var accent=ThemePalette.Accent(dark);
+            var raised=dark?ThemePalette.Card(dark):C(255,255,255);
+            railBrush.Color=ThemePalette.Background(dark);
+            selectedBrush.Color=kind==TabPresentation.Result?accent:raised;
             if(contrast)
             {
                 foreach(var token in Tokens)tabs.Resources.Remove(token);
@@ -82,11 +83,11 @@ public static class InterfaceTabs
             {
                 tabs.Background=new SolidColorBrush(transparent);
                 Token("TabViewItemHeaderBackground",transparent);
-                Token("TabViewItemHeaderBackgroundSelected",kind==TabPresentation.Document?(dark?C(36,40,62):C(255,255,255)):transparent);
-                Token("TabViewItemHeaderBackgroundPointerOver",dark?Color.FromArgb(50,195,194,255):Color.FromArgb(25,72,73,168));
-                Token("TabViewItemHeaderBackgroundPressed",dark?C(36,40,62):C(248,246,242));
-                Token("TabViewSelectedItemBorderBrush",kind==TabPresentation.Document?(dark?C(195,194,255):C(72,73,168)):transparent);
-                Token("TabViewItemHeaderForegroundSelected",kind==TabPresentation.Result?accent:dark?C(248,246,242):C(32,38,60));
+                Token("TabViewItemHeaderBackgroundSelected",kind==TabPresentation.Document?raised:transparent);
+                Token("TabViewItemHeaderBackgroundPointerOver",ThemePalette.AccentAlpha(dark,dark?(byte)50:(byte)25));
+                Token("TabViewItemHeaderBackgroundPressed",dark?raised:ThemePalette.Background(dark));
+                Token("TabViewSelectedItemBorderBrush",kind==TabPresentation.Document?accent:transparent);
+                Token("TabViewItemHeaderForegroundSelected",kind==TabPresentation.Result?accent:ThemePalette.Ink(dark));
                 tabs.Resources["TabViewSelectedItemBorderThickness"]=new Thickness(kind==TabPresentation.Document?1:0);
                 tabs.Resources["TabViewSelectedItemHeaderMargin"]=new Thickness(0);
             }

@@ -48,7 +48,7 @@ public sealed partial class MainWindow
             {
                 if (new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast) { run.ClearValue(TextElement.ForegroundProperty); return; }
                 bool dark = text.ActualTheme == ElementTheme.Dark; string token = match.Value;
-                var color = token.StartsWith('#') || token.StartsWith("//") ? dark ? "8DA2A9" : "61717B" : token.StartsWith('"') || token.StartsWith('\'') ? dark ? "E2B995" : "9E481A" : char.IsDigit(token[0]) ? dark ? "BBA6E3" : "7753A1" : dark ? "62CFF1" : "006D92";
+                var color = token.StartsWith('#') || token.StartsWith("//") ? dark ? "8DA2A9" : "61717B" : token.StartsWith('"') || token.StartsWith('\'') ? dark ? "E2B995" : "9E481A" : char.IsDigit(token[0]) ? dark ? "BBA6E3" : "7753A1" : ThemePalette.Tokens(dark).Accent.ToString("X6");
                 run.Foreground = new SolidColorBrush(Windows.UI.Color.FromArgb(255, Convert.ToByte(color[..2], 16), Convert.ToByte(color[2..4], 16), Convert.ToByte(color[4..], 16)));
             }
             text.Loaded += (_, _) => Theme(); text.ActualThemeChanged += (_, _) => Theme(); offset = match.Index + match.Length;

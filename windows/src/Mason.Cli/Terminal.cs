@@ -27,10 +27,32 @@ internal static class Term
             Ansi = GetConsoleMode(handle, out var mode) && (((mode & 4) != 0) || SetConsoleMode(handle, mode | 4));
         }
         Styled = Ansi && Environment.GetEnvironmentVariable("NO_COLOR") is null or "";
+        UseTheme(Mason.Code.ThemeFamilies.Saved(global::Interactive.DataHome()));
+    }
+
+    /// <summary>The theme family chosen in Mason Agent's Appearance (appearance.json), used for the accent colour.</summary>
+    public static Mason.Code.ThemeFamily Theme { get; private set; } = Mason.Code.ThemeFamilies.Default;
+
+    /// <summary>
+    /// A light terminal background gets the family's light-mode accent. COLORFGBG ("15;0") is the only widely set hint;
+    /// without it the terminal is taken to be dark, as most are.
+    /// </summary>
+    static bool LightBackground => Environment.GetEnvironmentVariable("COLORFGBG") is { } colors
+        && int.TryParse(colors.Split(';')[^1], out var background) && background is 7 or 15;
+
+    public static void UseTheme(Mason.Code.ThemeFamily family)
+    {
+        Theme = family;
+        var tokens = family.For(dark: !LightBackground);
+        static string Rgb(uint c) => $"{(c >> 16) & 0xFF};{(c >> 8) & 0xFF};{c & 0xFF}";
+        Accent = $"\x1b[38;2;{Rgb(tokens.Accent)}m";
+        Selected = $"\x1b[48;2;{Rgb(tokens.Accent)}m\x1b[38;2;{Rgb(tokens.OnAccent)}m\x1b[1m";
     }
 
     public const string Reset = "\x1b[0m", Bold = "\x1b[1m", Dim = "\x1b[2m", Italic = "\x1b[3m";
-    public const string Accent = "\x1b[38;2;195;194;255m", Green = "\x1b[38;2;120;200;140m", Red = "\x1b[38;2;240;120;120m", Yellow = "\x1b[38;2;230;190;110m", Cyan = "\x1b[38;2;130;190;220m";
+    public static string Accent { get; private set; } = "\x1b[38;2;180;184;255m";
+    public static string Selected { get; private set; } = "\x1b[48;2;180;184;255m\x1b[38;2;21;27;48m\x1b[1m";
+    public const string Green = "\x1b[38;2;120;200;140m", Red = "\x1b[38;2;240;120;120m", Yellow = "\x1b[38;2;230;190;110m", Cyan = "\x1b[38;2;130;190;220m";
     public static string Paint(string style, string text) => Styled && text.Length > 0 ? style + text + Reset : text;
 
     /// <summary>Writes complete lines above the status line.</summary>
@@ -75,7 +97,32 @@ internal static class Term
             return lines.Count;
         }
     }
-    public const string Selected = "\x1b[48;2;195;194;255m\x1b[38;2;23;26;43m\x1b[1m";
+
+    /// <summary>
+    /// The app icon drawn with upper half blocks (two pixel rows per line) in 24-bit colour, one string per line.
+    /// Empty when colour is off or the terminal is narrower than 80 columns.
+    /// </summary>
+    public static string[] Picture()
+    {
+        if (!Styled || Width < 80) return [];
+        var lines = new string[PixelBear.Size / 2];
+        for (int row = 0; row < lines.Length; row++)
+        {
+            var line = new StringBuilder();
+            string top = PixelBear.Pixels[row * 2], bottom = PixelBear.Pixels[row * 2 + 1];
+            for (int x = 0; x < PixelBear.Size; x++)
+            {
+                string upper = top.Substring(x * 6, 6), lower = bottom.Substring(x * 6, 6);
+                static string Rgb(string hex) => $"{Convert.ToInt32(hex[..2], 16)};{Convert.ToInt32(hex[2..4], 16)};{Convert.ToInt32(hex[4..], 16)}";
+                if (upper == "......" && lower == "......") line.Append(Reset).Append(' ');
+                else if (lower == "......") line.Append(Reset).Append($"\x1b[38;2;{Rgb(upper)}m▀");
+                else if (upper == "......") line.Append(Reset).Append($"\x1b[38;2;{Rgb(lower)}m▄");
+                else line.Append($"\x1b[38;2;{Rgb(upper)}m\x1b[48;2;{Rgb(lower)}m▀");
+            }
+            lines[row] = line.Append(Reset).ToString();
+        }
+        return lines;
+    }
     static void Erase() { if (status.Length > 0) Console.Out.Write("\r\x1b[2K"); }
     static void Draw() { if (status.Length > 0) { Console.Out.Write(Styled ? Dim + status + Reset : status); Console.Out.Flush(); } }
 

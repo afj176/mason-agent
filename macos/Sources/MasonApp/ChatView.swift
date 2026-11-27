@@ -57,9 +57,11 @@ struct ChatView: View {
                                 }
                             }
                             if model.chatRunning {
-                                if model.chatLive.isEmpty {
-                                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Thinking").foregroundStyle(.secondary) }
-                                } else {
+                                HStack(spacing: 8) {
+                                    PoseImage(pose: .planning, height: 34, meaning: "working on the answer")
+                                    if model.chatLive.isEmpty { ProgressView().controlSize(.small); Text("Thinking").foregroundStyle(.secondary) }
+                                }
+                                if !model.chatLive.isEmpty {
                                     MarkdownText(text: model.chatLive)
                                 }
                             }
@@ -72,7 +74,7 @@ struct ChatView: View {
                     .onChange(of: model.chatLive) { _, _ in proxy.scrollTo("end") }
                 }
                 if chat.messages.count <= 1, !model.chatRunning {
-                    Mascot(size: 72)
+                    PoseImage(pose: .listening, height: 104)
                     Text("Ask anything. Chat answers from the conversation alone: it cannot read your project, edit files or run commands. Use Code for that.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 60).padding(.bottom, 12)
                 }

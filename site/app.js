@@ -1,9 +1,24 @@
 // Optional enhancements. The page works without this file: every download is listed with static links and text.
 //   1. Show the visitor's own system first: the hero button and the download tabs.
 //   2. Fill in versions and download sizes from GitHub, and point each button at the newest release that has its file.
+//   3. Let the Themes section show the app in each theme family.
 (function () {
   var root = document.documentElement;
   root.classList.add("js");
+
+  // ---- theme families ----
+  // Each button swaps the picture to that family; the <picture> keeps choosing light or dark from the visitor's setting.
+  var themeImage = document.getElementById("theme-image"), themeDark = document.getElementById("theme-dark"), themeCaption = document.getElementById("theme-caption");
+  document.querySelectorAll(".theme-list button").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var family = button.getAttribute("data-family"), name = button.textContent.trim();
+      document.querySelectorAll(".theme-list button").forEach(function (other) { other.setAttribute("aria-pressed", String(other === button)); });
+      themeDark.srcset = "assets/themes/" + family + "-dark.webp";
+      themeImage.src = "assets/themes/" + family + "-light.webp";
+      themeImage.alt = "The coding session in the " + name + " theme";
+      themeCaption.textContent = name + (family === "blueprint" ? ", the default." : ".") + " The picture follows your light or dark setting.";
+    });
+  });
 
   // ---- platform tabs ----
   var platforms = ["windows", "macos", "linux"];

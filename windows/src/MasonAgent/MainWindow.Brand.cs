@@ -10,26 +10,23 @@ using Windows.UI.ViewManagement;
 
 namespace Mason;
 
-// Mason Agent identity: palette, type, mascot assets and the shared themed surfaces.
-// Values mirror brand/tokens.json. Windows high contrast always wins over the brand.
+// Mason Agent identity: type, pose art and the shared themed surfaces. Colours come from the active theme
+// family (ThemePalette.cs). Windows high contrast always wins over the theme.
 public sealed partial class MainWindow
 {
     static readonly UISettings brandSystemColors = new();
+    // When files were last put back (rewind, undo, redo, restore original); the session shows the "restored" pose for a short while.
+    DateTimeOffset restoredAt = DateTimeOffset.MinValue;
+    Action? refreshStatusPose;
 
-    // brand/tokens.json palette
-    static readonly Color BrandPaper = Rgb(0xF8F6F2), BrandWhite = Rgb(0xFFFFFF), BrandInk = Rgb(0x20263C), BrandMuted = Rgb(0x535B72);
-    static readonly Color BrandViolet = Rgb(0x4849A8), BrandNight = Rgb(0x171A2B), BrandRaised = Rgb(0x24283E), BrandSilver = Rgb(0xC3C9E0), BrandBright = Rgb(0xC3C2FF);
-    // Hairline borders over each theme's surface ("hairline" and "seam" in brand/tokens.json).
-    static readonly Color BrandLineLight = Rgb(0xD9DBE1), BrandLineDark = Rgb(0x3B4059);
     const double RadiusSmall = 8, RadiusLarge = 20;
 
     // Manrope is the display face; body text and controls keep the Windows system font.
     static readonly FontFamily DisplayFont = new("ms-appx:///Assets/Fonts/Manrope.ttf#Manrope");
 
-    static Color Rgb(int value) => Color.FromArgb(255, (byte)(value >> 16), (byte)(value >> 8), (byte)value);
     static bool BrandHighContrast => new AccessibilitySettings().HighContrast;
-    static Color BrandAccentColor(bool dark) => dark ? BrandBright : BrandViolet;
-    static Color BrandLine(bool dark) => dark ? BrandLineDark : BrandLineLight;
+    static Color BrandAccentColor(bool dark) => ThemePalette.Accent(dark);
+    static Color BrandLine(bool dark) => ThemePalette.Line(dark);
 
     /// <summary>A page or panel title on the type ramp. Title sizes and above use Manrope, the brand display face.</summary>
     static TextBlock Heading(string text, double size = 22)
@@ -73,38 +70,52 @@ public sealed partial class MainWindow
         return box;
     }
 
-    // Mortar's mascot art (Assets/Brand/mascot). One artwork set serves both themes: the
-    // stills are transparent cut-outs, so they are drawn as they are, with no badge or clip behind them.
-    const string MoodWelcome = "08-you-made-my-day", MoodReady = "01-that-checks-out", MoodChecking = "02-let-me-check";
-    const string MoodUnsure = "03-not-convinced", MoodPleased = "04-well-played", MoodTrouble = "05-oof";
-    const string MoodDone = "06-were-good", MoodWorking = "07-im-on-it";
+    // Pose art (Assets/Poses): the bear and the level-bot, one still per state. The stills are transparent
+    // cut-outs that read on every theme, so they are drawn as they are. Each pose stands for one true state.
+    const string PoseOpenProject = "open-project", PoseListening = "listening", PoseReading = "reading-files", PosePlanning = "planning";
+    const string PoseEditing = "editing", PoseChecks = "running-checks", PoseReview = "ready-to-review", PoseChooseModel = "choose-model";
+    const string PoseDownloading = "downloading", PoseLoadingModel = "loading-model", PoseConnected = "connected", PoseApproval = "awaiting-approval";
+    const string PoseFailed = "check-failed", PoseRestored = "restored", PoseAttention = "needs-attention", PoseFirstLaunch = "first-launch";
 
-    static BitmapImage MascotSource(string mood, double size)
-        => new(new Uri(mood is "on-the-mend" or "mark-this-line"
-            ? $"ms-appx:///Assets/Brand/poses/{mood}.png" : $"ms-appx:///Assets/Brand/mascot/{mood}-light.png")) { DecodePixelWidth = (int)Math.Min(768, size * 2) };
-
-    /// <summary>One Mortar mood still. <paramref name="meaning"/> is what assistive technology reads.</summary>
-    static Image MascotImage(string mood, double size, string meaning)
+    /// <summary>The pose for what a running session is doing, from the tool it is using (read, edit, check) or planning between calls.</summary>
+    internal static string PoseForTool(string? tool)
     {
-        var image = new Image { Source = MascotSource(mood, size), Width = size, Height = size, Stretch = Stretch.Uniform, VerticalAlignment = VerticalAlignment.Center };
-        AutomationProperties.SetName(image, "Mortar: " + meaning);
+        if (string.IsNullOrEmpty(tool)) return PosePlanning;
+        bool Has(params string[] words) => words.Any(w => tool.Contains(w, StringComparison.OrdinalIgnoreCase));
+        if (Has("edit", "replace", "create", "write", "delete", "rename", "move", "patch")) return PoseEditing;
+        if (Has("run_", "shell", "check", "review", "test", "browser", "build", "verify", "workflow", "preview")) return PoseChecks;
+        if (Has("read", "open", "list", "search", "find", "grep", "symbol", "definition", "reference", "documentation", "skill")) return PoseReading;
+        return PosePlanning;
+    }
+
+    // Poses are wider than tall, so a pose is sized by its height and keeps its own width.
+    static BitmapImage PoseSource(string pose, double height) => new(new Uri($"ms-appx:///Assets/Poses/{pose}.png")) { DecodePixelHeight = (int)Math.Min(720, height * 2) };
+
+    /// <summary>One pose still, <paramref name="size"/> pixels tall. <paramref name="meaning"/> is what assistive technology reads.</summary>
+    static Image MascotImage(string pose, double size, string meaning)
+    {
+        var image = new Image { Source = PoseSource(pose, size), Height = size, Stretch = Stretch.Uniform, VerticalAlignment = VerticalAlignment.Center };
+        AutomationProperties.SetName(image, "Mason Agent: " + meaning);
         return image;
     }
 
-    /// <summary>Mortar as the logo and as the agent's speaker mark (Assets/Brand/mascot.png).</summary>
-    static Image MortarImage(double size)
+    /// <summary>The app icon (the bear with the level-bot): the title bar logo and the agent's speaker mark.</summary>
+    static Image AppIconImage(double size)
     {
         var image = new Image
         {
-            Source = new BitmapImage(new Uri("ms-appx:///Assets/Brand/mascot.png")) { DecodePixelWidth = (int)(size * 2) },
+            Source = new BitmapImage(new Uri("ms-appx:///Assets/Brand/icon.png")) { DecodePixelWidth = (int)(size * 2) },
             Width = size, Height = size, Stretch = Stretch.Uniform, VerticalAlignment = VerticalAlignment.Center
         };
-        AutomationProperties.SetName(image, "Mortar, the Mason Agent mascot");
+        AutomationProperties.SetName(image, "Mason Agent");
         return image;
     }
 
-    /// <summary>An error or unavailable state: Mortar's "oof" beside the plain explanation.</summary>
-    static FrameworkElement TroubleNotice(string title, params string[] details)
+    /// <summary>Something that tried and broke: the "check failed" pose beside the plain explanation.</summary>
+    static FrameworkElement TroubleNotice(string title, params string[] details) => ProblemNotice(PoseFailed, title, details);
+
+    /// <summary>A problem notice with a pose: <see cref="PoseAttention"/> when the environment needs the user to act, <see cref="PoseFailed"/> when something broke.</summary>
+    static FrameworkElement ProblemNotice(string pose, string title, params string[] details)
     {
         var text = Stack(Text(title, 20));
         foreach (var detail in details) text.Children.Add(Muted(detail, 14));
@@ -112,8 +123,8 @@ public sealed partial class MainWindow
         var notice = new Grid { ColumnSpacing = 20, Padding = new Thickness(24), MaxWidth = 760, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         notice.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         notice.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        var mortar = MascotImage(MoodTrouble, 72, "something went wrong");
-        notice.Children.Add(mortar);
+        bool attention = pose == PoseAttention;
+        notice.Children.Add(MascotImage(pose, attention ? 80 : 66, attention ? "needs your attention" : "something went wrong"));
         Grid.SetColumn(text, 1); notice.Children.Add(text);
         return notice;
     }
@@ -161,28 +172,16 @@ public sealed partial class MainWindow
     /// <summary>Kept for call sites: controls take the accent ramp from App.xaml.</summary>
     static T BrandControl<T>(T control) where T : FrameworkElement => control;
 
-    /// <summary>
-    /// Title bar lockup, sized for the 48 px caption: Mortar is the logo, followed by the approved outlined wordmark.
-    /// The wordmark is an image on purpose; the brand guide forbids resetting it in live text.
-    /// </summary>
+    /// <summary>Title bar lockup, sized for the 48 px caption: the app icon and the name in the display face and the theme's text colour.</summary>
     FrameworkElement BrandHeader()
     {
-        var mortar = MortarImage(32);
-        var wordmark = new Image { Height = 16, Stretch = Stretch.Uniform, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
-        AutomationProperties.SetName(wordmark, "Mason Agent");
-        var lockup = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 9, Margin = new Thickness(2, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center };
-        lockup.Children.Add(mortar);
-        lockup.Children.Add(wordmark);
+        var name = new TextBlock { Text = "Mason Agent", Style = Token("MasonBody"), VerticalAlignment = VerticalAlignment.Center };
+        name.FontFamily = DisplayFont; name.FontSize = 15; name.FontWeight = Microsoft.UI.Text.FontWeights.Bold;
+        var lockup = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(2, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center };
+        lockup.Children.Add(AppIconImage(24));
+        lockup.Children.Add(name);
+        AutomationProperties.SetName(lockup, "Mason Agent");
         ToolTipService.SetToolTip(lockup, "Mason Agent · Make the next move clear.");
-
-        void Update()
-        {
-            bool dark = BrandIsDark();
-            wordmark.Source = new BitmapImage(new Uri("ms-appx:///Assets/Brand/" + (dark ? "wordmark-dark.png" : "wordmark-light.png")));
-        }
-        root.ActualThemeChanged += (_, _) => Update();
-        brandSystemColors.ColorValuesChanged += (_, _) => DispatcherQueue.TryEnqueue(Update);
-        Update();
         try { AppWindow.SetIcon(System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "Brand", "app.ico")); }
         catch { /* The app still starts if the shell icon cannot be assigned. */ }
         return lockup;
@@ -208,7 +207,6 @@ public sealed partial class MainWindow
             return;
         }
         bool dark = root.ActualTheme == ElementTheme.Dark;
-        var ink = dark ? BrandPaper : BrandInk;
         // The window is clear so Mica shows in the title bar and sidebar; pages sit on the brand paper (MainWindow.Chrome.cs).
         ApplyWindowMaterial(dark);
 

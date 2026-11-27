@@ -79,7 +79,7 @@ public sealed partial class MainWindow
             foreach (var key in new[] { "ListViewItemBackgroundSelected", "ListViewItemBackgroundSelectedPointerOver", "ListViewItemBackgroundSelectedPressed" })
             {
                 if (new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast) history.Resources.Remove(key);
-                else history.Resources[key] = new SolidColorBrush(history.ActualTheme == ElementTheme.Dark ? Windows.UI.Color.FromArgb(46, 195, 194, 255) : Windows.UI.Color.FromArgb(30, 72, 73, 168));
+                else history.Resources[key] = new SolidColorBrush(history.ActualTheme == ElementTheme.Dark ? ThemePalette.AccentAlpha(true, 46) : ThemePalette.AccentAlpha(false, 30));
             }
         }
         history.Loaded += (_, _) => UpdateHistorySelection(); history.ActualThemeChanged += (_, _) => UpdateHistorySelection();
@@ -337,8 +337,8 @@ public sealed partial class MainWindow
                 var name = Text(turn.Role == "user" ? "You" : turn.Model.Length == 0 ? "Assistant" : turn.Model, 13); name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
                 var time = Text(turn.At.ToLocalTime().ToString("t"), 12); time.Opacity = .6;
                 var content = new StackPanel { Spacing = 12 };
-                // Mortar speaks for the model; your own messages keep a plain person glyph.
-                UIElement speaker = turn.Role == "user" ? new FontIcon { Glyph = "\uE77B", FontSize = 16, Width = 26 } : MortarImage(26);
+                // The app icon speaks for the model; your own messages keep a plain person glyph.
+                UIElement speaker = turn.Role == "user" ? new FontIcon { Glyph = "\uE77B", FontSize = 16, Width = 26 } : AppIconImage(26);
                 content.Children.Add(Row(speaker, name, time));
                 if (turn.Reasoning.Length > 0) content.Children.Add(new Expander { Header = "Reasoning", Content = ChatInline(turn.Reasoning, 14), HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
                 content.Children.Add(ChatMarkdown(turn.Text, ShowArtifact));
@@ -357,8 +357,8 @@ public sealed partial class MainWindow
                 if (turn.State != "Complete")
                 {
                     var incomplete = Text(turn.State + " · incomplete answers are excluded from later context", 12); incomplete.VerticalAlignment = VerticalAlignment.Center;
-                    // Failures get Mortar's "oof"; a stop you asked for is not a failure.
-                    if (turn.State is "Failed" or "No final answer") content.Children.Add(Row(MascotImage(MoodTrouble, 40, turn.State.ToLowerInvariant()), incomplete));
+                    // Failures get the "check failed" pose; a stop you asked for is not a failure.
+                    if (turn.State is "Failed" or "No final answer") content.Children.Add(Row(MascotImage(PoseFailed, 40, turn.State.ToLowerInvariant()), incomplete));
                     else content.Children.Add(incomplete);
                 }
                 if (turn.StatusDetail.Length > 0) content.Children.Add(Text(turn.StatusDetail, 12));
@@ -597,7 +597,7 @@ public sealed partial class MainWindow
             var liveAnswer = new TextBlock { FontSize = 15, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, LineHeight = 24 };
             var liveReasoning = new TextBlock { FontSize = 14, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
             var liveName = Text(profile.Name, 13); liveName.VerticalAlignment = VerticalAlignment.Center;
-            var live = Stack(Row(MascotImage(MoodChecking, 34, "working on the answer"), liveName), new Expander { Header = "Reasoning", Content = liveReasoning, HorizontalAlignment = HorizontalAlignment.Stretch }, liveAnswer);
+            var live = Stack(Row(MascotImage(PosePlanning, 34, "working on the answer"), liveName), new Expander { Header = "Reasoning", Content = liveReasoning, HorizontalAlignment = HorizontalAlignment.Stretch }, liveAnswer);
             // Your message and the answer's live view are the new containers: they animate in. Tokens then only
             // change the text inside the live view, which never re-triggers the panel's transitions.
             var sent = transcript.Children[^2];

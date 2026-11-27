@@ -173,6 +173,46 @@ void ModelsPage::refresh() {
     if (search_.get_parent()) search_.unparent();
     clear(content_);
 
+    // What the model side is doing, with its pose: downloading, a model starting, connected, or a model to choose.
+    {
+        std::string mood, title, detail;
+        if (c.download) {
+            mood = pose::downloading;
+            title = "Downloading " + c.download->title;
+            detail = "The model starts when the download is checked.";
+        } else if (!c.starting_path.empty()) {
+            mood = pose::loading_model;
+            title = "Starting " + fs::path(c.starting_path).filename().string();
+            detail = c.starting_stage.empty() ? "Loading the model into memory." : c.starting_stage;
+        } else if (c.endpoint) {
+            mood = pose::connected;
+            title = "Connected to " + c.endpoint_name;
+            detail = c.endpoint->url;
+        } else {
+            mood = pose::choose_model;
+            title = c.local_models.empty() ? "No models yet" : "Choose a model";
+            detail = c.local_models.empty() ? "Search below, or let Mason suggest a coding model that fits this computer." : "Start one of the models on this computer, or use a server that is already running.";
+        }
+        auto* hero = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 18);
+        hero->add_css_class("models-hero");
+        hero->append(*pose_picture(mood, 96, title));
+        auto* words = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+        words->set_valign(Gtk::Align::CENTER);
+        words->set_hexpand(true);
+        auto* heading = Gtk::make_managed<Gtk::Label>(title);
+        heading->set_xalign(0);
+        heading->set_wrap(true);
+        heading->add_css_class("models-hero-title");
+        auto* line = Gtk::make_managed<Gtk::Label>(detail);
+        line->set_xalign(0);
+        line->set_wrap(true);
+        line->add_css_class("dim-label");
+        words->append(*heading);
+        words->append(*line);
+        hero->append(*words);
+        content_.append(*hero);
+    }
+
     if (busy) {
         auto* banner = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
         banner->add_css_class("card");
@@ -223,6 +263,12 @@ void ModelsPage::refresh() {
     for (const GpuAdapter& adapter : gpu_.adapters) gpu_rows_.push_back(row(graphics, adapter.name, gpu::describe(adapter)));
 
     // ---- runtime ----
+    // The environment needs the user before a model can start here.
+    if (c.runtime_path.empty()) {
+        auto* notice = problem_notice(pose::attention, "llama.cpp is not installed", "Mason needs it to start a GGUF model on this computer. Install it below; a server you run yourself still works without it.");
+        notice->add_css_class("card");
+        content_.append(*notice);
+    }
     AdwPreferencesGroup* runtime = group(content_, "Runtime", "llama.cpp runs GGUF models. Mason can install the official build for this computer, verified against its published SHA-256.");
     AdwActionRow* runtime_row = row(runtime, c.runtime_path.empty() ? "llama.cpp is not installed" : "llama.cpp is installed", c.runtime_path.empty() ? "Needed to start a model from Mason." : c.runtime_path);
     button(runtime_row, c.runtime_path.empty() ? "Install llama.cpp" : "Update", !busy, [this] { controller_.install_runtime(); }, c.runtime_path.empty());

@@ -20,7 +20,7 @@ public sealed class ChartView : Grid
     readonly TextBox title = new() { Header = "Title", Width = 180, MaxLength = 100 }, unit = new() { Header = "Unit", Width = 90, MaxLength = 24 };
     readonly CheckBox legend = new() { Content = "Legend", IsChecked = true };
     readonly StackPanel measures = new() { Orientation = Orientation.Horizontal, Spacing = 12 }, toggles = new() { Orientation = Orientation.Horizontal, Spacing = 10 };
-    readonly Canvas plot = new() { Width = 1000, Height = 500, Background = Brush("#171A2B") };
+    readonly Canvas plot = new() { Width = 1000, Height = 500, Background = new SolidColorBrush(ThemePalette.Card(true)) };
     readonly TextBlock caption = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(8) };
     readonly ScrollViewer scroll;
     readonly ScrollViewer toolbarSurface;
@@ -118,7 +118,7 @@ public sealed class ChartView : Grid
         Dataset = table == null ? new([], "Category", unavailable ?? "No table to chart.", 0) : ChartModel.Build(table, Definition);
         Dataset = Dataset with { Scope = $"Result {Definition.ResultSet + 1} · {Dataset.Rows:N0} visible / {loadedRows:N0} loaded" + (truncated ? " · Display cap reached: totals may be incomplete" : "") };
         Scene = ChartLayout.Build(Definition, Dataset, plot.Width, Math.Max(plot.Height, Definition.Kind == "Big number" ? 180 + Dataset.Series.Count / 3 * 100 : plot.Height), hidden, Compact);
-        if(ActualTheme==ElementTheme.Light)Scene=Scene.LightSurface();
+        bool darkChart=ActualTheme!=ElementTheme.Light;if(!darkChart)Scene=Scene.LightSurface();Scene=Scene.Themed(ThemePalette.Tokens(darkChart),darkChart);
         plot.Background=Brush(Scene.Background);
         plot.Height = Scene.Height; plot.Children.Clear();
         foreach (var m in Scene.Marks)

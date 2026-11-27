@@ -74,7 +74,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'LICENSE') -Destination $payload
 $notices=Join-Path $repoRoot 'THIRD-PARTY-NOTICES.md'
 if(Test-Path -LiteralPath $notices){Copy-Item -LiteralPath $notices -Destination $payload}
 New-Item -ItemType Directory -Path (Join-Path $payload 'licenses') -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $repoRoot 'brand/logo-kit/fonts/LICENSE-Manrope.txt') -Destination (Join-Path $payload 'licenses')
+Copy-Item -LiteralPath (Join-Path $appRoot 'src/MasonAgent/Assets/Fonts/LICENSE-Manrope.txt') -Destination (Join-Path $payload 'licenses')
 if(-not(Test-Path -LiteralPath (Join-Path $payload 'MasonAgent.exe')) -or -not(Test-Path -LiteralPath (Join-Path $payload 'MasonAgent.pri'))){throw 'Executable or WinUI resources missing'}
 # Mason Agent never ships the Postgres provider, and always ships its native coding handoff and sandbox setup.
 if(Test-Path -LiteralPath (Join-Path $payload 'Npgsql.dll')){throw 'Database provider leaked into Mason Agent'}

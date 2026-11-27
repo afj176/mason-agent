@@ -166,9 +166,9 @@ struct MilestonesView: View {
 
     func tint(_ state: MilestoneStatus.State) -> Color {
         switch state {
-        case .verified, .reviewed: return .green
+        case .verified, .reviewed: return Brand.success
         case .ready: return Brand.accent
-        case .recheck: return .orange
+        case .recheck: return Brand.caution
         case .blocked: return .secondary
         }
     }

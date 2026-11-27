@@ -49,6 +49,31 @@ const char* const kSpinner[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦",
 
 std::string label_of(const std::string& tool) { return replace_all(tool, "_", " "); }
 
+/// /theme and "mason theme": lists the families, or saves one to appearance.json for the CLI and the app.
+void theme_command(const std::string& asked) {
+    const std::string name = trim(asked);
+    if (!name.empty()) {
+        const theme::Family* found = theme::try_find(name);
+        if (!found) {
+            std::vector<std::string> slugs;
+            for (const theme::Family& item : theme::families()) slugs.push_back(item.slug());
+            term::line(paint(term::red, "  No theme called " + name + ". ") + "Choose one of: " + join(slugs, ", ") + ".");
+            return;
+        }
+        theme::save(data_home(), *found);
+        term::use_theme(*found);
+        term::line("  " + paint(std::string(term::accent) + term::bold, "✓") + " Theme set to " + paint(term::accent, found->name) + paint(term::dim, ". Mason Agent uses it the next time it starts."));
+        return;
+    }
+    term::line();
+    for (const theme::Family& item : theme::families()) {
+        const bool current = &item == term::family;
+        const std::string swatch = term::styled ? "\x1b[38;2;" + term::rgb_code(item.dark.accent) + "m■" + term::reset + " \x1b[38;2;" + term::rgb_code(item.light.accent) + "m■" + term::reset : "";
+        term::line("  " + (current ? paint(std::string(term::accent) + term::bold, "›") : std::string(" ")) + " " + swatch + " " + term::pad(item.slug(), 12) + (current ? paint(term::dim, "current") : ""));
+    }
+    term::line(paint(term::dim, "  /theme NAME chooses one. It is shared with Mason Agent's Appearance setting."));
+}
+
 /// What the engine reports while a request runs, handed from its thread to the terminal loop.
 struct RunFeed {
     std::mutex lock;
@@ -104,10 +129,23 @@ public:
 
     void loop(bool resumed) {
         if (!endpoint) find_running_model();
+        std::vector<std::string> lines = {
+            paint(std::string(term::bold) + term::accent, "Mason Agent") + paint(term::dim, "  ·  " + workspace_.root()),
+            paint(term::dim, "model ") + (endpoint ? endpoint_name : paint(term::yellow, "none running")) + paint(term::dim, "  ·  " + mode_name() + "  ·  /help for commands"),
+        };
+        if (resumed) lines.push_back(paint(term::dim, "resumed ") + session_.title + paint(term::dim, "  ·  " + std::to_string(session_.turns.size()) + " requests  ·  " + session_.state));
         term::line();
-        term::line("  " + paint(std::string(term::bold) + term::accent, "Mason Agent") + paint(term::dim, "  ·  " + workspace_.root()));
-        term::line("  " + paint(term::dim, "model ") + (endpoint ? endpoint_name : paint(term::yellow, "none running")) + paint(term::dim, "  ·  " + mode_name() + "  ·  /help for commands"));
-        if (resumed) term::line("  " + paint(term::dim, "resumed ") + session_.title + paint(term::dim, "  ·  " + std::to_string(session_.turns.size()) + " requests  ·  " + session_.state));
+        // In a wide colour terminal the app icon sits at the left with the session lines beside its middle.
+        const std::vector<std::string> picture = term::picture();
+        if (picture.empty()) {
+            for (const std::string& text : lines) term::line("  " + text);
+        } else {
+            const int first = (static_cast<int>(picture.size()) - static_cast<int>(lines.size())) / 2;
+            for (int row = 0; row < static_cast<int>(picture.size()); row++) {
+                const int at = row - first;
+                term::line("  " + picture[row] + (at >= 0 && at < static_cast<int>(lines.size()) ? "   " + lines[at] : ""));
+            }
+        }
         if (!endpoint) first_run();
         while (true) {
             const std::optional<std::string> input = read_request();
@@ -521,6 +559,7 @@ private:
             return true;
         }
         if (name == "/status") { status(); return true; }
+        if (name == "/theme") { theme_command(rest); return true; }
         if (name == "/diff" || name == "/changes") { diff(rest); return true; }
         if (name == "/undo" || name == "/redo") {
             const bool redo = name == "/redo";
@@ -737,6 +776,7 @@ private:
             {"/models setup", "Suggest coding models that fit this computer and download one"},
             {"/models runtime", "Install or update llama.cpp"},
             {"/status", "Session, model, permission and storage"},
+            {"/theme [name]", "List the theme families, or choose one (shared with Mason Agent)"},
             {"/exit", "Leave (Ctrl+C twice also works)"},
         };
         term::line();
@@ -1599,7 +1639,9 @@ const char* const kUsage =
     "  already running, restarts the one you used last, or helps you choose or download one.\n"
     "  New sessions ask before each edit and command (--review).\n"
     "mason --run-due\n"
-    "  Runs the scheduled requests that are due, unattended, and exits. For cron or a systemd timer; the app does this itself while open.\n";
+    "  Runs the scheduled requests that are due, unattended, and exits. For cron or a systemd timer; the app does this itself while open.\n"
+    "mason theme [blueprint|evergreen|graphite|kiln|retro-neon]\n"
+    "  Lists the theme families, or chooses one for the CLI and Mason Agent.\n";
 
 }  // namespace
 
@@ -1607,6 +1649,17 @@ int main(int argc, char** argv) {
     // Inside the sandbox this program is started as the forwarder to Mason's network relay.
     if (const auto forwarded = network::maybe_forward(argc, argv)) return *forwarded;
     std::vector<std::string> arguments(argv + 1, argv + argc);
+    // The accent follows the theme family chosen in Mason Agent or with "mason theme".
+    term::use_theme(theme::saved(data_home()));
+    if (!arguments.empty() && arguments[0] == "theme") {
+        try {
+            theme_command(join(std::vector<std::string>(arguments.begin() + 1, arguments.end()), " "));
+            return 0;
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << "\n";
+            return 1;
+        }
+    }
     if (!arguments.empty() && arguments[0] == "chat") arguments.erase(arguments.begin());
     // A script operation prints JSON Lines and exits; everything else opens the interactive session.
     if (!arguments.empty() && script::names().count(arguments[0])) {

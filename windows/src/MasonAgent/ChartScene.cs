@@ -8,6 +8,15 @@ public sealed record ChartMark(string Kind, double X, double Y, double W, double
     string Text = "", string Path = "", string Tip = "", double Size = 12);
 public sealed record ChartScene(double Width, double Height, List<ChartMark> Marks, string Background = "#171A2B")
 {
+    /// <summary>Takes the theme family's canvas, text, grid and accent colours; other series colours are kept.</summary>
+    public ChartScene Themed(Mason.Code.ThemeTokens theme, bool dark)
+    {
+        static string Hex(uint rgb) => "#" + rgb.ToString("X6");
+        string ink = Hex(theme.Text), line = Hex(theme.Line), accent = Hex(theme.Accent);
+        var colors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["#F8F6F2"] = ink, ["#20263C"] = ink, ["#3B4059"] = line, ["#D9DBE1"] = line, ["#C3C2FF"] = accent, ["#4849A8"] = accent };
+        return this with { Background = dark ? Hex(theme.Card) : "#FFFFFF", Marks = Marks.Select(m => colors.TryGetValue(m.Color, out var color) ? m with { Color = color } : m).ToList() };
+    }
+
     public ChartScene LightSurface()
     {
         var colors=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase){["#F8F6F2"]="#20263C",["#3B4059"]="#D9DBE1",

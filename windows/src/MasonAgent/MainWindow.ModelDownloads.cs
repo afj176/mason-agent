@@ -87,7 +87,7 @@ public sealed partial class MainWindow
         var count=Text("No downloads yet",13);var query=new TextBox{PlaceholderText="Search downloads…"};Accessible(query,"Search downloads");
         var statusFilter=new ComboBox{ItemsSource=new[]{"All statuses","Downloading","Queued","Verifying files","Paused","Needs attention","Ready in library","Cancelled"},SelectedIndex=0,MinWidth=155};Accessible(statusFilter,"Filter downloads by status");
         var empty=Stack(Text("Your downloads will appear here",21),Text("Find a model in Discover, choose its files, then review the download.",14),Button("Find models",(_,_)=>selectModelView?.Invoke(3),true));
-        EmptyState(empty, MoodReady, "no downloads yet");
+        EmptyState(empty, PoseDownloading, "no downloads yet");
         var downloadBody=new Grid();downloadBody.Children.Add(downloadTable);downloadBody.Children.Add(empty);
         var dTitle=Text("Select a download",20);var dRepo=Text("Progress, verified files and destination appear here.",13);
         var stages=StageRail("Download","Verify","Ready");var dState=Text("",23);var dBytes=Text("",13);var dRate=Text("",12);var dDetail=Text("",12);
@@ -113,13 +113,15 @@ public sealed partial class MainWindow
         var dAction=Button("Pause",async(_,_)=>{if(Selected() is {} job)await Act(job);},true);
         var cancel=Button("Cancel download",async(_,_)=>{if(Selected() is {} job)try{service.Pause(job.Id,true);}catch(Exception error){await Notice("Download",error.Message);}});
         var modelCard=Button("View model card ↗",async(_,_)=>{if(Selected() is {} job)await Windows.System.Launcher.LaunchUriAsync(HubClient.ModelPage(job.Repository));});
-        var selectedContent=Stack(dTitle,dRepo,modelCard,stages.View,dState,dProgress,dBytes,dRate,FormGrid(170,dAction,cancel),dDetail,dFiles,dPath,new Expander{Header="Details",Content=dFacts,HorizontalAlignment=HorizontalAlignment.Stretch},Text("Models remain stopped until you choose Start & connect in Library.",12));
+        var dPose=MascotImage(PoseDownloading,72,"downloading");dPose.HorizontalAlignment=HorizontalAlignment.Left;dPose.Visibility=Visibility.Collapsed;
+        var selectedContent=Stack(dTitle,dRepo,modelCard,stages.View,dPose,dState,dProgress,dBytes,dRate,FormGrid(170,dAction,cancel),dDetail,dFiles,dPath,new Expander{Header="Details",Content=dFacts,HorizontalAlignment=HorizontalAlignment.Stretch},Text("Models remain stopped until you choose Start & connect in Library.",12));
         var downloadsPage=InspectorLayout(Vertical(Stack(Toolbar(Text("Downloads",20),Button("Model locations",(_,_)=>openModelLocations?.Invoke())),count,Toolbar(query,statusFilter)),downloadBody),ScrollPage(selectedContent),"Selected download");
         void Detail(ModelDownload? j)
         {
-            foreach(var control in new FrameworkElement[]{modelCard,stages.View,dState,dProgress,dBytes,dRate,dAction,cancel,dDetail,dFiles,dPath})control.Visibility=j==null?Visibility.Collapsed:Visibility.Visible;
+            foreach(var control in new FrameworkElement[]{modelCard,stages.View,dPose,dState,dProgress,dBytes,dRate,dAction,cancel,dDetail,dFiles,dPath})control.Visibility=j==null?Visibility.Collapsed:Visibility.Visible;
             if(j==null)return;
             dTitle.Text=j.Name;dRepo.Text=j.Repository+" · "+j.Variant;
+            dPose.Visibility=j.State is "Downloading" or "Queued" or "Verifying files"?Visibility.Visible:Visibility.Collapsed;
             dState.Text=j.State=="Downloading"?j.Percent.ToString("0")+"%":j.State;
             dState.Foreground=DownloadStateBrush(j.State,dState.ActualTheme);dBytes.Text=j.State=="Ready in library"?$"{j.Files.Length} {(j.Files.Length==1?"file":"files")} verified · "+HubFormat.Size(j.Total):j.ProgressText;dRate.Text=j.RateText;dRate.Visibility=j.RateText.Length==0?Visibility.Collapsed:Visibility.Visible;dProgress.Visibility=j.Terminal?Visibility.Collapsed:Visibility.Visible;dProgress.Value=j.State=="Verifying files"?j.VerifiedFiles*100d/j.Files.Length:j.Percent;
             Accessible(dProgress,j.State+" · "+j.ProgressText);stages.Set(j.State=="Ready in library"?3:j.State=="Verifying files"?1:0);
@@ -355,6 +357,6 @@ public sealed partial class MainWindow
         var ui=new Windows.UI.ViewManagement.UISettings();
         if(new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast)return new(ui.UIElementColor(Windows.UI.ViewManagement.UIElementType.WindowText));
         bool dark=theme==ElementTheme.Dark;
-        return new(state switch{"Ready in library"=>ModelTones.Ink(Tone.Good,dark),"Needs attention"=>ModelTones.Ink(Tone.Bad,dark),_=>dark?Windows.UI.Color.FromArgb(255,248,246,242):Windows.UI.Color.FromArgb(255,32,38,60)});
+        return new(state switch{"Ready in library"=>ModelTones.Ink(Tone.Good,dark),"Needs attention"=>ModelTones.Ink(Tone.Bad,dark),_=>ThemePalette.Ink(dark)});
     }
 }

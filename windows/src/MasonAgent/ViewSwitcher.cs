@@ -80,11 +80,11 @@ public sealed class ViewSwitcher : UserControl
                 string[] backgrounds=["ToggleButtonBackground","ToggleButtonBackgroundPointerOver","ToggleButtonBackgroundPressed","ToggleButtonBackgroundChecked","ToggleButtonBackgroundCheckedPointerOver","ToggleButtonBackgroundCheckedPressed"];
                 if(new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast){foreach(var key in backgrounds)segment.Resources.Remove(key);segment.ClearValue(Control.BackgroundProperty);segment.ClearValue(Control.ForegroundProperty);segment.ClearValue(Control.BorderBrushProperty);return;}
                 bool dark=segment.ActualTheme==ElementTheme.Dark;
-                var accent=new Microsoft.UI.Xaml.Media.SolidColorBrush(dark?Windows.UI.Color.FromArgb(255,195,194,255):Windows.UI.Color.FromArgb(255,72,73,168));
+                var accent=new Microsoft.UI.Xaml.Media.SolidColorBrush(ThemePalette.Accent(dark));
                 var clear=new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent);
                 foreach(var key in backgrounds)segment.Resources[key]=clear;
                 segment.Background=clear;segment.BorderBrush=index==selected?accent:clear;segment.BorderThickness=new Thickness(0,0,0,2);segment.CornerRadius=new CornerRadius(0);
-                segment.Foreground=index==selected?accent:new Microsoft.UI.Xaml.Media.SolidColorBrush(dark?Windows.UI.Color.FromArgb(255,248,246,242):Windows.UI.Color.FromArgb(255,32,38,60));
+                segment.Foreground=index==selected?accent:new Microsoft.UI.Xaml.Media.SolidColorBrush(ThemePalette.Ink(dark));
                 segment.Resources["ToggleButtonForegroundChecked"]=segment.Foreground;
                 segment.Resources["ToggleButtonForegroundCheckedPointerOver"]=segment.Foreground;
             }

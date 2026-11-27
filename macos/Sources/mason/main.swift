@@ -77,6 +77,8 @@ final class CLI {
           New sessions ask before each edit and command (--review).
         mason --run-due
           Runs the scheduled requests that are due, unattended, and exits. For launchd or cron; the app does this itself while open.
+        mason theme [blueprint|evergreen|graphite|kiln|retro-neon]
+          Lists the theme families, or chooses one for the CLI and Mason Agent.
         """
 
     static func main() async -> Int32 {
@@ -85,6 +87,7 @@ final class CLI {
         if arguments.first == "chat" { arguments.removeFirst() }
         if arguments.contains("--version") { print("mason \(MasonVersion.current)"); return 0 }
         if arguments.contains("--help") || arguments.contains("-h") { print(usage); print(ScriptOperations.usage); return 0 }
+        if arguments.first == "theme" { theme(arguments.dropFirst().joined(separator: " ")); return 0 }
         // A script operation prints JSON Lines and exits; everything else opens the interactive session.
         if let first = arguments.first, ScriptOperations.names.contains(first) {
             return await ScriptOperations.run(arguments) { print($0); fflush(stdout) }
@@ -148,10 +151,7 @@ final class CLI {
     func loop(resumed: Bool) async {
         watchInterrupts()
         if endpoint == nil { await findRunningModel() }
-        Term.line()
-        Term.line("  " + Term.paint(Term.bold + Term.accent, "Mason Agent") + Term.paint(Term.dim, "  ·  " + workspace.root.path))
-        Term.line("  " + Term.paint(Term.dim, "model ") + (endpoint == nil ? Term.paint(Term.yellow, "none running") : endpointName) + Term.paint(Term.dim, "  ·  \(modeName)  ·  /help for commands"))
-        if resumed { Term.line("  " + Term.paint(Term.dim, "resumed ") + session.title + Term.paint(Term.dim, "  ·  \(session.turns.count) requests  ·  \(session.state)")) }
+        banner(resumed: resumed)
         if endpoint == nil { await firstRun() }
         while true {
             guard let input = readRequest() else { Term.line(); return }
@@ -162,6 +162,49 @@ final class CLI {
             } catch is CancellationError { Term.line(Term.paint(Term.yellow, "  Cancelled.")) }
             catch { Term.line(Term.paint(Term.red, "✗ " + ((error as? MasonError)?.description ?? error.localizedDescription))) }
         }
+    }
+
+    /// The session lines; in a wide colour terminal the app icon sits at the left with the lines beside its middle.
+    func banner(resumed: Bool) {
+        var lines = [
+            Term.paint(Term.bold + Term.accent, "Mason Agent") + Term.paint(Term.dim, "  ·  " + workspace.root.path),
+            Term.paint(Term.dim, "model ") + (endpoint == nil ? Term.paint(Term.yellow, "none running") : endpointName) + Term.paint(Term.dim, "  ·  \(modeName)  ·  /help for commands"),
+        ]
+        if resumed { lines.append(Term.paint(Term.dim, "resumed ") + session.title + Term.paint(Term.dim, "  ·  \(session.turns.count) requests  ·  \(session.state)")) }
+        Term.line()
+        let picture = Term.picture()
+        if picture.isEmpty { for line in lines { Term.line("  " + line) }; return }
+        let first = (picture.count - lines.count) / 2
+        for (row, art) in picture.enumerated() {
+            Term.line("  " + art + (row >= first && row - first < lines.count ? "   " + lines[row - first] : ""))
+        }
+    }
+
+    /// /theme and "mason theme": lists the families, or saves one to appearance.json for the CLI and the app.
+    static func theme(_ name: String) {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty {
+            guard let family = ThemeFamilies.named(name) else {
+                Term.line(Term.paint(Term.red, "  No theme called \(name). ") + "Choose one of: " + ThemeFamilies.all.map(\.slug).joined(separator: ", ") + ".")
+                return
+            }
+            do { try ThemeFamilies.save(family, home: DataHome.url) } catch {
+                Term.line(Term.paint(Term.red, "  The theme could not be saved: ") + error.localizedDescription)
+                return
+            }
+            Term.useTheme(family)
+            Term.line("  " + Term.paint(Term.accent + Term.bold, "✓") + " Theme set to " + Term.paint(Term.accent, family.name)
+                      + Term.paint(Term.dim, ". Mason Agent uses it the next time it starts."))
+            return
+        }
+        Term.line()
+        for family in ThemeFamilies.all {
+            let current = family == Term.theme
+            let swatch = Term.styled ? "\u{1B}[38;2;\(Term.rgb(family.dark.accent))m■\(Term.reset) \u{1B}[38;2;\(Term.rgb(family.light.accent))m■\(Term.reset)" : ""
+            let marker = current ? Term.paint(Term.accent + Term.bold, "›") : " "
+            Term.line("  \(marker) \(swatch) \(family.slug.padding(toLength: 12, withPad: " ", startingAt: 0))" + (current ? Term.paint(Term.dim, "current") : ""))
+        }
+        Term.line(Term.paint(Term.dim, "  /theme NAME chooses one. It is shared with the Theme setting in Mason Agent."))
     }
 
     /// Ctrl+C stops a run; at the prompt, a second Ctrl+C within five seconds leaves.
@@ -410,6 +453,7 @@ final class CLI {
         switch name {
         case "/exit", "/quit": return false
         case "/help", "/?": help()
+        case "/theme": CLI.theme(rest)
         case "/new":
             if !session.turns.isEmpty {
                 let previous = session
@@ -657,6 +701,7 @@ final class CLI {
             ("/models setup", "Suggest coding models that fit this Mac and download one"),
             ("/models runtime", "Install or update llama.cpp"),
             ("/status", "Session, model, permission and storage"),
+            ("/theme [name]", "List the theme families, or choose one (shared with Mason Agent)"),
             ("/exit", "Leave (Ctrl+C twice also works)"),
         ]
         Term.line()

@@ -154,6 +154,8 @@ public sealed partial class MainWindow
         startupClock.Tick+=(_,_)=>{if(startupAt is {} at)startupElapsed.Text="Elapsed · "+(DateTimeOffset.UtcNow-at).ToString(@"mm\:ss");};Closed+=(_,_)=>startupClock.Stop();
         var launchDetail=Text("Models run only when you choose Start. Existing external servers are never stopped or adopted.",12);
         var selectedStatus=Text("",12);
+        // Loading while the selected model starts, connected once Mason serves it.
+        var modelPose=MascotImage(PoseConnected,64,"connected");modelPose.HorizontalAlignment=HorizontalAlignment.Left;modelPose.Visibility=Visibility.Collapsed;string modelPoseShown=PoseConnected;
         var selectedPurpose=Text("",15);
         var exactName=new TextBox { Header="Model name on disk",IsReadOnly=true,TextWrapping=TextWrapping.Wrap };
         var verdictTitle=Text("",15);verdictTitle.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;var verdictDetail=Text("",12);
@@ -200,7 +202,7 @@ public sealed partial class MainWindow
         ToolTipService.SetToolTip(embedGguf,"One GGUF model at a time runs inside Mason; others start as owned processes. A native llama.cpp crash closes Mason, and an embedded model stops when Mason closes. Turn this off to run every model in its own process.");
         var folders=Text("",12);
         var emptyAdd=Button("Add local folder",(_,_)=>openModelLocations?.Invoke());noMatches.Children.Add(Button("Find models",(_,_)=>ShowView(3),true));noMatches.Children.Add(emptyAdd);
-        var noMatchesMortar = EmptyState(noMatches, MoodChecking, "nothing here yet");
+        var noMatchesPose = EmptyState(noMatches, PoseChooseModel, "nothing here yet");
         var scanNotes=new TextBox { IsReadOnly=true,AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,MaxHeight=200 };
         var runtimePaths=Text("",12);
         Border Card(UIElement child)
@@ -267,7 +269,7 @@ public sealed partial class MainWindow
             noMatchesTitle.Text=discovered.Length==0?"Your collection starts here":"No models match";
             // An empty collection and an empty filter result are different moments.
             clearFilters.Visibility=discovered.Length==0?Visibility.Collapsed:Visibility.Visible;
-            noMatchesMortar.Source=MascotSource(discovered.Length==0?MoodChecking:MoodUnsure,96);
+            noMatchesPose.Height=discovered.Length==0?96:72;
             noMatchesHelp.Text=discovered.Length==0?"Scan common folders, or add the folder where your model weights live. Scan warnings appear above.":"Try a different name or capability, or clear your filters.";
             clearFilters.Visibility=discovered.Length==0?Visibility.Collapsed:Visibility.Visible;emptyAdd.Visibility=discovered.Length==0?Visibility.Visible:Visibility.Collapsed;
             servingEmpty.Visibility=modelServing.Running.Count==0?Visibility.Visible:Visibility.Collapsed;
@@ -400,6 +402,9 @@ public sealed partial class MainWindow
             UpdateFit();adaptive?.Invoke();
             var served=m==null?null:modelServing.Running.FirstOrDefault(x=>x.Owner.IsRunning&&x.Model.Path.Equals(m.Path,StringComparison.OrdinalIgnoreCase));
             bool starting=m!=null&&startupModel?.Path==m.Path;
+            var wantPose=starting?PoseLoadingModel:PoseConnected;
+            modelPose.Visibility=served!=null||starting?Visibility.Visible:Visibility.Collapsed;
+            if(wantPose!=modelPoseShown){modelPoseShown=wantPose;modelPose.Source=PoseSource(wantPose,64);Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(modelPose,"Mason Agent: "+(starting?"loading the model":"connected"));}
             selectedStatus.Text=m==null?"":served!=null?"Running · "+served.Profile.Endpoint:starting?State(m):shownVerdict?.Readiness==ModelReadiness.Ready&&m.Launchable?"Ready to start · "+shownVerdict.RoleLabel:State(m);
             statusDot.Style=Token(served!=null||(shownVerdict?.Readiness==ModelReadiness.Ready&&m?.Launchable==true&&!starting)?"MasonDotSuccess":starting?"MasonDotAccent":"MasonDotNeutral");
             selectedRuntime.Text=m?.Launchable==true?(ModelAdapters.IsQuantized(m)?"Runs with GPT-QModel · packed 4-bit weights":ModelAdapters.UsesPython(m)?"Runs with Python · PyTorch + Transformers":"Runs with llama.cpp · GGUF")+(File.Exists(ModelAdapters.IsQuantized(m)?quantizedPython.Text:ModelAdapters.UsesPython(m)?python.Text:llama.Text)?" · runtime selected":" · choose a runtime in Runtime setup"):"";
@@ -556,7 +561,7 @@ public sealed partial class MainWindow
         Grid.SetColumn(draftButton,1);Grid.SetColumn(runtimeDrawer,2);footerRow.Children.Add(footerFacts);footerRow.Children.Add(draftButton);footerRow.Children.Add(runtimeDrawer);
         var footer=Stack(new Border{Style=Token("MasonDivider")},footerRow);footer.Margin=new Thickness(0,4,0,0);
         var statusRow=Row(statusDot,selectedStatus);
-        var heading=Stack(modelOrg,modelTitle,modelChips,statusRow,modelFacts);heading.Spacing=6;
+        var heading=Stack(modelOrg,modelTitle,modelChips,statusRow,modelPose,modelFacts);heading.Spacing=6;
         var actionsDivider=new Border{Style=Token("MasonDivider")};
         list.SelectionChanged+=(_,_)=>{bool file=Chosen()!=null;footer.Visibility=actionsDivider.Visibility=file?Visibility.Visible:Visibility.Collapsed;};
         var detailContents=Stack(backToLibrary,heading,verdictPanel,connectionEdit,selectedPurpose,fileOptions,actionsDivider,actionList,footer);detailContents.Spacing=14;
@@ -614,7 +619,7 @@ public sealed partial class MainWindow
         };
         servingEmpty.Children.Add(Button("Browse your models",(_,_)=>ShowView(0),true));
         servingEmpty.Children.Add(Button("Manage external AI connections",(_,_)=>Navigate("AI connections")));
-        EmptyState(servingEmpty, MoodReady, "nothing running");
+        EmptyState(servingEmpty, PoseChooseModel, "nothing running");
         var runningChat = Button("Use for coding", (_, _) => { if (aiOperation == null && running.SelectedItem is ServedModel s) openCodeWithModel?.Invoke(s.Profile.Id); }, true); runningChat.Visibility = Visibility.Collapsed;
         running.SelectionChanged += (_, _) => runningChat.Visibility = running.SelectedItem is ServedModel s && s.Owner.IsRunning && s.Profile.Checks.Any(c => c.Capability == AiCapability.Chat && c.State == "Passed") ? Visibility.Visible : Visibility.Collapsed;
         var runningTalk = Button("Open in chat", (_, _) => { if (aiOperation == null && running.SelectedItem is ServedModel s) openNativeChat?.Invoke(s.Profile.Id); }); runningTalk.Visibility = Visibility.Collapsed;
@@ -730,7 +735,7 @@ public sealed partial class MainWindow
         var closeLocations=Button("Close",(_,_)=>{});
         var locationPanel=SurfaceCard(Vertical(Toolbar(Text("Model locations",23),closeLocations),ScrollPage(Stack(DownloadStorage(),new Expander{Header="Managed model folders",Content=managedLocations,HorizontalAlignment=HorizontalAlignment.Stretch},Text("Folders included in Library",20),Text("Existing folders are indexed in place. Adding a folder does not copy its models.",12),ScrollTools(Row(add,remove)),locations,common,new Expander{Header="Common folders · availability",Content=folders,HorizontalAlignment=HorizontalAlignment.Stretch},locationSummary,Button("Scan library",async(_,_)=>{await Scan();locationSummary.Text=lastScan.HasValue?"Last scan · "+lastScan.Value.ToLocalTime().ToString("g"):"Not scanned yet";}),new Expander{Header="Scan details",Content=scanNotes,HorizontalAlignment=HorizontalAlignment.Stretch}))));
         var locationOverlay=new Grid{Visibility=Visibility.Collapsed};var shade=new Border{Background=new SolidColorBrush(Windows.UI.Color.FromArgb(75,0,0,0))};locationOverlay.Children.Add(shade);locationOverlay.Children.Add(locationPanel);locationPanel.HorizontalAlignment=HorizontalAlignment.Right;
-        void LocationSurface(){locationPanel.Background=new SolidColorBrush(new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast?new Windows.UI.ViewManagement.UISettings().UIElementColor(Windows.UI.ViewManagement.UIElementType.Window):root.ActualTheme==ElementTheme.Dark?BrandRaised:BrandWhite);}
+        void LocationSurface(){locationPanel.Background=new SolidColorBrush(new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast?new Windows.UI.ViewManagement.UISettings().UIElementColor(Windows.UI.ViewManagement.UIElementType.Window):ThemePalette.Card(root.ActualTheme==ElementTheme.Dark));}
         root.ActualThemeChanged+=(_,_)=>LocationSurface();LocationSurface();
         void LocationWidth(){locationPanel.Width=host.ActualWidth<900?Math.Max(0,host.ActualWidth):Math.Min(560,host.ActualWidth);}
         host.SizeChanged+=(_,_)=>LocationWidth();host.Children.Add(locationOverlay);
@@ -807,7 +812,7 @@ public sealed partial class MainWindow
                     SettingsCard("\uE8B7","Saved to",downloadSettings.Folder),
                     SettingsCard("\uE7EF","Runs inside Mason","No separate server. The model starts when the download is verified."));
                 plan.MaxHeight=440;plan.Padding=new Thickness(0);
-                if(await new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Set up local AI",Content=plan,PrimaryButtonText="Download and start",CloseButtonText="Cancel",DefaultButton=ContentDialogButton.Primary}.ShowAsync()!=ContentDialogResult.Primary)return;
+                if(await new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Set up local AI",Content=WithPose(PoseChooseModel,plan,"choosing a model"),PrimaryButtonText="Download and start",CloseButtonText="Cancel",DefaultButton=ContentDialogButton.Primary}.ShowAsync()!=ContentDialogResult.Primary)return;
                 if(needRuntime&&release!=null)
                 {
                     using var http=new HttpClient(new SocketsHttpHandler{AllowAutoRedirect=false}){Timeout=Timeout.InfiniteTimeSpan};

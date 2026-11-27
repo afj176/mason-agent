@@ -11,6 +11,7 @@
 
 #include "notes.hpp"
 #include "palette.hpp"
+#include "theme.hpp"
 #include "gpu.hpp"
 #include "generation.hpp"
 #include "agent.hpp"
@@ -2766,6 +2767,29 @@ static void test_project_notes() {
     CHECK(project_notes::command("clear", workspace, box.home) == "This project has no notes now." && project_notes::load(box.home, workspace.root()).empty());
 }
 
+static void test_theme_families() {
+    CHECK(theme::families().size() == 5);
+    CHECK(theme::default_family().name == "Blueprint");
+    CHECK(theme::find("retro-neon").name == "Retro Neon");
+    CHECK(theme::find("KILN").name == "Kiln");
+    CHECK(theme::try_find("sepia") == nullptr);
+    CHECK(theme::find("sepia").name == "Blueprint");
+    CHECK(theme::find("Retro Neon").slug() == "retro-neon");
+    CHECK(theme::mix(0x000000, 0xFFFFFF, 0.5) == 0x808080);
+    CHECK(theme::hex(0x374FAB) == "#374FAB");
+    Sandbox box;
+    CHECK(theme::saved(box.home).name == "Blueprint");
+    // Saving keeps whatever else the file holds, as the Windows app and CLI do.
+    fs::create_directories(box.home);
+    write_file_atomic(box.home / "appearance.json", R"({"Other": 3})");
+    theme::save(box.home, theme::find("evergreen"));
+    CHECK(theme::saved(box.home).name == "Evergreen");
+    const json saved = json::parse(read_file(box.home / "appearance.json"));
+    CHECK(saved["Family"] == "Evergreen" && saved["Other"] == 3);
+    write_file_atomic(box.home / "appearance.json", "not json");
+    CHECK(theme::saved(box.home).name == "Blueprint");
+}
+
 static void test_palette() {
     const std::vector<PaletteItem> items = {
         {"session", "Fix the cart total", "Session in shop", "s1"},     {"project", "shop", "Project at /home/me/shop", "/home/me/shop"},
@@ -3126,7 +3150,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"palette", test_palette}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };
     for (const auto& [name, function] : tests) {

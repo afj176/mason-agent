@@ -14,6 +14,7 @@ extension AppModel {
             replace(made.session)
             selection = made.session.id
             draft = made.request
+            if restoreFiles { restoredAt = Date() }
             notice = made.session.detail
         } catch {
             notice = describe(error)
