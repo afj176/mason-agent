@@ -1,4 +1,5 @@
 import Foundation
+import MasonCore
 #if canImport(Darwin)
 import Darwin
 #else
@@ -15,8 +16,62 @@ enum Term {
     private static var saved: termios?
 
     static let reset = "\u{1B}[0m", bold = "\u{1B}[1m", dim = "\u{1B}[2m"
-    static let accent = "\u{1B}[38;2;195;194;255m", green = "\u{1B}[38;2;120;200;140m", red = "\u{1B}[38;2;240;120;120m"
+    static let green = "\u{1B}[38;2;120;200;140m", red = "\u{1B}[38;2;240;120;120m"
     static let yellow = "\u{1B}[38;2;230;190;110m", cyan = "\u{1B}[38;2;130;190;220m"
+
+    /// The theme family chosen in Mason Agent's Settings or with `mason theme` (appearance.json), used for the accent colour.
+    private(set) static var theme = ThemeFamilies.saved()
+    /// Mason's accent, from the theme family.
+    private(set) static var accent = accentStyle(theme)
+    /// The highlighted row or cell: the family's accent as the background.
+    private(set) static var selected = selectedStyle(theme)
+
+    /// A light terminal background gets the family's light-mode accent. COLORFGBG ("15;0") is the only widely set hint;
+    /// without it the terminal is taken to be dark, as most are.
+    static var lightBackground: Bool {
+        guard let colors = ProcessInfo.processInfo.environment["COLORFGBG"], let last = colors.split(separator: ";").last, let background = Int(last) else { return false }
+        return background == 7 || background == 15
+    }
+    static func rgb(_ color: UInt32) -> String {
+        let c = ThemeFamilies.channels(color)
+        return "\(c.red);\(c.green);\(c.blue)"
+    }
+    private static func accentStyle(_ family: ThemeFamily) -> String { "\u{1B}[38;2;\(rgb(family.tokens(dark: !lightBackground).accent))m" }
+    private static func selectedStyle(_ family: ThemeFamily) -> String {
+        let tokens = family.tokens(dark: !lightBackground)
+        return "\u{1B}[48;2;\(rgb(tokens.accent))m\u{1B}[38;2;\(rgb(tokens.onAccent))m\u{1B}[1m"
+    }
+    static func useTheme(_ family: ThemeFamily) {
+        theme = family
+        accent = accentStyle(family)
+        selected = selectedStyle(family)
+    }
+
+    /// The app icon drawn with upper half blocks (two pixel rows per line) in 24-bit colour, one string per line.
+    /// Empty when colour is off or the terminal is narrower than 80 columns.
+    static func picture() -> [String] {
+        guard styled, width >= 80 else { return [] }
+        let rows = PixelBear.pixels.map { Array($0) }
+        func cell(_ row: [Character], _ x: Int) -> String { String(row[(x * 6)..<(x * 6 + 6)]) }
+        func color(_ hex: String) -> String {
+            let value = UInt32(hex, radix: 16) ?? 0
+            return rgb(value)
+        }
+        var lines: [String] = []
+        for row in 0..<(PixelBear.size / 2) {
+            let top = rows[row * 2], bottom = rows[row * 2 + 1]
+            var line = ""
+            for x in 0..<PixelBear.size {
+                let upper = cell(top, x), lower = cell(bottom, x)
+                if upper == "......" && lower == "......" { line += reset + " " }
+                else if lower == "......" { line += reset + "\u{1B}[38;2;\(color(upper))m▀" }
+                else if upper == "......" { line += reset + "\u{1B}[38;2;\(color(lower))m▄" }
+                else { line += "\u{1B}[38;2;\(color(upper))m\u{1B}[48;2;\(color(lower))m▀" }
+            }
+            lines.append(line + reset)
+        }
+        return lines
+    }
 
     static func paint(_ style: String, _ text: String) -> String { styled && !text.isEmpty ? style + text + reset : text }
 
@@ -92,8 +147,6 @@ enum Term {
         var size = winsize()
         return ioctl(1, UInt(TIOCGWINSZ), &size) == 0 && size.ws_row > 0 ? Int(size.ws_row) : 24
     }
-    /// The highlighted row or cell: Mason's accent as the background.
-    static let selected = "\u{1B}[48;2;195;194;255m\u{1B}[38;2;23;26;43m\u{1B}[1m"
 
     enum Key: Equatable { case up, down, left, right, enter, escape, interrupt, character(Character), other }
     /// Waits for one key in raw mode and names it; arrows arrive as escape sequences.

@@ -37,6 +37,10 @@ final class AppModel: ObservableObject {
     @Published var liveActivities: [Activity] = []
     @Published var approval: PendingApproval?
     @Published var notice: String?
+    /// The latest error turned into words, so a notice that reports it shows the check-failed pose.
+    private(set) var lastError: String?
+    /// When files were last put back (undo, redo or a fork that restores them); the status shows "restored" for 30 seconds.
+    @Published var restoredAt: Date?
     /// The search box over sessions, projects, files, commands and chats, and what it has to choose from.
     @Published var paletteShown = false
     var paletteItems: [PaletteItem] = []
@@ -231,7 +235,11 @@ final class AppModel: ObservableObject {
     func sendCurrent() { if pane == .chat { sendChat() } else { send() } }
     func stopCurrent() { if pane == .chat { stopChat() } else { stop() } }
 
-    func describe(_ error: Error) -> String { (error as? MasonError)?.description ?? error.localizedDescription }
+    func describe(_ error: Error) -> String {
+        let words = (error as? MasonError)?.description ?? error.localizedDescription
+        lastError = words
+        return words
+    }
 
     // MARK: sessions
 
@@ -454,6 +462,7 @@ final class AppModel: ObservableObject {
         do {
             guard let result = try Agent.undoLatest(&current, store: store, redo: redo) else { notice = redo ? "Nothing to redo." : "Nothing to undo in this session."; return }
             replace(current)
+            restoredAt = Date()
             let verb = redo ? "reapplied" : "put back"
             notice = "\(result.restored.count) file\(result.restored.count == 1 ? "" : "s") \(verb)." + (result.skipped.isEmpty ? "" : " Changed since and left alone: \(result.skipped.joined(separator: ", ")).")
         } catch { notice = describe(error) }

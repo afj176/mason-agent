@@ -4,12 +4,15 @@ import MasonCore
 @main
 struct MasonAgentApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var theme = ThemeStore.shared
     @AppStorage("appearance") private var appearance = AppearanceChoice.system.rawValue
 
     var body: some Scene {
         WindowGroup("Mason Agent") {
             RootView()
                 .environmentObject(model)
+                // A new theme family rebuilds the views so every Brand colour is drawn again from it.
+                .id(theme.family)
                 .frame(minWidth: 860, minHeight: 540)
                 .tint(Brand.accent)
                 .onAppear { NSApp.appearance = (AppearanceChoice(rawValue: appearance) ?? .system).appearance }
@@ -52,7 +55,7 @@ struct MasonAgentApp: App {
         }
 
         Settings {
-            SettingsView().environmentObject(model)
+            SettingsView().environmentObject(model).id(theme.family).tint(Brand.accent)
         }
     }
 }
@@ -105,10 +108,8 @@ struct RootView: View {
                 }
             }
         }
-        .alert("Mason Agent", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
-            Button("OK", role: .cancel) { model.notice = nil }
-        } message: {
-            Text(model.notice ?? "")
+        .sheet(isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
+            NoticeSheet(text: model.notice ?? "").environmentObject(model)
         }
         .sheet(isPresented: $model.paletteShown) { PaletteView().environmentObject(model) }
     }
@@ -120,10 +121,7 @@ struct Sidebar: View {
     var body: some View {
         List(selection: $model.selection) {
             Section {
-                HStack(spacing: 8) {
-                    Mascot(size: 26)
-                    Text("Mason Agent").font(.headline).fontWeight(.heavy)
-                }
+                BrandHeader(iconSize: 26, textSize: 15)
                 .padding(.vertical, 4)
                 .listRowSeparator(.hidden)
                 .selectionDisabled()
@@ -204,14 +202,21 @@ struct SettingsView: View {
 struct GeneralPane: View {
     @EnvironmentObject var model: AppModel
     @AppStorage("appearance") private var appearance = AppearanceChoice.system.rawValue
+    @ObservedObject private var theme = ThemeStore.shared
 
     var body: some View {
         Form {
             Section("Appearance") {
-                Picker("Theme", selection: $appearance) {
+                Picker("Mode", selection: $appearance) {
                     ForEach(AppearanceChoice.allCases) { Text($0.rawValue).tag($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Theme")
+                    ThemeFamilyPicker()
+                    Text(theme.problem.map { "The theme applies now but could not be saved: " + $0 } ?? "Each theme has a light and a dark side; Mode chooses which one shows. The mason command uses the same theme.")
+                        .font(.callout).foregroundStyle(theme.problem == nil ? Brand.muted : Brand.critical)
+                }
             }
             CodeSearchSection()
             Section("Command line") {

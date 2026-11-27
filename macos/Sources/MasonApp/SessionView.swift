@@ -11,7 +11,8 @@ struct SessionView: View {
             HSplitView {
                 VStack(spacing: 0) {
                     Transcript(session: session)
-                    if let pending = model.approval { ApprovalCard(pending: pending) }
+                    // The approval card has its own pose, so the status pose steps aside while it shows.
+                    if let pending = model.approval { ApprovalCard(pending: pending) } else { StatusPose(session: session) }
                     Composer(session: session)
                 }
                 .frame(minWidth: 420)
@@ -37,14 +38,18 @@ struct Transcript: View {
                         TurnView(turn: turn, activities: activities(for: index), live: model.running && index == session.turns.count - 1)
                     }
                     if session.turns.isEmpty {
-                        Text("Ask a question about this project, or describe a change.")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.top, 80)
+                        VStack(spacing: 14) {
+                            PoseImage(pose: .listening, height: 104)
+                            Text("Ask a question about this project, or describe a change.")
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 56)
                     }
                     if !model.running, !session.detail.isEmpty {
+                        // A failed request's pose is in the status above the composer.
                         Label(session.detail, systemImage: session.state == "Failed" ? "xmark.octagon" : "info.circle")
-                            .foregroundStyle(session.state == "Failed" ? Color.red : Color.secondary)
+                            .foregroundStyle(session.state == "Failed" ? Brand.critical : Color.secondary)
                             .font(.callout)
                     }
                     Color.clear.frame(height: 1).id("end")
@@ -108,20 +113,26 @@ struct TurnView: View {
                     if !live, let receipt = turn.checks {
                         // What Mason found when it ran the checks it worked out from the request.
                         let ran = receipt.results.contains { $0.state != "notRun" }
-                        Label(receipt.summary, systemImage: !ran ? "minus.circle" : receipt.passed ? "checkmark.seal.fill" : "xmark.seal.fill")
-                            .font(.callout)
-                            .foregroundStyle(!ran ? Color.orange : receipt.passed ? Color.green : Color.red)
-                            .help(receipt.report)
+                        HStack(spacing: 10) {
+                            if ran { PoseImage(pose: receipt.passed ? .runningChecks : .checkFailed, height: 40, meaning: receipt.passed ? "checks passed" : "a check failed") }
+                            Label(receipt.summary, systemImage: !ran ? "minus.circle" : receipt.passed ? "checkmark.seal.fill" : "xmark.seal.fill")
+                                .font(.callout)
+                                .foregroundStyle(!ran ? Brand.caution : receipt.passed ? Brand.success : Brand.critical)
+                                .help(receipt.report)
+                        }
                     }
                     if !live, let receipt = turn.verification {
                         // What Mason found when it ran the project's verify workflow itself.
                         let good = receipt.verdict == .passed || receipt.verdict == .fixed
                         let quiet = receipt.verdict == .notRun || receipt.verdict == .failingBefore
-                        Label("Verified by Mason: \(receipt.summary)" + (receipt.repairs > 0 ? " · after \(receipt.repairs) repair\(receipt.repairs == 1 ? "" : "s")" : ""),
-                              systemImage: good ? "checkmark.seal.fill" : quiet ? "minus.circle" : "xmark.seal.fill")
-                            .font(.callout)
-                            .foregroundStyle(good ? Color.green : quiet ? Color.orange : Color.red)
-                            .help(receipt.command + (receipt.output.isEmpty ? "" : "\n\n" + String(receipt.output.suffix(600))))
+                        HStack(spacing: 10) {
+                            if !quiet { PoseImage(pose: good ? .runningChecks : .checkFailed, height: 40, meaning: good ? "checks passed" : "a check failed") }
+                            Label("Verified by Mason: \(receipt.summary)" + (receipt.repairs > 0 ? " · after \(receipt.repairs) repair\(receipt.repairs == 1 ? "" : "s")" : ""),
+                                  systemImage: good ? "checkmark.seal.fill" : quiet ? "minus.circle" : "xmark.seal.fill")
+                                .font(.callout)
+                                .foregroundStyle(good ? Brand.success : quiet ? Brand.caution : Brand.critical)
+                                .help(receipt.command + (receipt.output.isEmpty ? "" : "\n\n" + String(receipt.output.suffix(600))))
+                        }
                     }
                     if !live, !activities.isEmpty || !turn.changes.isEmpty {
                         // What the request amounted to, in one line, and the way to its changes.
@@ -132,7 +143,7 @@ struct TurnView: View {
                                     .buttonStyle(.plain).fontWeight(.semibold).foregroundStyle(Brand.accent)
                                     .help("Show what changed")
                             }
-                            if turn.undone { Text("Undone").font(.caption).foregroundStyle(.orange) }
+                            if turn.undone { Text("Undone").font(.caption).foregroundStyle(Brand.caution) }
                         }
                     }
                 }
@@ -174,13 +185,13 @@ struct ActivityRow: View {
             HStack(spacing: 6) {
                 switch activity.state {
                 case .running: ProgressView().controlSize(.mini)
-                case .completed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-                case .denied: Image(systemName: "nosign").foregroundStyle(.orange)
+                case .completed: Image(systemName: "checkmark.circle.fill").foregroundStyle(Brand.success)
+                case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(Brand.critical)
+                case .denied: Image(systemName: "nosign").foregroundStyle(Brand.caution)
                 }
                 Text(activity.tool.replacingOccurrences(of: "_", with: " ")).fontWeight(.medium)
                 Text(activity.subject).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                if activity.state == .denied { Text("declined").foregroundStyle(.orange) }
+                if activity.state == .denied { Text("declined").foregroundStyle(Brand.caution) }
             }
             .font(.callout)
             .accessibilityElement(children: .combine)
@@ -234,7 +245,10 @@ struct ApprovalCard: View {
     var body: some View {
         let tool = pending.request.tool.replacingOccurrences(of: "_", with: " ")
         VStack(alignment: .leading, spacing: 10) {
-            Label("Review \(tool)", systemImage: "hand.raised.fill").font(.headline)
+            HStack(alignment: .center, spacing: 12) {
+                PoseImage(pose: .awaitingApproval, height: 70)
+                Label("Review \(tool)", systemImage: "hand.raised.fill").font(.headline)
+            }
             Text(pending.request.title).font(.system(.body, design: .monospaced)).textSelection(.enabled).lineLimit(6)
             if !pending.request.detail.isEmpty {
                 ScrollView {
@@ -242,7 +256,7 @@ struct ApprovalCard: View {
                         ForEach(Array(pending.request.detail.components(separatedBy: "\n").prefix(200).enumerated()), id: \.offset) { _, line in
                             Text(line.isEmpty ? " " : line)
                                 .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(line.hasPrefix("+") ? Color.green : line.hasPrefix("-") ? Color.red : Color.secondary)
+                                .foregroundStyle(line.hasPrefix("+") ? Brand.success : line.hasPrefix("-") ? Brand.critical : Color.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
@@ -257,8 +271,8 @@ struct ApprovalCard: View {
             }
         }
         .padding(14)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.5)))
+        .background(Brand.caution.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.caution.opacity(0.5)))
         .padding(.horizontal, 16).padding(.top, 8)
         .popover(isPresented: $showRule) {
             VStack(alignment: .leading, spacing: 10) {
@@ -429,8 +443,8 @@ struct FileDiff: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(change.path).fontWeight(.medium)
-                Text("+\(rows.filter { $0.kind == .added }.count)").foregroundStyle(.green)
-                Text("−\(rows.filter { $0.kind == .removed }.count)").foregroundStyle(.red)
+                Text("+\(rows.filter { $0.kind == .added }.count)").foregroundStyle(Brand.success)
+                Text("−\(rows.filter { $0.kind == .removed }.count)").foregroundStyle(Brand.critical)
                 if change.deleted { Text("deleted").foregroundStyle(.secondary) } else if change.created { Text("new file").foregroundStyle(.secondary) }
                 if change.isOpaque { Text("binary or large file").foregroundStyle(.secondary) }
                 if change.byCommand == true { Text("by a command").foregroundStyle(.secondary) }
@@ -450,10 +464,10 @@ struct FileDiff: View {
                                     }
                                 Text("\(String(row.number).leftPadded(5)) \(String(row.kind.rawValue)) \(row.text)")
                                     .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(row.kind == .added ? Color.green : row.kind == .removed ? Color.red : Color.primary)
+                                    .foregroundStyle(row.kind == .added ? Brand.success : row.kind == .removed ? Brand.critical : Color.primary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            .background(row.kind == .added ? Color.green.opacity(0.10) : row.kind == .removed ? Color.red.opacity(0.10) : Color.clear)
+                            .background(row.kind == .added ? Brand.success.opacity(0.10) : row.kind == .removed ? Brand.critical.opacity(0.10) : Color.clear)
                         } else {
                             Text("      ⋯").font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                         }
