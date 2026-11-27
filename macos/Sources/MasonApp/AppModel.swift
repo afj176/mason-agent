@@ -344,7 +344,7 @@ final class AppModel: ObservableObject {
         // Show the request at once; the engine's copy replaces it when the run ends.
         var shown = current
         shown.turns.append(Turn(request: Review.request(text, comments: current.comments ?? []), firstActivity: current.activities.count))
-        shown.state = "Running"
+        shown.state = "Running"; shown.ending = nil; shown.repeatStop = nil
         replace(shown)
         runTask = Task {
             let agent = Agent(store: store, model: model, approve: { [weak self] request in
@@ -409,7 +409,7 @@ final class AppModel: ObservableObject {
             // The previous request is finished: show it as it ended, and the follow-up as the request now running.
             var shown = state
             shown.turns.append(Turn(request: text, firstActivity: state.activities.count))
-            shown.state = "Running"
+            shown.state = "Running"; shown.ending = nil; shown.repeatStop = nil
             replace(shown)
             liveText = ""; liveActivities = []
             waitingFollowUps = max(0, waitingFollowUps - 1)

@@ -55,6 +55,14 @@ public struct ApprovalRules {
 /// One bounded, sequential agent loop: ask the model, run the tool it calls, hand the result back, until it answers in text.
 public final class Agent {
     public static let actionLimit = 64
+    /// The steps one request may take before it pauses; `actionLimit` unless a test sets a smaller one.
+    public var stepLimit = Agent.actionLimit
+    /// How long one request may run, in seconds, before Mason pauses it as the user's stop would; tests set less.
+    public var timeLimit: TimeInterval = 30 * 60
+    /// Set when the running request's time limit expired, so its stop ends as time_limit rather than the user's stop.
+    private var expired = false
+    /// Whether the latest tool call failed because Workspace rejected its path.
+    var rejectedPath = false
     let store: SessionStore
     let model: ChatModel
     let approve: (ApprovalRequest) async -> Bool
@@ -276,17 +284,29 @@ public final class Agent {
     public func run(_ session: inout Session, request: String) async {
         var input = request
         if request.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "/queue" {
-            guard let next = Agent.nextFollowUp(session) else { session.state = "Failed"; session.detail = "No messages are queued."; return }
+            guard let next = Agent.nextFollowUp(session) else {
+                session.state = "Failed"; session.detail = "No messages are queued."; session.ending = RunEnding(code: "failed"); return
+            }
             session.pendingInput?.removeAll { $0.id == next.id }
             input = next.text
         }
         withInbox { accepting = true }
         while true {
             let start = session, text = input
+            withInbox { expired = false }
             let turn = Task { [self] () -> Session in var working = start; await self.runTurn(&working, request: text); return working }
             // A steering message that arrived between requests interrupts this one at once.
             if withInbox({ activeTurn = turn; return inbox.contains { $0.steer } }) { turn.cancel() }
+            // Each request has a time limit. When it runs out, the request stops as the user's stop would, and says why.
+            let limit = timeLimit
+            let timer = Task { [self] in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, limit) * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                withInbox { expired = true }
+                turn.cancel()
+            }
             session = await withTaskCancellationHandler { await turn.value } onCancel: { turn.cancel() }
+            timer.cancel()
             let stopping = Task.isCancelled, state = session.state, waiting = Agent.nextFollowUp(session)
             let (arrived, next, continuing): ([FollowUp], FollowUp?, Bool) = withInbox {
                 activeTurn = nil
@@ -324,16 +344,23 @@ public final class Agent {
 
     /// Runs one request to completion. The session is saved after every step, so an interruption loses nothing that already happened.
     func runTurn(_ session: inout Session, request: String) async {
+        session.repeatStop = nil
+        session.ending = nil
+        // How the request ended, with the files it changed that are still changed.
+        let turnsBefore = session.turns.count
+        func end(_ code: String, _ session: inout Session) {
+            session.ending = RunEnding(code: code, kept: session.turns.count > turnsBefore ? Agent.keptFiles(session.turns[session.turns.count - 1]) : 0)
+        }
         guard let workspace = try? Workspace(path: session.workspace) else {
-            session.state = "Failed"; session.detail = "The project folder \(session.workspace) is no longer available."; return
+            session.state = "Failed"; session.detail = "The project folder \(session.workspace) is no longer available."; end("failed", &session); return
         }
         // Comments on lines of the project travel with the request, and only while those files are unchanged.
         let comments = session.comments ?? []
         do { try Review.validate(workspace, comments: comments) }
-        catch { session.state = "Failed"; session.detail = "\(error)"; return }
+        catch { session.state = "Failed"; session.detail = "\(error)"; end("failed", &session); return }
         let input = Review.request(request, comments: comments)
         guard !input.isEmpty, input.count <= 16_000 else {
-            session.state = "Failed"; session.detail = "Describe a request in 1–16,000 characters."; return
+            session.state = "Failed"; session.detail = "Describe a request in 1–16,000 characters."; end("failed", &session); return
         }
         session.comments = nil
         if session.title == "New session" { session.title = input.count > 55 ? String(input.prefix(55)) + "…" : input }
@@ -379,6 +406,7 @@ public final class Agent {
             if derivesChecks, session.permission == .auto, !session.askOnly {
                 if Catalog.applies(input, workspace: workspace), try await buildCatalog(input, workspace: workspace, session: &session) {
                     session.state = "Completed"; session.detail = ""
+                    end(Agent.finishedCode(session.turns[session.turns.count - 1]), &session)
                     try? store.save(session)
                     return
                 }
@@ -390,12 +418,21 @@ public final class Agent {
             }
             var blocked: String?
             var reviewed = false
+            // The previous call of this request, how many times in a row the model has asked for it, and what each of
+            // those identical calls returned.
+            var lastCall: String?, inARow = 0
+            var streak: [Attempt] = []
+            var repeated: RepeatStop?
+            // Failed calls since the last one that succeeded, and rejected paths in a row: a model that cannot get
+            // past the same failure, or cannot name a path inside the project, is stuck.
+            var failures: [Failure] = [], rejectedPaths = 0
+            var stuck: String?
             // With hooks on, the project's afterPlan workflows run once the checks are worked out and before any work.
             if let failure = await runHooks("afterPlan", in: workspace, session: session) {
                 session.messages[session.messages.count - 1].content += "\n\nThe project's afterPlan hook failed before work began:\n" + failure
             }
             let window = await model.contextWindow()
-            for _ in 0..<Agent.actionLimit {
+            for _ in 0..<stepLimit {
                 try Task.checkCancellation()
                 if Compaction.needed(session, window: window) {
                     emit(.status("Compacting the conversation"))
@@ -464,19 +501,39 @@ public final class Agent {
                 }
                 for call in reply.toolCalls {
                     try Task.checkCancellation()
+                    // A model stuck in a loop asks for the identical call again and again. Once two identical calls in a
+                    // row came back the same, Mason does not run a third and ends the request instead of spending the
+                    // rest of the steps. A changed result is progress, and a poll that waited is patience.
+                    let key = Agent.repeatKey(call)
+                    if key == lastCall { inARow += 1 } else { inARow = 1; streak = [] }
+                    lastCall = key
+                    if inARow > 1, Agent.looping(streak) {
+                        repeated = skipRepeat(call, times: inARow, session: &session)
+                        try? store.save(session)
+                        break
+                    }
                     // Before the first step that can change the project, note whether it verifies as it stands.
                     if !baselineTaken, Agent.changing.contains(call.name) {
                         baselineTaken = true
                         baseline = await verifyRun(workspace, session: session)
                     }
+                    let started = Date(), row = session.activities.count
                     var result = await perform(call, in: workspace, session: &session)
+                    if let problem = Agent.stuckProblem(call, key: key, state: row < session.activities.count ? session.activities[row].state : .completed,
+                                                        result: row < session.activities.count ? session.activities[row].result : result,
+                                                        rejectedPath: rejectedPath, failures: &failures, rejectedPaths: &rejectedPaths) {
+                        stuck = problem
+                    }
+                    streak.append(Attempt(result: result, waited: ["poll_job", "terminal_status"].contains(call.name) && Date().timeIntervalSince(started) >= 1))
                     // After an edit, the project's afterEdit hooks say at once whether it broke something.
                     if ["edit_file", "write_file", "apply_edits"].contains(call.name), !result.hasPrefix("Error:"), let failure = await runHooks("afterEdit", in: workspace, session: session) {
                         result += "\n[" + failure + "]"
                     }
+                    // Fair warning: the second identical call came back the same, so the model hears that a third will not run.
+                    if Agent.looping(streak) { result += RepeatStop.warning }
                     session.messages.append(ChatMessage(role: "tool", content: result, toolCallId: call.id))
                     try? store.save(session)
-                    if pendingQuestion != nil { break }
+                    if pendingQuestion != nil || stuck != nil { break }
                 }
                 if let question = pendingQuestion {
                     // The model needs something only the user can say. Its question is the answer to this request.
@@ -485,13 +542,43 @@ public final class Agent {
                     asked = true
                     break
                 }
+                if repeated != nil || stuck != nil { break }
             }
-            session.state = asked ? "Needs your answer" : finished ? "Completed" : "Stopped"
-            session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : blocked.map { String($0.prefix(600)) } ?? "Stopped after \(Agent.actionLimit) steps. Send another message to continue."
+            if let stuck {
+                // The model cannot get past one failure, or cannot name a path inside the project: its doing, not Mason's.
+                session.state = "Stopped"; session.detail = stuck
+                end("model_stuck", &session)
+            } else if let repeated {
+                // The model looped, not Mason: the request stops there, what already landed stands, and it is never a failure.
+                end("model_loop", &session)
+                session.repeatStop = repeated
+                session.state = "Stopped"
+                session.detail = repeated.detail(kept: (session.ending?.kept ?? 0) > 0)
+            } else if asked {
+                session.state = "Needs your answer"; session.detail = "Mason asked a question. Reply to continue."
+                end("question", &session)
+            } else if finished {
+                session.state = "Completed"; session.detail = ""
+                end(Agent.finishedCode(session.turns[session.turns.count - 1]), &session)
+            } else if let blocked {
+                session.state = "Stopped"; session.detail = String(blocked.prefix(600))
+                end("blocked", &session)
+            } else {
+                session.state = "Stopped"; session.detail = "Stopped after \(stepLimit) steps. Send another message to continue."
+                end("step_limit", &session)
+            }
         } catch is CancellationError {
-            session.state = "Stopped"; session.detail = "Stopped. Completed edits are kept."
+            session.state = "Stopped"
+            if withInbox({ expired }) {
+                session.detail = "Mason paused this request at its \(Int(timeLimit / 60))-minute time limit. Completed edits and receipts are kept."
+                end("time_limit", &session)
+            } else {
+                session.detail = "Stopped. Completed edits are kept."
+                end("stopped", &session)
+            }
         } catch {
             session.state = "Failed"; session.detail = (error as? MasonError)?.description ?? error.localizedDescription
+            end((error as? MasonError)?.modelUnavailable == true ? "model_unavailable" : "failed", &session)
         }
         // A tool call without a result would make the next request invalid for the model, so close any that were cut short.
         Agent.closeOpenCalls(&session)
@@ -549,11 +636,92 @@ public final class Agent {
         }
     }
 
+    /// What a call is about, as its activity row shows it: the command, path, query or name it names.
+    static func subject(of call: ToolCall, arguments: [String: Any]) -> String {
+        func text(_ key: String) -> String? { arguments[key] as? String }
+        let named = text("command") ?? text("path") ?? text("query") ?? text("name") ?? text("id") ?? text("question")
+        return call.name == "suggest_note" ? (text("text") ?? "") : named ?? [text("server"), text("tool") ?? text("uri")].compactMap { $0 }.joined(separator: "/")
+    }
+
+    /// A call's tool and arguments compared as parsed JSON, so spacing and key order do not make two calls differ.
+    static func repeatKey(_ call: ToolCall) -> String {
+        guard let parsed = try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8), options: [.fragmentsAllowed]),
+              let canonical = try? JSONSerialization.data(withJSONObject: parsed, options: [.sortedKeys, .fragmentsAllowed]) else { return call.name + "\n" + call.arguments }
+        return call.name + "\n" + String(decoding: canonical, as: UTF8.self)
+    }
+
+    /// One of the identical calls in a row: what it returned, and whether it was a poll that waited a second or more
+    /// for its job (measured, not taken from wait_ms).
+    struct Attempt: Equatable { var result: String; var waited: Bool }
+
+    /// Two identical calls in a row returned the same result, and neither was a poll that waited for its job.
+    static func looping(_ streak: [Attempt]) -> Bool {
+        guard streak.count >= 2 else { return false }
+        let last = streak[streak.count - 1], previous = streak[streak.count - 2]
+        return last.result == previous.result && !last.waited && !previous.waited
+    }
+
+    /// A call that failed or was declined: which operation it was, its tool and path, and what it said.
+    struct Failure: Equatable { var key: String; var tool: String; var path: String?; var result: String }
+
+    static let sameFailureDetail = "The same operation failed three times without a successful tool action. See activity for the last error."
+    static let invalidPathDetail = "The model could not produce a valid path after correction. Use a relative path or try another model."
+
+    /// After a call ran: whether the model is stuck, as the detail to end with, or nil. A completed call clears the
+    /// failures; a skipped repeat never reaches here. The same failure is the same operation, or the same tool on the
+    /// same path with the same result. Two rejected paths in a row are stuck too.
+    static func stuckProblem(_ call: ToolCall, key: String, state: Activity.State, result: String, rejectedPath: Bool,
+                             failures: inout [Failure], rejectedPaths: inout Int) -> String? {
+        rejectedPaths = rejectedPath ? rejectedPaths + 1 : 0
+        if state == .completed { failures = [] }
+        else if state == .failed || state == .denied {
+            let arguments = (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any]) ?? [:]
+            let failure = Failure(key: key, tool: call.name, path: arguments["path"] as? String, result: result)
+            failures.append(failure)
+            let same = failures.filter { prior in
+                prior.key == failure.key || (prior.tool == failure.tool && prior.result == failure.result && prior.path != nil && prior.path == failure.path)
+            }
+            if same.count >= 3 { return sameFailureDetail }
+        }
+        return rejectedPaths >= 2 ? invalidPathDetail : nil
+    }
+
+    /// How many files a request changed that are still changed: not created and deleted again, not put back as they were.
+    static func keptFiles(_ turn: Turn) -> Int {
+        if turn.undone { return 0 }
+        return turn.changes.filter { change in
+            if change.afterMissing == true { return change.before != nil || change.beforeBlob != nil }
+            if change.before == nil && change.beforeBlob == nil { return true }
+            if change.beforeBlob != nil || change.afterBlob != nil { return change.beforeBlob != change.afterBlob }
+            return change.before != change.after
+        }.count
+    }
+
+    /// A request the model finished is done, unless what Mason checked failed or could not be checked.
+    static func finishedCode(_ turn: Turn) -> String {
+        if let receipt = turn.verification, receipt.verdict != .passed, receipt.verdict != .fixed { return "unverified" }
+        if let receipt = turn.checks, !receipt.passed || (!receipt.results.isEmpty && !receipt.results.contains(where: { $0.state != "notRun" })) { return "unverified" }
+        return "done"
+    }
+
+    /// The model asked again for a call it had already made twice in a row with the same result: it is recorded as
+    /// skipped, not run, and still answered so the conversation stays valid. Returns the record the request ends with.
+    func skipRepeat(_ call: ToolCall, times: Int, session: inout Session) -> RepeatStop {
+        let arguments = (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any]) ?? [:]
+        let subject = Agent.subject(of: call, arguments: arguments)
+        let activity = Activity(tool: call.name, subject: subject, state: .skipped, result: RepeatStop.result)
+        session.activities.append(activity)
+        emit(.activityStarted(activity))
+        emit(.activityFinished(activity))
+        session.messages.append(ChatMessage(role: "tool", content: RepeatStop.result, toolCallId: call.id))
+        return RepeatStop(tool: call.name, subject: subject, times: times, model: model.name)
+    }
+
     func perform(_ call: ToolCall, in workspace: Workspace, session: inout Session) async -> String {
         let arguments = (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any]) ?? [:]
         func text(_ key: String) -> String? { arguments[key] as? String }
-        let named = text("command") ?? text("path") ?? text("query") ?? text("name") ?? text("id") ?? text("question")
-        let subject = call.name == "suggest_note" ? (text("text") ?? "") : named ?? [text("server"), text("tool") ?? text("uri")].compactMap { $0 }.joined(separator: "/")
+        let subject = Agent.subject(of: call, arguments: arguments)
+        rejectedPath = false
         var activity = Activity(tool: call.name, subject: subject, state: .running, result: "")
         session.activities.append(activity)
         emit(.activityStarted(activity))
@@ -682,6 +850,7 @@ public final class Agent {
         } catch is CancellationError {
             return finish(.failed, "Stopped by the user.")
         } catch {
+            rejectedPath = (error as? MasonError)?.invalidPath == true
             return finish(.failed, (error as? MasonError)?.description ?? error.localizedDescription)
         }
     }

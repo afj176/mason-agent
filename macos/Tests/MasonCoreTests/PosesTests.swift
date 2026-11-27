@@ -29,4 +29,19 @@ final class PosesTests: XCTestCase {
         XCTAssertEqual(pose("Failed"), .checkFailed)
         XCTAssertNil(pose("Stopped"))
     }
+
+    func testEndingsDecideThePose() {
+        func pose(_ state: String, _ ending: String?, changes: Bool = false) -> Pose? {
+            Pose.forStatus(state: state, hasTurns: true, runningTool: nil, restoredRecently: false, reviewableChanges: changes, ending: ending)
+        }
+        XCTAssertEqual(pose("Completed", "done"), .connected)
+        XCTAssertEqual(pose("Completed", "done", changes: true), .readyToReview)
+        XCTAssertEqual(pose("Needs your answer", "question"), .listening)
+        for failed in ["unverified", "model_unavailable", "failed"] { XCTAssertEqual(pose("Failed", failed), .checkFailed, failed) }
+        // The model's loop, a limit, a project block or the user's stop is calm, never the failed pose.
+        for calm in ["model_loop", "model_stuck", "step_limit", "time_limit", "blocked", "stopped"] { XCTAssertNil(pose("Stopped", calm), calm) }
+        // An unknown code falls back to the state.
+        XCTAssertEqual(pose("Failed", "from_the_future"), .checkFailed)
+        XCTAssertEqual(pose("Running", "done"), .planning)
+    }
 }

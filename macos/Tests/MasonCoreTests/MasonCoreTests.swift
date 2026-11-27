@@ -26,6 +26,14 @@ final class ScriptedModel: ChatModel {
     }
 }
 
+/// A model whose every request fails with the same error: an unreachable server, a stop, anything else.
+final class ThrowingModel: ChatModel {
+    let name = "throwing"
+    let error: Error
+    init(_ error: Error) { self.error = error }
+    func complete(messages: [ChatMessage], tools: [ToolSpec], onText: @escaping (String) -> Void) async throws -> ModelReply { throw error }
+}
+
 func call(_ name: String, _ arguments: [String: String], id: String = UUID().uuidString) -> ModelReply {
     let json = String(decoding: try! JSONSerialization.data(withJSONObject: arguments), as: UTF8.self)
     return ModelReply(toolCalls: [ToolCall(id: id, name: name, arguments: json)])
@@ -186,6 +194,231 @@ final class MasonCoreTests: XCTestCase {
         await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Change x")
         XCTAssertEqual(session.activities.last?.state, .failed)
         XCTAssertTrue(model.seen[1].last!.content.contains("matches 2 places"))
+    }
+
+    // MARK: repeat stop
+
+    func testARepeatedWriteWithTheSameResultIsWarnedThenSkippedAndTheWorkIsKept() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        // The same call each time; spacing and key order differ, which does not make it a different call.
+        let write = { (id: String, arguments: String) in ModelReply(toolCalls: [ToolCall(id: id, name: "write_file", arguments: arguments)]) }
+        let model = ScriptedModel([
+            write("w1", #"{"path":"index.html","content":"<h1>Hi</h1>"}"#),
+            write("w2", #"{"content": "<h1>Hi</h1>", "path": "index.html"}"#),
+            write("w3", #"{"path":"index.html","content":"<h1>Hi</h1>"}"#),
+            write("w4", #"{"path":"index.html","content":"<h1>Hi</h1>"}"#),
+            ModelReply(text: "Not reached."),
+        ])
+        let page = folder.appendingPathComponent("index.html")
+        // Before the fourth request the file is changed by hand, so a fourth write would show.
+        model.onRequest = { if $0 == 4 { try? "mine".write(to: page, atomically: true, encoding: .utf8) } }
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Make a page")
+        // Created, then edited to the same text twice (the same result), then not run.
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .completed, .skipped])
+        XCTAssertEqual(session.activities.last?.result, RepeatStop.result)
+        XCTAssertEqual(try String(contentsOf: page, encoding: .utf8), "mine", "the skipped call is not run")
+        XCTAssertEqual(model.replies.count, 1, "the request ends at the repeat")
+        // The model was warned exactly once, after the second identical result, and the activity rows do not carry it.
+        let tools = session.messages.filter { $0.role == "tool" }
+        XCTAssertEqual(tools.filter { $0.content.hasSuffix(RepeatStop.warning) }.map(\.toolCallId), ["w3"])
+        XCTAssertFalse(session.activities.contains { $0.result.contains("Mason will not run") })
+        // A repeat stop is always Stopped, never Completed or Failed; what landed is kept.
+        XCTAssertEqual(session.state, "Stopped")
+        XCTAssertEqual(session.ending, RunEnding(code: "model_loop", kept: 1))
+        XCTAssertEqual(session.repeatStop, RepeatStop(tool: "write_file", subject: "index.html", times: 4, model: "scripted"))
+        XCTAssertEqual(session.detail, "scripted kept repeating write file index.html with the same result, so Mason stopped it. Your work so far is kept.")
+        XCTAssertEqual(session.repeatStop?.explanation(kept: true),
+                       "scripted asked for write file index.html 4 times in a row and got the same result each time. Mason skipped the last one and stopped here instead of looping. Your work so far is kept.")
+        // The skipped call is still answered, so the next request is valid for the model.
+        XCTAssertEqual(tools.last?.content, RepeatStop.result)
+        XCTAssertEqual(tools.last?.toolCallId, "w4")
+        // The record and the ending are kept with the session.
+        let reloaded = try SessionStore(home: home).sessions.first { $0.id == session.id }
+        XCTAssertEqual(reloaded?.repeatStop?.subject, "index.html")
+        XCTAssertEqual(reloaded?.ending, RunEnding(code: "model_loop", kept: 1))
+    }
+
+    func testARepeatedReadWithNothingChangedStopsAndTheNextRequestClearsTheRecord() async throws {
+        var (store, session) = try session(.reviewEdits)
+        let read = call("read_file", ["path": "calc.py"])
+        await Agent(store: store, model: ScriptedModel([read, read, read, ModelReply(text: "Not reached.")]), approve: { _ in true }, emit: { _ in }).run(&session, request: "Explain calc")
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .skipped])
+        XCTAssertEqual(session.state, "Stopped")
+        XCTAssertEqual(session.ending, RunEnding(code: "model_loop", kept: 0))
+        XCTAssertEqual(session.repeatStop, RepeatStop(tool: "read_file", subject: "calc.py", times: 3, model: "scripted"))
+        XCTAssertEqual(session.detail, "scripted kept repeating read file calc.py with the same result, so Mason stopped it. Nothing was changed.")
+        XCTAssertEqual(session.repeatStop?.explanation(kept: false),
+                       "scripted asked for read file calc.py 3 times in a row and got the same result each time. Mason skipped the last one and stopped here instead of looping. Nothing was changed.")
+
+        await Agent(store: store, model: ScriptedModel([ModelReply(text: "It subtracts.")]), approve: { _ in true }, emit: { _ in }).run(&session, request: "And now?")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertNil(session.repeatStop)
+        XCTAssertEqual(session.ending, RunEnding(code: "done", kept: 0))
+        // Without a model name the sentence says "The model".
+        XCTAssertTrue(RepeatStop(tool: "write_file", subject: "a.txt", model: "").detail(kept: true).hasPrefix("The model kept repeating write file a.txt"))
+    }
+
+    func testADifferentCallInBetweenResetsTheCount() async throws {
+        var (store, session) = try session(.reviewEdits)
+        let a = call("read_file", ["path": "calc.py"]), b = call("list_files", ["path": "."])
+        await Agent(store: store, model: ScriptedModel([a, a, b, a, a, ModelReply(text: "Read it.")]), approve: { _ in true }, emit: { _ in }).run(&session, request: "Look around")
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .completed, .completed, .completed])
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertNil(session.repeatStop)
+        XCTAssertEqual(session.detail, "")
+    }
+
+    func testIdenticalCallsWhoseResultChangesAreNeverStopped() async throws {
+        var (store, session) = try session(.reviewEdits)
+        let read = call("read_file", ["path": "calc.py"])
+        let model = ScriptedModel([read, read, read, read, ModelReply(text: "It changes.")])
+        let file = folder.appendingPathComponent("calc.py")
+        // The file is rewritten before every request, so each identical read returns something new.
+        model.onRequest = { try? "x = \($0)\n".write(to: file, atomically: true, encoding: .utf8) }
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Watch calc")
+        XCTAssertEqual(session.activities.map(\.state), [.completed, .completed, .completed, .completed])
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertNil(session.repeatStop)
+        XCTAssertFalse(session.messages.contains { $0.content.contains(RepeatStop.warning) })
+    }
+
+    func testLoopingNeedsTwoEqualResultsThatDidNotWait() {
+        typealias Attempt = Agent.Attempt
+        XCTAssertFalse(Agent.looping([]))
+        XCTAssertFalse(Agent.looping([Attempt(result: "a", waited: false)]))
+        XCTAssertTrue(Agent.looping([Attempt(result: "a", waited: false), Attempt(result: "a", waited: false)]))
+        XCTAssertFalse(Agent.looping([Attempt(result: "a", waited: false), Attempt(result: "b", waited: false)]))
+        // A poll that waited for its job is patience, not a loop, whichever of the two waited.
+        XCTAssertFalse(Agent.looping([Attempt(result: "running", waited: true), Attempt(result: "running", waited: false)]))
+        XCTAssertFalse(Agent.looping([Attempt(result: "running", waited: false), Attempt(result: "running", waited: true)]))
+        // Only the last two count.
+        XCTAssertTrue(Agent.looping([Attempt(result: "a", waited: true), Attempt(result: "b", waited: false), Attempt(result: "b", waited: false)]))
+    }
+
+    // MARK: run endings
+
+    func testEveryEndingCodeHasAStyleAndAnUnknownOneHasNone() {
+        XCTAssertEqual(RunEnding.codes.count, 11)
+        for code in RunEnding.codes { XCTAssertNotNil(RunEnding.style(code), code) }
+        XCTAssertNil(RunEnding.style("something_else"))
+        XCTAssertNil(RunEnding.style(""))
+        XCTAssertEqual(RunEnding.style("model_loop"), RunEnding.Style(glyph: "↻", tone: .warning, headline: "Model looped", cause: "model"))
+        XCTAssertEqual(RunEnding.style("stopped")?.tone, .neutral)
+        XCTAssertEqual(RunEnding.style("model_unavailable")?.tone, .danger)
+        XCTAssertEqual(RunEnding.hint("step_limit"), "Send another message to continue from here.")
+        XCTAssertNil(RunEnding.hint("done"))
+        XCTAssertEqual(RunEnding.keptText(1), "1 file kept")
+        XCTAssertEqual(RunEnding.keptText(2), "2 files kept")
+    }
+
+    func testAFinishedRequestIsDoneWithItsKeptFilesAndANewRequestClearsTheEnding() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        await Agent(store: store, model: ScriptedModel([call("write_file", ["path": "a.txt", "content": "a"]), ModelReply(text: "Done.")]), approve: { _ in true }, emit: { _ in }).run(&session, request: "Add a")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.ending, RunEnding(code: "done", kept: 1))
+        XCTAssertEqual(try SessionStore(home: home).sessions.first { $0.id == session.id }?.ending, RunEnding(code: "done", kept: 1))
+        // The next request starts without one, and ends with its own.
+        let id = session.id, home: URL = self.home
+        var whileRunning: RunEnding? = RunEnding(code: "not read")
+        let model = ScriptedModel([ModelReply(text: "Nothing to do.")])
+        model.onRequest = { _ in whileRunning = (try? SessionStore(home: home))?.sessions.first(where: { $0.id == id })?.ending }
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Anything else?")
+        XCTAssertNil(whileRunning, "the ending is cleared when a request starts")
+        XCTAssertEqual(session.ending, RunEnding(code: "done", kept: 0))
+    }
+
+    func testAQuestionEndsAsQuestion() async throws {
+        var (store, session) = try session(.reviewEdits)
+        await Agent(store: store, model: ScriptedModel([call("ask_user", ["question": "Which file?"])]), approve: { _ in true }, emit: { _ in }).run(&session, request: "Fix it")
+        XCTAssertEqual(session.state, "Needs your answer")
+        XCTAssertEqual(session.ending, RunEnding(code: "question", kept: 0))
+    }
+
+    func testTheStepLimitPausesAsStoppedAndKeepsTheFiles() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        let agent = Agent(store: store, model: ScriptedModel([call("write_file", ["path": "a.txt", "content": "a"]), call("write_file", ["path": "b.txt", "content": "b"]), ModelReply(text: "Not reached.")]),
+                          approve: { _ in true }, emit: { _ in })
+        agent.stepLimit = 2
+        await agent.run(&session, request: "Add two files")
+        XCTAssertEqual(session.state, "Stopped")
+        XCTAssertEqual(session.ending, RunEnding(code: "step_limit", kept: 2))
+        XCTAssertEqual(session.detail, "Stopped after 2 steps. Send another message to continue.")
+    }
+
+    func testTheSameFailureThreeTimesIsModelStuck() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        // Three different edits of the same file, each failing the same way: not one repeated call, the same failure.
+        let miss = { (text: String) in call("edit_file", ["path": "calc.py", "old_text": text, "new_text": "x"]) }
+        let model = ScriptedModel([miss("nope one"), miss("nope two"), miss("nope three"), ModelReply(text: "Not reached.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Edit calc")
+        XCTAssertEqual(session.activities.map(\.state), [.failed, .failed, .failed])
+        XCTAssertEqual(model.replies.count, 1)
+        XCTAssertEqual(session.state, "Stopped")
+        XCTAssertEqual(session.ending, RunEnding(code: "model_stuck", kept: 0))
+        XCTAssertEqual(session.detail, "The same operation failed three times without a successful tool action. See activity for the last error.")
+    }
+
+    func testASuccessfulCallInBetweenClearsTheFailures() async throws {
+        var (store, session) = try session(.workspaceEdits)
+        let miss = { (text: String) in call("edit_file", ["path": "calc.py", "old_text": text, "new_text": "x"]) }
+        let model = ScriptedModel([miss("nope one"), miss("nope two"), call("read_file", ["path": "calc.py"]), miss("nope three"), ModelReply(text: "Gave up.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Edit calc")
+        XCTAssertEqual(session.state, "Completed")
+        XCTAssertEqual(session.ending?.code, "done")
+    }
+
+    func testTwoRejectedPathsInARowAreModelStuck() async throws {
+        var (store, session) = try session(.reviewEdits)
+        let model = ScriptedModel([call("read_file", ["path": "../outside.txt"]), call("read_file", ["path": "/etc/hosts"]), ModelReply(text: "Not reached.")])
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Read it")
+        XCTAssertEqual(session.activities.map(\.state), [.failed, .failed])
+        XCTAssertEqual(session.state, "Stopped")
+        XCTAssertEqual(session.ending, RunEnding(code: "model_stuck", kept: 0))
+        XCTAssertEqual(session.detail, "The model could not produce a valid path after correction. Use a relative path or try another model.")
+        // A path the project rejects is told apart from other errors.
+        do { _ = try Workspace(path: folder.path).resolve("../x"); XCTFail("../x must be rejected") }
+        catch { XCTAssertEqual((error as? MasonError)?.invalidPath, true) }
+        XCTAssertFalse(MasonError("Something else.").invalidPath)
+    }
+
+    func testTheTimeLimitPausesTheRequestAndAUserStopIsStillStopped() async throws {
+        var (store, session) = try session(.reviewEdits)
+        let slow = ScriptedModel([ModelReply(text: "Too late.")])
+        slow.delay = 5_000_000_000
+        let agent = Agent(store: store, model: slow, approve: { _ in true }, emit: { _ in })
+        agent.timeLimit = 0.2
+        await agent.run(&session, request: "Take your time")
+        XCTAssertEqual(session.state, "Stopped")
+        XCTAssertEqual(session.ending, RunEnding(code: "time_limit", kept: 0))
+        XCTAssertTrue(session.detail.hasSuffix("time limit. Completed edits and receipts are kept."), session.detail)
+
+        // The user's own stop, well inside the limit, ends as stopped.
+        let (store2, start) = try self.session(.reviewEdits)
+        let slower = ScriptedModel([ModelReply(text: "Too late.")])
+        slower.delay = 5_000_000_000
+        let stoppable = Agent(store: store2, model: slower, approve: { _ in true }, emit: { _ in })
+        let running = Task { () -> Session in var working = start; await stoppable.run(&working, request: "Take your time"); return working }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        running.cancel()
+        let stopped = await running.value
+        XCTAssertEqual(stopped.state, "Stopped")
+        XCTAssertEqual(stopped.ending, RunEnding(code: "stopped", kept: 0))
+        XCTAssertEqual(stopped.detail, "Stopped. Completed edits are kept.")
+        XCTAssertEqual(Agent(store: store2, model: slower, approve: { _ in true }, emit: { _ in }).timeLimit, 30 * 60)
+    }
+
+    func testStoppingAnUnreachableModelAndOtherErrorsEachHaveTheirEnding() async throws {
+        let cases: [(Error, String, String)] = [
+            (CancellationError(), "Stopped", "stopped"),
+            (MasonError.unavailable("The model server did not answer: Could not connect to the server."), "Failed", "model_unavailable"),
+            (MasonError("Something else went wrong."), "Failed", "failed"),
+        ]
+        for (error, state, code) in cases {
+            var (store, session) = try self.session(.reviewEdits)
+            await Agent(store: store, model: ThrowingModel(error), approve: { _ in true }, emit: { _ in }).run(&session, request: "Fix add")
+            XCTAssertEqual(session.state, state, code)
+            XCTAssertEqual(session.ending, RunEnding(code: code, kept: 0))
+        }
     }
 
     func testCommandAsksOnceThenASavedRuleAllowsIt() async throws {
