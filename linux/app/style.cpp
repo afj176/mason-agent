@@ -160,28 +160,56 @@ const char* const kWidgets = R"css(
 .ending-card.tone-danger .ending-glyph { color: @error_color; }
 .ending-card .ending-title { font-weight: 700; }
 .ending-card .changed-link { padding: 0 4px; min-height: 0; }
-/* The Activity panel: a lens per scene, and the strip of scenes along the bottom, tinted by kind and outcome. */
+/* Moments: the side panel's header and shelf, the feed of cards and quiet lines, and an opened moment's lens. */
+.surface-header { padding: 0 12px 0 14px; border-bottom: 1px solid @mason_seam; }
+.surface-title { font-weight: 800; font-size: 1.08em; }
+.surface-back { padding: 3px 10px; min-height: 0; border-radius: 8px; font-weight: 700; }
+.surface-shelf { margin-left: 6px; }
+/* Room under the chips for the overlay scrollbar, so it never covers them. */
+.surface-shelf > viewport > box { padding-bottom: 9px; padding-top: 9px; }
+.shelf-chip { padding: 3px 10px; min-height: 0; border-radius: 8px; font-size: 0.9em; font-weight: 600; box-shadow: none;
+  background: alpha(@view_fg_color, 0.05); border: 1px solid @mason_seam; }
+.shelf-chip:hover { background: alpha(@view_fg_color, 0.10); }
+.shelf-chip.shelf-made { font-weight: 500; }
+.shelf-chip.shelf-selected { background: @card_bg_color; border: 2px solid @accent_bg_color; padding: 2px 9px; }
 .viewer-where { font-weight: 700; font-size: 1.05em; }
 .viewer-jump { padding: 2px 12px; min-height: 0; font-size: 0.88em; font-weight: 700; }
 .viewer-card { background: @card_bg_color; border: 1px solid @mason_seam; border-radius: 12px; padding: 10px 12px; }
 .viewer-card .code-block { padding: 6px 8px; }
 .viewer-card .changed-link { min-height: 0; }
+.moment-card { background: @card_bg_color; border: 1px solid @mason_seam; border-radius: 12px; padding: 12px 14px; }
+.moment-card.moment-live { border: 2px solid @accent_bg_color; padding: 11px 13px; }
+.moment-card .changed-link { min-height: 0; padding: 2px 6px; }
+.end-moment { padding: 14px 16px; }
+.end-title { font-size: 1.05em; }
+.moment-title { font-size: 1.0em; }
+.moment-badge { min-width: 26px; min-height: 26px; border-radius: 7px; font-weight: 700; font-size: 0.95em; }
+.key-badge { min-width: 28px; min-height: 22px; border-radius: 5px; font-size: 1em; }
+.badge-good { color: @success_color; background: alpha(@success_color, 0.16); }
+.badge-accent { color: @accent_color; background: alpha(@accent_bg_color, 0.18); }
+.badge-bad { color: @error_color; background: alpha(@error_color, 0.16); }
+.badge-search { color: mix(@purple_3, @window_fg_color, 0.25); background: alpha(@purple_3, 0.18); }
+.badge-neutral { color: @mason_muted; background: alpha(@view_fg_color, 0.08); }
+.moment-peek { opacity: 0.75; }
+.moment-added { color: @success_color; background: alpha(@success_color, 0.14); border-radius: 4px; padding: 2px 8px; }
+.moment-action { padding: 3px 12px; min-height: 0; }
+.pass-bar trough { min-height: 6px; border-radius: 3px; background: @error_color; }
+.pass-bar progress { min-height: 6px; border-radius: 3px; background: @success_color; }
+.quiet-moment { padding: 5px 14px; border-radius: 10px; font-weight: normal; }
+.quiet-moment label { font-size: 0.95em; }
+.moment-dot { min-width: 6px; min-height: 6px; border-radius: 3px; background: alpha(@view_fg_color, 0.35); }
+.moment-dot.moment-dot-failed { background: @error_color; }
+.asked-moment { font-size: 0.92em; padding: 8px 14px 2px 14px; }
+.moments-empty-title { font-weight: 800; font-size: 1.35em; }
 .failure-line { border-left: 3px solid @error_color; padding-left: 8px; color: @error_color; }
 .folder-bar { background: @accent_bg_color; border-radius: 4px; min-height: 8px; }
 .stat-value { font-size: 1.5em; font-weight: 800; font-feature-settings: "tnum"; }
 .viewer-card grid > box { padding: 2px 4px; }
-.scene-strip { border-top: 1px solid @mason_seam; padding-top: 8px; }
-.scene-tick { font-family: monospace; font-size: 11px; padding: 1px 7px; min-height: 22px; min-width: 18px; border-radius: 5px; border: 1px solid alpha(@view_fg_color, 0.08); box-shadow: none; }
-.scene-tick.tick-read { background: alpha(@view_fg_color, 0.07); }
-.scene-tick.tick-edit { background: alpha(@accent_bg_color, 0.20); color: @accent_color; }
-.scene-tick.tick-run { background: alpha(@success_color, 0.16); color: @success_color; }
-.scene-tick.tick-page { background: alpha(@purple_3, 0.18); }
-.scene-tick.tick-failed { background: alpha(@error_color, 0.16); color: @error_color; }
-.scene-tick.tick-skipped { background: alpha(@warning_color, 0.18); color: @warning_color; }
-.scene-tick.tick-selected { border: 2px solid @accent_bg_color; }
 .viewer-actions > flowboxchild { padding: 0; }
-/* Five segments share the side panel's width. */
-.panel-switch > button { padding: 4px 8px; min-width: 0; }
+/* The session bar's chips: the published pull request, and background tasks while any is going. */
+.session-chip { padding: 2px 10px; min-height: 0; border-radius: 999px; font-size: 0.88em; font-weight: 700; box-shadow: none;
+  background: alpha(@view_fg_color, 0.07); }
+.session-chip.session-chip-live { color: @accent_color; background: alpha(@accent_bg_color, 0.16); }
 )css";
 
 Glib::RefPtr<Gtk::CssProvider> palette() {

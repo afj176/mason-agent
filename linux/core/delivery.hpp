@@ -48,6 +48,8 @@ std::string publish(const Workspace& workspace, const DeliveryDraft& draft, cons
 /// Failed checks, requested changes and review comments on the draft's pull request.
 DeliveryFeedback feedback(const Workspace& workspace, const DeliveryDraft& draft);
 DeliveryFeedback parse_feedback(const std::string& state, const std::string& comments);
+/// The address of the draft's pull request once it is published, for the session bar's chip; nothing before that.
+std::optional<std::string> pull_request(const std::optional<DeliveryDraft>& draft);
 /// The project's current draft, if it has one.
 std::optional<DeliveryDraft> current(const Workspace& workspace, const fs::path& home);
 

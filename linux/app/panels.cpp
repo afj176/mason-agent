@@ -46,7 +46,6 @@ void MainWindow::refresh_files() {
     if (fingerprint == changes_shown_) return;
     changes_shown_ = fingerprint;
     clear(changes_);
-    changes_.append(*panel_switch());
     if (!session) return;
     std::optional<Workspace> workspace;
     try {
@@ -410,7 +409,6 @@ void MainWindow::refresh_website() {
     if (fingerprint == changes_shown_) return;
     changes_shown_ = fingerprint;
     clear(changes_);
-    changes_.append(*panel_switch());
     if (!session) return;
     if (!website_built_) build_website();
     if (pages_root_ != session->workspace) {

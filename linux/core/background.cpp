@@ -339,4 +339,14 @@ std::string command(const std::string& rest, const Workspace& workspace, const s
     return kUsage;
 }
 
+int active_count(const std::vector<std::pair<BackgroundTask, TaskStatus>>& tasks) {
+    int count = 0;
+    for (const auto& item : tasks) {
+        if (item.second.active()) count++;
+    }
+    return count;
+}
+
+std::string chip_label(int active) { return active > 0 ? std::to_string(active) + " background" : ""; }
+
 }  // namespace mason::background

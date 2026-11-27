@@ -4,6 +4,7 @@
 #include <map>
 #include <regex>
 #include <set>
+#include <tuple>
 
 namespace mason::scenes {
 
@@ -113,11 +114,14 @@ Kind kind_of(const std::string& tool) {
 
 bool is_search(const std::string& tool) { return tool == "search_files" || tool == "search_next" || tool == "semantic_search" || tool == "list_files"; }
 
-std::vector<Scene> group(const std::vector<Activity>& activities) {
+std::vector<Scene> group(const std::vector<Activity>& activities) { return group(activities, {}); }
+
+std::vector<Scene> group(const std::vector<Activity>& activities, const std::vector<size_t>& breaks) {
+    const std::set<size_t> starts(breaks.begin(), breaks.end());
     std::vector<Scene> scenes;
     for (size_t i = 0; i < activities.size(); i++) {
         const Kind kind = kind_of(activities[i].tool);
-        if (!scenes.empty() && scenes.back().kind == kind && scenes.back().count < kMaxSceneLength) scenes.back().count++;
+        if (!scenes.empty() && scenes.back().kind == kind && scenes.back().count < kMaxSceneLength && !starts.count(i)) scenes.back().count++;
         else scenes.push_back({kind, i, 1});
     }
     return scenes;
@@ -267,6 +271,90 @@ std::vector<std::pair<std::string, int>> folders(const std::vector<Activity>& ac
 size_t request_start(const Session& session) {
     if (session.turns.empty()) return 0;
     return std::min(session.turns.back().first_activity, session.activities.size());
+}
+
+std::vector<FileChange> kept_changes(const Session& session) {
+    std::vector<FileChange> merged;
+    for (const Turn& turn : session.turns) {
+        if (turn.undone) continue;
+        for (const FileChange& change : turn.changes) {
+            auto existing = std::find_if(merged.begin(), merged.end(), [&](const FileChange& item) { return item.path == change.path; });
+            if (existing != merged.end()) {
+                existing->after = change.after;
+                existing->after_blob = change.after_blob;
+                existing->after_missing = change.after_missing;
+            } else {
+                merged.push_back(change);
+            }
+        }
+    }
+    return merged;
+}
+
+std::string page_label(const std::string& page) {
+    const std::string text = trim(page);
+    const size_t scheme = text.find("://");
+    if (scheme == std::string::npos) return base_name(normalize(text)) + " page";
+    const size_t slash = text.find('/', scheme + 3);
+    const std::string host = text.substr(scheme + 3, slash == std::string::npos ? std::string::npos : slash - scheme - 3);
+    std::string path = slash == std::string::npos ? "" : text.substr(slash);
+    const size_t query = path.find_first_of("?#");
+    if (query != std::string::npos) path.erase(query);
+    return path.size() > 1 ? path + " page" : host;
+}
+
+std::vector<Made> made_so_far(const std::vector<Activity>& activities, size_t from, const std::vector<FileChange>& changes, size_t limit) {
+    std::vector<Made> out;
+    std::set<std::string> seen;
+    for (size_t i = activities.size(); i-- > std::min(from, activities.size()) && out.size() < limit;) {
+        const Activity& call = activities[i];
+        const Kind kind = kind_of(call.tool);
+        if (kind == Kind::Edit) {
+            const std::optional<std::string> path = path_of(call);
+            if (!path || seen.count(*path)) continue;
+            const auto change = std::find_if(changes.begin(), changes.end(), [&](const FileChange& item) { return normalize(item.path) == *path; });
+            if (change == changes.end() || change->deleted()) continue;
+            seen.insert(*path);
+            out.push_back({base_name(*path), change->path, false, change->created(), i});
+        } else if ((call.tool == "check_page" || call.tool == "open_preview") && !trim(call.subject).empty() && !failed(call)) {
+            const std::string page = trim(call.subject);
+            if (!seen.insert("page:" + page).second) continue;
+            out.push_back({page_label(page), page, true, false, i});
+        }
+    }
+    return out;
+}
+
+std::vector<Asked> requests(const Session& session, size_t count) {
+    std::vector<Asked> out;
+    for (const Turn& turn : session.turns) {
+        const std::string text = trim(turn.request);
+        if (!text.empty()) out.push_back({std::min(turn.first_activity, count), text});
+    }
+    return out;
+}
+
+std::vector<FeedEntry> feed(const std::vector<Scene>& scenes, const std::vector<Asked>& asked) {
+    // (position, order, entry): later positions first; at one position the scene comes before the request's line.
+    std::vector<std::tuple<size_t, int, size_t, FeedEntry>> timeline;
+    for (size_t i = 0; i < asked.size(); i++) timeline.emplace_back(asked[i].position, 0, i, FeedEntry{true, i});
+    for (size_t i = 0; i < scenes.size(); i++) timeline.emplace_back(scenes[i].first, 1, i, FeedEntry{false, i});
+    std::stable_sort(timeline.begin(), timeline.end(), [](const auto& a, const auto& b) {
+        if (std::get<0>(a) != std::get<0>(b)) return std::get<0>(a) > std::get<0>(b);
+        if (std::get<1>(a) != std::get<1>(b)) return std::get<1>(a) > std::get<1>(b);
+        return std::get<2>(a) > std::get<2>(b);
+    });
+    std::vector<FeedEntry> out;
+    for (const auto& item : timeline) out.push_back(std::get<3>(item));
+    return out;
+}
+
+std::string end_facts(size_t files, int added, int removed, int commands, size_t steps) {
+    std::vector<std::string> facts = {plural(files, "file changed", "files changed")};
+    if (files > 0) facts.push_back("+" + std::to_string(added) + " −" + std::to_string(removed));
+    if (commands > 0) facts.push_back(plural(static_cast<size_t>(commands), "command", "commands"));
+    facts.push_back(plural(steps, "step", "steps"));
+    return join(facts, " · ");
 }
 
 }  // namespace mason::scenes
