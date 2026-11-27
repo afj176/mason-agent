@@ -132,6 +132,9 @@ public sealed partial class MainWindow : Window
     {
         var panel = new StackPanel { Spacing = 8, MinWidth = 280 };
         panel.Children.Add(new TextBlock { Text = "Appearance", Style = Token("MasonBodyStrong") });
+        panel.Children.Add(Muted("Theme", 12));
+        panel.Children.Add(BuildThemeFamilyPicker(panel));
+        panel.Children.Add(Muted("Mode", 12));
         panel.Children.Add(BuildThemeSwitch());
         var motion = new ToggleSwitch { Header = "Reduce motion", IsOn = preferences.ReducedMotion };
         motion.Toggled += async (_, _) =>

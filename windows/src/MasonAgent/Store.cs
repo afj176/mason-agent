@@ -5,7 +5,8 @@ using System.Text.Json;
 
 namespace Mason;
 
-public sealed record AppPreferences(string Theme = "Default", double FontSize = 14, bool ReducedMotion = false, WindowPlacement? Window = null);
+/// <summary>Saved in appearance.json. Theme is the mode (Default = Auto, Light, Dark); Family is the theme family (ThemeFamilies), also read by the CLI.</summary>
+public sealed record AppPreferences(string Theme = "Default", double FontSize = 14, bool ReducedMotion = false, WindowPlacement? Window = null, string Family = "Blueprint");
 /// <summary>Where the main window was last shown, in physical pixels; restored only onto a display that still exists.</summary>
 public sealed record WindowPlacement(int X, int Y, int Width, int Height, bool Maximized);
 public static class Store

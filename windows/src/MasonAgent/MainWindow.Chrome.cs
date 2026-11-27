@@ -198,10 +198,10 @@ public sealed partial class MainWindow
         }
         root.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         backdrop.SetTheme(dark);
-        var ink = dark ? BrandPaper : BrandInk;
+        var ink = ThemePalette.Ink(dark);
         chrome.ButtonBackgroundColor = chrome.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         chrome.ButtonForegroundColor = chrome.ButtonHoverForegroundColor = chrome.ButtonPressedForegroundColor = ink;
-        chrome.ButtonInactiveForegroundColor = dark ? BrandSilver : BrandMuted;
+        chrome.ButtonInactiveForegroundColor = ThemePalette.Muted(dark);
         chrome.ButtonHoverBackgroundColor = dark ? Color.FromArgb(28, 255, 255, 255) : Color.FromArgb(20, 0, 0, 0);
         chrome.ButtonPressedBackgroundColor = dark ? Color.FromArgb(18, 255, 255, 255) : Color.FromArgb(12, 0, 0, 0);
     }

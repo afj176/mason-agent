@@ -10,15 +10,14 @@ public enum Tone { Neutral, Accent, Good, Warn, Bad, Search }
 
 public static class ModelTones
 {
-    static Color Rgb(int v, byte a = 255) => Color.FromArgb(a, (byte)(v >> 16), (byte)(v >> 8), (byte)v);
     public static Color Ink(Tone tone, bool dark) => tone switch
     {
-        Tone.Accent => dark ? Rgb(0xC3C2FF) : Rgb(0x4849A8),
-        Tone.Good => dark ? Rgb(0x7EE0A6) : Rgb(0x14734A),
-        Tone.Warn => dark ? Rgb(0xF2C66D) : Rgb(0x8A5A00),
-        Tone.Bad => dark ? Rgb(0xFF9D94) : Rgb(0xAF2323),
-        Tone.Search => dark ? Rgb(0x8FD9E3) : Rgb(0x0F6E7A),
-        _ => dark ? Rgb(0xC3C9E0) : Rgb(0x535B72)
+        Tone.Accent => ThemePalette.Accent(dark),
+        Tone.Good => ThemePalette.Success(dark),
+        Tone.Warn => ThemePalette.Caution(dark),
+        Tone.Bad => ThemePalette.Critical(dark),
+        Tone.Search => ThemePalette.Search(dark),
+        _ => ThemePalette.Muted(dark)
     };
     public static Color Fill(Tone tone, bool dark) { var c = Ink(tone, dark); return Color.FromArgb(dark ? (byte)38 : (byte)26, c.R, c.G, c.B); }
     public static SolidColorBrush InkBrush(Tone tone, bool dark) => Contrast ? new(System(Windows.UI.ViewManagement.UIElementType.WindowText)) : new(Ink(tone, dark));

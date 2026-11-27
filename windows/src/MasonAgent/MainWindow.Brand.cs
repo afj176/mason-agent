@@ -10,26 +10,20 @@ using Windows.UI.ViewManagement;
 
 namespace Mason;
 
-// Mason Agent identity: palette, type, mascot assets and the shared themed surfaces.
-// Values mirror brand/tokens.json. Windows high contrast always wins over the brand.
+// Mason Agent identity: type, pose art and the shared themed surfaces. Colours come from the active theme
+// family (ThemePalette.cs). Windows high contrast always wins over the theme.
 public sealed partial class MainWindow
 {
     static readonly UISettings brandSystemColors = new();
 
-    // brand/tokens.json palette
-    static readonly Color BrandPaper = Rgb(0xF8F6F2), BrandWhite = Rgb(0xFFFFFF), BrandInk = Rgb(0x20263C), BrandMuted = Rgb(0x535B72);
-    static readonly Color BrandViolet = Rgb(0x4849A8), BrandNight = Rgb(0x171A2B), BrandRaised = Rgb(0x24283E), BrandSilver = Rgb(0xC3C9E0), BrandBright = Rgb(0xC3C2FF);
-    // Hairline borders over each theme's surface ("hairline" and "seam" in brand/tokens.json).
-    static readonly Color BrandLineLight = Rgb(0xD9DBE1), BrandLineDark = Rgb(0x3B4059);
     const double RadiusSmall = 8, RadiusLarge = 20;
 
     // Manrope is the display face; body text and controls keep the Windows system font.
     static readonly FontFamily DisplayFont = new("ms-appx:///Assets/Fonts/Manrope.ttf#Manrope");
 
-    static Color Rgb(int value) => Color.FromArgb(255, (byte)(value >> 16), (byte)(value >> 8), (byte)value);
     static bool BrandHighContrast => new AccessibilitySettings().HighContrast;
-    static Color BrandAccentColor(bool dark) => dark ? BrandBright : BrandViolet;
-    static Color BrandLine(bool dark) => dark ? BrandLineDark : BrandLineLight;
+    static Color BrandAccentColor(bool dark) => ThemePalette.Accent(dark);
+    static Color BrandLine(bool dark) => ThemePalette.Line(dark);
 
     /// <summary>A page or panel title on the type ramp. Title sizes and above use Manrope, the brand display face.</summary>
     static TextBlock Heading(string text, double size = 22)
@@ -208,7 +202,6 @@ public sealed partial class MainWindow
             return;
         }
         bool dark = root.ActualTheme == ElementTheme.Dark;
-        var ink = dark ? BrandPaper : BrandInk;
         // The window is clear so Mica shows in the title bar and sidebar; pages sit on the brand paper (MainWindow.Chrome.cs).
         ApplyWindowMaterial(dark);
 

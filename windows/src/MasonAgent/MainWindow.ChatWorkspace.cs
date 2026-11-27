@@ -79,7 +79,7 @@ public sealed partial class MainWindow
             foreach (var key in new[] { "ListViewItemBackgroundSelected", "ListViewItemBackgroundSelectedPointerOver", "ListViewItemBackgroundSelectedPressed" })
             {
                 if (new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast) history.Resources.Remove(key);
-                else history.Resources[key] = new SolidColorBrush(history.ActualTheme == ElementTheme.Dark ? Windows.UI.Color.FromArgb(46, 195, 194, 255) : Windows.UI.Color.FromArgb(30, 72, 73, 168));
+                else history.Resources[key] = new SolidColorBrush(history.ActualTheme == ElementTheme.Dark ? ThemePalette.AccentAlpha(true, 46) : ThemePalette.AccentAlpha(false, 30));
             }
         }
         history.Loaded += (_, _) => UpdateHistorySelection(); history.ActualThemeChanged += (_, _) => UpdateHistorySelection();

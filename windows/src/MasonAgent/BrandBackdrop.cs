@@ -7,12 +7,11 @@ using Windows.UI;
 namespace Mason;
 
 /// <summary>
-/// Mica tinted with the brand background (Night in dark, Paper in light) so the title bar and sidebar match the
+/// Mica tinted with the theme family's window background so the title bar and sidebar match the
 /// pages instead of taking their colour from the wallpaper. Falls back to the same solid colour when Mica is off.
 /// </summary>
 sealed class BrandBackdrop : SystemBackdrop
 {
-    static readonly Color Night = Color.FromArgb(255, 0x17, 0x1A, 0x2B), Paper = Color.FromArgb(255, 0xF8, 0xF6, 0xF2);
     MicaController? controller;
     bool dark;
 
@@ -44,7 +43,7 @@ sealed class BrandBackdrop : SystemBackdrop
     void Tint()
     {
         if (controller == null) return;
-        var color = dark ? Night : Paper;
+        var color = ThemePalette.Background(dark);
         controller.TintColor = color;
         controller.FallbackColor = color;
         controller.TintOpacity = dark ? .85f : .8f;
