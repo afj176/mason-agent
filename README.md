@@ -109,18 +109,16 @@ Type a request and each step prints as it finishes. Approvals take one key: `y` 
 | `/theme` | Choose the theme the app and `mason` share |
 | `/help` | Everything else |
 
-[More on the command line](docs/cli.md), including the operations for scripts.
+[More on the command line](docs/cli.md), including options and use in scripts.
 
 ## More
 
 - [Everything Mason Agent does](docs/features.md)
-- [Install details](docs/install.md): model options, data folders and requirements
-- [The Windows app](docs/windows.md) · [The macOS and Linux apps](docs/macos-and-linux.md)
-- [The `mason` command line](docs/cli.md)
+- [Install details](docs/install.md): getting a model, where your data is kept, requirements
 
 ## Build from source
 
-Each platform is its own native project: WinUI 3 and C# in [`windows/`](windows), SwiftUI and Swift in [`macos/`](macos), GTK 4 and C++ in [`linux/`](linux). [Building and releasing](docs/contributing.md) has the steps for each.
+Each platform is its own native project: WinUI 3 and C# in [`windows/`](windows), SwiftUI and Swift in [`macos/`](macos), GTK 4 and C++ in [`linux/`](linux). [Building from source](docs/contributing.md) has the steps for each.
 
 ## Privacy
 
