@@ -160,6 +160,28 @@ const char* const kWidgets = R"css(
 .ending-card.tone-danger .ending-glyph { color: @error_color; }
 .ending-card .ending-title { font-weight: 700; }
 .ending-card .changed-link { padding: 0 4px; min-height: 0; }
+/* The Activity panel: a lens per scene, and the strip of scenes along the bottom, tinted by kind and outcome. */
+.viewer-where { font-weight: 700; font-size: 1.05em; }
+.viewer-jump { padding: 2px 12px; min-height: 0; font-size: 0.88em; font-weight: 700; }
+.viewer-card { background: @card_bg_color; border: 1px solid @mason_seam; border-radius: 12px; padding: 10px 12px; }
+.viewer-card .code-block { padding: 6px 8px; }
+.viewer-card .changed-link { min-height: 0; }
+.failure-line { border-left: 3px solid @error_color; padding-left: 8px; color: @error_color; }
+.folder-bar { background: @accent_bg_color; border-radius: 4px; min-height: 8px; }
+.stat-value { font-size: 1.5em; font-weight: 800; font-feature-settings: "tnum"; }
+.viewer-card grid > box { padding: 2px 4px; }
+.scene-strip { border-top: 1px solid @mason_seam; padding-top: 8px; }
+.scene-tick { font-family: monospace; font-size: 11px; padding: 1px 7px; min-height: 22px; min-width: 18px; border-radius: 5px; border: 1px solid alpha(@view_fg_color, 0.08); box-shadow: none; }
+.scene-tick.tick-read { background: alpha(@view_fg_color, 0.07); }
+.scene-tick.tick-edit { background: alpha(@accent_bg_color, 0.20); color: @accent_color; }
+.scene-tick.tick-run { background: alpha(@success_color, 0.16); color: @success_color; }
+.scene-tick.tick-page { background: alpha(@purple_3, 0.18); }
+.scene-tick.tick-failed { background: alpha(@error_color, 0.16); color: @error_color; }
+.scene-tick.tick-skipped { background: alpha(@warning_color, 0.18); color: @warning_color; }
+.scene-tick.tick-selected { border: 2px solid @accent_bg_color; }
+.viewer-actions > flowboxchild { padding: 0; }
+/* Five segments share the side panel's width. */
+.panel-switch > button { padding: 4px 8px; min-width: 0; }
 )css";
 
 Glib::RefPtr<Gtk::CssProvider> palette() {

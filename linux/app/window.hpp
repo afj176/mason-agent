@@ -24,6 +24,12 @@ std::string inline_markup(const std::string& text);
 void clear(Gtk::Box& box);
 /// A small label styled as secondary text.
 Gtk::Label* dim_label(const std::string& text);
+/// Text that wraps and, unless told otherwise, can be selected with the pointer.
+Gtk::Label* text_label(const std::string& text, bool selectable = true);
+/// A tool's name as a person reads it: "read file".
+std::string label_of(const std::string& tool);
+/// Changed lines with two lines of context; a row with kind 0 marks a gap.
+std::vector<DiffLine> visible_rows(const std::vector<DiffLine>& rows);
 /// A model's answer: prose with headings, bullets and inline code, and fenced code as scrollable blocks.
 Gtk::Widget* answer_view(const std::string& text);
 /// A table from an answer: its cells in a grid, and its numeric columns as bars against the first column.
@@ -219,6 +225,15 @@ private:
     void show_page(const std::string& page);
     void open_address(const std::string& address);
     void element_picked(const std::string& message);
+    /// The Activity panel (activity_panel.cpp): the run as scenes, a lens for the chosen one, and a strip of every scene.
+    void refresh_activity();
+    /// Opens the Activity panel on the scene that holds this call, or following the run when the id is empty.
+    void show_activity(const std::string& activity_id);
+    std::string activity_scene_;  ///< "" follows the run; else "plan", "end" or the id of a call in the chosen scene.
+    bool activity_raw_ = false;   ///< Show each call's subject and result exactly as kept.
+    double activity_scroll_ = 0;  ///< Where the lens was scrolled, kept while the same scene is rebuilt.
+    std::string activity_scroll_scene_;
+    sigc::connection activity_scroll_watch_;
     std::string observing_;  ///< The milestone whose observation is being written.
     void refresh_plan();
     Gtk::Widget* panel_switch();

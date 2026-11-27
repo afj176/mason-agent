@@ -36,6 +36,7 @@
 #include "shell.hpp"
 #include "models.hpp"
 #include "model_memory.hpp"
+#include "scenes.hpp"
 
 using namespace mason;
 
@@ -3593,12 +3594,108 @@ static void test_run_endings() {
     CHECK(!session_from_json(old).ending);
 }
 
+/// Scenes for the Activity panel: the same checks as the Windows CodeScenes checks, with Linux's tool names and results.
+static void test_scenes() {
+    using namespace mason::scenes;
+    Sandbox box;
+    SessionStore store(box.home);
+    const auto never = [](const ApprovalRequest&) { return false; };
+    {
+        // A read loop: R, R, skipped. One read scene of one file.
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        model.replies = {call("read_file", {{"path", "calc.py"}}), call("read_file", {{"path", "calc.py"}}), call("read_file", {{"path", "calc.py"}})};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Look at calc");
+        const std::vector<Scene> loop = group(session.activities);
+        CHECK(session.activities.size() == 3 && session.activities[2].state == "skipped");
+        CHECK(loop.size() == 1 && loop[0] == (Scene{Kind::Read, 0, 3}) && label(loop[0], session.activities) == "Read 1 file");
+        CHECK(request_start(session) == 0);
+    }
+    auto activity = [](const std::string& tool, const std::string& subject, const std::string& result = "", const std::string& state = "completed") {
+        Activity item;
+        item.tool = tool;
+        item.subject = subject;
+        item.result = result;
+        item.state = state;
+        return item;
+    };
+    const std::string test_run = "exit 1\nPASS auth.test.ts\nFAIL tests/upload.test.ts\n  ✕ returns 429 after the 10th upload (12 ms)\nTests:       1 failed, 41 passed, 42 total\n";
+    const std::vector<Activity> mixed = {activity("read_file", "src/a.ts"), activity("search_files", "limit"), activity("read_file", "tests\\a.test.ts"),
+                                         activity("edit_file", "./src/a.ts"), activity("write_file", "src/b.ts"), activity("run_shell", "npm test", test_run, "failed"),
+                                         activity("check_page", "index.html"), activity("suggest_note", "x")};
+    // Each call lands in exactly one scene, grouped by kind in order.
+    const std::vector<Scene> scenes = group(mixed);
+    std::vector<Kind> kinds;
+    size_t total = 0;
+    for (const Scene& scene : scenes) { kinds.push_back(scene.kind); total += scene.count; }
+    CHECK(kinds == (std::vector<Kind>{Kind::Read, Kind::Edit, Kind::Command, Kind::Page, Kind::Other}) && total == mixed.size());
+    // Labels count distinct files and name the command.
+    CHECK(label(scenes[0], mixed) == "Read 2 files, searched 1 time" && label(scenes[1], mixed) == "Edited 2 files" && label(scenes[2], mixed) == "Ran npm test");
+    CHECK(label(scenes[3], mixed) == "Checked the page" && label(scenes[4], mixed) == "suggest note");
+    CHECK(label(Scene{Kind::Edit, 3, 1}, mixed) == "Edited a.ts");
+    CHECK(label(Scene{Kind::Read, 1, 1}, mixed) == "Searched 1 time");
+    // Paths are normalised for matching against changes; a search's query is not a path.
+    CHECK(path_of(mixed[3]) == "src/a.ts" && path_of(mixed[2]) == "tests/a.test.ts" && !path_of(mixed[1]) && !path_of(mixed[5]));
+    CHECK(normalize("/src/x.py") == "src/x.py" && normalize("./././a") == "a" && normalize(".github/ci.yml") == ".github/ci.yml");
+    // Folders count the reads under each top folder.
+    CHECK(folders(std::vector<Activity>(mixed.begin(), mixed.begin() + 3)) == (std::vector<std::pair<std::string, int>>{{"src/", 1}, {"tests/", 1}}));
+    CHECK(folders(std::vector<Activity>(mixed.begin(), mixed.begin() + 5)) == (std::vector<std::pair<std::string, int>>{{"src/", 3}, {"tests/", 1}}));
+    // A test run is read for exit code, counts and failing lines, not the summary line.
+    const CommandSummary summary = command(mixed[5]);
+    CHECK(summary.exit_code == 1 && summary.passed == 41 && summary.failed == 1 && !summary.truncated);
+    CHECK(summary.failures == (std::vector<std::string>{"FAIL tests/upload.test.ts", "✕ returns 429 after the 10th upload (12 ms)"}));
+    CHECK(!starts_with(summary.output, "exit") && starts_with(summary.output, "PASS auth.test.ts"));
+    CHECK(command_failed(mixed[5]) && !command_failed(activity("run_shell", "true", "exit 0\n")));
+    // dotnet test counts are read too.
+    const CommandSummary dotnet = command(activity("run_shell", "dotnet test", "exit 1\n  Failed Mason.Tests.Upload [12 ms]\nFailed!  - Failed:     2, Passed:    41, Skipped:     0, Total:    43\n", "failed"));
+    CHECK(dotnet.passed == 41 && dotnet.failed == 2 && dotnet.failures == (std::vector<std::string>{"Failed Mason.Tests.Upload [12 ms]"}));
+    // pytest's summary line.
+    const CommandSummary pytest = command(activity("run_shell", "pytest", "exit 1\nFAILED tests/test_cart.py::test_total - assert 3 == 4\n========= 1 failed, 12 passed in 0.31s =========\n", "failed"));
+    CHECK(pytest.passed == 12 && pytest.failed == 1 && pytest.failures == (std::vector<std::string>{"FAILED tests/test_cart.py::test_total - assert 3 == 4"}));
+    // Python unittest counts come from Ran and FAILED; a command label names the program, not its folder.
+    const Activity unittest = activity("run_command", "'/usr/bin/python3' '-m' 'unittest' '-v'", "exit 1\ntest_a ... ok\nFAIL: test_b (t.T.test_b)\n\nRan 6 tests in 0.002s\n\nFAILED (failures=1, errors=1)\n", "failed");
+    const CommandSummary py = command(unittest);
+    CHECK(py.exit_code == 1 && py.passed == 4 && py.failed == 2 && std::find(py.failures.begin(), py.failures.end(), "FAIL: test_b (t.T.test_b)") != py.failures.end());
+    CHECK(command_text(unittest) == "/usr/bin/python3 -m unittest -v");
+    CHECK(label(Scene{Kind::Command, 0, 1}, {unittest}) == "Ran python3 -m unittest -v");
+    CHECK(label(Scene{Kind::Command, 0, 1}, {activity("run_shell", "/opt/node/bin/npm run build")}) == "Ran npm run build");
+    CHECK(label(Scene{Kind::Command, 0, 1}, {activity("run_command", "'git' 'commit' '-m' 'a message'")}) == "Ran git commit -m \"a message\"");
+    CHECK(label(Scene{Kind::Command, 0, 1}, {activity("run_workflow", "verify")}) == "Ran workflow verify");
+    CHECK(label(Scene{Kind::Command, 0, 2}, {unittest, unittest}) == "Ran 2 commands");
+    // Long commands are clipped.
+    CHECK(utf8_length(label(Scene{Kind::Command, 0, 1}, {activity("run_shell", "echo " + std::string(80, 'x'))})) == 4 + 48);
+    // A clean run: exit 0, OK, no failures; a command that was declined has no exit code.
+    const CommandSummary ok = command(activity("run_shell", "python -m unittest", "exit 0\n..\nRan 2 tests in 0.001s\n\nOK\n"));
+    CHECK(ok.exit_code == 0 && ok.passed == 2 && !ok.failed && ok.failures.empty());
+    CHECK(!command(activity("run_shell", "rm x", "The user declined this command.", "denied")).exit_code && failed(activity("run_shell", "rm x", "", "denied")));
+    CHECK(!failed(activity("read_file", "a", "", "skipped")));
+    CHECK(command(activity("run_shell", "make", "exit 0\nlots\n[Output clipped at 64 KiB.]")).truncated);
+    // Long runs split so no scene grows without bound.
+    std::vector<Activity> long_run;
+    for (size_t i = 0; i < kMaxSceneLength + 5; i++) long_run.push_back(activity("read_file", "f" + std::to_string(i) + ".txt"));
+    const std::vector<Scene> split_up = group(long_run);
+    CHECK(split_up.size() == 2 && split_up[0].count == kMaxSceneLength && split_up[1].count == 5 && split_up[1].first == kMaxSceneLength);
+    CHECK(group({}).empty());
+    // Linux's tool names map to the kinds.
+    CHECK(kind_of("write_file") == Kind::Edit && kind_of("apply_edits") == Kind::Edit && kind_of("search_files") == Kind::Read && kind_of("semantic_search") == Kind::Read);
+    CHECK(kind_of("run_command") == Kind::Command && kind_of("start_terminal") == Kind::Command && kind_of("check_page") == Kind::Page && kind_of("desktop_act") == Kind::Page);
+    CHECK(kind_of("ask_user") == Kind::Other && kind_of("enable_tools") == Kind::Other);
+    // The latest request starts at its turn's first call.
+    Session two;
+    two.activities = mixed;
+    two.turns.resize(2);
+    two.turns[1].first_activity = 5;
+    CHECK(request_start(two) == 5);
+    two.turns[1].first_activity = 99;
+    CHECK(request_start(two) == mixed.size());
+}
+
 int main(int argc, char** argv) {
     // Inside the sandbox this program is started as the forwarder to Mason's network relay.
     if (const auto forwarded = mason::network::maybe_forward(argc, argv)) return *forwarded;
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
-        {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"repeat stop", test_repeat_stop}, {"run endings", test_run_endings}, {"stuck models and the time limit", test_stuck_and_time_limit},{"commands and rules", test_commands_and_rules},
+        {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"repeat stop", test_repeat_stop}, {"run endings", test_run_endings}, {"scenes", test_scenes}, {"stuck models and the time limit", test_stuck_and_time_limit},{"commands and rules", test_commands_and_rules},
         {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };
