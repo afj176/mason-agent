@@ -64,6 +64,7 @@ public sealed partial class MainWindow
         Action? viewerChanged = null; // assigned once the page exists; refreshes counts outside the viewer
         bool updating = false, refreshQueued = false, emptySidebarVisible = true; string[] allFiles = []; int fileGeneration = 0; string? forcedPanel = null; CodeGitStatus? gitStatus = null;
         Button send = null!, openFolder = null!, branch = null!, changeButton = null!, preview = null!, deliveryChip = null!, tasksChip = null!;
+        ContentControl surfaceHome = null!; StackPanel surfaceShelf = null!;
         Button websiteShortcut=null!;
         FrameworkElement composer = null!, sessionHeader = null!;
         Grid toolbar = null!; TextBlock viewerLabel = null!; Image stateMood = null!; string shownMood = "";
@@ -529,15 +530,82 @@ public sealed partial class MainWindow
         outputToggle=ChipToggle(new ToggleButton{Content="Output",IsChecked=true});AutomationProperties.SetName(outputToggle,"Toggle command output");
         outputScroll=CodeScroll(outputText);outputScroll.MaxHeight=180;
         outputPanel=Stack(outputTitle,outputScroll);outputPanel.Margin=new Thickness(4,6,4,2);outputPanel.Spacing=6;
-        var workBody=new Grid{RowSpacing=8};workBody.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});workBody.RowDefinitions.Add(new(){Height=GridLength.Auto});workBody.Children.Add(tabs);Grid.SetRow(outputPanel,1);workBody.Children.Add(outputPanel);
+        var workBody=new Grid{RowSpacing=4};workBody.RowDefinitions.Add(new(){Height=GridLength.Auto});workBody.RowDefinitions.Add(new(){Height=new GridLength(1,GridUnitType.Star)});workBody.RowDefinitions.Add(new(){Height=GridLength.Auto});
+        // The viewer is one surface: a header (Moments, the shelf of what is open or made, and the viewer's buttons) over the content.
+        // The TabView keeps hosting each view, selection and closing; its own strip is hidden once its template loads.
+        var surfaceHeader=new Grid{ColumnSpacing=8,Padding=new Thickness(8,6,4,6)};
+        surfaceHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});surfaceHeader.ColumnDefinitions.Add(new(){Width=new GridLength(1,GridUnitType.Star)});surfaceHeader.ColumnDefinitions.Add(new(){Width=GridLength.Auto});
+        workBody.Children.Add(surfaceHeader);Grid.SetRow(tabs,1);workBody.Children.Add(tabs);Grid.SetRow(outputPanel,2);workBody.Children.Add(outputPanel);
+        tabs.Loaded+=(_,_)=>HideTabStrip(tabs);tabs.LayoutUpdated+=(_,_)=>HideTabStrip(tabs);
         outputToggle.Click+=(_,_)=>{if(session!=null){session.OutputVisible=outputToggle.IsChecked==true;RefreshOutput();Save();}};
         void RefreshOutput()
         {
-            var last=session?.Activities.LastOrDefault(a=>a.Tool is "run_shell" or "run_command");outputToggle.Visibility=last==null?Visibility.Collapsed:Visibility.Visible;outputToggle.IsChecked=session?.OutputVisible==true;
-            outputPanel.Visibility=last!=null&&session?.OutputVisible==true?Visibility.Visible:Visibility.Collapsed;
+            var last=session?.Activities.LastOrDefault(a=>a.Tool is "run_shell" or "run_command");
+            // Moments already shows every command with its output, so the panel is for the other views.
+            bool onMoments=((tabs.SelectedItem as TabViewItem)?.Tag as CodeTab)?.Kind=="activity";
+            outputToggle.Visibility=last==null||onMoments?Visibility.Collapsed:Visibility.Visible;outputToggle.IsChecked=session?.OutputVisible==true;
+            outputPanel.Visibility=last!=null&&!onMoments&&session?.OutputVisible==true?Visibility.Visible:Visibility.Collapsed;
             if(last!=null){outputTitle.Text="Command output · "+last.State+"\n"+CodeActivityText.Command(last);var text=CodeActivityText.Result(last);outputScroll.Content=ChatInline(text.Length>12000?text[^12000..]:text,12,true);}
         }
-        tabs.TabStripFooter = Row(changeButton, preview, outputToggle, pinned, closeViewer);
+        var surfaceMore=ChatIcon("More viewer pages","\uE712",(_,_)=>{});
+        var morePages=Fluent.Acrylic(new MenuFlyout());
+        foreach(var (label,kind) in new[]{("Plan & repository map","plan"),("Model roles & decisions","roles"),("Background tasks","tasks"),("Context checkpoints","context")})
+        {var item=new MenuFlyoutItem{Text=label};item.Click+=(_,_)=>OpenTab(kind,"",true);morePages.Items.Add(item);}
+        surfaceMore.Flyout=morePages;
+        preview.Content=new FontIcon{Glyph="",FontSize=15};preview.Padding=new Thickness(8);
+        var surfaceRight=Row(preview,outputToggle,pinned,surfaceMore,closeViewer);surfaceRight.Spacing=4;surfaceRight.VerticalAlignment=VerticalAlignment.Center;
+        Grid.SetColumn(surfaceRight,2);surfaceHeader.Children.Add(surfaceRight);
+        surfaceHome=new ContentControl{VerticalAlignment=VerticalAlignment.Center};surfaceHeader.Children.Add(surfaceHome);
+        surfaceShelf=new StackPanel{Orientation=Orientation.Horizontal,Spacing=6};
+        var shelfScroll=new ScrollViewer{Content=surfaceShelf,HorizontalScrollBarVisibility=ScrollBarVisibility.Hidden,HorizontalScrollMode=ScrollMode.Enabled,VerticalScrollBarVisibility=ScrollBarVisibility.Disabled,VerticalScrollMode=ScrollMode.Disabled,VerticalAlignment=VerticalAlignment.Center};
+        AutomationProperties.SetName(shelfScroll,"Open and made in this session");
+        Grid.SetColumn(shelfScroll,1);surfaceHeader.Children.Add(shelfScroll);
+        void CloseViewerTab(CodeTab tab)
+        {
+            if(session==null)return;
+            if(viewerEntries.Remove(tab.Key,out var entry))entry.Dispose();CodePanels.Close(session,tab.Key);
+            RenderTabs();RefreshResultActions();Arrange();Save();
+        }
+        void ShowMoments(string? location)
+        {
+            if(session==null)return;
+            OpenTab("activity","",true);
+            if(session.Tabs.FirstOrDefault(t=>t.Kind=="activity") is not {} moments)return;
+            moments.Location=location;moments.Scroll=0;session.SelectedTab=moments.Key;
+            if(viewerEntries.TryGetValue(moments.Key,out var live))live.Refresh?.Invoke();
+            RenderTabs();Save();
+        }
+        // The header follows what the surface shows: Moments itself, or the way back to it from anything opened.
+        void RenderSurfaceHeader()
+        {
+            surfaceShelf.Children.Clear();
+            if(session==null){surfaceHome.Content=null;return;}
+            var owner=session;
+            var selectedTab=(tabs.SelectedItem as TabViewItem)?.Tag as CodeTab??owner.Tabs.FirstOrDefault(t=>t.Key==owner.SelectedTab)??owner.Tabs.FirstOrDefault();
+            bool running=owner.State is "Running" or "Awaiting review";
+            if(selectedTab?.Kind=="activity"&&string.IsNullOrEmpty(selectedTab.Location))
+            {
+                var title=Text("Moments",15);title.FontWeight=Microsoft.UI.Text.FontWeights.SemiBold;title.VerticalAlignment=VerticalAlignment.Center;
+                var home=Row(title);home.Margin=new Thickness(6,0,4,0);if(running)home.Children.Add(Pill("● Live",Tone.Accent));
+                surfaceHome.Content=home;
+            }
+            else
+            {
+                var back=Button("← Moments",(_,_)=>ShowMoments(null));
+                if(running)back.Content=Row(new TextBlock{Text="← Moments"},Pill("●",Tone.Accent));
+                AutomationProperties.SetName(back,"Back to moments");surfaceHome.Content=back;
+            }
+            var shown=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach(var tab in owner.Tabs.Where(t=>t.Kind!="activity").ToArray())
+            {
+                shown.Add(tab.Title);
+                bool selected=tab.Key==selectedTab?.Key;
+                surfaceShelf.Children.Add(ShelfChip(tab.Title,selected,()=>{owner.SelectedTab=tab.Key;RenderTabs();Save();},()=>CloseViewerTab(tab)));
+            }
+            foreach(var (label,act) in MadeSoFar(owner,(call,path)=>ShowMoments("open:"+call.Id+"|"+path),(kind,target)=>OpenTab(kind,target,true)).Take(6))
+                if(shown.Add(label))surfaceShelf.Children.Add(ShelfChip(label,false,act,null));
+        }
+        liveSurfaceChanged=RenderSurfaceHeader;
         viewer = workBody;
         SurfaceBehind(viewer, new Thickness(5, 4, 5, 6));
         Grid.SetColumn(viewer, 2); layout.Children.Add(viewer);
@@ -681,12 +749,11 @@ public sealed partial class MainWindow
         {
             if (e.Key == VirtualKey.Enter && !Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Shift).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down)) { e.Handled = true; await Send(); }
         };
-        tabs.SelectionChanged += (_, _) => { if (!updating && session != null && tabs.SelectedItem is TabViewItem selected && selected.Tag is CodeTab tab) { session.SelectedTab = tab.Key; Save(); } };
+        tabs.SelectionChanged += (_, _) => { if (!updating && session != null && tabs.SelectedItem is TabViewItem selected && selected.Tag is CodeTab tab) { session.SelectedTab = tab.Key; Save(); } RenderSurfaceHeader(); RefreshOutput(); };
         tabs.TabCloseRequested += (_, e) =>
         {
             if (session == null || e.Tab.Tag is not CodeTab tab) return;
-            if (viewerEntries.Remove(tab.Key, out var entry)) entry.Dispose(); CodePanels.Close(session, tab.Key);
-            RenderTabs(); RefreshResultActions(); Arrange(); Save();
+            CloseViewerTab(tab);
         };
         page.SizeChanged += (_, _) => Arrange();
         refreshCodeProfiles = RefreshModels;
@@ -1227,6 +1294,7 @@ public sealed partial class MainWindow
                 tabs.SelectedItem = selected;
             }
             finally { updating = false; }
+            RenderSurfaceHeader(); RefreshOutput();
         }
         void Arrange()
         {

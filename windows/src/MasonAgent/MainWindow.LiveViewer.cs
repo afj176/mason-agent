@@ -16,6 +16,45 @@ namespace Mason;
 public sealed partial class MainWindow
 {
     const string OpenPrefix = "open:", OpenEnd = "open:end";
+    /// <summary>Redraws the viewer's header (Moments or the way back, and the shelf) when Moments opens or closes something.</summary>
+    Action? liveSurfaceChanged;
+
+    /// <summary>One item on the viewer's shelf: a view that is open, or something the run made. Selected is outlined; open views can close.</summary>
+    static FrameworkElement ShelfChip(string label, bool selected, Action show, Action? close)
+    {
+        var name = new Button { Content = new TextBlock { Text = label, FontSize = 12.5, MaxWidth = 180, TextTrimming = TextTrimming.CharacterEllipsis }, Padding = new Thickness(10, 5, close == null ? 10 : 4, 5), MinHeight = 32, Style = Token("SubtleButtonStyle"), VerticalAlignment = VerticalAlignment.Center };
+        name.Click += (_, _) => show();
+        AutomationProperties.SetName(name, (selected ? "Showing " : "Show ") + label);
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
+        row.Children.Add(name);
+        if (close != null)
+        {
+            var x = new Button { Content = new TextBlock { Text = "✕", FontSize = 10 }, Padding = new Thickness(6, 4, 8, 4), MinHeight = 32, MinWidth = 24, Style = Token("SubtleButtonStyle"), VerticalAlignment = VerticalAlignment.Center };
+            x.Click += (_, _) => close();
+            AutomationProperties.SetName(x, "Close " + label); ToolTipService.SetToolTip(x, "Close " + label);
+            row.Children.Add(x);
+        }
+        var chip = ThemedBorder(selected
+            ? "BorderBrush='{ThemeResource AccentFillColorDefaultBrush}' BorderThickness='1.5' CornerRadius='8' Background='{ThemeResource CardBackgroundFillColorDefaultBrush}'"
+            : "BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='1' CornerRadius='8' Background='{ThemeResource CardBackgroundFillColorSecondaryBrush}'");
+        chip.Child = row;
+        return chip;
+    }
+
+    /// <summary>The TabView still hosts every view; the viewer's own header replaces its strip.</summary>
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<TabView, FrameworkElement> hiddenStrips = new();
+    static void HideTabStrip(TabView tabs)
+    {
+        if (hiddenStrips.TryGetValue(tabs, out var known)) { if (known.Visibility != Visibility.Collapsed) known.Visibility = Visibility.Collapsed; return; }
+        static FrameworkElement? Find(DependencyObject node, string name)
+        {
+            if (node is FrameworkElement element && element.Name == name) return element;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+                if (Find(VisualTreeHelper.GetChild(node, i), name) is { } found) return found;
+            return null;
+        }
+        if (Find(tabs, "TabContainerGrid") is { } strip) { strip.Visibility = Visibility.Collapsed; hiddenStrips.AddOrUpdate(tabs, strip); }
+    }
 
     void BuildLiveViewer(CodeSession session, CodeTab model, CodeViewerEntry entry, ContentControl host, Action save, Action<string, string> open)
     {
@@ -56,8 +95,6 @@ public sealed partial class MainWindow
                 {
                     // An opened artifact, with the way back and how much has happened since.
                     int newer = openedEnd ? 0 : scenes.Count(s => s.First > opened!.Last);
-                    var back = Button("← Moments", (_, _) => Go(null));
-                    AutomationProperties.SetName(back, "Back to moments");
                     string titleText = openedEnd ? CodeRunEnding.Look(session.Ending?.Code)?.Headline ?? "Run ended"
                         : openedPath != null ? Path.GetFileName(openedPath) : CodeScenes.Label(opened!, activities);
                     var title = Text(titleText, 14); title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.MaxLines = 1; title.TextTrimming = TextTrimming.CharacterEllipsis; title.VerticalAlignment = VerticalAlignment.Center;
@@ -71,7 +108,7 @@ public sealed partial class MainWindow
                         raw.Click += (_, _) => { model.ViewMode = raw.IsChecked == true ? "raw" : ""; revision = ""; save(); entry.Refresh?.Invoke(); };
                         right.Children.Add(raw);
                     }
-                    header = HeaderRow(back, title, right);
+                    header = HeaderRow(title, new Border(), right);
                     if (openedEnd) ReceiptLens(session, body, open);
                     else if (model.ViewMode == "raw") foreach (int i in Indices(opened!)) body.Children.Add(ActivityCard(session, i, true));
                     else
@@ -95,28 +132,8 @@ public sealed partial class MainWindow
                 }
                 else
                 {
-                    // The feed. Header: what this is, whether it is live, and what the run has made so far.
-                    var title = Text("Moments", 15); title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.VerticalAlignment = VerticalAlignment.Center;
-                    var left = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-                    left.Children.Add(title);
-                    if (running) left.Children.Add(Pill("● Live", Tone.Accent));
-                    var made = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-                    foreach (var (label, act) in MadeSoFar(session, (call, path) => Go(Opener(call, path)), open).Take(5))
-                    {
-                        var chip = Button(label, (_, _) => act()); chip.Padding = new Thickness(9, 4, 9, 4); chip.FontSize = 12;
-                        AutomationProperties.SetName(chip, "Open " + label); made.Children.Add(chip);
-                    }
-                    var madeScroll = new ScrollViewer { Content = made, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled, HorizontalAlignment = HorizontalAlignment.Right };
-                    AutomationProperties.SetName(madeScroll, "Made so far");
-                    var more = ChatIcon("More run pages", "", (_, _) => { });
-                    var pages = Fluent.Acrylic(new MenuFlyout());
-                    foreach (var (label, kind) in new[] { ("Plan & repository map", "plan"), ("Model roles & decisions", "roles"), ("Background tasks", "tasks"), ("Context checkpoints", "context") })
-                    { var item = new MenuFlyoutItem { Text = label }; item.Click += (_, _) => open(kind, ""); pages.Items.Add(item); }
-                    more.Flyout = pages;
-                    var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
-                    right.Children.Add(more);
-                    header = HeaderRow(left, madeScroll, right);
-
+                    // The feed. The viewer's header carries "Moments", whether it is live, and the shelf.
+                    header = new Border();
                     if (!running && session.Ending != null) body.Children.Add(EndMoment(session, open, () => Go(OpenEnd)));
                     foreach (var moment in FeedMoments(session, scenes, running, dark, open, call => Go(Opener(call)), (call, path) => Go(Opener(call, path))).Take(120))
                         body.Children.Add(moment);
@@ -136,6 +153,7 @@ public sealed partial class MainWindow
             layout.RowDefinitions.Add(new() { Height = GridLength.Auto }); layout.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
             layout.Children.Add(header); Grid.SetRow(scroll, 1); layout.Children.Add(scroll);
             host.Content = layout;
+            liveSurfaceChanged?.Invoke();
         };
         entry.Refresh();
     }
