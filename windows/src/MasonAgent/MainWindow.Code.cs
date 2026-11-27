@@ -611,6 +611,13 @@ public sealed partial class MainWindow
         extraCaptures.Add(("code-live", () => { CaptureViewer("activity"); if (session?.Tabs.FirstOrDefault(t => t.Kind == "activity") is { } live) { live.Location = null; if (viewerEntries.TryGetValue(live.Key, out var shown)) shown.Refresh?.Invoke(); } }));
         foreach (var (name, kind) in new[] { ("code-live-read", CodeSceneKind.Read), ("code-live-edit", CodeSceneKind.Edit), ("code-live-run", CodeSceneKind.Command) })
             extraCaptures.Add((name, () => { CaptureViewer(null); if (session != null) OpenActivity(session.Activities.FindIndex(a => CodeScenes.KindOf(a.Tool) == kind)); }));
+        // A session that has not run anything yet: the Live Viewer's empty state. Captured in a session of its own, kept apart from the fixture's.
+        extraCaptures.Add(("code-live-empty", () =>
+        {
+            CaptureViewer(null); if (session == null) return;
+            var empty = store.Sessions.FirstOrDefault(s => s.Workspace == session.Workspace && s.Activities.Count == 0 && s.Turns.Count == 0) ?? store.New(session.Workspace);
+            Select(empty, project); OpenTab("activity", "", true);
+        }));
         extraCaptures.Add(("code-notes", () => { CaptureViewer(null); notesTray.Open(); }));
         openCodeProject = owner => { if (codeOperation != null) { state.Text = "Finish or stop the current run before switching projects."; return; } Navigate("Code"); if (owner != project) SelectProject(owner); };
         addCodeProject = OpenWorkspace;
@@ -1294,6 +1301,8 @@ public sealed partial class MainWindow
             agentMode.IsEnabled = ready && workspaceReady; permissions.IsEnabled = ready && workspaceReady && session?.Mode != "ask";
             activityButton.IsEnabled = contextLink.IsEnabled = branch.IsEnabled = changeButton.IsEnabled = preview.IsEnabled = workspaceReady;
             ToolTipService.SetToolTip(activityButton, workspaceReady ? "Inspect actual tool requests and results" : "Open a workspace folder to start a session.");
+            // Until the session has done something there is no activity to view.
+            activityButton.Visibility = session?.Activities.Count > 0 || session?.State is "Running" or "Awaiting review" ? Visibility.Visible : Visibility.Collapsed;
             ToolTipService.SetToolTip(contextLink, workspaceReady ? ContextCaption(session) : "Open a workspace folder to start a session.");
             bool canGuide=liveEngine!=null && session==liveOwner;
             draft.IsEnabled = session != null && (ready||canGuide); send.IsEnabled = session != null && ready;
