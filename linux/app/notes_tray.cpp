@@ -236,7 +236,8 @@ void MainWindow::build_notes() {
         notes_revealer_.measure(Gtk::Orientation::VERTICAL, width, minimum, natural, ignored, ignored);
         const int tray = std::max(minimum, std::min(natural, top - tab_height - 8));
         if (child == &notes_revealer_) place = Gdk::Rectangle(left, top - tray, width, tray);
-        else place = Gdk::Rectangle(left + 12, top - tray - tab_height, tab_width, tab_height);
+        // The tab sits at the trailing end, clear of the state row that sits at the left above the request box.
+        else place = Gdk::Rectangle(static_cast<int>(card.origin.x + card.size.width) - 24 - tab_width, top - tray - tab_height, tab_width, tab_height);
         return true;
     }, false);
 }
