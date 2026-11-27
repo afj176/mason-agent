@@ -22,8 +22,7 @@ struct MasonAgentApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Session") { model.pane = .code; model.newSession() }.keyboardShortcut("n")
-                // ⌘⇧N opens Notes, so a new chat is ⌥⌘N.
-                Button("New Chat") { model.newChat() }.keyboardShortcut("n", modifiers: [.command, .option])
+                Button("New Chat") { model.newChat() }.keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("Open Project…") { model.openFolder() }.keyboardShortcut("o")
             }
             CommandGroup(after: .undoRedo) {
@@ -37,8 +36,9 @@ struct MasonAgentApp: App {
                 Button("Chat") { model.pane = .chat }.keyboardShortcut("2")
                 Button("Models") { model.pane = .models }.keyboardShortcut("3")
                 Divider()
+                // New Chat keeps ⌘⇧N, so Notes is ⌥⌘N.
                 Button(model.notesOpen ? "Hide Notes" : "Notes") { model.toggleNotes() }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .keyboardShortcut("n", modifiers: [.command, .option])
                     .disabled(model.pane != .code || model.session == nil)
                 Button("Search Mason…") { model.showPalette() }.keyboardShortcut("k")
             }

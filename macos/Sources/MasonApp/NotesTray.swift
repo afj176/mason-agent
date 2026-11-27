@@ -179,7 +179,7 @@ struct NotesTab: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(model.notesOpen ? "Close Notes (⌘⇧N)" : "Notes Mason reads with every request (⌘⇧N)")
+        .help(model.notesOpen ? "Close Notes (⌥⌘N)" : "Notes Mason reads with every request (⌥⌘N)")
         .accessibilityLabel("Notes, \(model.projectNotes.count)")
     }
 }
