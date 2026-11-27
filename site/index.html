@@ -42,9 +42,8 @@
     <nav aria-label="Main">
       <ul>
         <li class="wide"><a href="#features">Features</a></li>
+        <li class="wide"><a href="#terminal">Terminal</a></li>
         <li class="wide"><a href="#themes">Themes</a></li>
-        <li class="wide"><a href="#platforms">Platforms</a></li>
-        <li class="wide"><a href="#screenshots">Screenshots</a></li>
         <li><a href="#download">Download</a></li>
         <li><a class="github" href="https://github.com/afj176/mason-agent">
           <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
@@ -91,12 +90,12 @@
   <section class="story" aria-labelledby="story-title">
     <div class="wrap">
       <h2 id="story-title">One request, start to finish</h2>
-      <p class="section-lede">The same two characters show what Mason is doing in the app, so you can tell at a glance whether it is reading, editing or waiting for you.</p>
+      <p class="section-lede">You ask in plain words. Mason does the work in steps you can follow, and nothing is kept until you have seen it.</p>
       <ol class="steps">
         <li class="step"><img src="assets/poses/listening.png" alt="" loading="lazy" decoding="async"><h3>You ask</h3><p>Describe a change, or ask about the project.</p></li>
         <li class="step"><img src="assets/poses/reading-files.png" alt="" loading="lazy" decoding="async"><h3>It reads</h3><p>Mason opens and searches the files it needs.</p></li>
         <li class="step"><img src="assets/poses/editing.png" alt="" loading="lazy" decoding="async"><h3>It edits</h3><p>Each edit waits for your approval unless you allowed it.</p></li>
-        <li class="step"><img src="assets/poses/running-checks.png" alt="" loading="lazy" decoding="async"><h3>It checks</h3><p>Tests and language servers catch mistakes before it moves on.</p></li>
+        <li class="step"><img src="assets/poses/running-checks.png" alt="" loading="lazy" decoding="async"><h3>It checks</h3><p>It runs your tests and fixes what they catch.</p></li>
         <li class="step"><img src="assets/poses/ready-to-review.png" alt="" loading="lazy" decoding="async"><h3>You review</h3><p>Keep the diffs, or undo the whole request.</p></li>
       </ol>
     </div>
@@ -104,67 +103,116 @@
 
   <section class="features" id="features" aria-labelledby="features-title">
     <div class="wrap">
-      <h2 id="features-title">A workspace with room to think</h2>
-      <p class="section-lede">Your code, your workspace, your local models. Everything stays on your computer.</p>
-      <ul class="cards">
-        <li class="card">
-          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg></span>
-          <h3>Projects keep their history</h3>
-          <p>Add a folder and Mason Agent keeps its coding sessions, files and changes together, with the Git branch in view. Sessions are saved in your local profile.</p>
-        </li>
-        <li class="card">
-          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1.5V4M15 1.5V4M9 20v2.5M15 20v2.5M1.5 9H4M1.5 15H4M20 9h2.5M20 15h2.5"/></svg></span>
+      <h2 id="features-title">Your code stays on your computer</h2>
+      <p class="section-lede">Mason Agent works with models running on your own machine. There is no account, no cloud and no telemetry.</p>
+      <div class="feature-row">
+        <div class="feature-copy">
+          <h3>Review every change, undo any request</h3>
+          <p>Every edit shows as a diff against the original file. Undo puts back everything a request changed, including files its commands created or deleted, and leaves alone anything you edited since.</p>
+        </div>
+        <figure class="shot">
+          <picture>
+            <source srcset="assets/changes-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/changes-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="Review changes: a diff of the importer switching to csv.reader, beside the finished turn with 3 of 3 checks passed">
+          </picture>
+        </figure>
+      </div>
+      <div class="feature-row flip">
+        <div class="feature-copy">
           <h3>Runs on your own models</h3>
-          <p>Mason Agent runs GGUF models itself through llama.cpp, so there is no separate server to start or keep alive. Or connect to an OpenAI-compatible server on this computer. Transformers weights also run, through your own Python with PyTorch.</p>
-        </li>
-        <li class="card">
-          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg></span>
-          <h3>Quick setup</h3>
-          <p>Mason checks your memory, installs the right llama.cpp build, suggests a coding model that fits and, once you confirm the download, starts it.</p>
-        </li>
+          <p><strong>Quick setup</strong> checks your memory, installs llama.cpp and downloads a coding model that fits. The library shows what each model on your computer can do for the agent and whether it fits before you start it. A local OpenAI-compatible server works too.</p>
+        </div>
+        <figure class="shot">
+          <picture>
+            <source srcset="assets/models-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/models-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="The Models library: GPU memory, a Quick setup button, and local models with what each can do for the coding agent">
+          </picture>
+        </figure>
+      </div>
+      <div class="feature-row">
+        <div class="feature-copy">
+          <h3>Chat beside your code</h3>
+          <p>Talk a problem through with the running model, apart from your coding sessions. Attach documents and pictures, and keep the conversations on your computer.</p>
+        </div>
+        <figure class="shot">
+          <picture>
+            <source srcset="assets/chat-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/chat-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="Chat: a new conversation with suggested prompts and the Reference panel">
+          </picture>
+        </figure>
+      </div>
+      <ul class="cards">
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 5 6v5.5c0 4.2 2.9 7.9 7 9.5 4.1-1.6 7-5.3 7-9.5V6z"/><path d="m9 12 2 2 4-4"/></svg></span>
           <h3>You set the permissions</h3>
-          <p>Sessions start read-only. Approve each edit and command, allow workspace edits, or use Auto, which runs commands in your system's own sandbox, limited to the project. Choose <em>Always allow</em> to stop being asked about a command, folder or tool you trust.</p>
-        </li>
-        <li class="card">
-          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5M10 13h6M13 10v6M10 19h6"/></svg></span>
-          <h3>Undo a whole request</h3>
-          <p>Edits show as diffs against the original files. Undo puts back everything a request changed, including files its commands created, changed or deleted, and Redo reapplies it. Files you edited since are left alone.</p>
-        </li>
-        <li class="card">
-          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg></span>
-          <h3>Your agents and commands</h3>
-          <p>Write agents and slash commands as Markdown files in your project. Mason Agent also reads the ones you keep for Claude Code and OpenCode. Add MCP servers on this computer and choose which of their tools the agent may use; every call asks first.</p>
+          <p>Sessions start read-only. Approve each edit and command, or use Auto, which runs commands in your system's sandbox, limited to the project and with no network.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5M15 7l5 5-5 5"/></svg></span>
-          <h3>Errors caught as it edits</h3>
-          <p>Mason Agent talks to the language servers on your computer the way an editor does. After each edit, the errors the server finds go straight back to the model, so it fixes them before moving on. It knows the servers for about 35 languages and installs a missing one when you choose to.</p>
+          <h3>Mistakes caught as it works</h3>
+          <p>Language servers check each edit and your project's tests run before a request finishes, so the model fixes errors before you see them.</p>
+        </li>
+        <li class="card">
+          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5"/></svg></span>
+          <h3>Your agents, commands and MCP servers</h3>
+          <p>Write agents and slash commands as Markdown files. Mason also reads the ones you keep for Claude Code and OpenCode, and calls the MCP tools you switch on.</p>
         </li>
         <li class="card">
           <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/></svg></span>
           <h3>Schedules and notifications</h3>
-          <p>Schedule a request to run hourly, daily, on weekdays or weekly, unattended and with nothing approved on your behalf. While you work in another app, your system notifies you when a session finishes or needs your approval.</p>
-        </li>
-        <li class="card">
-          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 4v-4h0A1.5 1.5 0 0 1 4 14.5z"/><path d="M8 9h8M8 12h5"/></svg></span>
-          <h3>Chat beside your code</h3>
-          <p>Talk a problem through with the running model, apart from your coding sessions. Answers can include code blocks, you can attach text files, chats are saved on your computer, and long conversations compact automatically.</p>
-        </li>
-        <li class="card">
-          <span class="icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16.5 4.5l3.8 1-4 15.4-3.8-1z"/></svg></span>
-          <h3>A model library</h3>
-          <p>Scan your folders for model weights, see what each one can do for the agent and whether it fits in your memory, and download models from Hugging Face when you choose to.</p>
+          <p>Run a request hourly, daily or weekly with nothing approved on your behalf. Your system tells you when a session finishes or needs you.</p>
         </li>
       </ul>
+      <p class="section-lede more"><a href="https://github.com/afj176/mason-agent/blob/main/docs/features.md">Everything Mason Agent can do</a></p>
+    </div>
+  </section>
+
+  <section class="features" id="terminal" aria-labelledby="terminal-title">
+    <div class="wrap">
+      <h2 id="terminal-title">The same agent in your terminal</h2>
+      <p class="section-lede">Run <code>mason</code> in a project folder. It needs no setup flags: it uses a model that is already running, restarts the one you used last, or helps you download one.</p>
+      <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, and Mason shows its app icon beside the start banner with the Blueprint theme, starts a local model, reads a file, asks before editing it, and shows the change">
+        <pre><code><span class="t-dim">~/src/shop $</span> mason
+<span class="banner"><span class="pixels" aria-hidden="true"><i></i><i style="background:#4a548a"></i><i style="background:#505892"></i><i style="background:#4f578e"></i><i style="background:#4e578d"></i><i style="background:#4d558b"></i><i style="background:#50578d"></i><i style="background:#495490"></i><i style="background:#4e568f"></i><i style="background:#4d558a"></i><i style="background:#4e568c"></i><i style="background:#4e578d"></i><i style="background:#4e568c"></i><i style="background:#4f5890"></i><i style="background:#4d548a"></i><i></i><i></i><i style="background:#4f5790"></i><i style="background:#50578e"></i><i style="background:#4e568c"></i><i style="background:#51588d"></i><i style="background:#555b92"></i><i style="background:#444e83"></i><i style="background:#524c64"></i><i style="background:#464b78"></i><i style="background:#505992"></i><i style="background:#51578d"></i><i style="background:#4f568d"></i><i style="background:#50578e"></i><i style="background:#4e568d"></i><i style="background:#525b95"></i><i style="background:#4c558a"></i><i style="background:#4b538a"></i><i style="background:#535992"></i><i style="background:#51588f"></i><i style="background:#535990"></i><i style="background:#444f8b"></i><i style="background:#324684"></i><i style="background:#554c56"></i><i style="background:#a56533"></i><i style="background:#6a4839"></i><i style="background:#354377"></i><i style="background:#4b558e"></i><i style="background:#51588e"></i><i style="background:#4b5388"></i><i style="background:#4d548b"></i><i style="background:#50578f"></i><i style="background:#4e558a"></i><i style="background:#4d568e"></i><i style="background:#3f4b7f"></i><i style="background:#404a7a"></i><i style="background:#37477d"></i><i style="background:#655b65"></i><i style="background:#a27352"></i><i style="background:#c87d42"></i><i style="background:#b86b36"></i><i style="background:#684739"></i><i style="background:#754e35"></i><i style="background:#53495d"></i><i style="background:#4f5995"></i><i style="background:#3f4876"></i><i style="background:#3a4672"></i><i style="background:#434d7e"></i><i style="background:#51598f"></i><i style="background:#3d4a7b"></i><i style="background:#855940"></i><i style="background:#9c5f35"></i><i style="background:#a06c46"></i><i style="background:#df863e"></i><i style="background:#d9782f"></i><i style="background:#cc6f2d"></i><i style="background:#cf6d25"></i><i style="background:#c8702f"></i><i style="background:#7e4e32"></i><i style="background:#714e44"></i><i style="background:#425194"></i><i style="background:#4b528d"></i><i style="background:#3f4984"></i><i style="background:#3a457b"></i><i style="background:#4e5789"></i><i style="background:#524c60"></i><i style="background:#ac6633"></i><i style="background:#975932"></i><i style="background:#df7a2d"></i><i style="background:#c96e2d"></i><i style="background:#c96e2c"></i><i style="background:#cd702d"></i><i style="background:#e89755"></i><i style="background:#8f5f41"></i><i style="background:#89502d"></i><i style="background:#2e3451"></i><i style="background:#50597b"></i><i style="background:#5e665e"></i><i style="background:#5d654b"></i><i style="background:#4c5571"></i><i style="background:#4f578d"></i><i style="background:#313b69"></i><i style="background:#865438"></i><i style="background:#d07430"></i><i style="background:#ca7130"></i><i style="background:#be6a2f"></i><i style="background:#c97435"></i><i style="background:#d7aa82"></i><i style="background:#4d5570"></i><i style="background:#706c6c"></i><i style="background:#d2834c"></i><i style="background:#424435"></i><i style="background:#ced049"></i><i style="background:#bebe59"></i><i style="background:#919651"></i><i style="background:#798040"></i><i style="background:#394379"></i><i style="background:#35427d"></i><i style="background:#3d405f"></i><i style="background:#ce752f"></i><i style="background:#e37d30"></i><i style="background:#90522c"></i><i style="background:#b9926f"></i><i style="background:#f0d9ac"></i><i style="background:#807069"></i><i style="background:#e4d0a8"></i><i style="background:#e3a171"></i><i style="background:#827124"></i><i style="background:#b7bc57"></i><i style="background:#bab98c"></i><i style="background:#6e764a"></i><i style="background:#cdcc61"></i><i style="background:#79805a"></i><i style="background:#39437c"></i><i style="background:#3c4161"></i><i style="background:#80563c"></i><i style="background:#925a37"></i><i style="background:#d1712a"></i><i style="background:#e7ae77"></i><i style="background:#d6c5a5"></i><i style="background:#ffebb7"></i><i style="background:#ffe8ad"></i><i style="background:#b57349"></i><i style="background:#5d6133"></i><i style="background:#a6ae31"></i><i style="background:#c6c449"></i><i style="background:#9fa159"></i><i style="background:#b6b74a"></i><i style="background:#697136"></i><i style="background:#32417e"></i><i style="background:#5b4b53"></i><i style="background:#d97a2f"></i><i style="background:#995c35"></i><i style="background:#7f4e32"></i><i style="background:#da8645"></i><i style="background:#e4bb8c"></i><i style="background:#e7b682"></i><i style="background:#d28445"></i><i style="background:#513c42"></i><i style="background:#1d2957"></i><i style="background:#544b43"></i><i style="background:#525d3c"></i><i style="background:#959b35"></i><i style="background:#b9b92b"></i><i style="background:#19283d"></i><i style="background:#2f3e77"></i><i style="background:#413947"></i><i style="background:#bb692d"></i><i style="background:#e27b2d"></i><i style="background:#8b5636"></i><i style="background:#a45f30"></i><i style="background:#d3742e"></i><i style="background:#cf702c"></i><i style="background:#a95e29"></i><i style="background:#2b3666"></i><i style="background:#56485a"></i><i style="background:#d87931"></i><i style="background:#a26344"></i><i style="background:#292d44"></i><i style="background:#21323d"></i><i style="background:#293557"></i><i style="background:#5f555d"></i><i style="background:#8c6043"></i><i style="background:#a25e30"></i><i style="background:#e37d2e"></i><i style="background:#7f5037"></i><i style="background:#5b4139"></i><i style="background:#e07b2a"></i><i style="background:#cf732d"></i><i style="background:#b76729"></i><i style="background:#343b69"></i><i style="background:#544556"></i><i style="background:#cd7129"></i><i style="background:#db7a30"></i><i style="background:#bf7238"></i><i style="background:#2c345c"></i><i style="background:#3a457d"></i><i style="background:#ae774d"></i><i style="background:#9c5e36"></i><i style="background:#d07530"></i><i style="background:#d9782d"></i><i style="background:#6f4d43"></i><i style="background:#34395c"></i><i style="background:#61494f"></i><i style="background:#504459"></i><i style="background:#44405e"></i><i style="background:#3a437c"></i><i style="background:#4c4359"></i><i style="background:#ce742d"></i><i style="background:#c87233"></i><i style="background:#db792e"></i><i style="background:#95664a"></i><i style="background:#2c3d75"></i><i style="background:#c46f2f"></i><i style="background:#ce7432"></i><i style="background:#ce7532"></i><i style="background:#d3752c"></i><i style="background:#564450"></i><i style="background:#35427d"></i><i style="background:#313c72"></i><i style="background:#313d72"></i><i style="background:#313c6d"></i><i style="background:#3d4477"></i><i style="background:#383d66"></i><i style="background:#b6682f"></i><i style="background:#d27631"></i><i style="background:#cb702e"></i><i style="background:#cc793a"></i><i style="background:#4a485f"></i><i></i><i style="background:#d67933"></i><i style="background:#d77933"></i><i style="background:#bc6b2e"></i><i style="background:#363a5e"></i><i style="background:#2d3864"></i><i style="background:#333a64"></i><i style="background:#353b66"></i><i style="background:#333b65"></i><i style="background:#2f3760"></i><i style="background:#2b3b70"></i><i style="background:#825338"></i><i style="background:#db792f"></i><i style="background:#cb7331"></i><i style="background:#dc7d36"></i><i style="background:#9f6742"></i><i></i><i></i><i style="background:#e37e30"></i><i style="background:#865437"></i><i style="background:#2a3769"></i><i style="background:#313861"></i><i style="background:#3c426f"></i><i style="background:#404471"></i><i style="background:#3d4370"></i><i style="background:#2e365d"></i><i style="background:#2f3b6f"></i><i style="background:#5f4644"></i><i style="background:#d9772c"></i><i style="background:#d37733"></i><i style="background:#cb722f"></i><i></i></span><span>  <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
+  <span class="t-dim">theme</span> <span class="t-accent">blueprint</span>  <span class="t-dim">·  review edits</span>
+  <span class="t-dim">Nothing is answering yet, so Mason is starting the model you used last.</span>
+  <span class="t-ok">✓ Qwen2.5-Coder-7B is running</span></span></span>
+
+<span class="t-dim">review edits</span> <span class="t-accent">›</span> the cart total ignores the discount, fix it
+  <span class="t-ok">✓</span> read file src/cart.py
+  <span class="t-warn">▌ Review edit file</span>  src/cart.py
+  <span class="t-warn">▌</span> <span class="t-bad">-     return subtotal</span>
+  <span class="t-warn">▌</span> <span class="t-ok">+     return subtotal - discount(subtotal)</span>
+  Allow?  y once   a always for this project…   n decline</code></pre>
+      </div>
+      <p class="section-lede">Approvals take one key. <code>/diff</code> and <code>/undo</code> review and reverse changes, <code>/models</code> finds and downloads models, and <code>/permission</code> sets what Mason may do without asking.</p>
+    </div>
+  </section>
+
+  <section class="screens" id="platforms" aria-labelledby="platforms-title">
+    <div class="wrap">
+      <h2 id="platforms-title">A native app on each system</h2>
+      <p class="section-lede">The Windows, macOS and Linux apps do the same things, and each one looks and behaves like it belongs on its system.</p>
+      <div class="gallery">
+        <figure class="shot">
+          <img src="assets/mac-app.png" width="1024" height="688" loading="lazy" decoding="async" alt="Mason Agent on macOS in dark mode: a request to fix a CSV importer, the four steps Mason took, its explanation and the completed pose">
+          <figcaption>macOS</figcaption>
+        </figure>
+        <figure class="shot">
+          <picture>
+            <source srcset="assets/linux-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/linux-light.webp" width="1280" height="800" loading="lazy" decoding="async" alt="Mason Agent on Linux: a finished request that wrote one file, with the completed pose above the request box">
+          </picture>
+          <figcaption>Linux</figcaption>
+        </figure>
+      </div>
     </div>
   </section>
 
   <section class="themes" id="themes" aria-labelledby="themes-title">
-    <div class="wrap">
+    <div class="wrap narrow">
       <h2 id="themes-title">Five themes, light and dark</h2>
-      <p class="section-lede">Pick a family in the app's Appearance menu, or with <code>mason theme</code> in your terminal. Each one has a light and a dark version, and the app follows your system unless you choose.</p>
+      <p class="section-lede">Pick one in the app or with <code>mason theme</code>. The app follows your system's light or dark mode unless you choose.</p>
       <div class="theme-view">
         <ul class="theme-list" aria-label="Theme families">
           <li><button type="button" data-family="blueprint" aria-pressed="true"><span class="swatch" aria-hidden="true"><span style="background:#F3F5FC"><i style="background:#374FAB"></i></span><span style="background:#151B30"><i style="background:#B4B8FF"></i></span></span>Blueprint</button></li>
@@ -184,97 +232,6 @@
     </div>
   </section>
 
-  <section class="features" id="platforms" aria-labelledby="platforms-title">
-    <div class="wrap">
-      <h2 id="platforms-title">Native on each system</h2>
-      <p class="section-lede">Each app is written for its own platform, with that system's interface, sandbox and conventions. The <code>mason</code> command brings the same agent to your terminal.</p>
-      <ul class="cards">
-        <li class="card">
-          <span class="status available">Available</span>
-          <h3>Windows</h3>
-          <p>WinUI 3 and C#. Commands in Auto run in a Windows sandbox limited to your project. An illustrated installer or a portable ZIP.</p>
-          <p><a href="#download" data-platform="windows">Download for Windows</a></p>
-        </li>
-        <li class="card">
-          <span class="status available">Available</span>
-          <h3>macOS</h3>
-          <p>SwiftUI and Swift, engine included. Auto uses the macOS sandbox. A universal app for Apple silicon and Intel, with an installer that puts <code>mason</code> on your PATH.</p>
-          <p><a href="#download" data-platform="macos">Download for macOS</a></p>
-        </li>
-        <li class="card">
-          <span class="status available">Available</span>
-          <h3>Linux</h3>
-          <p>GTK 4, libadwaita and C++. Auto uses a bubblewrap sandbox. A <code>.deb</code> for Debian and Ubuntu, and an archive that installs for your user on other distributions.</p>
-          <p><a href="#download" data-platform="linux">Download for Linux</a></p>
-        </li>
-      </ul>
-      <p class="section-lede">All three apps do the same things: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. They work out checks from a request and run them, and build a simple offline store with a built-in component. They have experiments in worktrees, pull request drafting, background tasks that outlive the app, separate reviewer and vision models, pinned project tests, a file viewer and a Website panel, network access you allow per host, project policy with hooks, installable bundles, pictures and documents in chat, charts for tables in answers, and five light and dark themes.</p>
-      <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, and Mason shows its app icon beside the start banner with the Blueprint theme, starts a local model, reads a file, asks before editing it, and shows the change">
-        <pre><code><span class="t-dim">~/src/shop $</span> mason
-<span class="banner"><span class="pixels" aria-hidden="true"><i></i><i style="background:#4a548a"></i><i style="background:#505892"></i><i style="background:#4f578e"></i><i style="background:#4e578d"></i><i style="background:#4d558b"></i><i style="background:#50578d"></i><i style="background:#495490"></i><i style="background:#4e568f"></i><i style="background:#4d558a"></i><i style="background:#4e568c"></i><i style="background:#4e578d"></i><i style="background:#4e568c"></i><i style="background:#4f5890"></i><i style="background:#4d548a"></i><i></i><i></i><i style="background:#4f5790"></i><i style="background:#50578e"></i><i style="background:#4e568c"></i><i style="background:#51588d"></i><i style="background:#555b92"></i><i style="background:#444e83"></i><i style="background:#524c64"></i><i style="background:#464b78"></i><i style="background:#505992"></i><i style="background:#51578d"></i><i style="background:#4f568d"></i><i style="background:#50578e"></i><i style="background:#4e568d"></i><i style="background:#525b95"></i><i style="background:#4c558a"></i><i style="background:#4b538a"></i><i style="background:#535992"></i><i style="background:#51588f"></i><i style="background:#535990"></i><i style="background:#444f8b"></i><i style="background:#324684"></i><i style="background:#554c56"></i><i style="background:#a56533"></i><i style="background:#6a4839"></i><i style="background:#354377"></i><i style="background:#4b558e"></i><i style="background:#51588e"></i><i style="background:#4b5388"></i><i style="background:#4d548b"></i><i style="background:#50578f"></i><i style="background:#4e558a"></i><i style="background:#4d568e"></i><i style="background:#3f4b7f"></i><i style="background:#404a7a"></i><i style="background:#37477d"></i><i style="background:#655b65"></i><i style="background:#a27352"></i><i style="background:#c87d42"></i><i style="background:#b86b36"></i><i style="background:#684739"></i><i style="background:#754e35"></i><i style="background:#53495d"></i><i style="background:#4f5995"></i><i style="background:#3f4876"></i><i style="background:#3a4672"></i><i style="background:#434d7e"></i><i style="background:#51598f"></i><i style="background:#3d4a7b"></i><i style="background:#855940"></i><i style="background:#9c5f35"></i><i style="background:#a06c46"></i><i style="background:#df863e"></i><i style="background:#d9782f"></i><i style="background:#cc6f2d"></i><i style="background:#cf6d25"></i><i style="background:#c8702f"></i><i style="background:#7e4e32"></i><i style="background:#714e44"></i><i style="background:#425194"></i><i style="background:#4b528d"></i><i style="background:#3f4984"></i><i style="background:#3a457b"></i><i style="background:#4e5789"></i><i style="background:#524c60"></i><i style="background:#ac6633"></i><i style="background:#975932"></i><i style="background:#df7a2d"></i><i style="background:#c96e2d"></i><i style="background:#c96e2c"></i><i style="background:#cd702d"></i><i style="background:#e89755"></i><i style="background:#8f5f41"></i><i style="background:#89502d"></i><i style="background:#2e3451"></i><i style="background:#50597b"></i><i style="background:#5e665e"></i><i style="background:#5d654b"></i><i style="background:#4c5571"></i><i style="background:#4f578d"></i><i style="background:#313b69"></i><i style="background:#865438"></i><i style="background:#d07430"></i><i style="background:#ca7130"></i><i style="background:#be6a2f"></i><i style="background:#c97435"></i><i style="background:#d7aa82"></i><i style="background:#4d5570"></i><i style="background:#706c6c"></i><i style="background:#d2834c"></i><i style="background:#424435"></i><i style="background:#ced049"></i><i style="background:#bebe59"></i><i style="background:#919651"></i><i style="background:#798040"></i><i style="background:#394379"></i><i style="background:#35427d"></i><i style="background:#3d405f"></i><i style="background:#ce752f"></i><i style="background:#e37d30"></i><i style="background:#90522c"></i><i style="background:#b9926f"></i><i style="background:#f0d9ac"></i><i style="background:#807069"></i><i style="background:#e4d0a8"></i><i style="background:#e3a171"></i><i style="background:#827124"></i><i style="background:#b7bc57"></i><i style="background:#bab98c"></i><i style="background:#6e764a"></i><i style="background:#cdcc61"></i><i style="background:#79805a"></i><i style="background:#39437c"></i><i style="background:#3c4161"></i><i style="background:#80563c"></i><i style="background:#925a37"></i><i style="background:#d1712a"></i><i style="background:#e7ae77"></i><i style="background:#d6c5a5"></i><i style="background:#ffebb7"></i><i style="background:#ffe8ad"></i><i style="background:#b57349"></i><i style="background:#5d6133"></i><i style="background:#a6ae31"></i><i style="background:#c6c449"></i><i style="background:#9fa159"></i><i style="background:#b6b74a"></i><i style="background:#697136"></i><i style="background:#32417e"></i><i style="background:#5b4b53"></i><i style="background:#d97a2f"></i><i style="background:#995c35"></i><i style="background:#7f4e32"></i><i style="background:#da8645"></i><i style="background:#e4bb8c"></i><i style="background:#e7b682"></i><i style="background:#d28445"></i><i style="background:#513c42"></i><i style="background:#1d2957"></i><i style="background:#544b43"></i><i style="background:#525d3c"></i><i style="background:#959b35"></i><i style="background:#b9b92b"></i><i style="background:#19283d"></i><i style="background:#2f3e77"></i><i style="background:#413947"></i><i style="background:#bb692d"></i><i style="background:#e27b2d"></i><i style="background:#8b5636"></i><i style="background:#a45f30"></i><i style="background:#d3742e"></i><i style="background:#cf702c"></i><i style="background:#a95e29"></i><i style="background:#2b3666"></i><i style="background:#56485a"></i><i style="background:#d87931"></i><i style="background:#a26344"></i><i style="background:#292d44"></i><i style="background:#21323d"></i><i style="background:#293557"></i><i style="background:#5f555d"></i><i style="background:#8c6043"></i><i style="background:#a25e30"></i><i style="background:#e37d2e"></i><i style="background:#7f5037"></i><i style="background:#5b4139"></i><i style="background:#e07b2a"></i><i style="background:#cf732d"></i><i style="background:#b76729"></i><i style="background:#343b69"></i><i style="background:#544556"></i><i style="background:#cd7129"></i><i style="background:#db7a30"></i><i style="background:#bf7238"></i><i style="background:#2c345c"></i><i style="background:#3a457d"></i><i style="background:#ae774d"></i><i style="background:#9c5e36"></i><i style="background:#d07530"></i><i style="background:#d9782d"></i><i style="background:#6f4d43"></i><i style="background:#34395c"></i><i style="background:#61494f"></i><i style="background:#504459"></i><i style="background:#44405e"></i><i style="background:#3a437c"></i><i style="background:#4c4359"></i><i style="background:#ce742d"></i><i style="background:#c87233"></i><i style="background:#db792e"></i><i style="background:#95664a"></i><i style="background:#2c3d75"></i><i style="background:#c46f2f"></i><i style="background:#ce7432"></i><i style="background:#ce7532"></i><i style="background:#d3752c"></i><i style="background:#564450"></i><i style="background:#35427d"></i><i style="background:#313c72"></i><i style="background:#313d72"></i><i style="background:#313c6d"></i><i style="background:#3d4477"></i><i style="background:#383d66"></i><i style="background:#b6682f"></i><i style="background:#d27631"></i><i style="background:#cb702e"></i><i style="background:#cc793a"></i><i style="background:#4a485f"></i><i></i><i style="background:#d67933"></i><i style="background:#d77933"></i><i style="background:#bc6b2e"></i><i style="background:#363a5e"></i><i style="background:#2d3864"></i><i style="background:#333a64"></i><i style="background:#353b66"></i><i style="background:#333b65"></i><i style="background:#2f3760"></i><i style="background:#2b3b70"></i><i style="background:#825338"></i><i style="background:#db792f"></i><i style="background:#cb7331"></i><i style="background:#dc7d36"></i><i style="background:#9f6742"></i><i></i><i></i><i style="background:#e37e30"></i><i style="background:#865437"></i><i style="background:#2a3769"></i><i style="background:#313861"></i><i style="background:#3c426f"></i><i style="background:#404471"></i><i style="background:#3d4370"></i><i style="background:#2e365d"></i><i style="background:#2f3b6f"></i><i style="background:#5f4644"></i><i style="background:#d9772c"></i><i style="background:#d37733"></i><i style="background:#cb722f"></i><i></i></span><span>  <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
-  <span class="t-dim">theme</span> <span class="t-accent">blueprint</span>  <span class="t-dim">·  review edits</span>
-  <span class="t-dim">Nothing is answering yet, so Mason is starting the model you used last.</span>
-  <span class="t-ok">✓ Qwen2.5-Coder-7B is running</span></span></span>
-
-<span class="t-dim">review edits</span> <span class="t-accent">›</span> the cart total ignores the discount, fix it
-  <span class="t-ok">✓</span> read file src/cart.py
-  <span class="t-warn">▌ Review edit file</span>  src/cart.py
-  <span class="t-warn">▌</span> <span class="t-bad">-     return subtotal</span>
-  <span class="t-warn">▌</span> <span class="t-ok">+     return subtotal - discount(subtotal)</span>
-  Allow?  y once   a always for this project…   n decline</code></pre>
-      </div>
-      <p class="section-lede"><strong>The command line needs no setup flags.</strong> Run <code>mason</code> in a project folder. It uses a model that is already running, restarts the one you used last, or helps you choose or download one. <code>/models</code> searches and downloads from Hugging Face, <code>/diff</code> and <code>/undo</code> review and reverse changes, <code>/permission</code> sets what Mason may do without asking, and <code>/theme</code> picks the colours it shares with the app.</p>
-    </div>
-  </section>
-
-  <section class="screens" id="screenshots" aria-labelledby="screens-title">
-    <div class="wrap">
-      <h2 id="screens-title">Screenshots</h2>
-      <p class="section-lede">One design, built natively three times: Fluent and Mica on Windows, SwiftUI on macOS, libadwaita on Linux. Each follows your light or dark setting, or you can choose, and so do these pictures. The pictures show a demonstration session played by a stand-in model.</p>
-      <div class="gallery">
-        <figure class="shot">
-          <img src="assets/mac-app.png" width="1024" height="688" loading="lazy" decoding="async" alt="Mason Agent on macOS in dark mode: a request to fix a CSV importer, the four steps Mason took, its explanation and the completed pose">
-          <figcaption>macOS: what Mason did for a request, step by step, and its summary.</figcaption>
-        </figure>
-        <figure class="shot">
-          <picture>
-            <source srcset="assets/linux-dark.webp" media="(prefers-color-scheme: dark)">
-            <img src="assets/linux-light.webp" width="1280" height="800" loading="lazy" decoding="async" alt="Mason Agent on Linux: a finished request that wrote one file, with the completed pose above the composer">
-          </picture>
-          <figcaption>Linux: a finished request, with the pose that shows how it ended.</figcaption>
-        </figure>
-        <figure class="shot wide">
-          <picture>
-            <source srcset="assets/changes-dark.webp" media="(prefers-color-scheme: dark)">
-            <img src="assets/changes-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="Review changes: a unified diff of the importer switching to csv.reader, beside the finished turn with 3 of 3 checks passed">
-          </picture>
-          <figcaption>Windows: review a session's edits as diffs, then keep or restore them.</figcaption>
-        </figure>
-        <figure class="shot">
-          <picture>
-            <source srcset="assets/chat-dark.webp" media="(prefers-color-scheme: dark)">
-            <img src="assets/chat-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="Chat: a new conversation with the listening pose, suggested prompts and the Reference panel">
-          </picture>
-          <figcaption>Windows: chat with a local model. Conversations are saved on this computer.</figcaption>
-        </figure>
-        <figure class="shot">
-          <picture>
-            <source srcset="assets/models-dark.webp" media="(prefers-color-scheme: dark)">
-            <img src="assets/models-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="The Models library: GPU memory, a Quick setup button, and local GGUF models with what each can do for the coding agent">
-          </picture>
-          <figcaption>Windows: your local models, what each can do for the agent, and Quick setup.</figcaption>
-        </figure>
-        <figure class="shot wide">
-          <picture>
-            <source srcset="assets/harness-dark.webp" media="(prefers-color-scheme: dark)">
-            <img src="assets/harness-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="Harness settings beside a finished coding session: saved approvals, agents and commands, MCP servers and scheduled runs">
-          </picture>
-          <figcaption>Windows: saved approvals, your agents and commands, MCP servers and schedules on one settings page.</figcaption>
-        </figure>
-      </div>
-    </div>
-  </section>
-
   <section class="download" id="download" aria-labelledby="download-title">
     <div class="wrap">
       <div class="download-card">
@@ -282,9 +239,14 @@
           <img src="assets/poses/ready-to-install.png" width="315" height="260" loading="lazy" decoding="async" alt="">
           <div>
             <h2 id="download-title">Download Mason Agent</h2>
-            <p>Free, from GitHub Releases. Choose your system.</p>
+            <p>Free and open source. Choose your system.</p>
           </div>
         </div>
+        <ol class="quick">
+          <li><strong>Install</strong> the app for your system.</li>
+          <li><strong>Run Quick setup</strong> under Models. It downloads a coding model that fits your computer.</li>
+          <li><strong>Add a project folder</strong> and ask for a change.</li>
+        </ol>
         <div class="platform-tabs" role="tablist" aria-label="Your system">
           <button type="button" role="tab" id="tab-windows" aria-controls="panel-windows" aria-selected="true">Windows</button>
           <button type="button" role="tab" id="tab-macos" aria-controls="panel-macos" aria-selected="false" tabindex="-1">macOS</button>
@@ -302,7 +264,7 @@
           <div class="download-grid">
             <div>
               <h4>Installer or portable</h4>
-              <p>The installer sets Mason Agent up for your Windows account, with no administrator rights needed, and follows Windows light or dark mode. The portable ZIP runs from any folder: extract it and start <code>MasonAgent.exe</code>. Put an empty <code>portable.flag</code> file beside it to keep settings and sessions in a <code>data</code> folder next to the app.</p>
+              <p>The installer sets Mason Agent up for your Windows account, with no administrator rights needed, and follows Windows light or dark mode. The portable ZIP runs from any folder: extract it and start <code>MasonAgent.exe</code>.</p>
             </div>
             <div>
               <h4>Requirements</h4>
@@ -314,8 +276,7 @@
               </ul>
             </div>
           </div>
-          <p class="note" data-before="2.2.1"><strong>The <code>mason</code> command on Windows</strong> arrives with version 2.2.1. From then on the installer can add it to your PATH. Until that release, build it from <a href="https://github.com/afj176/mason-agent#build-from-source">source</a>.</p>
-          <p class="note" data-from="2.2.1" hidden><strong>The <code>mason</code> command:</strong> tick <em>Add the mason command to PATH</em> in the installer, then run <code>mason</code> in any project folder. With the portable ZIP, add its <code>bin</code> folder to your PATH.</p>
+          <p class="note"><strong>The <code>mason</code> command:</strong> tick <em>Add the mason command to PATH</em> in the installer, then run <code>mason</code> in any project folder. With the portable ZIP, add its <code>bin</code> folder to your PATH.</p>
           <p class="note"><strong>Windows SmartScreen:</strong> releases are not code-signed yet, so Windows may warn the first time you run them. Choose <em>More info → Run anyway</em>.</p>
         </div>
 
@@ -341,7 +302,6 @@
             </div>
           </div>
           <p class="note"><strong>First launch:</strong> the app is not notarized by Apple, so macOS blocks it the first time. Open <em>System Settings → Privacy &amp; Security</em> and choose <em>Open Anyway</em>. On macOS 14 you can also right-click the file and choose <em>Open</em>.</p>
-          <p class="note"><strong>Checked on a Mac:</strong> the app is built and checked on a Mac for every change.</p>
         </div>
 
         <div class="platform-panel" id="panel-linux" role="tabpanel" aria-labelledby="tab-linux">
@@ -371,7 +331,7 @@ cd mason-agent-*-linux-amd64 &amp;&amp; ./install.sh</code></pre>
               </ul>
             </div>
           </div>
-          <p class="note"><strong>Checked on Ubuntu:</strong> the app is built and checked on Ubuntu 24.04 for every change, and not yet tried on other distributions.</p>
+          <p class="note"><strong>Other distributions:</strong> Mason Agent is built and tested on Ubuntu 24.04 and has not been tried on other distributions yet.</p>
         </div>
 
         <p class="note">SHA-256 checksums are attached to each release if you want to verify a download.</p>
