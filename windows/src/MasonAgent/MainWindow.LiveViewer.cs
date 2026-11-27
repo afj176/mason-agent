@@ -47,6 +47,8 @@ public sealed partial class MainWindow
             }
             if (selected == Live()) following = true;
             var scene = scenes.FirstOrDefault(s => Key(s) == selected);
+            // Before the first step there is nothing to follow, pick or show raw: the panel explains what will appear instead.
+            if (selected == "") { host.Content = LiveViewerEmpty(running, dark); shownScene = ""; return; }
 
             void Choose(string key)
             {
@@ -85,8 +87,7 @@ public sealed partial class MainWindow
             var body = new StackPanel { Spacing = 14, Margin = new Thickness(16, 4, 16, 16) };
             try
             {
-                if (selected == "") body.Children.Add(Stack(Text("Nothing has run yet", 19), CodeNote("When Mason reads, edits, runs or checks something, it shows here as it happens.", 13)));
-                else if (selected == PlanScene) PlanLens(session, body, open);
+                if (selected == PlanScene) PlanLens(session, body, open);
                 else if (selected == EndScene) ReceiptLens(session, body, open);
                 else if (model.ViewMode == "raw") foreach (int i in Indices(scene!)) body.Children.Add(ActivityCard(session, i, true));
                 else
@@ -164,6 +165,45 @@ public sealed partial class MainWindow
             host.Content = layout;
         };
         entry.Refresh();
+    }
+
+    /// <summary>The Live Viewer before any step: a pose, what the panel will show, and a key to the step strip's colours.</summary>
+    static FrameworkElement LiveViewerEmpty(bool running, bool dark)
+    {
+        var page = new StackPanel { Spacing = 14, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(24) };
+        var pose = MascotImage(running ? PosePlanning : PoseReading, 132, running ? "planning the first step" : "waiting to read the project");
+        pose.HorizontalAlignment = HorizontalAlignment.Center;
+        page.Children.Add(pose);
+        var title = Heading(running ? "Working out the first step" : "Mason's work shows up here", 20); title.HorizontalAlignment = HorizontalAlignment.Center; title.TextAlignment = TextAlignment.Center; title.TextWrapping = TextWrapping.Wrap;
+        var lead = Muted(running ? "The first file Mason reads, edit it makes or command it runs appears here as it happens."
+            : "Each file Mason reads, edit it makes and check it runs appears here as it happens. When the run ends you get a summary of what changed.", 13);
+        lead.TextAlignment = TextAlignment.Center; lead.TextWrapping = TextWrapping.Wrap; lead.HorizontalAlignment = HorizontalAlignment.Center;
+        page.Children.Add(title); page.Children.Add(lead);
+        // A key to the step strip: the same tick shapes and colours the run will use, with what each one opens.
+        var key = new Grid { ColumnSpacing = 12, RowSpacing = 8, Margin = new Thickness(0, 10, 0, 0), HorizontalAlignment = HorizontalAlignment.Center };
+        key.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); key.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        var rows = new (string Tick, Tone Tone, string Meaning)[]
+        {
+            ("read", Tone.Neutral, "Files read and searches, and where in the project"),
+            ("edit", Tone.Accent, "The change to each file, line by line"),
+            ("run", Tone.Good, "Commands and tests, failures first"),
+            ("page", Tone.Search, "Pages and windows Mason checked"),
+            ("end", Tone.Neutral, "How the run ended and what to do next"),
+        };
+        for (int i = 0; i < rows.Length; i++)
+        {
+            key.RowDefinitions.Add(new() { Height = GridLength.Auto });
+            var tick = new Border { Child = new TextBlock { Text = rows[i].Tick, FontSize = 11, FontFamily = new FontFamily("Cascadia Mono, Consolas"), Foreground = ModelTones.InkBrush(rows[i].Tone, dark) },
+                Background = ModelTones.FillBrush(rows[i].Tone, dark), CornerRadius = new CornerRadius(4), Padding = new Thickness(7, 2, 7, 2), MinWidth = 40, VerticalAlignment = VerticalAlignment.Center };
+            ((TextBlock)tick.Child).HorizontalAlignment = HorizontalAlignment.Center;
+            var meaning = Muted(rows[i].Meaning, 12); meaning.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetRow(tick, i); Grid.SetRow(meaning, i); Grid.SetColumn(meaning, 1);
+            key.Children.Add(tick); key.Children.Add(meaning);
+        }
+        AutomationProperties.SetName(key, "What the step strip will show");
+        page.Children.Add(key);
+        var scroll = CodeScroll(page); scroll.VerticalContentAlignment = VerticalAlignment.Center;
+        return scroll;
     }
 
     static IEnumerable<int> Indices(CodeScene scene) => Enumerable.Range(scene.First, scene.Count);
