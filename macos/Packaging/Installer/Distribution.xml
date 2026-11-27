@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The macOS installer around the component package. build-app.sh fills in __VERSION__ and runs productbuild
+     with this folder as its resources: background.png (the welcome pose), welcome.html and conclusion.html. -->
+<installer-gui-script minSpecVersion="2">
+    <title>Mason Agent</title>
+    <background file="background.png" mime-type="image/png" alignment="bottomleft" scaling="none"/>
+    <background-darkAqua file="background.png" mime-type="image/png" alignment="bottomleft" scaling="none"/>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="14.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <choices-outline>
+        <line choice="default">
+            <line choice="site.masonagent.MasonAgent"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="site.masonagent.MasonAgent" visible="false">
+        <pkg-ref id="site.masonagent.MasonAgent"/>
+    </choice>
+    <pkg-ref id="site.masonagent.MasonAgent" version="__VERSION__" onConclusion="none">MasonAgent-component.pkg</pkg-ref>
+</installer-gui-script>
