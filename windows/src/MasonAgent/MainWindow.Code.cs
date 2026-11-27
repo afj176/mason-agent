@@ -200,7 +200,7 @@ public sealed partial class MainWindow
         sideToggle.Click += (_, _) => ToggleWorkspace(); viewerToggle.Click += (_, _) => ToggleViewer();
         var closeViewer = ChatIcon("Close artifact viewer", "\uE711", (_, _) => { if (session != null) CodePanels.Hide(session); Arrange(); Save(); });
         changeButton = Button("Changes", (_, _) => OpenTab("changes", "", true));
-        activityButton = CodeLink("View activity", (_, _) => OpenTab("activity", "", true));
+        activityButton = CodeLink("Moments", (_, _) => OpenTab("activity", "", true));
         async Task OpenWebsite()
         {
             if (session == null || dialogOpen) return;
@@ -601,6 +601,8 @@ public sealed partial class MainWindow
         void CaptureViewer(string? kind)
         {
             Navigate("Code"); CaptureProject(); notesTray.Close(); if (session == null) return;
+            // The empty-state capture adds a session with no moments; the others show the fixture session that has them.
+            if (session.Activities.Count == 0 && store.Sessions.FirstOrDefault(s => s.Workspace == session.Workspace && s.Activities.Count > 0) is { } worked) Select(worked, project);
             if (kind != null) OpenTab(kind, "", true);
             else if (viewer.Visibility == Visibility.Visible) { CodePanels.Hide(session); forcedPanel = null; Arrange(); }
         }
@@ -610,7 +612,7 @@ public sealed partial class MainWindow
         // The Live Viewer: the receipt it follows to when a run has ended, then one scene of each kind.
         extraCaptures.Add(("code-live", () => { CaptureViewer("activity"); if (session?.Tabs.FirstOrDefault(t => t.Kind == "activity") is { } live) { live.Location = null; if (viewerEntries.TryGetValue(live.Key, out var shown)) shown.Refresh?.Invoke(); } }));
         foreach (var (name, kind) in new[] { ("code-live-read", CodeSceneKind.Read), ("code-live-edit", CodeSceneKind.Edit), ("code-live-run", CodeSceneKind.Command) })
-            extraCaptures.Add((name, () => { CaptureViewer(null); if (session != null) OpenActivity(session.Activities.FindIndex(a => CodeScenes.KindOf(a.Tool) == kind)); }));
+            extraCaptures.Add((name, () => { CaptureViewer(null); if (session != null) OpenActivity(session.Activities.FindIndex(a => CodeScenes.KindOf(a.Tool) == kind), detail: true); }));
         // A session that has not run anything yet: the Live Viewer's empty state. Captured in a session of its own, kept apart from the fixture's.
         extraCaptures.Add(("code-live-empty", () =>
         {
@@ -907,7 +909,7 @@ public sealed partial class MainWindow
                 yield return Command(view + " view", () => SelectView(view));
             yield return Command("Notes", () => notesTray.Open());
             yield return Command("Review session changes", () => OpenTab("changes", "", true));
-            yield return Command("View activity", () => OpenTab("activity", "", true));
+            yield return Command("Moments", () => OpenTab("activity", "", true));
             yield return Command("View context checkpoints", () => OpenTab("context", "", true));
             yield return Command("Plan & repository map", () => OpenTab("plan", "", true));
             yield return Command("Repository status", () => OpenTab("git", "", true));
@@ -1110,7 +1112,7 @@ public sealed partial class MainWindow
                 if (turn.Role == "assistant" && !activityShown && segmentEnd > segmentStart)
                 {
                     int start = segmentStart;
-                    transcript.Children.Add(Toolbar(CodeNote(CodeProtocol.ActivitySummary(session.Activities.Skip(segmentStart).Take(segmentEnd - segmentStart))), CodeLink("View activity", (_, _) => OpenActivity(start)))); activityShown = true;
+                    transcript.Children.Add(Toolbar(CodeNote(CodeProtocol.ActivitySummary(session.Activities.Skip(segmentStart).Take(segmentEnd - segmentStart))), CodeLink("Moments", (_, _) => OpenActivity(start)))); activityShown = true;
                 }
             }
             AddTurnEvidence();
@@ -1176,11 +1178,13 @@ public sealed partial class MainWindow
             OpenTab(entry.Kind, entry.Target, true);
         }
         // Opens the Live Viewer on the scene holding this call, so a summary line in the chat shows its own steps.
-        void OpenActivity(int index)
+        // Opens Moments. With detail, opens the moment holding this call, as Open on its card does (used by the review captures).
+        void OpenActivity(int index, bool detail = false)
         {
             OpenTab("activity", "", true);
-            if (session?.Tabs.FirstOrDefault(t => t.Kind == "activity") is not { } tab || index < 0 || index >= session.Activities.Count) return;
-            tab.Location = session.Activities[index].Id.ToString();
+            if (session?.Tabs.FirstOrDefault(t => t.Kind == "activity") is not { } tab) return;
+            tab.Location = detail && index >= 0 && index < session.Activities.Count ? "open:" + session.Activities[index].Id : null;
+            tab.Scroll = 0;
             if (viewerEntries.TryGetValue(tab.Key, out var live)) live.Refresh?.Invoke();
             Save();
         }
@@ -1300,7 +1304,7 @@ public sealed partial class MainWindow
             reference.IsEnabled = ready && CodeExplorerSelection(files) is { Directory: false };
             agentMode.IsEnabled = ready && workspaceReady; permissions.IsEnabled = ready && workspaceReady && session?.Mode != "ask";
             activityButton.IsEnabled = contextLink.IsEnabled = branch.IsEnabled = changeButton.IsEnabled = preview.IsEnabled = workspaceReady;
-            ToolTipService.SetToolTip(activityButton, workspaceReady ? "Inspect actual tool requests and results" : "Open a workspace folder to start a session.");
+            ToolTipService.SetToolTip(activityButton, workspaceReady ? "What Mason did, as moments you can open" : "Open a workspace folder to start a session.");
             // Until the session has done something there is no activity to view.
             activityButton.Visibility = session?.Activities.Count > 0 || session?.State is "Running" or "Awaiting review" ? Visibility.Visible : Visibility.Collapsed;
             ToolTipService.SetToolTip(contextLink, workspaceReady ? ContextCaption(session) : "Open a workspace folder to start a session.");

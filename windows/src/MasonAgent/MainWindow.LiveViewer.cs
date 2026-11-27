@@ -8,199 +8,440 @@ using Microsoft.UI.Xaml.Media;
 
 namespace Mason;
 
-// The Live Viewer: the Activity tab shown as scenes. Consecutive calls of one kind form a scene, and each kind has its own
-// lens: a diff for edits, a summary-first terminal for commands, a map for reads, the page for browser checks, the plan,
-// and a receipt when the run ends. The viewer follows the newest scene until the user picks another one.
-// Every fact the old list showed (authorization, arguments, results, skipped repeats) is still under Step details or Raw.
+// Moments: the Activity tab as a feed of what the run did, newest first. A step that made something (a file, a change, a
+// check, a page) is a card with Open; reading and other steps are quiet one-line moments, and each request starts with a
+// "You asked" line. Open shows the artifact: a new file or a page in its own viewer tab; a change, a test report or a set of
+// reads here, with ← Moments to go back. Every fact the old list showed (authorization, arguments, results, skipped repeats)
+// is still under Step details or Raw there.
 public sealed partial class MainWindow
 {
-    const string PlanScene = "plan", EndScene = "end";
+    const string OpenPrefix = "open:", OpenEnd = "open:end";
 
     void BuildLiveViewer(CodeSession session, CodeTab model, CodeViewerEntry entry, ContentControl host, Action save, Action<string, string> open)
     {
-        string revision = "", shownScene = "";
+        string revision = "", shown = "";
         bool themeHooked = false;
         entry.Refresh = () =>
         {
             var activities = session.Activities;
             bool running = session.State is "Running" or "Awaiting review";
-            var next = string.Join('|', activities.Select(a => a.Id.ToString("N")[..8] + a.State + a.Result.Length)) + "#" + session.State + session.Ending?.Code +
-                model.Location + model.ViewMode + session.Milestones.Length + "#" + string.Join(',', session.Changes.Select(c => c.AfterHash.Length > 6 ? c.AfterHash[..6] : c.AfterHash + c.Restored));
+            var next = string.Join('|', activities.Select(a => a.Id.ToString("N")[..8] + a.State + a.Result.Length)) + "#" + session.State + session.Ending?.Code + session.Turns.Count +
+                model.Location + model.ViewMode + session.Milestones.Length + "#" + string.Join(',', session.Changes.Select(c => (c.AfterHash.Length > 6 ? c.AfterHash[..6] : c.AfterHash) + c.Restored));
             if (revision == next && host.Content != null) return;
             revision = next;
             if (!themeHooked) { themeHooked = true; host.ActualThemeChanged += (_, _) => { revision = ""; entry.Refresh?.Invoke(); }; }
             bool dark = host.ActualTheme == ElementTheme.Dark;
+            if (activities.Count == 0) { host.Content = LiveViewerEmpty(running, dark); shown = ""; return; }
 
             var scenes = CodeScenes.Group(activities);
-            bool hasPlan = session.Milestones.Length > 0;
-            bool hasEnd = !running && session.Ending != null && activities.Count > 0;
-            string Key(CodeScene scene) => "s" + scene.First;
-            string Live() => running ? (scenes.Count > 0 ? Key(scenes[^1]) : hasPlan ? PlanScene : "") : hasEnd ? EndScene : scenes.Count > 0 ? Key(scenes[^1]) : hasPlan ? PlanScene : "";
-            bool following = string.IsNullOrEmpty(model.Location);
-            string selected = Live();
-            if (!following)
+            void Go(string? location) { model.Location = location; model.Scroll = 0; revision = ""; save(); entry.Refresh?.Invoke(); }
+            string Opener(CodeActivity call, string? path = null) => OpenPrefix + call.Id + (path == null ? "" : "|" + path);
+
+            // Which artifact is open, if any: "open:end", "open:<call id>" or "open:<call id>|<path>" for one file of an edit.
+            CodeScene? opened = null; string? openedPath = null; bool openedEnd = false;
+            if (model.Location == OpenEnd && !running && session.Ending != null) openedEnd = true;
+            else if (model.Location is { } location && location.StartsWith(OpenPrefix, StringComparison.Ordinal))
             {
-                if (model.Location == EndScene && hasEnd) selected = EndScene;
-                else if (model.Location == PlanScene && hasPlan) selected = PlanScene;
-                else if (Guid.TryParse(model.Location, out var id) && activities.FindIndex(a => a.Id == id) is >= 0 and var at) selected = Key(scenes.First(s => s.Contains(at)));
-                else { model.Location = null; following = true; }
+                var parts = location[OpenPrefix.Length..].Split('|', 2);
+                if (Guid.TryParse(parts[0], out var id) && activities.FindIndex(a => a.Id == id) is >= 0 and var at) { opened = scenes.First(s => s.Contains(at)); openedPath = parts.Length > 1 ? parts[1] : null; }
             }
-            if (selected == Live()) following = true;
-            var scene = scenes.FirstOrDefault(s => Key(s) == selected);
-            // Before the first step there is nothing to follow, pick or show raw: the panel explains what will appear instead.
-            if (selected == "") { host.Content = LiveViewerEmpty(running, dark); shownScene = ""; return; }
+            if (opened == null && !openedEnd) model.Location = null;
+            string view = model.Location ?? "";
 
-            void Choose(string key)
-            {
-                model.Location = key == Live() ? null : key is PlanScene or EndScene ? key : scenes.FirstOrDefault(s => Key(s) == key) is { } chosen ? activities[chosen.First].Id.ToString() : null;
-                revision = ""; save(); entry.Refresh?.Invoke();
-            }
-
-            // Header: following state, where we are, raw switch, and the pages that used to live in the project menu.
-            var where = Text(selected switch
-            {
-                PlanScene => "Plan",
-                EndScene => CodeRunEnding.Look(session.Ending?.Code)?.Headline ?? "Run ended",
-                "" => "Live",
-                _ => CodeScenes.Label(scene!, activities) + (scene!.Count > 1 ? $" · steps {scene.First + 1}–{scene.Last + 1} of {activities.Count}" : $" · step {scene.First + 1} of {activities.Count}")
-            }, 14);
-            where.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; where.MaxLines = 1; where.TextTrimming = TextTrimming.CharacterEllipsis; where.VerticalAlignment = VerticalAlignment.Center;
-            FrameworkElement state = following
-                ? Pill(running ? "● Following" : selected == EndScene ? "Run ended" : "Latest", running ? Tone.Accent : Tone.Neutral)
-                : Button("Jump to latest", (_, _) => Choose(Live()));
-            state.VerticalAlignment = VerticalAlignment.Center;
-            AutomationProperties.SetName(state, following ? (running ? "Following the run as it happens" : "Showing the latest step") : "Jump to the latest step and follow the run");
-            var raw = ChipToggle(new ToggleButton { Content = "Raw", IsChecked = model.ViewMode == "raw", Padding = new Thickness(10, 4, 10, 4) });
-            AutomationProperties.SetName(raw, "Show raw tool arguments and results"); ToolTipService.SetToolTip(raw, "Show the exact arguments and results the model sent and received");
-            raw.Click += (_, _) => { model.ViewMode = raw.IsChecked == true ? "raw" : ""; revision = ""; save(); entry.Refresh?.Invoke(); };
-            var more = ChatIcon("More run pages", "", (_, _) => { });
-            var pages = Fluent.Acrylic(new MenuFlyout());
-            foreach (var (label, kind) in new[] { ("Plan & repository map", "plan"), ("Model roles & decisions", "roles"), ("Background tasks", "tasks"), ("Context checkpoints", "context") })
-            { var item = new MenuFlyoutItem { Text = label }; item.Click += (_, _) => open(kind, ""); pages.Items.Add(item); }
-            more.Flyout = pages;
-            var header = new Grid { ColumnSpacing = 10, Padding = new Thickness(14, 10, 10, 10) };
-            header.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); header.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-            header.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); header.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-            header.Children.Add(state); Grid.SetColumn(where, 1); header.Children.Add(where); Grid.SetColumn(raw, 2); header.Children.Add(raw); Grid.SetColumn(more, 3); header.Children.Add(more);
-
-            // Lens
-            var body = new StackPanel { Spacing = 14, Margin = new Thickness(16, 4, 16, 16) };
+            var body = new StackPanel { Spacing = 10, Margin = new Thickness(16, 4, 16, 16) };
+            FrameworkElement header;
             try
             {
-                if (selected == PlanScene) PlanLens(session, body, open);
-                else if (selected == EndScene) ReceiptLens(session, body, open);
-                else if (model.ViewMode == "raw") foreach (int i in Indices(scene!)) body.Children.Add(ActivityCard(session, i, true));
+                if (opened != null || openedEnd)
+                {
+                    // An opened artifact, with the way back and how much has happened since.
+                    int newer = openedEnd ? 0 : scenes.Count(s => s.First > opened!.Last);
+                    var back = Button("← Moments", (_, _) => Go(null));
+                    AutomationProperties.SetName(back, "Back to moments");
+                    string titleText = openedEnd ? CodeRunEnding.Look(session.Ending?.Code)?.Headline ?? "Run ended"
+                        : openedPath != null ? Path.GetFileName(openedPath) : CodeScenes.Label(opened!, activities);
+                    var title = Text(titleText, 14); title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.MaxLines = 1; title.TextTrimming = TextTrimming.CharacterEllipsis; title.VerticalAlignment = VerticalAlignment.Center;
+                    var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+                    if (newer > 0) { var fresh = Button(newer == 1 ? "1 new moment" : newer + " new moments", (_, _) => Go(null)); right.Children.Add(fresh); }
+                    else if (running) right.Children.Add(Pill("● Live", Tone.Accent));
+                    if (!openedEnd)
+                    {
+                        var raw = ChipToggle(new ToggleButton { Content = "Raw", IsChecked = model.ViewMode == "raw", Padding = new Thickness(10, 4, 10, 4) });
+                        AutomationProperties.SetName(raw, "Show raw tool arguments and results"); ToolTipService.SetToolTip(raw, "Show the exact arguments and results the model sent and received");
+                        raw.Click += (_, _) => { model.ViewMode = raw.IsChecked == true ? "raw" : ""; revision = ""; save(); entry.Refresh?.Invoke(); };
+                        right.Children.Add(raw);
+                    }
+                    header = HeaderRow(back, title, right);
+                    if (openedEnd) ReceiptLens(session, body, open);
+                    else if (model.ViewMode == "raw") foreach (int i in Indices(opened!)) body.Children.Add(ActivityCard(session, i, true));
+                    else
+                    {
+                        var scene = opened!;
+                        if (Why(session, scene) is { Length: > 0 } why) body.Children.Add(WhyLine(why));
+                        switch (scene.Kind)
+                        {
+                            case CodeSceneKind.Edit: EditLens(session, scene, body, open, dark, openedPath); break;
+                            case CodeSceneKind.Command: CommandLens(session, scene, body); break;
+                            case CodeSceneKind.Read: ReadLens(session, scene, body); break;
+                            case CodeSceneKind.Page: PageLens(session, scene, body, open); break;
+                            default: foreach (int i in Indices(scene)) body.Children.Add(ActivityCard(session, i, false)); break;
+                        }
+                        if (scene.Kind != CodeSceneKind.Other)
+                        {
+                            var details = Stack(Indices(scene).Select(i => (UIElement)ActivityCard(session, i, false)).ToArray());
+                            body.Children.Add(new Expander { Header = scene.Count == 1 ? "Step details" : $"Step details ({scene.Count})", Content = details, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+                        }
+                    }
+                }
                 else
                 {
-                    if (Why(session, scene!) is { Length: > 0 } why) body.Children.Add(WhyLine(why));
-                    switch (scene!.Kind)
+                    // The feed. Header: what this is, whether it is live, and what the run has made so far.
+                    var title = Text("Moments", 15); title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.VerticalAlignment = VerticalAlignment.Center;
+                    var left = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+                    left.Children.Add(title);
+                    if (running) left.Children.Add(Pill("● Live", Tone.Accent));
+                    var made = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+                    foreach (var (label, act) in MadeSoFar(session, (call, path) => Go(Opener(call, path)), open).Take(5))
                     {
-                        case CodeSceneKind.Edit: EditLens(session, scene, body, open, dark); break;
-                        case CodeSceneKind.Command: CommandLens(session, scene, body); break;
-                        case CodeSceneKind.Read: ReadLens(session, scene, body); break;
-                        case CodeSceneKind.Page: PageLens(session, scene, body, open); break;
-                        default: foreach (int i in Indices(scene)) body.Children.Add(ActivityCard(session, i, false)); break;
+                        var chip = Button(label, (_, _) => act()); chip.Padding = new Thickness(9, 4, 9, 4); chip.FontSize = 12;
+                        AutomationProperties.SetName(chip, "Open " + label); made.Children.Add(chip);
                     }
-                    if (scene.Kind != CodeSceneKind.Other)
-                    {
-                        var details = Stack(Indices(scene).Select(i => (UIElement)ActivityCard(session, i, false)).ToArray());
-                        body.Children.Add(new Expander { Header = scene.Count == 1 ? "Step details" : $"Step details ({scene.Count})", Content = details, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
-                    }
+                    var madeScroll = new ScrollViewer { Content = made, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled, HorizontalAlignment = HorizontalAlignment.Right };
+                    AutomationProperties.SetName(madeScroll, "Made so far");
+                    var more = ChatIcon("More run pages", "", (_, _) => { });
+                    var pages = Fluent.Acrylic(new MenuFlyout());
+                    foreach (var (label, kind) in new[] { ("Plan & repository map", "plan"), ("Model roles & decisions", "roles"), ("Background tasks", "tasks"), ("Context checkpoints", "context") })
+                    { var item = new MenuFlyoutItem { Text = label }; item.Click += (_, _) => open(kind, ""); pages.Items.Add(item); }
+                    more.Flyout = pages;
+                    var right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+                    right.Children.Add(more);
+                    header = HeaderRow(left, madeScroll, right);
+
+                    if (!running && session.Ending != null) body.Children.Add(EndMoment(session, open, () => Go(OpenEnd)));
+                    foreach (var moment in FeedMoments(session, scenes, running, dark, open, call => Go(Opener(call)), (call, path) => Go(Opener(call, path))).Take(120))
+                        body.Children.Add(moment);
                 }
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException or InvalidOperationException)
-            { body.Children.Add(TroubleNotice("This step can't be shown", error.Message)); }
-            var lens = CodeScroll(body);
-            double restore = selected == shownScene ? model.Scroll : 0;
-            lens.Loaded += (_, _) => lens.ChangeView(null, restore, null, true);
-            lens.ViewChanged += (_, _) => model.Scroll = lens.VerticalOffset;
-            shownScene = selected;
-
-            // Scene strip: the shape of the run, tinted by kind and outcome.
-            var ticks = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-            Button? current = null;
-            Button Tick(string key, string text, Tone tone, string tip)
             {
-                var tick = new Button
-                {
-                    Content = new TextBlock { Text = text, FontSize = 11, FontFamily = new FontFamily("Cascadia Mono, Consolas") },
-                    Padding = new Thickness(7, 2, 7, 2), MinHeight = 24, MinWidth = 28, CornerRadius = new CornerRadius(4),
-                    Background = ModelTones.FillBrush(tone, dark), Foreground = ModelTones.InkBrush(tone, dark),
-                    BorderThickness = new Thickness(key == selected ? 2 : 1)
-                };
-                if (key == selected) { tick.BorderBrush = (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"]; current = tick; }
-                ToolTipService.SetToolTip(tick, tip); AutomationProperties.SetName(tick, tip + (key == selected ? ", shown" : ""));
-                tick.Click += (_, _) => Choose(key);
-                return tick;
+                body.Children.Add(TroubleNotice("This can't be shown", error.Message));
+                header = HeaderRow(Button("← Moments", (_, _) => Go(null)), new Border(), new Border());
             }
-            if (hasPlan) ticks.Children.Add(Tick(PlanScene, "plan", Tone.Neutral, "Plan · " + session.Milestones.Length + " steps"));
-            const int shownTicks = 150;
-            if (scenes.Count > shownTicks) ticks.Children.Add(Muted($"{scenes.Count - shownTicks} earlier", 11));
-            foreach (var item in scenes.Skip(Math.Max(0, scenes.Count - shownTicks)))
-            {
-                var calls = Indices(item).Select(i => activities[i]).ToArray();
-                bool failed = calls.Any(CodeScenes.Failed) || item.Kind == CodeSceneKind.Command && calls.Any(a => CodeScenes.Command(a).ExitCode is not (null or 0));
-                bool skipped = calls.Any(a => a.State == "Skipped");
-                var (text, tone) = item.Kind switch
-                {
-                    CodeSceneKind.Read => (item.Count > 1 ? "read×" + item.Count : "read", Tone.Neutral),
-                    CodeSceneKind.Edit => ("edit", Tone.Accent),
-                    CodeSceneKind.Command => ("run", Tone.Good),
-                    CodeSceneKind.Page => ("page", Tone.Search),
-                    _ => ("step", Tone.Neutral)
-                };
-                if (failed) tone = Tone.Bad; else if (skipped) tone = Tone.Warn;
-                ticks.Children.Add(Tick(Key(item), text, tone, CodeScenes.Label(item, activities) + (failed ? " · failed" : skipped ? " · repeat skipped" : "")));
-            }
-            if (hasEnd && session.Ending is { } ending) ticks.Children.Add(Tick(EndScene, "end", CodeRunEnding.Look(ending.Code) is { } look ? EndingTone(look.Tone) : Tone.Neutral, CodeRunEnding.Look(ending.Code)?.Headline ?? "Run ended"));
-            var strip = new ScrollViewer { Content = ticks, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollMode = ScrollMode.Disabled, Padding = new Thickness(14, 8, 14, 10) };
-            AutomationProperties.SetName(strip, "Steps of this run");
-            strip.Loaded += (_, _) => current?.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
-
+            var scroll = CodeScroll(body);
+            double restore = view == shown ? model.Scroll : 0;
+            scroll.Loaded += (_, _) => scroll.ChangeView(null, restore, null, true);
+            scroll.ViewChanged += (_, _) => model.Scroll = scroll.VerticalOffset;
+            shown = view;
             var layout = new Grid();
-            layout.RowDefinitions.Add(new() { Height = GridLength.Auto }); layout.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) }); layout.RowDefinitions.Add(new() { Height = GridLength.Auto });
-            layout.Children.Add(header);
-            Grid.SetRow(lens, 1); layout.Children.Add(lens);
-            if (ticks.Children.Count > 0) { Grid.SetRow(strip, 2); layout.Children.Add(strip); }
+            layout.RowDefinitions.Add(new() { Height = GridLength.Auto }); layout.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
+            layout.Children.Add(header); Grid.SetRow(scroll, 1); layout.Children.Add(scroll);
             host.Content = layout;
         };
         entry.Refresh();
     }
 
-    /// <summary>The Live Viewer before any step: a pose, what the panel will show, and a key to the step strip's colours.</summary>
+    static FrameworkElement HeaderRow(FrameworkElement left, FrameworkElement middle, FrameworkElement right)
+    {
+        var grid = new Grid { ColumnSpacing = 10, Padding = new Thickness(14, 10, 10, 10) };
+        grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); grid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        left.VerticalAlignment = VerticalAlignment.Center; middle.VerticalAlignment = VerticalAlignment.Center; right.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(left); Grid.SetColumn(middle, 1); grid.Children.Add(middle); Grid.SetColumn(right, 2); grid.Children.Add(right);
+        return grid;
+    }
+
+    static string Ago(DateTimeOffset at)
+    {
+        var span = DateTimeOffset.UtcNow - at;
+        return span.TotalSeconds < 45 ? "just now" : span.TotalMinutes < 60 ? $"{Math.Max(1, (int)span.TotalMinutes)} m" : span.TotalHours < 24 ? $"{(int)span.TotalHours} h" : at.ToLocalTime().ToString("MMM d");
+    }
+
+    static CodeChange? ChangeFor(CodeSession session, string path) =>
+        session.Changes.LastOrDefault(c => !c.Restored && string.Equals(CodeScenes.Normalize(c.Path), path, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The files and pages the session has made, newest first, each with what opening it does.</summary>
+    static IEnumerable<(string Label, Action Open)> MadeSoFar(CodeSession session, Action<CodeActivity, string> openChange, Action<string, string> open)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = session.Activities.Count - 1; i >= 0; i--)
+        {
+            var call = session.Activities[i];
+            var kind = CodeScenes.KindOf(call.Tool);
+            if (kind == CodeSceneKind.Edit && CodeScenes.PathOf(call) is { } path && ChangeFor(session, path) is { } change && seen.Add(path))
+            {
+                var target = change.Path;
+                yield return (Path.GetFileName(path), change.Before == null ? () => open("file", target) : () => openChange(call, path));
+            }
+            else if (kind == CodeSceneKind.Page && CodeScenes.Argument(call, "url") is { Length: > 0 } url && seen.Add(url) && Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                yield return (uri.AbsolutePath.Length > 1 ? uri.AbsolutePath + " page" : uri.Authority, () => { try { open("web", CodeProtocol.PreviewUri(url).AbsoluteUri); } catch (ArgumentException) { } });
+        }
+    }
+
+    /// <summary>The feed, newest first: one card per thing made, a quiet line per other step, and a line where each request began.</summary>
+    IEnumerable<FrameworkElement> FeedMoments(CodeSession session, IReadOnlyList<CodeScene> scenes, bool running, bool dark, Action<string, string> open, Action<CodeActivity> openScene, Action<CodeActivity, string> openFile)
+    {
+        var activities = session.Activities;
+        // Where each request starts in the call list, so its "You asked" line sits just before its first moment.
+        var requests = new List<(int Position, string Text)>();
+        for (int t = 0; t < session.Turns.Count; t++)
+        {
+            if (session.Turns[t].Role != "user") continue;
+            int position = activities.Count;
+            for (int u = t + 1; u < session.Turns.Count && session.Turns[u].Role != "user"; u++)
+                if (session.Turns[u].Role == "assistant" && session.Turns[u].ActivityCount > 0) { position = session.Turns[u].FirstActivity; break; }
+            requests.Add((position, session.Turns[t].Text.Trim()));
+        }
+        var timeline = new List<(int Position, int Order, Func<IEnumerable<FrameworkElement>> Make)>();
+        foreach (var (position, text) in requests) timeline.Add((position, 0, () => [AskedMoment(text)]));
+        int last = scenes.Count - 1;
+        for (int s = 0; s < scenes.Count; s++)
+        {
+            var scene = scenes[s]; bool newest = s == last && running;
+            timeline.Add((scene.First, 1, () => SceneMoments(session, scene, newest, dark, open, openScene, openFile)));
+        }
+        foreach (var item in timeline.OrderByDescending(x => x.Position).ThenByDescending(x => x.Order))
+            foreach (var view in item.Make()) yield return view;
+    }
+
+    IEnumerable<FrameworkElement> SceneMoments(CodeSession session, CodeScene scene, bool newest, bool dark, Action<string, string> open, Action<CodeActivity> openScene, Action<CodeActivity, string> openFile)
+    {
+        var calls = Indices(scene).Select(i => session.Activities[i]).ToArray();
+        var when = Ago(calls[^1].At);
+        switch (scene.Kind)
+        {
+            case CodeSceneKind.Edit:
+                foreach (var path in calls.Select(CodeScenes.PathOf).OfType<string>().Reverse().Distinct(StringComparer.OrdinalIgnoreCase))
+                    yield return EditMoment(session, calls.Last(a => string.Equals(CodeScenes.PathOf(a), path, StringComparison.OrdinalIgnoreCase)), path, when, newest, dark, open, openFile);
+                break;
+            case CodeSceneKind.Command: yield return CommandMoment(session, scene, calls, when, newest, dark, () => openScene(calls[^1])); break;
+            case CodeSceneKind.Page: yield return PageMoment(session, scene, calls, when, newest, open, () => openScene(calls[^1])); break;
+            default:
+                var label = CodeScenes.Label(scene, session.Activities);
+                if (label.Length > 0) label = char.ToUpperInvariant(label[0]) + label[1..];
+                var detail = scene.Kind == CodeSceneKind.Read && CodeScenes.Folders(calls) is { Length: > 0 } folders ? string.Join(", ", folders.Take(3).Select(f => f.Folder)) : "";
+                bool failed = calls.Any(CodeScenes.Failed);
+                yield return QuietMoment(label, detail, when, failed, () => openScene(calls[^1]));
+                break;
+        }
+    }
+
+    static Border MomentCard(UIElement content, bool newest)
+    {
+        var card = ChatSurface(content, new Thickness(14, 12, 14, 12));
+        if (newest) { card.BorderBrush = (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"]; card.BorderThickness = new Thickness(1.5); }
+        return card;
+    }
+
+    static FrameworkElement MomentTitle(string glyph, Tone tone, string title, string when, bool dark, params FrameworkElement?[] extras)
+    {
+        var badge = new Border { Width = 26, Height = 26, CornerRadius = new CornerRadius(7), Background = ModelTones.FillBrush(tone, dark), VerticalAlignment = VerticalAlignment.Center,
+            Child = new TextBlock { Text = glyph, FontSize = 13, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = ModelTones.InkBrush(tone, dark), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } };
+        var name = Text(title, 14); name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; name.TextTrimming = TextTrimming.CharacterEllipsis; name.MaxLines = 1; name.VerticalAlignment = VerticalAlignment.Center;
+        var middle = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        middle.Children.Add(name);
+        foreach (var extra in extras) if (extra != null) { extra.VerticalAlignment = VerticalAlignment.Center; middle.Children.Add(extra); }
+        var time = Muted(when, 12); time.VerticalAlignment = VerticalAlignment.Center;
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); grid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        grid.Children.Add(badge); Grid.SetColumn(middle, 1); grid.Children.Add(middle); Grid.SetColumn(time, 2); grid.Children.Add(time);
+        return grid;
+    }
+
+    static FrameworkElement EditMoment(CodeSession session, CodeActivity call, string path, string when, bool newest, bool dark, Action<string, string> open, Action<CodeActivity, string> openFile)
+    {
+        var change = ChangeFor(session, path);
+        bool created = change?.Before == null && change != null;
+        string file = Path.GetFileName(path);
+        var card = new StackPanel { Spacing = 8 };
+        if (change == null)
+        {
+            bool failed = CodeScenes.Failed(call);
+            card.Children.Add(MomentTitle(failed ? "✕" : "✎", failed ? Tone.Bad : Tone.Accent, (failed ? "Couldn't change " : "Changing ") + file, when, dark,
+                failed ? Pill(StateWords(call.State), StateTone(call.State)) : call.State is "Running" or "Pending" ? Pill("Writing…", Tone.Accent) : null));
+        }
+        else if (created)
+        {
+            int lines = change.After.Count(c => c == '\n') + (change.After.EndsWith('\n') || change.After.Length == 0 ? 0 : 1);
+            card.Children.Add(MomentTitle("+", Tone.Good, "Created " + file, when, dark, Muted(lines == 1 ? "1 line" : lines + " lines", 12)));
+            var head = string.Join('\n', change.After.Replace("\r\n", "\n").Split('\n').Where(l => l.Trim().Length > 0).Take(3));
+            if (head.Length > 0) { var peek = CodeSource(head, 12); peek.TextWrapping = TextWrapping.NoWrap; peek.Opacity = .75; peek.MaxLines = 3; card.Children.Add(peek); }
+        }
+        else
+        {
+            var (added, removed) = LineCounts(change);
+            card.Children.Add(MomentTitle("✎", Tone.Accent, "Changed " + file, when, dark, Pill("+" + added, Tone.Good), removed > 0 ? Pill("−" + removed, Tone.Bad) : null));
+            if (CodeProtocol.Diff(change.Before, change.After).FirstOrDefault(l => l.Kind == '+') is { } line)
+            {
+                var text = new TextBlock { Text = line.Text.Trim(), FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, MaxLines = 1 };
+                card.Children.Add(new Border { Child = text, Background = ModelTones.FillBrush(Tone.Good, dark), CornerRadius = new CornerRadius(4), Padding = new Thickness(8, 3, 8, 3), HorizontalAlignment = HorizontalAlignment.Left });
+            }
+        }
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (created) { var target = change!.Path; actions.Children.Add(Button("Open", (_, _) => open("file", target), newest)); actions.Children.Add(CodeLink("Diff", (_, _) => openFile(call, path))); }
+        else actions.Children.Add(Button("Open", (_, _) => openFile(call, path), newest));
+        card.Children.Add(actions);
+        var view = MomentCard(card, newest);
+        AutomationProperties.SetName(view, (created ? "Created " : "Changed ") + path + ", " + when);
+        return view;
+    }
+
+    static FrameworkElement CommandMoment(CodeSession session, CodeScene scene, CodeActivity[] calls, string when, bool newest, bool dark, Action openReport)
+    {
+        var call = calls[^1];
+        var summary = CodeScenes.Command(call);
+        bool failed = CodeScenes.Failed(call) || summary.ExitCode is not (null or 0) || summary.Failed > 0;
+        bool active = call.State is "Running" or "Pending";
+        var card = new StackPanel { Spacing = 8 };
+        card.Children.Add(MomentTitle(active ? "…" : failed ? "✕" : "✓", active ? Tone.Accent : failed ? Tone.Bad : Tone.Good, CodeScenes.Label(scene, session.Activities), when, dark,
+            summary.Passed is { } passed ? Pill(passed + " passed", Tone.Good) : null,
+            summary.Failed is > 0 ? Pill(summary.Failed + " failed", Tone.Bad) : null,
+            summary.Passed == null && summary.Failed == null && summary.ExitCode is { } exit ? Pill("exit " + exit, exit == 0 ? Tone.Good : Tone.Bad) : null,
+            call.State == "Skipped" ? Pill("Repeat skipped", Tone.Warn) : null));
+        if (summary.Passed is { } good && summary.Failed is var bad && good + (bad ?? 0) > 0)
+        {
+            var bar = new Grid { Height = 6, ColumnSpacing = 2, CornerRadius = new CornerRadius(3) };
+            bar.ColumnDefinitions.Add(new() { Width = new GridLength(Math.Max(good, 0.01), GridUnitType.Star) });
+            if (bad > 0) bar.ColumnDefinitions.Add(new() { Width = new GridLength(bad.Value, GridUnitType.Star) });
+            bar.Children.Add(new Border { Background = ModelTones.InkBrush(Tone.Good, dark) });
+            if (bad > 0) { var red = new Border { Background = ModelTones.InkBrush(Tone.Bad, dark) }; Grid.SetColumn(red, 1); bar.Children.Add(red); }
+            card.Children.Add(bar);
+        }
+        foreach (var failure in summary.Failures.Take(3)) { var line = CodeSource(failure, 12); line.TextWrapping = TextWrapping.NoWrap; line.MaxLines = 1; card.Children.Add(line); }
+        card.Children.Add(Row(CodeLink(failed || summary.Passed != null ? "Open the report" : "Open the output", (_, _) => openReport())));
+        var view = MomentCard(card, newest);
+        AutomationProperties.SetName(view, CodeScenes.Label(scene, session.Activities) + (failed ? ", failed" : "") + ", " + when);
+        return view;
+    }
+
+    FrameworkElement PageMoment(CodeSession session, CodeScene scene, CodeActivity[] calls, string when, bool newest, Action<string, string> open, Action openDetail)
+    {
+        var url = calls.Select(a => CodeScenes.Argument(a, "url")).LastOrDefault(u => u is { Length: > 0 });
+        var words = new StackPanel { Spacing = 6 };
+        var titleText = CodeScenes.Label(scene, session.Activities);
+        var name = Text(titleText, 14); name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        var time = Muted(when, 12);
+        words.Children.Add(Toolbar(name, time));
+        var said = calls.Select(CodeActivityText.Result).LastOrDefault(r => r.Trim().Length > 0)?.Trim() ?? "";
+        if (url != null) { var where = CodeSource(url, 12); where.MaxLines = 1; words.Children.Add(where); }
+        if (said.Length > 0) { var line = Muted(said.Length > 220 ? said[..219] + "…" : said, 13); line.TextWrapping = TextWrapping.Wrap; line.MaxLines = 3; words.Children.Add(line); }
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (url != null) actions.Children.Add(Button("Open page", (_, _) => { try { open("web", CodeProtocol.PreviewUri(url).AbsoluteUri); } catch (ArgumentException) { openDetail(); } }, newest));
+        actions.Children.Add(CodeLink("Details", (_, _) => openDetail()));
+        words.Children.Add(actions);
+        // The screenshot the check took, from the evidence recorded with the turn that made these calls.
+        var shot = session.Turns.Where(t => t.Role == "assistant" && t.ActivityCount > 0 && t.FirstActivity <= scene.Last && t.FirstActivity + t.ActivityCount > scene.First)
+            .SelectMany(t => t.Evidence).LastOrDefault(e => e.HasScreenshot);
+        FrameworkElement content = words;
+        if (shot != null && File.Exists(DeveloperEvidence.ImageFile(Store.Root, session.Id, shot.Id)))
+        {
+            var image = new Image { Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(DeveloperEvidence.ImageFile(Store.Root, session.Id, shot.Id))) { DecodePixelWidth = 340 }, Stretch = Stretch.UniformToFill };
+            var frame = ThemedBorder("BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='1' CornerRadius='6'");
+            frame.Width = 168; frame.Height = 112; frame.Child = image; frame.VerticalAlignment = VerticalAlignment.Top;
+            AutomationProperties.SetName(frame, "Screenshot of the page");
+            var grid = new Grid { ColumnSpacing = 14 };
+            grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); grid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
+            grid.Children.Add(frame); Grid.SetColumn(words, 1); grid.Children.Add(words);
+            content = grid;
+        }
+        var view = MomentCard(content, newest);
+        AutomationProperties.SetName(view, titleText + ", " + when);
+        return view;
+    }
+
+    static FrameworkElement QuietMoment(string label, string detail, string when, bool failed, Action openDetail)
+    {
+        var dot = new Border { Width = 6, Height = 6, CornerRadius = new CornerRadius(3), VerticalAlignment = VerticalAlignment.Center };
+        dot.Background = (Brush)Application.Current.Resources[failed ? "SystemFillColorCriticalBrush" : "TextFillColorTertiaryBrush"];
+        var name = Text(label, 13); name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; name.VerticalAlignment = VerticalAlignment.Center;
+        var words = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        words.Children.Add(name);
+        if (detail.Length > 0) { var more = Muted("· " + detail, 13); more.TextTrimming = TextTrimming.CharacterEllipsis; more.MaxLines = 1; more.VerticalAlignment = VerticalAlignment.Center; words.Children.Add(more); }
+        var time = Muted(when, 12); time.VerticalAlignment = VerticalAlignment.Center;
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); grid.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) }); grid.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        grid.Children.Add(dot); Grid.SetColumn(words, 1); grid.Children.Add(words); Grid.SetColumn(time, 2); grid.Children.Add(time);
+        var button = new Button { Content = grid, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(14, 6, 14, 6), Style = Token("SubtleButtonStyle") };
+        button.Click += (_, _) => openDetail();
+        AutomationProperties.SetName(button, label + (detail.Length > 0 ? ", " + detail : "") + ", " + when);
+        return button;
+    }
+
+    static FrameworkElement AskedMoment(string text)
+    {
+        if (text.Length > 160) text = text[..159] + "…";
+        var words = Muted("You asked: " + text, 12.5); words.TextWrapping = TextWrapping.Wrap; words.MaxLines = 2;
+        var line = new Border { Child = words, Padding = new Thickness(14, 10, 14, 4) };
+        AutomationProperties.SetName(line, "You asked: " + text);
+        return line;
+    }
+
+    static FrameworkElement EndMoment(CodeSession session, Action<string, string> open, Action openSummary)
+    {
+        var ending = session.Ending!;
+        var calls = session.Activities.Skip(CodeScenes.RequestStart(session)).ToArray();
+        var changes = session.Changes.Where(c => !c.Restored).ToArray();
+        var counts = changes.Take(40).Select(LineCounts).ToArray();
+        int commands = calls.Count(a => CodeScenes.KindOf(a.Tool) == CodeSceneKind.Command);
+        var card = new StackPanel { Spacing = 10 };
+        var request = session.Turns.LastOrDefault(t => t.Role == "user")?.Text.Trim() is { Length: > 0 } asked ? asked : CodeRunEnding.Look(ending.Code)?.Headline ?? "Run ended";
+        if (request.Length > 90) request = request[..89] + "…";
+        var title = Text(request, 15); title.TextTrimming = TextTrimming.CharacterEllipsis; title.MaxLines = 1; title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; title.VerticalAlignment = VerticalAlignment.Center;
+        var top = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+        if (EndingPill(ending) is { } pill) top.Children.Add(pill);
+        top.Children.Add(title);
+        card.Children.Add(top);
+        var facts = new List<string>();
+        facts.Add(changes.Length == 1 ? "1 file changed" : changes.Length + " files changed");
+        if (changes.Length > 0) facts.Add("+" + counts.Sum(c => c.Added) + " −" + counts.Sum(c => c.Removed));
+        if (commands > 0) facts.Add(commands == 1 ? "1 command" : commands + " commands");
+        facts.Add(calls.Length == 1 ? "1 step" : calls.Length + " steps");
+        card.Children.Add(Muted(string.Join(" · ", facts), 13));
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        if (changes.Length > 0)
+        {
+            actions.Children.Add(Button("Review all changes", (_, _) => open("changes", "")));
+            actions.Children.Add(Button(session.Delivery?.Url != null ? "Pull request & CI" : "Commit & open pull request…", (_, _) => open("delivery", ""), true));
+        }
+        actions.Children.Add(CodeLink("Summary", (_, _) => openSummary()));
+        card.Children.Add(actions);
+        var view = ChatSurface(card, new Thickness(16, 14, 16, 14));
+        AutomationProperties.SetName(view, (CodeRunEnding.Look(ending.Code)?.Headline ?? "Run ended") + ". " + string.Join(", ", facts));
+        return view;
+    }
+
+    /// <summary>Moments before any step: a pose, what the feed will show, and the kinds of moment that can be opened.</summary>
     static FrameworkElement LiveViewerEmpty(bool running, bool dark)
     {
         var page = new StackPanel { Spacing = 14, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(24) };
         var pose = MascotImage(running ? PosePlanning : PoseReading, 132, running ? "planning the first step" : "waiting to read the project");
         pose.HorizontalAlignment = HorizontalAlignment.Center;
         page.Children.Add(pose);
-        var title = Heading(running ? "Working out the first step" : "Mason's work shows up here", 20); title.HorizontalAlignment = HorizontalAlignment.Center; title.TextAlignment = TextAlignment.Center; title.TextWrapping = TextWrapping.Wrap;
-        var lead = Muted(running ? "The first file Mason reads, edit it makes or command it runs appears here as it happens."
-            : "Each file Mason reads, edit it makes and check it runs appears here as it happens. When the run ends you get a summary of what changed.", 13);
+        var title = Heading(running ? "Working out the first step" : "Moments show up here", 20); title.HorizontalAlignment = HorizontalAlignment.Center; title.TextAlignment = TextAlignment.Center; title.TextWrapping = TextWrapping.Wrap;
+        var lead = Muted(running ? "The first thing Mason reads, changes or runs appears here as a moment."
+            : "Each thing Mason does becomes a moment, newest first. Open one to see the file, change, test report or page it made.", 13);
         lead.TextAlignment = TextAlignment.Center; lead.TextWrapping = TextWrapping.Wrap; lead.HorizontalAlignment = HorizontalAlignment.Center;
         page.Children.Add(title); page.Children.Add(lead);
-        // A key to the step strip: the same tick shapes and colours the run will use, with what each one opens.
+        // The kinds of moment, with the badge each card uses and what opening it shows.
         var key = new Grid { ColumnSpacing = 12, RowSpacing = 8, Margin = new Thickness(0, 10, 0, 0), HorizontalAlignment = HorizontalAlignment.Center };
         key.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); key.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         var rows = new (string Tick, Tone Tone, string Meaning)[]
         {
-            ("read", Tone.Neutral, "Files read and searches, and where in the project"),
-            ("edit", Tone.Accent, "The change to each file, line by line"),
-            ("run", Tone.Good, "Commands and tests, failures first"),
-            ("page", Tone.Search, "Pages and windows Mason checked"),
-            ("end", Tone.Neutral, "How the run ended and what to do next"),
+            ("+", Tone.Good, "A new file · opens the file"),
+            ("✎", Tone.Accent, "A change · opens the lines that changed"),
+            ("✓", Tone.Good, "Tests and commands · opens the report, failures first"),
+            ("◫", Tone.Search, "A page Mason checked · opens the page"),
+            ("•", Tone.Neutral, "Reading and searching · a quiet line"),
         };
         for (int i = 0; i < rows.Length; i++)
         {
             key.RowDefinitions.Add(new() { Height = GridLength.Auto });
             var tick = new Border { Child = new TextBlock { Text = rows[i].Tick, FontSize = 11, FontFamily = new FontFamily("Cascadia Mono, Consolas"), Foreground = ModelTones.InkBrush(rows[i].Tone, dark) },
-                Background = ModelTones.FillBrush(rows[i].Tone, dark), CornerRadius = new CornerRadius(4), Padding = new Thickness(7, 2, 7, 2), MinWidth = 40, VerticalAlignment = VerticalAlignment.Center };
+                Background = ModelTones.FillBrush(rows[i].Tone, dark), CornerRadius = new CornerRadius(4), Padding = new Thickness(7, 2, 7, 2), MinWidth = 26, VerticalAlignment = VerticalAlignment.Center };
             ((TextBlock)tick.Child).HorizontalAlignment = HorizontalAlignment.Center;
             var meaning = Muted(rows[i].Meaning, 12); meaning.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetRow(tick, i); Grid.SetRow(meaning, i); Grid.SetColumn(meaning, 1);
             key.Children.Add(tick); key.Children.Add(meaning);
         }
-        AutomationProperties.SetName(key, "What the step strip will show");
+        AutomationProperties.SetName(key, "The kinds of moment");
         page.Children.Add(key);
         var scroll = CodeScroll(page); scroll.VerticalContentAlignment = VerticalAlignment.Center;
         return scroll;
@@ -280,10 +521,11 @@ public sealed partial class MainWindow
         return frame;
     }
 
-    void EditLens(CodeSession session, CodeScene scene, StackPanel body, Action<string, string> open, bool dark)
+    void EditLens(CodeSession session, CodeScene scene, StackPanel body, Action<string, string> open, bool dark, string? only = null)
     {
         var calls = Indices(scene).Select(i => session.Activities[i]).ToArray();
         var paths = calls.Select(CodeScenes.PathOf).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (only != null) paths = paths.Where(p => string.Equals(p, only, StringComparison.OrdinalIgnoreCase)).ToArray();
         foreach (var path in paths)
         {
             var mine = calls.Where(a => string.Equals(CodeScenes.PathOf(a), path, StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -308,7 +550,7 @@ public sealed partial class MainWindow
             else if (mine.LastOrDefault() is { } last && CodeActivityText.Result(last) is { Length: > 0 } result)
                 body.Children.Add(CodeNote(result.Length > 800 ? result[..800] + "…" : result));
         }
-        foreach (var other in calls.Where(a => CodeScenes.PathOf(a) == null)) body.Children.Add(ActivityCard(session, session.Activities.IndexOf(other), false));
+        foreach (var other in calls.Where(a => only == null && CodeScenes.PathOf(a) == null)) body.Children.Add(ActivityCard(session, session.Activities.IndexOf(other), false));
         if (session.Changes.Any(c => !c.Restored)) body.Children.Add(Row(CodeLink("Review all changes", (_, _) => open("changes", ""))));
     }
 
