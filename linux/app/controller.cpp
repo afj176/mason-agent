@@ -211,6 +211,23 @@ void Controller::remove_comment(const std::string& id) {
     keep(updated);
 }
 
+bool Controller::answer_suggestion(const std::string& choice) {
+    const Session* current = session();
+    if (!current || !store_ || running || current->suggested_note.empty()) return false;
+    try {
+        const Workspace workspace(current->workspace);
+        if (choice == "remember") project_notes::add(current->suggested_note, "", workspace, store_->home());
+        else if (choice == "dismiss") project_notes::dismiss(current->suggested_note, workspace.root(), store_->home());
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+        return false;
+    }
+    Session updated = *current;
+    updated.suggested_note.clear();
+    keep(updated);
+    return true;
+}
+
 void Controller::review_changes() {
     const Session* current = session();
     if (!current || !store_ || running || reviewing || !milestone_busy.empty()) return;
@@ -435,7 +452,7 @@ void Controller::host_command(const std::string& name, const std::string& rest) 
             } else if (name == "/roles" || name == "/role") said = roles::command(rest, home);
             else if (name == "/policy") said = policies::command(rest, workspace, home);
             else if (name == "/bundle" || name == "/bundles") said = bundles::command(rest, home);
-            else if (name == "/notes" || name == "/note") said = project_notes::command(rest, workspace, home);
+            else if (name == "/notes" || name == "/note") said = project_notes::command(project_notes::arguments(name, rest), workspace, home);
             else if (name == "/generation") said = generation::command(rest, target, home);
             else if (name == "/languages" || name == "/language") said = language_servers::command(rest, &workspace, home);
             else said = network_settings::command(rest, home);

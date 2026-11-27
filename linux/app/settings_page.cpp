@@ -5,7 +5,6 @@
 #include "background.hpp"
 #include "bundles.hpp"
 #include "generation.hpp"
-#include "notes.hpp"
 #include "language.hpp"
 #include "delivery.hpp"
 #include "experiments.hpp"
@@ -409,31 +408,6 @@ void SettingsPage::refresh() {
 
     // ---- what follows shares its code with the command line: each control runs the command it names ----
     auto run = [&c](const std::string& name, const std::string& rest) { c.host_command(name, rest); };
-
-    // ---- project notes ----
-    if (session) {
-        AdwPreferencesGroup* notes_group = group(content_, "Project notes", "Short facts about this project. The six newest are given to the model with each request, as background and not as instructions. "
-                                                                             "A note about a file stops being sent once that file changes.");
-        std::vector<ProjectNote> kept;
-        try {
-            kept = project_notes::load(home, Workspace(workspace).root());
-        } catch (const std::exception&) {
-        }
-        if (kept.empty()) row(notes_group, "No notes for this project", "Keep one below.");
-        for (size_t i = 0; i < kept.size(); i++) {
-            std::string about;
-            if (!kept[i].source.empty()) {
-                bool current = false;
-                try { current = project_notes::current(kept[i], Workspace(workspace)); } catch (const std::exception&) {}
-                about = "About " + kept[i].source + (current ? "" : ", which has changed, so this is no longer sent");
-            }
-            AdwActionRow* line = row(notes_group, kept[i].text, about);
-            const std::string number = std::to_string(i + 1);
-            button(line, "Remove", [run, number] { run("/notes", "remove " + number); });
-        }
-        entry_row(notes_group, "Keep a note", "Something worth telling the model every time", "Keep", [run](const std::string& text) { run("/notes", "add " + text); });
-        entry_row(notes_group, "Keep a note about a file", "PATH  A note about that file", "Keep", [run](const std::string& text) { run("/notes", "about " + text); });
-    }
 
     // ---- project policy ----
     if (session) {

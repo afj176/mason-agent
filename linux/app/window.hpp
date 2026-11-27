@@ -10,6 +10,7 @@
 #include "browser.hpp"
 #include "chat.hpp"
 #include "derived.hpp"
+#include "notes.hpp"
 #include "preview.hpp"
 #include "style.hpp"
 
@@ -237,6 +238,49 @@ private:
     std::string state_shown_;
     sigc::connection restored_timer_;
     void refresh_state();
+
+    // ---- Notes (notes_tray.cpp): a tab on the request box, and the tray that slides up from behind it ----
+    Gtk::Overlay conversation_overlay_;
+    Gtk::Box* composer_card_ = nullptr;
+    Gtk::Button notes_tab_;
+    Gtk::Label notes_count_;
+    Gtk::Revealer notes_revealer_;
+    Gtk::Box notes_tray_{Gtk::Orientation::VERTICAL, 10};
+    Gtk::Label notes_running_;
+    Gtk::Entry notes_entry_, notes_about_entry_;
+    Gtk::MenuButton notes_about_button_;
+    Gtk::Popover notes_about_popover_;
+    Gtk::Box notes_about_chip_{Gtk::Orientation::HORIZONTAL, 2};
+    Gtk::Label notes_about_label_;
+    Gtk::Button notes_add_{"Add"};
+    Gtk::Box notes_empty_{Gtk::Orientation::VERTICAL, 8};
+    Gtk::ScrolledWindow notes_scroll_;
+    Gtk::Box notes_list_{Gtk::Orientation::VERTICAL, 6};
+    Gtk::Box notes_footer_{Gtk::Orientation::HORIZONTAL, 8};
+    Gtk::Label notes_sent_;
+    Gtk::Box notes_confirm_{Gtk::Orientation::HORIZONTAL, 8};
+    Gtk::Label notes_confirm_label_;
+    std::vector<ProjectNote> notes_;
+    std::vector<bool> notes_current_;
+    std::string notes_root_;     ///< The project the notes are for.
+    std::string notes_shown_;    ///< A fingerprint of the tray as shown.
+    std::string notes_about_;    ///< The file the next note is about, or empty.
+    std::string notes_editing_;  ///< The note being edited in place, or empty.
+    bool notes_confirming_ = false;
+    void build_notes();
+    bool notes_open() const { return notes_revealer_.get_reveal_child(); }
+    void open_notes(bool open);
+    /// Reads the project's notes again. While a request runs they are only read when asked, not on every update.
+    void load_notes(bool force);
+    void refresh_notes();
+    /// After a change to the notes: read them again and show them, once the click that made it is over.
+    void notes_changed();
+    void add_note();
+    /// A toast, with an Undo button when `undo` is given.
+    void notes_toast(const std::string& text, std::function<void()> undo);
+    Gtk::Widget* note_row(const ProjectNote& note, bool current);
+    /// The card at the end of an answer that offers the note Mason suggested.
+    Gtk::Widget* suggestion_widget(const std::string& text);
     bool updating_ = false;
     std::string sidebar_shown_, transcript_shown_, changes_shown_;
 };

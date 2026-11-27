@@ -95,6 +95,9 @@ public:
     /// Pins a note to a line of a diff. It is sent with the next request. Returns false when it could not be added.
     bool add_comment(const std::string& path, const DiffLine& row, const std::string& note);
     void remove_comment(const std::string& id);
+    /// Answers the note Mason suggested with the latest answer: "remember" keeps it, "dismiss" records it so it is
+    /// not suggested again, and "edit" only clears it (the user finishes it in the Notes tray). Returns false when it failed.
+    bool answer_suggestion(const std::string& choice);
     std::vector<MilestoneStatus> milestone_status() const;
     std::vector<std::string> workflow_names() const;
     bool put_milestone(const Milestone& item);
