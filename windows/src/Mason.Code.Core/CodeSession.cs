@@ -55,6 +55,62 @@ public sealed class CodeActivity
     public string State { get; set; } = "Pending";
     public string Result { get; set; } = "";
 }
+/// <summary>The model asked for the identical tool call three times in a row; Mason skipped the third and ended the request.</summary>
+public sealed record CodeRepeatStop(string Tool, string Subject, int Times, string Model)
+{
+    public string Call => (Tool.Replace('_', ' ') + " " + Subject).Trim();
+    public string Who => Model.Length > 0 ? Model : "The model";
+    public string Detail(bool kept) => $"{Who} kept repeating {Call} with the same result, so Mason stopped it. " + (kept ? "Your work so far is kept." : "Nothing was changed.");
+    /// <summary>The explanation shown under the outcome, in the CLI and the app.</summary>
+    public string Explanation(bool kept) => $"{Who} asked for {Call} {Times} times in a row and got the same result each time. Mason skipped the last one and stopped here instead of looping. " + (kept ? "Your work so far is kept." : "Nothing was changed.");
+    public const string Origin = "This came from the model, not Mason.";
+}
+public enum CodeEndingTone { Success, Warning, Accent, Neutral, Danger }
+/// <summary>What the terminal and the app show for one ending: the same glyph, colour, words and cause everywhere.</summary>
+public sealed record CodeEndingLook(string Glyph, CodeEndingTone Tone, string Headline, string Cause);
+/// <summary>How a request ended. The code is stable and stored; <see cref="Look"/> is the one table every surface draws from.</summary>
+public sealed record CodeRunEnding(string Code, int Kept)
+{
+    public const string Done = "done", Unverified = "unverified", Question = "question", ModelLoop = "model_loop", ModelStuck = "model_stuck",
+        StepLimit = "step_limit", TimeLimit = "time_limit", Blocked = "blocked", Stopped = "stopped", ModelUnavailable = "model_unavailable", Failed = "failed";
+    public static readonly string[] Codes = [Done, Unverified, Question, ModelLoop, ModelStuck, StepLimit, TimeLimit, Blocked, Stopped, ModelUnavailable, Failed];
+    /// <summary>The look for a code, or null for one this version does not know (then surfaces fall back to the state).</summary>
+    public static CodeEndingLook? Look(string? code) => code switch
+    {
+        Done => new("✓", CodeEndingTone.Success, "Done", "model finished"),
+        Unverified => new("◐", CodeEndingTone.Warning, "Needs a check", "checks"),
+        Question => new("?", CodeEndingTone.Accent, "Needs your answer", "model asked"),
+        ModelLoop => new("↻", CodeEndingTone.Warning, "Model looped", "model"),
+        ModelStuck => new("⊘", CodeEndingTone.Warning, "Model stuck", "model"),
+        StepLimit => new("⏸", CodeEndingTone.Warning, "Paused at the step limit", "Mason limit"),
+        TimeLimit => new("⏸", CodeEndingTone.Warning, "Paused at the time limit", "Mason limit"),
+        Blocked => new("⊘", CodeEndingTone.Warning, "Blocked by checks", "project"),
+        Stopped => new("■", CodeEndingTone.Neutral, "Stopped by you", "you"),
+        ModelUnavailable => new("✗", CodeEndingTone.Danger, "Model unavailable", "model server"),
+        Failed => new("✗", CodeEndingTone.Danger, "Failed", "Mason"),
+        _ => null
+    };
+    /// <summary>The ending implied by a state when no more specific code was decided.</summary>
+    public static string FromState(string state) => state switch
+    {
+        "Completed" => Done, "Needs verification" => Unverified, "Waiting for input" => Question,
+        "Blocked" => ModelStuck, "Stopped" => Stopped, _ => Failed
+    };
+    /// <summary>The line under the outcome that says what to do next, or empty.</summary>
+    public static string Hint(string code, bool terminal = true) => code switch
+    {
+        ModelLoop => CodeRepeatStop.Origin + " Send another message to continue, or choose a larger model" + (terminal ? " with /model." : "."),
+        ModelStuck => "This came from the model, not Mason. Try rephrasing, or choose a larger model" + (terminal ? " with /model." : "."),
+        StepLimit or TimeLimit => "Send another message to continue from here.",
+        ModelUnavailable => terminal ? "Start it again with /models, or choose another with /model." : "Start it again in Models, or choose another model.",
+        _ => ""
+    };
+    /// <summary>Endings that get a card at the end of the conversation in the app.</summary>
+    public static bool Explains(string code) => code is ModelLoop or ModelStuck or StepLimit or TimeLimit or ModelUnavailable or Blocked;
+    public string? KeptText => Kept > 0 && Code != Done ? Kept + (Kept == 1 ? " file kept" : " files kept") : null;
+}
+/// <summary>Thrown before a tool call the model has asked for three times in a row; the call is recorded as skipped.</summary>
+public sealed class CodeRepeatException() : InvalidOperationException("Not run: the model already made this exact call twice in a row and got the same result both times.");
 public sealed class CodeChange
 {
     public string Path { get; set; } = "";
@@ -113,6 +169,10 @@ public sealed class CodeSession
     public int ActionLimit { get; set; } = 64;
     public string State { get; set; } = "Ready";
     public string Detail { get; set; } = "";
+    /// <summary>Set when the latest request ended because the model asked for the same tool call three times in a row.</summary>
+    public CodeRepeatStop? RepeatStop { get; set; }
+    /// <summary>How the latest request ended and how many files it left changed; null while a request runs.</summary>
+    public CodeRunEnding? Ending { get; set; }
     public DateTimeOffset Updated { get; set; } = DateTimeOffset.UtcNow;
     public List<CodeTurn> Turns { get; set; } = [];
     public List<CodeMessage> Messages { get; set; } = [];
@@ -329,6 +389,7 @@ public static class CodeProtocol
         if (Count("run_command", "run_shell") is > 0 and var commands) parts.Add($"Ran {commands} " + (commands == 1 ? "command" : "commands"));
         int failures = items.Count(a => a.State is "Failed" or "Denied");
         if (failures > 0) parts.Add($"{failures} " + (failures == 1 ? "failed/declined attempt" : "failed/declined attempts"));
+        if (items.Count(a => a.State == "Skipped") is > 0 and var skipped) parts.Add($"{skipped} " + (skipped == 1 ? "repeat skipped" : "repeats skipped"));
         if (items.Any(a => a.State == "Outcome unknown")) parts.Add("Unknown outcome · inspect activity");
         return string.Join(" · ", parts.Count == 0 ? new[] { $"{items.Length} tool calls" } : parts);
     }

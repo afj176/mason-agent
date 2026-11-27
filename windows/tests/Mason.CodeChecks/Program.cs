@@ -341,10 +341,10 @@ try
         Check(pin.Tabs.Count == 2 && pin.SelectedTab == "file:README.md", "agent cannot replace pinned viewer selection");
         var repair = store.New(workspace); repair.Permission = CodePermission.WorkspaceEdits; repair.Mode = "ask";
         await new CodeEngine(store, new RepairModel(), (_, _) => Task.FromResult(false), () => { }).Run(repair, "Recover valid action syntax.", default);
-        Check(repair.State == "Completed" && repair.Activities.Count(a => a.Tool == "model_response") == 1 && !File.Exists(Path.Combine(workspace, "partial.txt")), "malformed response recorded and corrected without executing partial action");
+        Check(repair.State == "Completed" && repair.Ending?.Code == CodeRunEnding.Done && repair.Activities.Count(a => a.Tool == "model_response") == 1 && !File.Exists(Path.Combine(workspace, "partial.txt")), "malformed response recorded and corrected without executing partial action");
         var failRepair = store.New(workspace);
         await new CodeEngine(store, new RepairModel(true), (_, _) => Task.FromResult(false), () => { }).Run(failRepair, "Bound correction attempts.", default);
-        Check(failRepair.State == "Failed" && failRepair.Activities.Count == 3 && failRepair.Messages.Count(m => m.Content.StartsWith(CodeProtocol.ResponseRepairPrefix, StringComparison.Ordinal)) == 2,
+        Check(failRepair.State == "Failed" && failRepair.Ending?.Code == CodeRunEnding.ModelStuck && failRepair.Activities.Count == 3 && failRepair.Messages.Count(m => m.Content.StartsWith(CodeProtocol.ResponseRepairPrefix, StringComparison.Ordinal)) == 2,
             "malformed response recovery stops after two corrections and retains all three failed responses");
         var premature = store.New(workspace);
         await new CodeEngine(store, new ScriptedModel(Done("I will inspect it."), Done("I will start."), Done("Working on it.")), (_, _) => Task.FromResult(false), () => { }).Run(premature, "Implement the change.", default);
@@ -445,7 +445,77 @@ try
         var loop=loopStore.New(workspace);loop.Mode="ask";
         var read=Tool("read_file",new{path="README.md"});
         await new CodeEngine(loopStore,new ScriptedModel(read,read,read,Done()),(_,_)=>throw new Exception("Loop requested review"),()=>{}).Run(loop,"Inspect the read loop.",default);
-        Check(loop.State=="Failed"&&loop.Activities.Count==3&&loop.Activities[^1].State=="Failed"&&loop.Detail.Contains("repeated-tool loop"),"identical tool loop stops before the third execution and retains failure evidence");
+        Check(loop.State=="Stopped"&&loop.Ending==new CodeRunEnding(CodeRunEnding.ModelLoop,0)&&loop.Activities.Count==3&&loop.Activities[^1].State=="Skipped"&&loop.Activities[1].State=="Completed"&&
+            loop.RepeatStop==new CodeRepeatStop("read_file","README.md",3,"")&&
+            loop.Detail=="The model kept repeating read file README.md with the same result, so Mason stopped it. Nothing was changed.",
+            "a read loop with nothing changed stops, not fails, and skips the third identical call");
+        Check(loop.Messages.Any(m=>m.Content.Contains("\"Skipped\"")&&m.Content.Contains("got the same result both times")),"the skipped repeat is still answered in the model history");
+        Check(CodeProtocol.ActivitySummary(loop.Activities).Contains("1 repeat skipped")&&!CodeProtocol.ActivitySummary(loop.Activities).Contains("failed"),"a skipped repeat is counted apart from failures");
+
+        var made=Path.Combine(root,"loop-made");Directory.CreateDirectory(made);
+        var created=loopStore.New(made);created.Permission=CodePermission.ReviewEdits;
+        var create=Tool("create_file",new{path="index.html",content="<h1>Dojo</h1>"});
+        int approvals=0;
+        await new CodeEngine(loopStore,new ScriptedModel(create,create,create,create,Done()),(_,_)=>Task.FromResult(++approvals>0),()=>{}){ModelName="Tiny-2B"}.Run(created,"Build a dojo site.",default);
+        // The write and the first refusal differ, so the model gets one more try; the second identical refusal is the loop.
+        Check(created.State=="Stopped"&&created.Ending==new CodeRunEnding(CodeRunEnding.ModelLoop,1)&&created.RepeatStop?.Model=="Tiny-2B"&&created.Activities.Select(a=>a.State).SequenceEqual(["Completed","Failed","Failed","Skipped"])&&
+            File.ReadAllText(Path.Combine(made,"index.html"))=="<h1>Dojo</h1>"&&created.Detail.EndsWith("Your work so far is kept.")&&created.Detail.StartsWith("Tiny-2B kept repeating create file index.html")&&created.RepeatStop!.Times==4&&created.RepeatStop.Explanation(true).StartsWith("Tiny-2B asked for create file index.html 4 times in a row"),
+            "a create loop after the file landed ends as a model loop, never Completed, keeps the file and names the model");
+        var saved=Directory.GetFiles(loopStore.Root,created.Id.ToString("N")+".json",SearchOption.AllDirectories).Single();
+        Check(System.Text.Json.JsonSerializer.Deserialize<CodeSession>(File.ReadAllText(saved))!.RepeatStop==created.RepeatStop,"the repeat stop survives a reload");
+
+        var reset=loopStore.New(workspace);reset.Mode="ask";
+        var list=Tool("list_files",new{path=".",limit=5});
+        await new CodeEngine(loopStore,new ScriptedModel(read,read,list,read,read,Done()),(_,_)=>throw new Exception("Reset requested review"),()=>{}).Run(reset,"Inspect twice.",default);
+        Check(reset.RepeatStop==null&&reset.Activities.Count==5&&reset.Activities.All(a=>a.State=="Completed"),"a different call in between resets the repeat count");
+        Check(created.Messages.Count(m=>m.Content.Contains("will not run this exact call a third time"))==1,"the model is warned once, on the second identical result, before anything is skipped");
+
+        // A file that changes between identical reads is progress (a growing log), never a loop.
+        var growing=loopStore.New(workspace);growing.Mode="ask";
+        var log=Path.Combine(workspace,"build.log");File.WriteAllText(log,"step 0");
+        var readLog=Tool("read_file",new{path="build.log"});int step=0;
+        await new CodeEngine(loopStore,new GrowingModel(()=>{File.WriteAllText(log,"step "+ ++step);return readLog;},5),(_,_)=>throw new Exception("Log requested review"),()=>{}).Run(growing,"Watch the log.",default);
+        File.Delete(log);
+        Check(growing.RepeatStop==null&&growing.Activities.Count==5&&growing.Activities.All(a=>a.State=="Completed"),"identical calls whose results keep changing are never stopped");
+
+        Check(CodeEngine.Looping([("same",false),("same",false)])&&!CodeEngine.Looping([("same",false),("changed",false)])&&
+            !CodeEngine.Looping([("running",true),("running",true)])&&!CodeEngine.Looping([("running",false),("running",true)])&&!CodeEngine.Looping([("same",false)]),
+            "only two identical results in a row count, and a poll that waited for its job never does");
+
+        // Every ending maps to one look, unknown codes fall back, and each way out of a request records its ending.
+        Check(CodeRunEnding.Codes.All(c=>CodeRunEnding.Look(c) is {Headline.Length:>0})&&CodeRunEnding.Look("from_the_future")==null&&CodeRunEnding.Look(null)==null&&
+            CodeRunEnding.Codes.Distinct().Count()==11&&CodeRunEnding.Codes.Where(c=>CodeRunEnding.Look(c)!.Tone==CodeEndingTone.Danger).SequenceEqual([CodeRunEnding.ModelUnavailable,CodeRunEnding.Failed]),
+            "the ending table covers every code, keeps red for breakage only, and has no look for an unknown code");
+        Check(new CodeRunEnding(CodeRunEnding.ModelLoop,2).KeptText=="2 files kept"&&new CodeRunEnding(CodeRunEnding.Done,2).KeptText==null&&new CodeRunEnding(CodeRunEnding.Stopped,0).KeptText==null&&
+            CodeRunEnding.Hint(CodeRunEnding.ModelUnavailable).Contains("/models")&&!CodeRunEnding.Hint(CodeRunEnding.ModelUnavailable,terminal:false).Contains('/'),
+            "kept files are counted for every ending but done, and app hints never name terminal commands");
+
+        var asked=loopStore.New(workspace);asked.Mode="ask";
+        await new CodeEngine(loopStore,new ScriptedModel(Tool("ask_user",new{question="Which colour?"})),(_,_)=>throw new Exception("Question requested review"),()=>{}).Run(asked,"Pick a colour.",default);
+        Check(asked.Ending==new CodeRunEnding(CodeRunEnding.Question,0),"a question ends as needs your answer");
+
+        var unreachable=loopStore.New(workspace);unreachable.Mode="ask";
+        await new CodeEngine(loopStore,new ThrowingModel(new HttpRequestException("Connection refused (127.0.0.1:18310)")),(_,_)=>throw new Exception("Unreachable requested review"),()=>{}).Run(unreachable,"Hello?",default);
+        Check(unreachable.State=="Failed"&&unreachable.Ending==new CodeRunEnding(CodeRunEnding.ModelUnavailable,0)&&unreachable.Detail.Contains("Connection refused"),"a model server that cannot be reached ends as model unavailable, not as Mason failing");
+
+        var broken=loopStore.New(workspace);broken.Mode="ask";
+        await new CodeEngine(loopStore,new ThrowingModel(new InvalidOperationException("Exact coding context measurement is unavailable.")),(_,_)=>throw new Exception("Broken requested review"),()=>{}).Run(broken,"Hello?",default);
+        Check(broken.Ending==new CodeRunEnding(CodeRunEnding.Failed,0),"any other error ends as failed");
+
+        var cancelled=loopStore.New(workspace);cancelled.Mode="ask";
+        using(var stop=new CancellationTokenSource()){
+            await new CodeEngine(loopStore,new ThrowingModel(null,stop),(_,_)=>throw new Exception("Cancel requested review"),()=>{}).Run(cancelled,"Wait.",stop.Token);
+        }
+        Check(cancelled.State=="Stopped"&&cancelled.Ending==new CodeRunEnding(CodeRunEnding.Stopped,0),"stopping a request ends as stopped by you");
+
+        await new CodeEngine(loopStore,new ScriptedModel(Done()),(_,_)=>throw new Exception("Next requested review"),()=>{}).Run(loop,"Answer briefly.",default);
+        Check(loop.RepeatStop==null&&loop.Ending?.Code!=CodeRunEnding.ModelLoop,"the next request clears the previous ending and repeat stop");
+        var reloaded=System.Text.Json.JsonSerializer.Deserialize<CodeSession>(File.ReadAllText(Directory.GetFiles(loopStore.Root,unreachable.Id.ToString("N")+".json",SearchOption.AllDirectories).Single()))!;
+        Check(reloaded.Ending==unreachable.Ending,"the ending survives a reload");
+        var waits=CodeSchema.NativeTools().EnumerateArray().Select(t=>t.GetProperty("function")).Where(f=>f.GetProperty("name").GetString() is "poll_job" or "terminal_status")
+            .Select(f=>f.GetProperty("parameters")).ToArray();
+        Check(waits.Length==2&&waits.All(p=>p.GetProperty("properties").TryGetProperty("wait_ms",out var w)&&w.GetProperty("maximum").GetInt32()==10000&&
+            p.GetProperty("required").EnumerateArray().Any(r=>r.GetString()=="wait_ms")),"terminal status can wait like poll_job, so watching a long build is patience, not a loop");
     }
     await HarnessRecoveryChecks.Run(root, Check);
     await HarnessContractChecks.Run(root, Check);
@@ -475,6 +545,24 @@ try
 // Production identity/job/ACL cleanup remains asserted by the sandbox checks.
 finally { Console.WriteLine("Coding check artifacts: " + root); }
 
+/// <summary>Throws an error from the model call, or cancels the request and waits to be stopped.</summary>
+sealed class ThrowingModel(Exception? error, CancellationTokenSource? cancel = null) : ICodeModel
+{
+    public async Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages, Action<string> onMessage, CancellationToken cancellation)
+    {
+        if (error != null) throw error;
+        cancel!.Cancel();
+        await Task.Delay(Timeout.Infinite, cancellation);
+        throw new InvalidOperationException("Unreachable.");
+    }
+}
+/// <summary>Runs a step before each of its first <c>times</c> answers, then finishes.</summary>
+sealed class GrowingModel(Func<CodeAction> step, int times) : ICodeModel
+{
+    int calls;
+    public Task<CodeAction> Next(IReadOnlyList<CodeMessage> messages, Action<string> onMessage, CancellationToken cancellation) =>
+        Task.FromResult(calls++ < times ? step() : new CodeAction("Watched.", null, default));
+}
 sealed class ScriptedModel(params CodeAction[] actions) : ICodeModel, ICodeAcceptancePlanner
 {
     public Task<List<AcceptanceCheck>> PlanAcceptance(string request, string[] units, CodeFiles files, CancellationToken ct) =>
