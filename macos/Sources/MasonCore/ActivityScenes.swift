@@ -1,6 +1,6 @@
 import Foundation
 
-/// What kind of work a run of tool calls was, which picks how the app's Activity panel (the Live Viewer) shows it.
+/// What kind of work a run of tool calls was, which picks how the side panel's Moments feed shows it.
 public enum ActivitySceneKind: String, Equatable, Sendable { case read, edit, command, page, other }
 
 /// Consecutive tool calls of one kind, shown together as one step of a run. `first` indexes the session's activities.

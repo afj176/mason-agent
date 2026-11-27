@@ -113,7 +113,21 @@ echo "--- app, a fuller session for the screenshot ---"
   sleep 6
   osascript -e 'tell application "System Events" to set frontmost of (first process whose unix id is '"$DEMO_PID"') to true'
   sleep 2
+  # The side panel opens on Moments (⌥⌘V), as the website shows the app.
+  osascript -e 'tell application "System Events" to keystroke "v" using {command down, option down}'
+  sleep 3
   screencapture -x "$SHOTS/5-demo.png"
+  # The window alone, for the website: a system prompt on the runner (such as local network access) stays out of it.
+  cat > "$WORK/window-id.swift" <<'SWIFT'
+import CoreGraphics
+let pid = Int32(CommandLine.arguments[1])!
+let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+for window in windows where (window[kCGWindowOwnerPID as String] as? Int32) == pid && (window[kCGWindowLayer as String] as? Int) == 0 {
+    print(window[kCGWindowNumber as String] ?? ""); break
+}
+SWIFT
+  WINDOW_ID=$(swift "$WORK/window-id.swift" "$DEMO_PID" 2>/dev/null)
+  [ -n "$WINDOW_ID" ] && screencapture -x -o -l "$WINDOW_ID" "$SHOTS/5-demo-window.png"
   # The Settings window, on its MCP Servers pane.
   osascript -e 'tell application "System Events" to keystroke "," using command down'
   sleep 2

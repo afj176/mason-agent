@@ -1,33 +1,45 @@
 import SwiftUI
 import MasonCore
 
-// The Live Viewer: the Activity panel shown as scenes. Consecutive calls of one kind form a scene, and each kind has its
-// own lens: a diff for edits, a summary-first terminal for commands, a map for reads, the page for browser checks, the
-// plan, and a receipt when the run ends. The viewer follows the newest scene until the user picks another one.
-// Every fact the activity rows show (state, subject, result, skipped repeats) is still under Step details or Raw.
+// Moments: the side panel's feed of what the run did, newest first. A step that made something (a file, a change, a
+// command's report, a page) is a card with Open; reading and other steps are quiet one-line moments, and each request
+// starts with a "You asked" line. Opening a change, report or set of reads shows it in the panel with ← Moments to go
+// back; the opened moment stays on the shelf until it is closed. Every fact the old activity rows showed (state,
+// subject, result, skipped repeats) is still under Step details or Raw there.
 
 extension AppModel {
-    /// Opens the Activity panel on the step holding a call, or following the run when there is none.
+    /// Opens the side panel on the moment holding a call, or on the feed when there is none.
     func showActivity(_ call: UUID?) {
-        activityPick = call?.uuidString
-        panel = "activity"
+        if let call {
+            activityPick = Moments.openKey(call)
+            panel = "moment"
+        } else {
+            panel = "moments"
+        }
         showChanges = true
+    }
+
+    /// Opens one moment of the feed: a scene by one of its calls, and optionally one file of an edit.
+    func openMoment(_ call: UUID, path: String? = nil) {
+        activityPick = Moments.openKey(call, path: path)
+        panel = "moment"
+    }
+
+    /// Shows a file in the Files panel.
+    func openFile(_ path: String) {
+        fileLine = 1
+        fileShown = path
+        panel = "files"
+    }
+
+    /// Shows a page in the Website panel.
+    func openPage(_ page: String) {
+        pageShown = page
+        panel = "website"
     }
 }
 
 extension Brand {
-    /// The colour of a step in the strip, from the shared status colours.
-    static func sceneTone(_ tone: SceneTone) -> Color {
-        switch tone {
-        case .neutral: return muted
-        case .accent: return accent
-        case .good: return success
-        case .search: return search
-        case .bad: return critical
-        case .warn: return caution
-        }
-    }
-
     static func callState(_ state: Activity.State) -> Color {
         switch state {
         case .completed: return success
@@ -64,180 +76,655 @@ struct ScenePill: View {
     }
 }
 
-struct LiveViewer: View {
+// MARK: The panel's header and shelf
+
+/// The side panel's one header: "Moments" (live while running) on the feed, or the way back to it, then the shelf of
+/// the panel's views, the opened moment and what the latest run made so far. The shown one is outlined.
+struct SurfaceHeader: View {
     @EnvironmentObject var model: AppModel
     let session: Session
+    let calls: [Activity]
 
-    /// The session's calls, with the ones the running request has reported so far.
-    var allCalls: [Activity] { model.running ? session.activities + model.liveActivities : session.activities }
+    static let views: [(key: String, label: String, icon: String)] = [
+        ("changes", "Changes", "plusminus"), ("plan", "Plan", "list.bullet"), ("files", "Files", "folder"), ("website", "Website", "globe"),
+    ]
+
+    var onFeed: Bool { !["moment", "changes", "plan", "files", "website"].contains(model.panel) }
 
     var body: some View {
-        let calls = allCalls
-        let running = model.running
         let scenes = ActivityScenes.group(calls)
-        let hasPlan = !(session.milestones ?? []).isEmpty
-        let hasEnd = !running && session.ending != nil && !calls.isEmpty
-        let shown = ActivityScenes.selection(pick: model.activityPick, activities: calls, scenes: scenes, running: running, hasPlan: hasPlan, hasEnd: hasEnd)
-        let scene = scenes.first { $0.key == shown.key }
-        VStack(spacing: 0) {
-            header(key: shown.key, following: shown.following, scene: scene, calls: calls, running: running)
-            Divider()
-            ScrollView {
-                lens(key: shown.key, scene: scene, calls: calls)
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .id(shown.key)
-            if hasPlan || !scenes.isEmpty {
-                Divider()
-                strip(selected: shown.key, scenes: scenes, calls: calls, running: running, hasPlan: hasPlan, hasEnd: hasEnd)
-            }
-        }
-    }
-
-    // MARK: Header
-
-    func header(key: String, following: Bool, scene: ActivityScene?, calls: [Activity], running: Bool) -> some View {
+        let openedTitle = MomentDetail.title(pick: model.activityPick, session: session, calls: calls, scenes: scenes, running: model.running)
+        let made = Moments.madeSoFar(calls, from: ActivityScenes.requestStart(session), changes: ActivityScenes.sessionChanges(session))
         HStack(spacing: 10) {
-            if following {
-                ScenePill(text: running ? "● Following" : key == ActivityScenes.endKey ? "Run ended" : "Latest", color: running ? Brand.accent : Brand.muted)
-                    .accessibilityLabel(running ? "Following the run as it happens" : "Showing the latest step")
+            if onFeed {
+                HStack(spacing: 6) {
+                    Text("Moments").font(.headline).foregroundStyle(Brand.ink)
+                    if model.running {
+                        ScenePill(text: "● Live", color: Brand.accent).accessibilityLabel("Live: the run is going")
+                    }
+                }
+                .fixedSize()
             } else {
-                Button("Jump to latest") { model.activityPick = nil }
+                Button { model.panel = "moments" } label: { Label("Moments", systemImage: "chevron.left") }
                     .controlSize(.small)
-                    .help("Jump to the latest step and follow the run")
+                    .help("Back to the Moments feed")
+                    .accessibilityLabel("Back to Moments")
             }
-            Text(title(key: key, scene: scene, calls: calls))
-                .fontWeight(.semibold).foregroundStyle(Brand.ink)
-                .lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 0)
-            Toggle("Raw", isOn: $model.activityRaw)
-                .toggleStyle(.button).controlSize(.small)
-                .help("Show each call's subject and result exactly as Mason recorded them")
-            Menu {
-                Button("Changes") { model.panel = "changes" }
-                Button("Plan") { model.panel = "plan" }
-                Button("Files") { model.panel = "files" }
-                Button("Website") { model.panel = "website" }
-            } label: {
-                Image(systemName: "ellipsis.circle")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    if let openedTitle {
+                        ShelfChip(label: openedTitle, icon: "sparkles", selected: model.panel == "moment",
+                                  show: { model.panel = "moment" },
+                                  close: {
+                                      model.activityPick = nil
+                                      if model.panel == "moment" { model.panel = "moments" }
+                                  })
+                    }
+                    ForEach(Self.views, id: \.key) { view in
+                        ShelfChip(label: view.label, icon: view.icon, selected: model.panel == view.key, show: { model.panel = view.key })
+                    }
+                    ForEach(made, id: \.call) { thing in
+                        madeChip(thing)
+                    }
+                }
+                .padding(.vertical, 2)
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            .help("More pages about this run")
-            .accessibilityLabel("More pages about this run")
+            .accessibilityLabel("Shelf: the panel's views and what the run made")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
     }
 
-    func title(key: String, scene: ActivityScene?, calls: [Activity]) -> String {
-        switch key {
-        case ActivityScenes.planKey: return "Plan"
-        case ActivityScenes.endKey: return session.ending?.style?.headline ?? "Run ended"
-        case "": return "Live"
-        default:
-            guard let scene else { return "" }
-            let place = scene.count > 1 ? "steps \(scene.first + 1)–\(scene.last + 1) of \(calls.count)" : "step \(scene.first + 1) of \(calls.count)"
-            return ActivityScenes.label(scene, calls) + " · " + place
-        }
-    }
-
-    // MARK: Lens
-
     @ViewBuilder
-    func lens(key: String, scene: ActivityScene?, calls: [Activity]) -> some View {
-        if key.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Nothing has run yet").font(.title3).foregroundStyle(Brand.ink)
-                Text("When Mason reads, edits, runs or checks something, it shows here as it happens.")
-                    .foregroundStyle(Brand.muted).fixedSize(horizontal: false, vertical: true)
+    func madeChip(_ thing: MadeThing) -> some View {
+        switch thing.kind {
+        case .file:
+            let path = ActivityScenes.normalize(thing.target)
+            let key = Moments.openKey(thing.call, path: path)
+            if thing.created {
+                ShelfChip(label: thing.label, icon: "doc.badge.plus", selected: model.panel == "files" && model.fileShown == thing.target,
+                          show: { model.openFile(thing.target) })
+            } else if key != model.activityPick {
+                ShelfChip(label: thing.label, icon: "pencil", selected: false, show: { model.openMoment(thing.call, path: path) })
             }
-        } else if key == ActivityScenes.planKey {
-            PlanLens(session: session)
-        } else if key == ActivityScenes.endKey {
-            ReceiptLens(session: session)
-        } else if let scene {
-            let steps = scene.indices.filter { $0 < calls.count }.map { calls[$0] }
-            VStack(alignment: .leading, spacing: 14) {
-                if model.activityRaw {
-                    ForEach(steps) { RawCallCard(activity: $0) }
-                } else {
-                    switch scene.kind {
-                    case .edit: EditLens(session: session, calls: steps)
-                    case .command: CommandLens(calls: steps)
-                    case .read: ReadLens(calls: steps)
-                    case .page: PageLens(calls: steps)
-                    case .other: VStack(alignment: .leading, spacing: 4) { ForEach(steps) { ActivityRow(activity: $0) } }
-                    }
-                    if scene.kind != .other { StepDetails(calls: steps) }
-                }
-            }
-        }
-    }
-
-    // MARK: Step strip
-
-    func strip(selected: String, scenes: [ActivityScene], calls: [Activity], running: Bool, hasPlan: Bool, hasEnd: Bool) -> some View {
-        let limit = 150
-        let recent = Array(scenes.suffix(limit))
-        let owner = self.model
-        let choose: (String) -> Void = { key in
-            owner.activityPick = ActivityScenes.pick(key, activities: calls, scenes: scenes, running: running, hasPlan: hasPlan, hasEnd: hasEnd)
-        }
-        return ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    if hasPlan {
-                        let count = session.milestones?.count ?? 0
-                        StepTick(text: "plan", tone: .neutral, tip: "Plan · \(count) step\(count == 1 ? "" : "s")", selected: selected == ActivityScenes.planKey) { choose(ActivityScenes.planKey) }
-                            .id(ActivityScenes.planKey)
-                    }
-                    if scenes.count > limit {
-                        Text("\(scenes.count - limit) earlier").font(.caption2).foregroundStyle(Brand.muted)
-                    }
-                    ForEach(recent, id: \.first) { item in
-                        let tick = ActivityScenes.tick(item, calls)
-                        let skipped = item.indices.contains { $0 < calls.count && calls[$0].state == .skipped }
-                        let outcome = tick.tone == .bad ? " · failed" : skipped ? " · repeat skipped" : ""
-                        StepTick(text: tick.text, tone: tick.tone, tip: ActivityScenes.label(item, calls) + outcome, selected: selected == item.key) { choose(item.key) }
-                            .id(item.key)
-                    }
-                    if hasEnd, let ending = session.ending {
-                        StepTick(text: "end", tone: ActivityScenes.tone(ending), tip: ending.style?.headline ?? "Run ended", selected: selected == ActivityScenes.endKey) { choose(ActivityScenes.endKey) }
-                            .id(ActivityScenes.endKey)
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 8)
-            }
-            .accessibilityLabel("Steps of this run")
-            .onAppear { proxy.scrollTo(selected) }
-            .onChange(of: selected) { _, key in proxy.scrollTo(key) }
-            .onChange(of: scenes.count) { _, _ in proxy.scrollTo(selected) }
+        case .page:
+            ShelfChip(label: thing.label, icon: "globe", selected: false, show: { model.openPage(thing.target) })
         }
     }
 }
 
-/// One step of the strip, tinted by kind and outcome; the one shown is outlined.
-struct StepTick: View {
-    let text: String
-    let tone: SceneTone
-    let tip: String
+/// One item on the shelf: a view, the opened moment, or something the run made. The shown one is outlined; the opened
+/// moment can be closed.
+struct ShelfChip: View {
+    let label: String
+    var icon: String?
     let selected: Bool
+    let show: () -> Void
+    var close: (() -> Void)?
+
+    var shortLabel: String { label.count > 28 ? String(label.prefix(27)) + "…" : label }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: show) {
+                HStack(spacing: 4) {
+                    if let icon { Image(systemName: icon).font(.caption).accessibilityHidden(true) }
+                    Text(shortLabel).lineLimit(1)
+                }
+                .font(.callout)
+                .padding(.leading, 9).padding(.trailing, close == nil ? 9 : 3).padding(.vertical, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(selected ? Brand.ink : Brand.muted)
+            .help(label)
+            .accessibilityLabel((selected ? "Showing " : "Show ") + label)
+            if let close {
+                Button(action: close) {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 7)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Brand.muted)
+                .help("Close " + label)
+                .accessibilityLabel("Close " + label)
+            }
+        }
+        .fixedSize()
+        .background(selected ? Brand.surface : Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(selected ? Brand.accent : Brand.seam, lineWidth: selected ? 1.5 : 1))
+    }
+}
+
+// MARK: The feed
+
+struct MomentsFeed: View {
+    @EnvironmentObject var model: AppModel
+    let session: Session
+    let calls: [Activity]
+
+    var body: some View {
+        if calls.isEmpty {
+            MomentsEmpty(running: model.running)
+        } else {
+            let scenes = ActivityScenes.group(calls)
+            let items = Array(Moments.feed(scenes: scenes, requests: Moments.requests(session.turns, activityCount: calls.count)).prefix(Moments.feedLimit))
+            let rows: [(id: String, item: MomentItem)] = items.enumerated().map { offset, item in
+                if case .scene(let scene) = item { return (scene.key, item) }
+                return ("a\(offset)", item)
+            }
+            let changes = ActivityScenes.sessionChanges(session)
+            let newest = model.running ? scenes.last?.key : nil
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if !model.running, session.ending != nil { EndMoment(session: session) }
+                    ForEach(rows, id: \.id) { row in
+                        switch row.item {
+                        case .asked(let text): AskedLine(text: text)
+                        case .scene(let scene): SceneMoments(scene: scene, calls: calls, changes: changes, newest: scene.key == newest)
+                        }
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+            }
+        }
+    }
+}
+
+/// "You asked: …", where a request began.
+struct AskedLine: View {
+    let text: String
+
+    var body: some View {
+        Text("You asked: " + text)
+            .font(.callout).foregroundStyle(Brand.muted)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 2)
+            .textSelection(.enabled)
+    }
+}
+
+/// One edit card per file an edit scene touched.
+struct EditPick: Identifiable {
+    let path: String
+    let call: Activity
+    var id: String { path.lowercased() }
+}
+
+/// The moments of one scene: a card per file for edits, a card for a command or a page check, a quiet line otherwise.
+struct SceneMoments: View {
+    @EnvironmentObject var model: AppModel
+    let scene: ActivityScene
+    let calls: [Activity]
+    let changes: [FileChange]
+    let newest: Bool
+
+    var body: some View {
+        let steps = scene.indices.filter { $0 < calls.count }.map { calls[$0] }
+        let when = steps.last.map { Moments.ago($0.at) } ?? ""
+        let edits: [EditPick] = scene.kind == .edit
+            ? Moments.editPaths(scene, calls).compactMap { path in Moments.lastCall(scene, calls, path: path).map { EditPick(path: path, call: $0) } }
+            : []
+        if !edits.isEmpty {
+            VStack(spacing: 10) {
+                ForEach(edits) { pick in
+                    EditMoment(call: pick.call, path: pick.path, change: ActivityScenes.change(for: pick.path, in: changes), when: when, newest: newest)
+                }
+            }
+        } else if scene.kind == .command, let last = steps.last {
+            CommandMoment(title: ActivityScenes.label(scene, calls), call: last, when: when, newest: newest)
+        } else if scene.kind == .page, let last = steps.last {
+            PageMoment(title: ActivityScenes.label(scene, calls), steps: steps, open: last.id, when: when, newest: newest)
+        } else if let last = steps.last {
+            QuietMoment(label: Moments.sentence(ActivityScenes.label(scene, calls)), detail: Moments.readPlaces(scene, calls), when: when,
+                        failed: steps.contains { ActivityScenes.failed($0) }, open: { model.openMoment(last.id) })
+        }
+    }
+}
+
+extension View {
+    /// A moment's card, outlined in the accent while it is the newest step of a running request.
+    func momentCard(newest: Bool) -> some View {
+        padding(.horizontal, 14).padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Brand.surface, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(newest ? Brand.accent : Brand.seam, lineWidth: newest ? 1.5 : 1))
+    }
+
+    /// A text button in the accent, for a moment's secondary actions.
+    func momentLink() -> some View {
+        buttonStyle(.plain).foregroundStyle(Brand.accent).font(.callout)
+    }
+}
+
+/// A moment's main action: prominent on the newest card.
+struct MomentButton: View {
+    let title: String
+    let primary: Bool
     let action: () -> Void
 
     var body: some View {
-        let color = Brand.sceneTone(tone)
-        Button(action: action) {
-            Text(text)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(color)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .frame(minWidth: 28)
-                .background(color.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(selected ? Brand.accent : color.opacity(0.35), lineWidth: selected ? 2 : 1))
+        if primary {
+            Button(title, action: action).buttonStyle(.borderedProminent).tint(Brand.accent).controlSize(.small)
+        } else {
+            Button(title, action: action).controlSize(.small)
+        }
+    }
+}
+
+/// The badge that says what kind of moment a card is.
+struct MomentBadge: View {
+    let glyph: String
+    let color: Color
+
+    var body: some View {
+        Text(glyph)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(color)
+            .frame(width: 26, height: 26)
+            .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: 7))
+            .accessibilityHidden(true)
+    }
+}
+
+/// A card's top line: its badge, title and facts, and how long ago it happened.
+struct MomentTitle<Extras: View>: View {
+    let glyph: String
+    let color: Color
+    let title: String
+    let when: String
+    let extras: Extras
+
+    init(glyph: String, color: Color, title: String, when: String, @ViewBuilder extras: () -> Extras) {
+        self.glyph = glyph; self.color = color; self.title = title; self.when = when; self.extras = extras()
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            MomentBadge(glyph: glyph, color: color)
+            Text(title).fontWeight(.semibold).foregroundStyle(Brand.ink).lineLimit(1).truncationMode(.middle)
+            extras
+            Spacer(minLength: 0)
+            Text(when).font(.caption).foregroundStyle(Brand.muted).fixedSize()
+        }
+    }
+}
+
+extension MomentTitle where Extras == EmptyView {
+    init(glyph: String, color: Color, title: String, when: String) {
+        self.init(glyph: glyph, color: color, title: title, when: when) { EmptyView() }
+    }
+}
+
+/// A file the run created or changed.
+struct EditMoment: View {
+    @EnvironmentObject var model: AppModel
+    let call: Activity
+    let path: String
+    let change: FileChange?
+    let when: String
+    let newest: Bool
+
+    var name: String { (path as NSString).lastPathComponent }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let change, change.created {
+                let lines = Moments.lineCount(change.after)
+                let head = Moments.head(change.after)
+                MomentTitle(glyph: "+", color: Brand.success, title: "Created " + name, when: when) {
+                    Text(lines == 1 ? "1 line" : "\(lines) lines").font(.caption).foregroundStyle(Brand.muted).fixedSize()
+                }
+                if !head.isEmpty {
+                    Text(head.joined(separator: "\n"))
+                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Brand.muted)
+                        .lineLimit(3).truncationMode(.tail)
+                }
+                HStack(spacing: 10) {
+                    MomentButton(title: "Open", primary: newest) { model.openFile(change.path) }
+                    Button("Diff") { model.openMoment(call.id, path: path) }.momentLink()
+                }
+            } else if let change {
+                let counts = ActivityScenes.lineCounts(change)
+                MomentTitle(glyph: "✎", color: Brand.accent, title: (change.deleted ? "Deleted " : "Changed ") + name, when: when) {
+                    ScenePill(text: "+\(counts.added)", color: Brand.success)
+                    if counts.removed > 0 { ScenePill(text: "−\(counts.removed)", color: Brand.critical) }
+                }
+                if let line = Moments.firstAdded(change), !line.isEmpty {
+                    Text(line)
+                        .font(.system(size: 12, design: .monospaced))
+                        .lineLimit(1).truncationMode(.tail)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Brand.success.opacity(0.13), in: RoundedRectangle(cornerRadius: 4))
+                }
+                MomentButton(title: "Open", primary: newest) { model.openMoment(call.id, path: path) }
+            } else {
+                let failed = ActivityScenes.failed(call)
+                MomentTitle(glyph: failed ? "✕" : "✎", color: failed ? Brand.critical : Brand.accent, title: (failed ? "Couldn't change " : "Changing ") + name, when: when) {
+                    if failed {
+                        ScenePill(text: callStateWords(call.state), color: Brand.callState(call.state))
+                    } else if call.state == .running {
+                        ScenePill(text: "Writing…", color: Brand.accent)
+                    }
+                }
+                MomentButton(title: "Open", primary: newest) { model.openMoment(call.id, path: path) }
+            }
+        }
+        .momentCard(newest: newest)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel((change?.created == true ? "Created " : "Changed ") + path + ", " + when)
+    }
+}
+
+/// A command or test run: passed and failed counts, a pass/fail bar, the first failing lines, and the report.
+struct CommandMoment: View {
+    @EnvironmentObject var model: AppModel
+    let title: String
+    let call: Activity
+    let when: String
+    let newest: Bool
+
+    var body: some View {
+        let summary = ActivityScenes.command(call)
+        let failed = Moments.commandFailed(call)
+        let active = call.state == .running
+        VStack(alignment: .leading, spacing: 8) {
+            MomentTitle(glyph: active ? "…" : failed ? "✕" : "✓", color: active ? Brand.accent : failed ? Brand.critical : Brand.success, title: title, when: when) {
+                if let passed = summary.passed { ScenePill(text: "\(passed) passed", color: Brand.success) }
+                if let failedCount = summary.failed, failedCount > 0 { ScenePill(text: "\(failedCount) failed", color: Brand.critical) }
+                if summary.passed == nil, summary.failed == nil, let exit = summary.exitCode {
+                    ScenePill(text: "exit \(exit)", color: exit == 0 ? Brand.success : Brand.critical)
+                }
+                if call.state == .skipped { ScenePill(text: "Repeat skipped", color: Brand.caution) }
+            }
+            if let passed = summary.passed, passed + (summary.failed ?? 0) > 0 {
+                PassBar(passed: passed, failed: summary.failed ?? 0)
+            }
+            ForEach(Array(summary.failures.prefix(3)), id: \.self) { failure in
+                Text(failure).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.tail)
+            }
+            Button(failed || summary.passed != nil ? "Open the report" : "Open the output") { model.openMoment(call.id) }.momentLink()
+        }
+        .momentCard(newest: newest)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title + (failed ? ", failed" : "") + ", " + when)
+    }
+}
+
+/// How many tests passed and failed, as one bar.
+struct PassBar: View {
+    let passed: Int
+    let failed: Int
+
+    var body: some View {
+        GeometryReader { geometry in
+            let total = CGFloat(max(1, passed + failed))
+            let gap: CGFloat = passed > 0 && failed > 0 ? 2 : 0
+            let room = max(0, geometry.size.width - gap)
+            HStack(spacing: gap) {
+                if passed > 0 { Rectangle().fill(Brand.success).frame(width: room * CGFloat(passed) / total) }
+                if failed > 0 { Rectangle().fill(Brand.critical).frame(width: room * CGFloat(failed) / total) }
+            }
+        }
+        .frame(height: 6)
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+        .accessibilityElement()
+        .accessibilityLabel("\(passed) passed, \(failed) failed")
+    }
+}
+
+/// A page Mason checked: where, what it found, and the way to the page.
+struct PageMoment: View {
+    @EnvironmentObject var model: AppModel
+    let title: String
+    let steps: [Activity]
+    let open: UUID
+    let when: String
+    let newest: Bool
+
+    var body: some View {
+        let page = steps.last { ($0.tool == "check_page" || $0.tool == "open_preview") && !$0.subject.trimmingCharacters(in: .whitespaces).isEmpty }?.subject
+        let subject = page ?? steps.last { !$0.subject.isEmpty }?.subject
+        let said = steps.last { !$0.result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?.result.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let failed = steps.contains { ActivityScenes.failed($0) }
+        VStack(alignment: .leading, spacing: 6) {
+            MomentTitle(glyph: "◫", color: failed ? Brand.critical : Brand.search, title: title, when: when)
+            if let subject {
+                Text(subject).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+            }
+            if !said.isEmpty {
+                Text(said.count > 220 ? String(said.prefix(219)) + "…" : said)
+                    .font(.callout).foregroundStyle(Brand.muted).lineLimit(3)
+            }
+            HStack(spacing: 10) {
+                if let page { MomentButton(title: "Open page", primary: newest) { model.openPage(page) } }
+                Button("Details") { model.openMoment(open) }.momentLink()
+            }
+        }
+        .momentCard(newest: newest)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title + ", " + when)
+    }
+}
+
+/// A reading or other step, as one quiet line that opens it.
+struct QuietMoment: View {
+    let label: String
+    let detail: String
+    let when: String
+    let failed: Bool
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 10) {
+                Circle().fill(failed ? Brand.critical : Brand.muted.opacity(0.6)).frame(width: 6, height: 6)
+                Text(label).fontWeight(.semibold).foregroundStyle(Brand.ink).lineLimit(1)
+                if !detail.isEmpty {
+                    Text("· " + detail).foregroundStyle(Brand.muted).lineLimit(1).truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+                Text(when).font(.caption).foregroundStyle(Brand.muted).fixedSize()
+            }
+            .font(.callout)
+            .padding(.horizontal, 14).padding(.vertical, 6)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(tip)
-        .accessibilityLabel(tip + (selected ? ", shown" : ""))
+        .help("Open this step")
+        .accessibilityLabel(label + (detail.isEmpty ? "" : ", " + detail) + (failed ? ", failed" : "") + ", " + when)
+    }
+}
+
+/// On top of the feed once a run ended: how it ended, what was asked, what it amounted to, and the way to ship it.
+struct EndMoment: View {
+    @EnvironmentObject var model: AppModel
+    let session: Session
+
+    var request: String {
+        let asked = (session.turns.last?.request ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = asked.isEmpty ? (session.ending?.style?.headline ?? "Run ended") : asked
+        return text.count > 90 ? String(text.prefix(89)) + "…" : text
+    }
+
+    var body: some View {
+        let facts = Moments.endFacts(session)
+        let changed = !ActivityScenes.sessionChanges(session).isEmpty
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                if let style = session.ending?.style { ScenePill(text: style.glyph + " " + style.headline, color: Brand.tone(style.tone)).fixedSize() }
+                Text(request).font(.headline).foregroundStyle(Brand.ink).lineLimit(1).truncationMode(.tail)
+            }
+            Text(facts.joined(separator: " · ")).font(.callout).foregroundStyle(Brand.muted)
+            HStack(spacing: 10) {
+                if changed {
+                    Button("Review all changes") { model.panel = "changes" }.controlSize(.small)
+                    SettingsLink { Text("Commit & open pull request…") }
+                        .buttonStyle(.borderedProminent).tint(Brand.accent).controlSize(.small)
+                        .help("Opens Settings, where the Project tab drafts and publishes the pull request")
+                }
+                Button("Summary") {
+                    model.activityPick = ActivityScenes.endKey
+                    model.panel = "moment"
+                }
+                .momentLink()
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel((session.ending?.style?.headline ?? "Run ended") + ". " + facts.joined(separator: ", "))
+    }
+}
+
+/// Moments before any step: a pose, what the feed will show, and the kinds of moment.
+struct MomentsEmpty: View {
+    let running: Bool
+
+    struct Kind {
+        let tick: String
+        let color: Color
+        let meaning: String
+    }
+
+    var kinds: [Kind] {
+        [Kind(tick: "+", color: Brand.success, meaning: "A new file · opens the file"),
+         Kind(tick: "✎", color: Brand.accent, meaning: "A change · opens the lines that changed"),
+         Kind(tick: "✓", color: Brand.success, meaning: "Tests and commands · opens the report, failures first"),
+         Kind(tick: "◫", color: Brand.search, meaning: "A page Mason checked · opens the page"),
+         Kind(tick: "•", color: Brand.muted, meaning: "Reading and searching · a quiet line")]
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                PoseImage(pose: running ? .planning : .readingFiles, height: 132,
+                          meaning: running ? "planning the first step" : "waiting to read the project")
+                Text(running ? "Working out the first step" : "Moments show up here")
+                    .font(.title2).fontWeight(.semibold).foregroundStyle(Brand.ink)
+                    .multilineTextAlignment(.center)
+                Text(running ? "The first thing Mason reads, changes or runs appears here as a moment."
+                             : "Each thing Mason does becomes a moment, newest first. Open one to see the file, change, test report or page it made.")
+                    .foregroundStyle(Brand.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                    ForEach(kinds, id: \.meaning) { kind in
+                        GridRow {
+                            Text(kind.tick)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(kind.color)
+                                .frame(minWidth: 12)
+                                .padding(.horizontal, 7).padding(.vertical, 2)
+                                .background(kind.color.opacity(0.14), in: RoundedRectangle(cornerRadius: 4))
+                                .accessibilityHidden(true)
+                            Text(kind.meaning).font(.caption).foregroundStyle(Brand.muted)
+                        }
+                    }
+                }
+                .padding(.top, 10)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("The kinds of moment")
+            }
+            .frame(maxWidth: 440)
+            .padding(24).padding(.top, 24)
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+// MARK: An opened moment
+
+/// A moment opened from the feed: its title, how much has happened since, Raw, and the scene's lens.
+struct MomentDetail: View {
+    @EnvironmentObject var model: AppModel
+    let session: Session
+    let calls: [Activity]
+
+    /// What the opened moment is called on the shelf and above it, or nil when nothing is open or it is gone.
+    static func title(pick: String?, session: Session, calls: [Activity], scenes: [ActivityScene], running: Bool) -> String? {
+        guard let pick else { return nil }
+        if pick == ActivityScenes.endKey {
+            return !running && session.ending != nil ? "Summary · " + (session.ending?.style?.headline ?? "Run ended") : nil
+        }
+        guard let found = Moments.opened(pick, activities: calls, scenes: scenes) else { return nil }
+        if let path = found.path { return (path as NSString).lastPathComponent }
+        return ActivityScenes.label(found.scene, calls)
+    }
+
+    var body: some View {
+        let scenes = ActivityScenes.group(calls)
+        let isEnd = model.activityPick == ActivityScenes.endKey && !model.running && session.ending != nil
+        let found = isEnd ? nil : Moments.opened(model.activityPick, activities: calls, scenes: scenes)
+        if !isEnd, found == nil {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Nothing is open").font(.title3).foregroundStyle(Brand.ink)
+                Text("Open a moment from the feed to see its file, change, report or page here.")
+                    .foregroundStyle(Brand.muted).fixedSize(horizontal: false, vertical: true)
+                Button("Back to Moments") { model.activityPick = nil; model.panel = "moments" }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Text(Self.title(pick: model.activityPick, session: session, calls: calls, scenes: scenes, running: model.running) ?? "")
+                        .fontWeight(.semibold).foregroundStyle(Brand.ink)
+                        .lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: 0)
+                    if let found {
+                        let newer = Moments.newer(than: found.scene, in: scenes)
+                        if newer > 0 {
+                            Button(newer == 1 ? "1 new moment" : "\(newer) new moments") { model.panel = "moments" }
+                                .controlSize(.small)
+                                .help("Back to the feed, where the newer moments are")
+                        } else if model.running {
+                            ScenePill(text: "● Live", color: Brand.accent)
+                        }
+                        Toggle("Raw", isOn: $model.activityRaw)
+                            .toggleStyle(.button).controlSize(.small)
+                            .help("Show each call's subject and result exactly as Mason recorded them")
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                Divider()
+                ScrollView {
+                    Group {
+                        if isEnd {
+                            ReceiptLens(session: session)
+                        } else if let found {
+                            lens(scene: found.scene, path: found.path)
+                        }
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .id(model.activityPick ?? "")
+            }
+        }
+    }
+
+    @ViewBuilder
+    func lens(scene: ActivityScene, path: String?) -> some View {
+        let steps = scene.indices.filter { $0 < calls.count }.map { calls[$0] }
+        VStack(alignment: .leading, spacing: 14) {
+            if model.activityRaw {
+                ForEach(steps) { RawCallCard(activity: $0) }
+            } else {
+                switch scene.kind {
+                case .edit:
+                    let mine = path.map { only in steps.filter { ActivityScenes.path(of: $0)?.lowercased() == only.lowercased() } } ?? steps
+                    EditLens(session: session, calls: mine.isEmpty ? steps : mine)
+                case .command: CommandLens(calls: steps)
+                case .read: ReadLens(calls: steps)
+                case .page: PageLens(calls: steps)
+                case .other: VStack(alignment: .leading, spacing: 4) { ForEach(steps) { ActivityRow(activity: $0) } }
+                }
+                if scene.kind != .other { StepDetails(calls: steps) }
+            }
+        }
     }
 }
 
@@ -521,37 +1008,6 @@ struct PageLens: View {
     }
 }
 
-/// The saved plan's milestones and where each stands.
-struct PlanLens: View {
-    @EnvironmentObject var model: AppModel
-    let session: Session
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Plan").font(.title3).fontWeight(.semibold).foregroundStyle(Brand.ink)
-            ForEach(model.milestoneStatus(session), id: \.item.id) { row in
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: row.done ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(row.done ? Brand.success : Brand.muted)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.item.title).fixedSize(horizontal: false, vertical: true)
-                        if !row.reason.isEmpty {
-                            Text(row.reason).font(.caption).foregroundStyle(Brand.muted).fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    ScenePill(text: row.state.rawValue, color: row.done ? Brand.success : row.state == .blocked || row.state == .recheck ? Brand.caution : Brand.muted)
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .card()
-            }
-            Button("Open the plan") { model.panel = "plan" }
-                .buttonStyle(.plain).foregroundStyle(Brand.accent).fontWeight(.semibold)
-        }
-    }
-}
 
 /// When the run ended: how it ended, what the request did, and the way to review and ship it.
 struct ReceiptLens: View {

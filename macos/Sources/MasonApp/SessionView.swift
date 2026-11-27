@@ -144,15 +144,15 @@ struct TurnView: View {
                         HStack(spacing: 10) {
                             Text(summary).font(.callout).foregroundStyle(Brand.muted)
                             if !turn.changes.isEmpty {
-                                Button("\(turn.changes.count) changed file\(turn.changes.count == 1 ? "" : "s")") { model.showChanges = true }
+                                Button("\(turn.changes.count) changed file\(turn.changes.count == 1 ? "" : "s")") { model.panel = "changes"; model.showChanges = true }
                                     .buttonStyle(.plain).fontWeight(.semibold).foregroundStyle(Brand.accent)
                                     .help("Show what changed")
                             }
                             if turn.undone { Text("Undone").font(.caption).foregroundStyle(Brand.caution) }
                             if let first = activities.first {
-                                Button("View activity") { model.showActivity(first.id) }
+                                Button("View moments") { model.showActivity(first.id) }
                                     .buttonStyle(.plain).foregroundStyle(Brand.accent)
-                                    .help("Show this request's steps in the Activity panel")
+                                    .help("Open this request's first step in Moments")
                             }
                         }
                     }
@@ -222,7 +222,7 @@ struct EndingCard: View {
                     HStack(spacing: 6) {
                         Text(RunEnding.keptText(ending.kept)).foregroundStyle(Brand.muted)
                         Text("·").foregroundStyle(Brand.muted)
-                        Button("Review changes") { model.showChanges = true }
+                        Button("Review changes") { model.panel = "changes"; model.showChanges = true }
                             .buttonStyle(.plain).fontWeight(.semibold).foregroundStyle(Brand.accent)
                             .help("Show what changed")
                     }
@@ -414,11 +414,18 @@ struct Composer: View {
                 .labelsHidden().fixedSize().disabled(model.running)
                 .help("What Mason may do without asking. Auto runs commands in the macOS sandbox, limited to this project, with network access off.")
                 Button { model.pane = .models } label: { Label(model.endpoint == nil ? "No model running" : model.endpointName, systemImage: "cpu").lineLimit(1) }
-                    .buttonStyle(.plain).chip()
+                    .buttonStyle(.plain).chip().fixedSize()
                     .help(model.endpoint == nil ? "No model is running. Open Models to start one." : "Running at \(model.endpoint?.url ?? "")")
                 WindowMenu(session: session)
+                SessionStatusChips(session: session)
                 Spacer()
-                if !model.running { Text("⌘Return to send").font(.caption).foregroundStyle(Brand.muted) }
+                // With Moments open the request box is narrow: the hint goes when it no longer fits, rather than wrapping a letter per line.
+                if !model.running {
+                    ViewThatFits(in: .horizontal) {
+                        Text("⌘Return to send").font(.caption).foregroundStyle(Brand.muted).lineLimit(1).fixedSize()
+                        Color.clear.frame(width: 0, height: 0)
+                    }
+                }
                 if model.running {
                     if model.waitingFollowUps > 0 { Text("\(model.waitingFollowUps) waiting").font(.caption).foregroundStyle(.secondary) }
                     let empty = model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -463,7 +470,47 @@ struct Composer: View {
     }
 }
 
-/// The files this session changed, as one diff per file, with undo and redo of the latest request.
+/// Beside the session's controls: "Pull request" while the project's delivery has an open pull request, and
+/// "N background" while background tasks run for the project. Each opens Settings, where the Project tab has them.
+struct SessionStatusChips: View {
+    @EnvironmentObject var model: AppModel
+    let session: Session
+    @State private var pullRequest: String?
+    @State private var background = 0
+
+    var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let pullRequest {
+                SettingsLink { Label("Pull request", systemImage: "arrow.triangle.pull").lineLimit(1) }
+                    .buttonStyle(.plain).chip()
+                    .help("Opens Settings, where the Project tab shows the pull request (\(pullRequest)) and its checks")
+            }
+            if let label = SessionChips.backgroundLabel(background) {
+                SettingsLink { Label(label, systemImage: "gearshape.2").lineLimit(1) }
+                    .buttonStyle(.plain).chip()
+                    .help("Opens Settings, where the Project tab lists this project's background tasks")
+            }
+        }
+        .task(id: session.workspace) {
+            // Both live in files other processes write, so they are read again every few seconds.
+            while !Task.isCancelled {
+                refresh()
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    func refresh() {
+        guard let workspace = try? Workspace(path: session.workspace) else { pullRequest = nil; background = 0; return }
+        pullRequest = SessionChips.pullRequest(Delivery.current(workspace, home: home))
+        background = SessionChips.activeTasks(BackgroundTasks.all(workspace: workspace, home: home).map { $0.status })
+    }
+}
+
+/// The side panel: one Moments-first surface. Its header carries "Moments" or the way back to it, and a shelf of the
+/// panel's other views (Changes, Plan, Files, Website), the opened moment, and what the latest run made so far.
 struct ChangesView: View {
     @EnvironmentObject var model: AppModel
     let session: Session
@@ -471,35 +518,34 @@ struct ChangesView: View {
     var changes: [FileChange] { ActivityScenes.sessionChanges(session) }
 
     var body: some View {
+        // The session's calls, with the ones the running request has reported so far.
+        let calls = model.running ? session.activities + model.liveActivities : session.activities
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                Picker("Show", selection: $model.panel) {
-                    Text("Changes").tag("changes")
-                    Text("Activity").tag("activity")
-                    Text("Plan").tag("plan")
-                    Text("Files").tag("files")
-                    Text("Website").tag("website")
-                }
-                .pickerStyle(.segmented).labelsHidden()
-                if model.panel == "changes" { HStack {
+            SurfaceHeader(session: session, calls: calls)
+            Divider()
+            if model.panel == "changes" {
+                HStack {
+                    Text("Changes").font(.headline).foregroundStyle(Brand.ink)
                     Spacer()
                     if model.reviewing { ProgressView().controlSize(.small) }
                     Button("Review") { model.reviewChanges() }.disabled(model.running || model.reviewing || changes.isEmpty)
                         .help("Have the model read these changes and pin what it finds as comments")
                     Button("Undo") { model.undo() }.disabled(model.running).help("Put back everything the latest request changed")
                     Button("Redo") { model.undo(redo: true) }.disabled(model.running)
-                } }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                Divider()
             }
-            .padding(12)
-            Divider()
-            if model.panel == "activity" {
-                LiveViewer(session: session)
+            if model.panel == "moment" {
+                MomentDetail(session: session, calls: calls)
             } else if model.panel == "plan" {
                 MilestonesView(session: session)
             } else if model.panel == "files" {
                 FilesPanel(session: session)
             } else if model.panel == "website" {
                 WebsitePanel(state: model.website, session: session)
+            } else if model.panel != "changes" {
+                MomentsFeed(session: session, calls: calls)
             } else if changes.isEmpty {
                 ContentUnavailableView("No changes", systemImage: "doc.text", description: Text("Files this session edits appear here."))
             } else {
