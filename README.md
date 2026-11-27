@@ -33,7 +33,7 @@ Each platform lives in its own folder and builds on its own, with nothing shared
 | [`windows/`](windows) | The WinUI 3 app, the C# engine and `mason`, their checks, build scripts and installer |
 | [`macos/`](macos) | The Swift package: engine, `mason`, the SwiftUI app, tests and packaging |
 | [`linux/`](linux) | The Meson project: C++ engine, `mason`, the GTK 4 app, tests and packaging |
-| [`site/`](site), [`brand/`](brand), [`docs/`](docs) | The website, the brand kit and shared documentation |
+| [`site/`](site), [`docs/`](docs) | The website and shared documentation |
 
 ## Install
 

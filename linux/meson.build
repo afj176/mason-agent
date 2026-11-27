@@ -58,6 +58,5 @@ if get_option('app')
   executable('mason-agent', app_sources, app_resources, dependencies: [core_dep, gtkmm, adwaita, webkit], cpp_args: app_args, install: true)
   install_data('packaging/site.masonagent.MasonAgent.desktop', install_dir: get_option('datadir') / 'applications')
   install_data('packaging/site.masonagent.MasonAgent.metainfo.xml', install_dir: get_option('datadir') / 'metainfo')
-  install_data('../brand/logo-kit/favicon/android-chrome-512x512.png',
-    rename: 'site.masonagent.MasonAgent.png', install_dir: get_option('datadir') / 'icons/hicolor/512x512/apps')
+  install_data('packaging/site.masonagent.MasonAgent.png', install_dir: get_option('datadir') / 'icons/hicolor/512x512/apps')
 endif

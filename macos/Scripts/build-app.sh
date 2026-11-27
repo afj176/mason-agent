@@ -33,15 +33,8 @@ mkdir -p "$APP/Contents/Resources/language-tools"
 cp ../windows/scripts/language-tools/python-symbols.py ../windows/scripts/language-tools/typescript-symbols.cjs "$APP/Contents/Resources/language-tools/"
 ../linux/packaging/prepare-language-tools.sh "$APP/Contents/Resources/language-tools"
 
-# App icon from the brand kit's largest square mark.
-ICON_SOURCE="../brand/logo-kit/favicon/android-chrome-512x512.png"
-ICONSET="$(mktemp -d)/AppIcon.iconset" && mkdir -p "$ICONSET"
-for size in 16 32 128 256 512; do
-  sips -z $size $size "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
-  double=$((size * 2))
-  sips -z $double $double "$ICON_SOURCE" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+# The app icon (16 to 1024 px, light and dark Finder backgrounds alike).
+cp Packaging/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Sign inside out. "-" is an ad hoc signature: it lets the app run on Apple silicon but is not a Developer ID.
 codesign --force --sign - "$APP/Contents/Resources/bin/mason"
