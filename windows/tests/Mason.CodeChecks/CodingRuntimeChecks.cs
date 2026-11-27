@@ -167,7 +167,7 @@ static class CodingRuntimeChecks
             child_isolated=subprocess.run([sys.executable,'-c',child,ambient],capture_output=True).returncode==0,
             network_blocked=network,host_pipe_denied=host_denied,pipe_client_cannot_impersonate_host=anonymous,secret_env_removed='MASON_TEST_SECRET' not in os.environ,
             workspace_home=pathlib.Path(os.environ['HOME']).is_relative_to(pathlib.Path.cwd()),
-            local_appdata_in_private_home=pathlib.Path(os.environ['LOCALAPPDATA']).resolve().is_relative_to(pathlib.Path(os.environ['HOME']).resolve()))
+            local_appdata_in_private_home=any(os.path.samestat(os.stat(parent),os.stat(os.environ['HOME'])) for parent in pathlib.Path(os.environ['LOCALAPPDATA']).parents))
         print(json.dumps(report))
         """;
     const string Node="""

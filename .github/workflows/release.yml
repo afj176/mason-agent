@@ -42,11 +42,35 @@ jobs:
     needs: [packages]
     runs-on: windows-latest
     steps:
+      # The coding checks start sandboxed programs from deep test folders; Mason shortens those paths with 8.3 names,
+      # which the runner's work drive does not create. Turn them on before the checkout makes any folders.
+      - name: Short names on the work drive
+        shell: pwsh
+        run: |
+          $drive = $env:GITHUB_WORKSPACE.Substring(0, 2)
+          fsutil 8dot3name set $drive 0
+          fsutil 8dot3name query $drive
+
+      # The sandbox checks add permissions to their test folders. The runner's work folder carries an access list in a
+      # non-canonical order, which Windows refuses to modify, so the checkout folder gets the standard one instead.
+      - name: Standard permissions on the work folder
+        shell: pwsh
+        run: |
+          $folder = $env:GITHUB_WORKSPACE
+          New-Item -ItemType Directory -Force $folder | Out-Null
+          icacls $folder /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "${env:USERNAME}:(OI)(CI)F" "*S-1-5-32-545:(OI)(CI)RX"
+          if ($LASTEXITCODE -ne 0) { throw "icacls failed: $LASTEXITCODE" }
+          (Get-Acl $folder).AreAccessRulesCanonical
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
+      # .NET goes into its own folder, first on PATH. The coding checks snapshot each runtime on PATH for Auto,
+      # within a 40,000-file / 2 GB bound; the runner's shared dotnet folder holds many SDKs and is larger than that.
       - uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}\dotnet
         with:
           dotnet-version: '10.0.x'
 

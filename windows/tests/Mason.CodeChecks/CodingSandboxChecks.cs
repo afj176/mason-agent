@@ -26,7 +26,8 @@ static class CodingSandboxChecks
         try { result=await CodeCommand.Run(probe,[sentinel,ambientFile,port.ToString()],workspace,default,workspace); }
         finally { listener.Stop();Environment.SetEnvironmentVariable("MASON_TEST_SECRET",oldSecret); }
         check(result.ExitCode==0,"native Win32 probe executes inside the strict Windows sandbox: "+result.Output);
-        using(var data=JsonDocument.Parse(result.Output))foreach(var property in data.RootElement.EnumerateObject())check(property.Value.GetBoolean(),"OS sandbox: "+property.Name);
+        var probeEnvironment=Path.Combine(workspace,"probe-env.txt");string folders=File.Exists(probeEnvironment)?File.ReadAllText(probeEnvironment,System.Text.Encoding.Unicode).ReplaceLineEndings(" | "):"no probe-env.txt";
+        using(var data=JsonDocument.Parse(result.Output))foreach(var property in data.RootElement.EnumerateObject())check(property.Value.GetBoolean(),"OS sandbox: "+property.Name+(property.Value.GetBoolean()?"":" · "+folders));
         check(File.ReadAllBytes(sentinel).SequenceEqual(before)&&!File.Exists(Path.Combine(outside,"created.txt"))&&!File.Exists(Path.Combine(outside,"moved.txt")),"outside canary bytes and directory inventory remain unchanged");
         check(new FileInfo(sentinel).GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access)==aclBefore,"outside canary ACL was not relaxed");
         var workspaceAcl=new DirectoryInfo(workspace).GetAccessControl().GetAccessRules(true,true,typeof(System.Security.Principal.SecurityIdentifier));
