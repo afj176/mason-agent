@@ -22,11 +22,12 @@ final class AppModel: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var selection: UUID?
     @Published var draft = ""
-    /// What the side panel shows: changes, activity, plan, files or website.
-    @Published var panel = "changes"
-    /// The step the Activity panel shows: nil follows the run; otherwise "plan", "end" or the id of a step's first call.
+    /// What the side panel shows: moments (the feed), moment (the opened moment), changes, plan, files or website.
+    @Published var panel = "moments"
+    /// The moment opened from the feed and kept on the shelf: nil for none, "end" for the run's summary, or a call's id
+    /// with "|path" for one file of an edit (see `Moments.openKey`).
     @Published var activityPick: String?
-    /// The Activity panel shows each call's subject and result as they are, instead of the summary.
+    /// An opened moment shows each call's subject and result as they are, instead of the summary.
     @Published var activityRaw = false
     /// The file being read in the Files panel, and the line the model pointed at.
     @Published var fileShown: String?
