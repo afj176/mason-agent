@@ -34,12 +34,12 @@ bool Workspace::forbidden(const std::string& name) {
 fs::path Workspace::resolve(const std::string& relative) const {
     if (relative.empty() || relative.size() > 1000 || relative[0] == '/' || relative[0] == '~' ||
         std::any_of(relative.begin(), relative.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; })) {
-        throw Error("Rejected path \"" + shown(relative) + "\". Use a path relative to the project folder.");
+        throw InvalidPath("Rejected path \"" + shown(relative) + "\". Use a path relative to the project folder.");
     }
     fs::path full = root_;
     for (const std::string& part : split(relative, '/', false)) {
         if (part == ".") continue;
-        if (part == ".." || forbidden(part)) throw Error("Rejected path \"" + shown(relative) + "\". It is outside the project or addresses excluded content.");
+        if (part == ".." || forbidden(part)) throw InvalidPath("Rejected path \"" + shown(relative) + "\". It is outside the project or addresses excluded content.");
         full /= part;
     }
     // A link inside the project must not lead out of it. For a file that does not exist yet, check its nearest existing parent.
@@ -48,7 +48,7 @@ fs::path Workspace::resolve(const std::string& relative) const {
     while (!fs::exists(fs::symlink_status(existing, failure)) && existing.string().size() > root_.size()) existing = existing.parent_path();
     const std::string real = fs::weakly_canonical(existing, failure).string();
     if (failure || !(real == root_ || starts_with(real, root_ + "/"))) {
-        throw Error("Rejected path \"" + shown(relative) + "\". It follows a link out of the project.");
+        throw InvalidPath("Rejected path \"" + shown(relative) + "\". It follows a link out of the project.");
     }
     return full;
 }

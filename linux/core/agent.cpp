@@ -701,6 +701,8 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
         if (!next) {
             session.state = "Failed";
             session.detail = "No messages are queued.";
+            session.repeat_stop.reset();
+            session.ending = RunEnding{"failed", 0};
             return;
         }
         input = next->text;
@@ -723,9 +725,13 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
             }
         }
         std::atomic<bool> finished{false};
+        timed_out_ = false;
+        // The caller's stop ends the request; so does its time limit, which stops it the same way but says why.
+        const auto deadline = std::chrono::steady_clock::now() + time_limit;
         std::thread relay([&] {
             while (!finished.load()) {
                 if (is_cancelled(cancel)) { turn->store(true); break; }
+                if (std::chrono::steady_clock::now() >= deadline) { timed_out_ = true; turn->store(true); break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
         });
@@ -812,13 +818,82 @@ bool Agent::build_catalog(const std::string& request, const Workspace& workspace
     return true;
 }
 
+namespace {
+
+/// What an activity shows beside the tool's name: the command, path, query or other main argument of the call.
+std::string call_subject(const json& arguments) {
+    auto text = [&](const char* key) -> std::optional<std::string> {
+        if (arguments.contains(key) && arguments[key].is_string()) return arguments[key].get<std::string>();
+        return std::nullopt;
+    };
+    std::string subject = text("command").value_or(text("path").value_or(text("query").value_or("")));
+    if (subject.empty()) subject = text("name").value_or(text("id").value_or(text("question").value_or(text("text").value_or(""))));
+    if (subject.empty() && text("server")) subject = *text("server") + (text("tool") ? "/" + *text("tool") : text("uri") ? "/" + *text("uri") : "");
+    return subject;
+}
+
+/// The model's name as a person reads it: a file name without its folder or ".gguf".
+std::string model_display_name(const std::string& name) {
+    std::string shown = name.substr(name.find_last_of("/\\") == std::string::npos ? 0 : name.find_last_of("/\\") + 1);
+    if (shown.size() > 5 && shown.compare(shown.size() - 5, 5, ".gguf") == 0) shown.resize(shown.size() - 5);
+    return trim(shown);
+}
+
+/// How many files the latest request changed that are still changed: not undone, and not written back as they were.
+int kept_files(const Session& session) {
+    if (session.turns.empty() || session.turns.back().undone) return 0;
+    int kept = 0;
+    for (const FileChange& change : session.turns.back().changes) {
+        const bool same = !change.opaque() && !change.deleted() && change.before && *change.before == change.after;
+        if (!same) kept++;
+    }
+    return kept;
+}
+
+/// Records how the request ended. A request that ended before it began has kept nothing.
+void end_run(Session& session, const std::string& code, bool began = true) { session.ending = RunEnding{code, began ? kept_files(session) : 0}; }
+
+/// The time limit as the detail says it: "30-minute", or seconds for the short limits tests use.
+std::string time_limit_words(std::chrono::milliseconds limit) {
+    const long long seconds = std::chrono::duration_cast<std::chrono::seconds>(limit).count();
+    if (seconds >= 60 && seconds % 60 == 0) return std::to_string(seconds / 60) + "-minute";
+    return std::to_string(std::max(1LL, seconds)) + "-second";
+}
+
+/// The same failing operation again, or the same tool failing the same way on the same path.
+bool same_failure(const std::string& tool, const json& arguments, const std::string& result, const std::string& prior_tool, const json& prior_arguments, const std::string& prior_result) {
+    if (tool != prior_tool) return false;
+    if (arguments == prior_arguments) return true;
+    return result == prior_result && arguments.is_object() && prior_arguments.is_object() && arguments.contains("path") && prior_arguments.contains("path") && arguments["path"] == prior_arguments["path"];
+}
+
+/// A finished request whose checks failed, or whose verify workflow now fails, needs a check; otherwise it is done.
+std::string finished_code(const Turn& turn) {
+    if (turn.checks && !derived::passed(*turn.checks)) return "unverified";
+    if (turn.verification && (turn.verification->verdict == "regression" || turn.verification->verdict == "failed")) return "unverified";
+    return "done";
+}
+
+}  // namespace
+
+bool Agent::looping(const std::vector<StreakEntry>& streak) {
+    if (streak.size() < 2) return false;
+    const StreakEntry& last = streak[streak.size() - 1];
+    const StreakEntry& before = streak[streak.size() - 2];
+    return last.result == before.result && !last.waited && !before.waited;
+}
+
 void Agent::run_turn(Session& session, const std::string& request, const CancelToken& cancel) {
+    // A repeat stop and an ending belong to the request they ended.
+    session.repeat_stop.reset();
+    session.ending.reset();
     std::optional<Workspace> workspace;
     try {
         workspace.emplace(session.workspace);
     } catch (const Error&) {
         session.state = "Failed";
         session.detail = "The project folder " + session.workspace + " is no longer available.";
+        end_run(session, "failed", false);
         return;
     }
     // Comments on lines of the project travel with the request, and only while those files are unchanged.
@@ -827,12 +902,14 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     } catch (const Error& error) {
         session.state = "Failed";
         session.detail = error.what();
+        end_run(session, "failed", false);
         return;
     }
     const std::string input = review::request(request, session.comments);
     if (input.empty() || utf8_length(input) > 16000) {
         session.state = "Failed";
         session.detail = "Describe a request in 1–16,000 characters.";
+        end_run(session, "failed", false);
         return;
     }
     session.comments.clear();
@@ -900,6 +977,17 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         int repairs = 0;
         std::string blocked;
         bool reviewed = false;
+        // The previous tool call of this request, with its arguments parsed, how many times in a row it was asked for,
+        // and what each of those runs returned.
+        std::optional<std::pair<std::string, json>> previous_call;
+        int in_a_row = 0;
+        std::vector<StreakEntry> streak;
+        // Tool calls that failed since the last one that worked (tool, arguments, result), and invalid paths in a row.
+        // A model that fails the same way three times, or cannot give a valid path after being corrected, is stuck.
+        struct Failure { std::string tool; json arguments; std::string result; };
+        std::vector<Failure> failures;
+        int path_errors = 0;
+        std::string stuck;
         static const std::set<std::string> changing = {"edit_file", "write_file", "apply_edits", "run_shell", "run_command", "run_workflow", "start_job", "start_terminal"};
         pending_question_.reset();
         // In Auto, Mason works out what it can check for itself before the work starts.
@@ -908,6 +996,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
             if (catalog::applies(input, *workspace) && build_catalog(input, *workspace, session, cancel)) {
                 session.state = "Completed";
                 session.detail.clear();
+                end_run(session, finished_code(session.turns.back()));
                 store_.save(session);
                 return;
             }
@@ -921,7 +1010,7 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         const std::string planned = run_hooks("afterPlan", *workspace, session, cancel);
         if (!planned.empty()) session.messages.back().content += "\n\nThe project's afterPlan hook failed before work began:\n" + planned;
         const int window = model_.context_window();
-        for (int step = 0; step < kActionLimit; step++) {
+        for (int step = 0; step < action_limit; step++) {
             check_cancel(cancel);
             if (compaction::needed(session, window)) {
                 emit_({AgentEvent::Kind::Status, "Compacting the conversation", {}});
@@ -1004,6 +1093,33 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
             }
             for (const ToolCall& call : reply.tool_calls) {
                 check_cancel(cancel);
+                // The identical call again (arguments compared as JSON, so spacing does not matter). When its last two runs
+                // returned exactly the same thing, the model is looping: Mason does not run it a third time and ends the
+                // request, keeping what the earlier steps did. A changed result is progress; a poll that waited is patience.
+                const json parsed = json::parse(call.arguments, nullptr, false);
+                const json compared = parsed.is_discarded() ? json(call.arguments) : parsed;
+                if (previous_call && previous_call->first == call.name && previous_call->second == compared) in_a_row++;
+                else {
+                    previous_call = std::make_pair(call.name, compared);
+                    in_a_row = 1;
+                    streak.clear();
+                }
+                if (in_a_row > 1 && looping(streak)) {
+                    Activity skipped;
+                    skipped.tool = call.name;
+                    skipped.subject = call_subject(parsed.is_object() ? parsed : json::object());
+                    session.activities.push_back(skipped);
+                    emit_({AgentEvent::Kind::ActivityStarted, "", skipped});
+                    skipped.state = "skipped";
+                    skipped.result = "Not run: the model already made this exact call twice in a row and got the same result both times.";
+                    session.activities.back() = skipped;
+                    emit_({AgentEvent::Kind::ActivityFinished, "", skipped});
+                    session.messages.push_back({"tool", skipped.result, {}, call.id});
+                    session.repeat_stop = RepeatStop{call.name, skipped.subject, in_a_row, model_display_name(model_.name())};
+                    store_.save(session);
+                    break;
+                }
+                const auto started = std::chrono::steady_clock::now();
                 // Before the first step that can change the project, note whether it verifies as it stands.
                 if (!baseline_taken && changing.count(call.name)) {
                     baseline_taken = true;
@@ -1026,10 +1142,31 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                     const std::string failure = run_hooks("afterEdit", *workspace, session, cancel);
                     if (!failure.empty()) result += "\n[" + failure + "]";
                 }
+                // Only a poll that really waited a second or more is patience; the model's wait_ms is not taken on trust.
+                const bool waited = (call.name == "poll_job" || call.name == "terminal_status") && std::chrono::steady_clock::now() - started >= std::chrono::seconds(1);
+                streak.push_back({session.activities.back().result, waited});
+                // Fair warning: the second identical call came back the same, so the model hears that a third will not run.
+                if (looping(streak)) result += "\n\n[Mason: this is the same result as your previous identical call. Use it, try something different, or finish. Mason will not run this exact call a third time.]";
                 session.messages.push_back({"tool", result, {}, call.id});
                 store_.save(session);
+                const Activity& done = session.activities.back();
+                if (done.state == "completed") failures.clear();
+                else {
+                    failures.push_back({call.name, compared, done.result});
+                    const auto same = std::count_if(failures.begin(), failures.end(), [&](const Failure& prior) { return same_failure(call.name, compared, done.result, prior.tool, prior.arguments, prior.result); });
+                    if (same >= 3) {
+                        stuck = "The same operation failed three times without a successful tool action. See activity for the last error.";
+                        break;
+                    }
+                }
+                path_errors = last_invalid_path_ ? path_errors + 1 : 0;
+                if (path_errors >= 2) {
+                    stuck = "The model could not produce a valid path after correction. Use a relative path or try another model.";
+                    break;
+                }
                 if (pending_question_) break;
             }
+            if (session.repeat_stop || !stuck.empty()) break;
             if (pending_question_) {
                 // The model needs something only the user can say. Its question is the answer to this request.
                 session.turns.back().answer = *pending_question_;
@@ -1038,14 +1175,56 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
                 break;
             }
         }
-        session.state = asked ? "Needs your answer" : finished ? "Completed" : "Stopped";
-        session.detail = asked ? "Mason asked a question. Reply to continue." : finished ? "" : !blocked.empty() ? utf8_prefix(blocked, 600) : "Stopped after " + std::to_string(kActionLimit) + " steps. Send another message to continue.";
+        if (session.repeat_stop) {
+            // The model looped, not Mason: never a failure. What already landed (a changed file, a command that ran) stands.
+            const Turn& turn = session.turns.back();
+            bool landed = !turn.changes.empty();
+            for (size_t i = turn.first_activity; i < session.activities.size() && !landed; i++) {
+                landed = session.activities[i].state == "completed" && changing.count(session.activities[i].tool);
+            }
+            session.repeat_stop->kept = landed;
+            session.state = "Stopped";
+            session.detail = session.repeat_stop->detail();
+            end_run(session, "model_loop");
+        } else if (!stuck.empty()) {
+            // The model is stuck, not Mason: it stops calmly, with what already landed kept.
+            session.state = "Stopped";
+            session.detail = stuck;
+            end_run(session, "model_stuck");
+        } else if (asked) {
+            session.state = "Needs your answer";
+            session.detail = "Mason asked a question. Reply to continue.";
+            end_run(session, "question");
+        } else if (finished) {
+            session.state = "Completed";
+            session.detail.clear();
+            end_run(session, finished_code(session.turns.back()));
+        } else if (!blocked.empty()) {
+            session.state = "Stopped";
+            session.detail = utf8_prefix(blocked, 600);
+            end_run(session, "blocked");
+        } else {
+            session.state = "Stopped";
+            session.detail = "Mason paused after " + std::to_string(action_limit) + " steps, its limit for one request.";
+            end_run(session, "step_limit");
+        }
     } catch (const Cancelled&) {
         session.state = "Stopped";
-        session.detail = "Stopped. Completed edits are kept.";
+        if (timed_out_) {
+            session.detail = "Mason paused this request at its " + time_limit_words(time_limit) + " time limit. Completed edits and receipts are kept.";
+            end_run(session, "time_limit");
+        } else {
+            session.detail = "Stopped. Completed edits are kept.";
+            end_run(session, "stopped");
+        }
+    } catch (const ModelUnavailable& error) {
+        session.state = "Failed";
+        session.detail = error.what();
+        end_run(session, "model_unavailable");
     } catch (const std::exception& error) {
         session.state = "Failed";
         session.detail = error.what();
+        end_run(session, "failed");
     }
     close_open_calls(session);
     store_.save(session);
@@ -1141,11 +1320,10 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
         if (arguments.contains(key) && arguments[key].is_string()) return arguments[key].get<std::string>();
         return std::nullopt;
     };
+    last_invalid_path_ = false;
     Activity activity;
     activity.tool = call.name;
-    activity.subject = text("command").value_or(text("path").value_or(text("query").value_or("")));
-    if (activity.subject.empty()) activity.subject = text("name").value_or(text("id").value_or(text("question").value_or(text("text").value_or(""))));
-    if (activity.subject.empty() && text("server")) activity.subject = *text("server") + (text("tool") ? "/" + *text("tool") : text("uri") ? "/" + *text("uri") : "");
+    activity.subject = call_subject(arguments);
     session.activities.push_back(activity);
     const size_t slot = session.activities.size() - 1;
     emit_({AgentEvent::Kind::ActivityStarted, "", activity});
@@ -1325,8 +1503,11 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
         if (const auto window = perform_desktop(call, arguments, session, cancel)) return finish(window->first, window->second);
         throw Error("Unknown tool " + call.name + ". Use one of: " + join(offered_names_, ", "));
     } catch (const Cancelled&) {
-        finish("failed", "Stopped by the user.");
+        finish("failed", timed_out_ ? "Stopped at the request's time limit." : "Stopped by the user.");
         throw;
+    } catch (const InvalidPath& error) {
+        last_invalid_path_ = true;
+        return finish("failed", error.what());
     } catch (const std::exception& error) {
         return finish("failed", error.what());
     }

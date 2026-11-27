@@ -46,7 +46,8 @@ struct Transcript: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 56)
                     }
-                    if !model.running, !session.detail.isEmpty {
+                    // An ending with a card under its turn (a loop, a limit, the model server) says it there instead.
+                    if !model.running, !session.detail.isEmpty, !RunEnding.carded.contains(session.ending?.code ?? "") {
                         // A failed request's pose is in the status above the composer.
                         Label(session.detail, systemImage: session.state == "Failed" ? "xmark.octagon" : "info.circle")
                             .foregroundStyle(session.state == "Failed" ? Brand.critical : Color.secondary)
@@ -150,6 +151,11 @@ struct TurnView: View {
                             if turn.undone { Text("Undone").font(.caption).foregroundStyle(Brand.caution) }
                         }
                     }
+                    if !live, let session = model.session, let ending = session.ending, RunEnding.carded.contains(ending.code),
+                       let style = ending.style, session.turns.last?.id == turn.id {
+                        // The request ended on a loop, a limit, a block or the model server: said at the end of its turn.
+                        EndingCard(session: session, ending: ending, style: style)
+                    }
                 }
                 .messageBody()
             }
@@ -168,8 +174,68 @@ struct TurnView: View {
             }
         }
         func count(_ number: Int, _ one: String, _ many: String) -> String? { number == 0 ? nil : "\(number) \(number == 1 ? one : many)" }
+        // A call Mason skipped because the model repeated it is not a failed step; it is counted on its own.
+        let repeats = activities.filter { $0.state == .skipped }.count
         let parts = [count(reads, "read", "reads"), count(edits, "edit", "edits"), count(commands, "command", "commands"), count(other, "other step", "other steps")].compactMap { $0 }
-        return parts.isEmpty ? "No steps completed" : parts.joined(separator: " · ")
+        let done = parts.isEmpty ? "No steps completed" : parts.joined(separator: " · ")
+        return done + (repeats == 0 ? "" : " · \(repeats) repeat\(repeats == 1 ? "" : "s") skipped")
+    }
+}
+
+/// At the end of a request that ended on a model loop, a stuck model, a limit, a project block or an unreachable
+/// model server: a calm card with a bar in the ending's tone, what happened, what to do next and what was kept.
+struct EndingCard: View {
+    @EnvironmentObject var model: AppModel
+    let session: Session
+    let ending: RunEnding
+    let style: RunEnding.Style
+
+    /// The explanation for a model loop, otherwise the session's detail.
+    var message: String {
+        if ending.code == "model_loop", let repeated = session.repeatStop { return repeated.explanation(kept: ending.kept > 0) }
+        return session.detail
+    }
+
+    var body: some View {
+        let color = Brand.tone(style.tone)
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: Brand.endingIcon(ending.code))
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(style.headline).fontWeight(.semibold).foregroundStyle(Brand.ink)
+                if !message.isEmpty {
+                    Text(message).foregroundStyle(Brand.ink)
+                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                }
+                if let hint = RunEnding.hint(ending.code, terminal: false) {
+                    Text(hint).font(.caption).foregroundStyle(Brand.muted).fixedSize(horizontal: false, vertical: true)
+                }
+                if ending.kept > 0 {
+                    HStack(spacing: 6) {
+                        Text(RunEnding.keptText(ending.kept)).foregroundStyle(Brand.muted)
+                        Text("·").foregroundStyle(Brand.muted)
+                        Button("Review changes") { model.showChanges = true }
+                            .buttonStyle(.plain).fontWeight(.semibold).foregroundStyle(Brand.accent)
+                            .help("Show what changed")
+                    }
+                    .font(.caption)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.callout)
+        .padding(12).padding(.leading, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.08))
+        // The tone bar down the leading edge, as tall as the card.
+        .overlay(alignment: .leading) { Rectangle().fill(color).frame(width: 4).accessibilityHidden(true) }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(color.opacity(0.30)))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(style.headline)
     }
 }
 
@@ -192,10 +258,12 @@ struct ActivityRow: View {
                 case .completed: Image(systemName: "checkmark.circle.fill").foregroundStyle(Brand.success)
                 case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(Brand.critical)
                 case .denied: Image(systemName: "nosign").foregroundStyle(Brand.caution)
+                case .skipped: Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(Brand.caution)
                 }
-                Text(activity.tool.replacingOccurrences(of: "_", with: " ")).fontWeight(.medium)
+                Text(Activity.label(activity.tool)).fontWeight(.medium)
                 Text(activity.subject).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 if activity.state == .denied { Text("declined").foregroundStyle(Brand.caution) }
+                if activity.state == .skipped { Text("Skipped · repeated").foregroundStyle(Brand.caution) }
             }
             .font(.callout)
             .accessibilityElement(children: .combine)

@@ -145,6 +145,21 @@ const char* const kWidgets = R"css(
 .note-card.stale .note-text, .note-card.stale .note-meta { opacity: 0.6; }
 .note-card .notes-small { margin: 2px 0 2px 6px; }
 .suggestion-card { background: @card_bg_color; border: 1px solid alpha(@accent_bg_color, 0.55); border-radius: 14px; padding: 12px 14px; }
+.state-danger { color: @error_color; background: alpha(@error_color, 0.14); }
+.state-row label.state-pill.state-done { color: @success_color; }
+.state-row label.state-pill.state-recheck { color: @warning_color; }
+.state-row label.state-pill.state-ready { color: @accent_color; }
+.state-row label.state-pill.state-blocked { color: @mason_muted; }
+.state-row label.state-pill.state-danger { color: @error_color; }
+.session-state.warning { color: @warning_color; }
+.session-state.error { color: @error_color; }
+.ending-card { background: @card_bg_color; border: 1px solid @mason_seam; border-left-width: 4px; border-radius: 14px; padding: 12px 14px; }
+.ending-card.tone-warning { border-left-color: @warning_color; background: alpha(@warning_color, 0.06); }
+.ending-card.tone-warning .ending-glyph { color: @warning_color; }
+.ending-card.tone-danger { border-left-color: @error_color; background: alpha(@error_color, 0.06); }
+.ending-card.tone-danger .ending-glyph { color: @error_color; }
+.ending-card .ending-title { font-weight: 700; }
+.ending-card .changed-link { padding: 0 4px; min-height: 0; }
 )css";
 
 Glib::RefPtr<Gtk::CssProvider> palette() {

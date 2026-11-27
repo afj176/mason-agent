@@ -136,7 +136,11 @@ struct Sidebar: View {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(session.title).lineLimit(1)
-                                Text(session.state).font(.caption).foregroundStyle(.secondary)
+                                // How the latest request ended: a danger ending in the failure colour, a warning one in the
+                                // attention colour, the rest quiet. A session from before endings shows its state.
+                                let style = session.state == "Running" ? nil : session.ending?.style
+                                Text(style?.headline ?? session.state).font(.caption)
+                                    .foregroundStyle(style?.tone == .danger ? Brand.critical : style?.tone == .warning ? Brand.caution : Color.secondary)
                             }
                         } icon: {
                             Image(systemName: session.state == "Running" || session.state == "Awaiting review" ? "ellipsis.bubble" : "bubble.left")

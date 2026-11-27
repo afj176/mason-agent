@@ -325,9 +325,17 @@ public sealed partial class MainWindow
                 "Waiting for input" => (PoseListening, "waiting for your answer"),
                 // Ready to review when the session left reviewable changes; connected and calm when it only answered.
                 "Completed" => session.Changes.Any(c => !c.Restored) ? (PoseReview, "ready to review") : (PoseConnected, "finished"),
+                _ when CodeRunEnding.Look(session.Ending?.Code) is { } look => look.Tone switch
+                {
+                    CodeEndingTone.Danger => (PoseFailed, look.Headline.ToLowerInvariant()),
+                    _ when session.Ending!.Code == CodeRunEnding.Unverified => (PoseFailed, "a check failed"),
+                    _ when session.Ending!.Code == CodeRunEnding.Question => (PoseListening, "waiting for your answer"),
+                    _ => session.Changes.Any(c => !c.Restored) ? (PoseReview, look.Headline.ToLowerInvariant() + ", changes kept") : (PoseConnected, look.Headline.ToLowerInvariant())
+                },
                 "Failed" or "Blocked" or "Needs verification" => (PoseFailed, "a check failed"),
                 _ => ("", "")
             };
+            endingHost.Child = session?.State is "Running" or "Awaiting review" ? null : EndingPill(session?.Ending);
             stateMood.Visibility = mood.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (mood == shownMood) return;
             shownMood = mood;
@@ -342,7 +350,7 @@ public sealed partial class MainWindow
         var progressRow = new Grid { ColumnSpacing = 8 };
         progressRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         progressRow.ColumnDefinitions.Add(new() { Width = new GridLength(1, GridUnitType.Star) });
-        progressRow.Children.Add(Row(stateMood, spinner));
+        progressRow.Children.Add(Row(stateMood, spinner, endingHost));
         Grid.SetColumn(state, 1);
         progressRow.Children.Add(state);
         stateRow = Toolbar(progressRow, stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow);
@@ -1074,6 +1082,7 @@ public sealed partial class MainWindow
             AddTurnEvidence();
             if (session.State is not ("Running" or "Awaiting review"))
             {
+                if (session.Ending is { } ending && CodeRunEnding.Explains(ending.Code)) transcript.Children.Add(EndingCard(session, ending));
                 resultActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
                 RefreshResultActions();
                 transcript.Children.Add(resultActions);
@@ -1266,9 +1275,19 @@ public sealed partial class MainWindow
         void ReflectRunState(CodeSession current)
         {
             var window = WinRT.Interop.WindowNative.GetWindowHandle(this);
-            var kind = current.State switch { "Running" => TaskbarStatus.Kind.Working, "Awaiting review" or "Waiting for input" => TaskbarStatus.Kind.NeedsYou, "Failed" or "Blocked" => TaskbarStatus.Kind.Failed, _ => TaskbarStatus.Kind.None };
+            var endingLook = current.State is "Running" or "Awaiting review" ? null : CodeRunEnding.Look(current.Ending?.Code);
+            var kind = current.State switch
+            {
+                "Running" => TaskbarStatus.Kind.Working, "Awaiting review" or "Waiting for input" => TaskbarStatus.Kind.NeedsYou,
+                _ when endingLook != null => endingLook.Tone switch { CodeEndingTone.Danger => TaskbarStatus.Kind.Failed, CodeEndingTone.Warning or CodeEndingTone.Accent => TaskbarStatus.Kind.NeedsYou, _ => TaskbarStatus.Kind.None },
+                "Failed" or "Blocked" => TaskbarStatus.Kind.Failed, _ => TaskbarStatus.Kind.None
+            };
             TaskbarStatus.Show(window, kind);
-            if (codeReflectedState == "Running" && current.State is "Completed" or "Failed" or "Blocked" or "Needs verification")
+            if (codeReflectedState == "Running" && endingLook != null && current.Ending!.Code != CodeRunEnding.Stopped)
+                Notifications.Show(current.Ending.Code == CodeRunEnding.Done ? "Mason finished" : "Mason · " + endingLook.Headline,
+                    current.Title + " · " + (current.Ending.KeptText is { } kept ? kept + " · " : "") + current.Detail, window,
+                    endingLook.Tone == CodeEndingTone.Danger || current.Ending.Code == CodeRunEnding.Unverified ? PoseFailed : current.Changes.Any(c => !c.Restored) ? PoseReview : PoseConnected);
+            else if (codeReflectedState == "Running" && endingLook == null && current.State is "Completed" or "Failed" or "Blocked" or "Needs verification")
                 Notifications.Show(current.State == "Completed" ? "Mason finished" : "Mason stopped: " + current.State, current.Title + " · " + current.Detail, window,
                     current.State != "Completed" ? PoseFailed : current.Changes.Any(c => !c.Restored) ? PoseReview : PoseConnected);
             codeReflectedState = current.State;
@@ -1379,7 +1398,7 @@ public sealed partial class MainWindow
             try
             {
                 var model = SessionModels(active, profile, value => context.Text = value, value => { active.Detail = value; if (active == session) state.Text = value; });
-                var engine = new CodeEngine(store, model, Approve, RefreshRun);
+                var engine = new CodeEngine(store, model, Approve, RefreshRun) { ModelName = profile.DisplayName };
                 liveEngine=engine;liveOwner=active;Enable();
                 submittedDraft = draft.Text;
                 var task = engine.Run(active, input, cancellation.Token, includeReview: true);

@@ -15,7 +15,13 @@ func realPath(_ path: String) -> String {
 
 public struct MasonError: Error, CustomStringConvertible, LocalizedError {
     public let description: String
+    /// True when the model server could not be reached or answered with an HTTP error, so the run ends as model_unavailable.
+    public var modelUnavailable = false
     public init(_ description: String) { self.description = description }
+    public static func unavailable(_ description: String) -> MasonError { var error = MasonError(description); error.modelUnavailable = true; return error }
+    /// True when a path was rejected: outside the project, absolute, or naming excluded content.
+    public var invalidPath = false
+    static func rejected(_ description: String) -> MasonError { var error = MasonError(description); error.invalidPath = true; return error }
     public var errorDescription: String? { description }
 }
 
@@ -57,11 +63,11 @@ public struct Workspace {
         let shown = relative.count > 160 ? String(relative.prefix(160)) + "…" : relative
         guard !relative.isEmpty, relative.count <= 1000, !relative.hasPrefix("/"), !relative.hasPrefix("~"),
               !relative.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
-            throw MasonError("Rejected path \"\(shown)\". Use a path relative to the project folder.")
+            throw MasonError.rejected("Rejected path \"\(shown)\". Use a path relative to the project folder.")
         }
         let parts = relative.split(separator: "/", omittingEmptySubsequences: true).map(String.init).filter { $0 != "." }
         guard !parts.contains(".."), !parts.contains(where: Workspace.forbidden) else {
-            throw MasonError("Rejected path \"\(shown)\". It is outside the project or addresses excluded content.")
+            throw MasonError.rejected("Rejected path \"\(shown)\". It is outside the project or addresses excluded content.")
         }
         let url = parts.reduce(root) { $0.appendingPathComponent($1) }
         // A link inside the project must not lead out of it. For a file that does not exist yet, check its nearest existing parent.
@@ -69,7 +75,7 @@ public struct Workspace {
         while !FileManager.default.fileExists(atPath: existing.path), existing.path.count > root.path.count { existing.deleteLastPathComponent() }
         let real = realPath(existing.path)
         guard real == root.path || real.hasPrefix(root.path + "/") else {
-            throw MasonError("Rejected path \"\(shown)\". It follows a link out of the project.")
+            throw MasonError.rejected("Rejected path \"\(shown)\". It follows a link out of the project.")
         }
         return url
     }

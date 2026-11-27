@@ -1,5 +1,7 @@
 // The agent loop: ask the model, run the tool it calls, hand the result back, until it answers in text.
 #pragma once
+#include <atomic>
+#include <chrono>
 #include <set>
 #include "language.hpp"
 #include "desktop.hpp"
@@ -51,6 +53,18 @@ struct UndoResult {
 class Agent {
 public:
     static constexpr int kActionLimit = 64;
+    /// How many model steps one request may take before it pauses at the step limit. Tests make it small.
+    int action_limit = kActionLimit;
+    /// How long one request may run before Mason pauses it, like a stop, at its time limit. Tests make it small.
+    std::chrono::milliseconds time_limit = std::chrono::minutes(30);
+    /// One run of an identical call in a row: what it returned, and whether it was a poll that really waited.
+    struct StreakEntry {
+        std::string result;
+        bool waited = false;
+    };
+    /// The model is looping when its last two identical calls returned exactly the same thing and neither was a poll
+    /// that waited. A changed result is progress; a poll that waited is patience.
+    static bool looping(const std::vector<StreakEntry>& streak);
     using Approve = std::function<bool(const ApprovalRequest&)>;
     using Emit = std::function<void(const AgentEvent&)>;
 
@@ -172,6 +186,10 @@ private:
     std::vector<FollowUp> inbox_;
     bool accepting_ = false;
     CancelToken turn_cancel_;
+    /// Set when the request in progress was stopped because it reached the time limit, not by the user.
+    std::atomic<bool> timed_out_{false};
+    /// Set by perform when the latest tool call failed on a path the project does not allow.
+    bool last_invalid_path_ = false;
 };
 
 /// Tools the model asks for a group at a time with enable_tools. Everything else is offered from the start, so the

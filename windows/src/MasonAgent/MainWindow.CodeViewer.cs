@@ -189,7 +189,7 @@ public sealed partial class MainWindow
                         var intent = session.Turns.FirstOrDefault(t => t.Role == "assistant" && t.ActivityCount > 0 && t.FirstActivity < session.Activities.Count && session.Activities[t.FirstActivity] == activity)?.Text ?? "";
                         // One card per tool call: what ran, how it was authorised, and what came back.
                         var toolName = Text(activity.Tool.Replace('_', ' '), 15); toolName.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
-                        var entry = Stack(Toolbar(toolName, Badge(activity.State)), CodeNote(activity.Authorization));
+                        var entry = Stack(Toolbar(toolName, activity.State == "Skipped" ? Pill("↻ Skipped · repeated", Tone.Warn) : Badge(activity.State)), CodeNote(activity.Authorization));
                         if (intent.Length > 0) entry.Children.Add(CodeNote(intent, 14));
                         entry.Children.Add(ChatInline(model.ViewMode=="raw"?activity.Arguments:CodeActivityText.Command(activity),12,true));
                         entry.Children.Add(ChatInline(value, 13, true));

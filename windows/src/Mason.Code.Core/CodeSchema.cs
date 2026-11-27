@@ -49,7 +49,7 @@ public static class CodeSchema
         "read_skill"=>"Read a project's named .mason/skills/<name>/SKILL.md workflow on demand.",
         "start_terminal"=>"Start a reconnectable line-oriented workspace terminal in the offline sandbox.",
         "terminal_input"=>"Send one line to an owned terminal. Use eof=true to close input.",
-        "terminal_status"=>"Read recent output and exit status from an owned terminal.",
+        "terminal_status"=>"Read an owned terminal's state and recent output, waiting up to wait_ms for it to finish.",
         "terminal_stop"=>"Stop an owned workspace terminal.",
         "mcp_tools"=>"Discover allowed tools on a user-registered local MCP server.",
         "mcp_resources"=>"Discover user-registered resource URIs.",
@@ -138,7 +138,8 @@ public static class CodeSchema
         tools.Add(Tool("read_skill",Fields(("name",Text()))));
         tools.Add(Tool("start_terminal",Fields(("executable",Text()),("arguments",new{type="array",items=Text(),maxItems=40}),("directory",existingDirectory))));
         tools.Add(Tool("terminal_input",Fields(("id",Text()),("line",Text()),("eof",new{type="boolean"}))));
-        foreach(var terminal in new[]{"terminal_status","terminal_stop"})tools.Add(Tool(terminal,Fields(("id",Text()))));
+        tools.Add(Tool("terminal_status",Fields(("id",Text()),("wait_ms",new{type="integer",minimum=0,maximum=10000}))));
+        tools.Add(Tool("terminal_stop",Fields(("id",Text()))));
         tools.Add(Tool("mcp_tools",Fields(("server",Text()))));
         tools.Add(Tool("read_documentation",Fields(("source",Text()),("path",Text()),("query",Text()))));
         tools.Add(Tool("mcp_resources",Fields(("server",Text()))));

@@ -181,6 +181,17 @@ final class CLI {
     }
 
     /// /theme and "mason theme": lists the families, or saves one to appearance.json for the CLI and the app.
+    /// The terminal colour of an ending's tone.
+    static func toneColor(_ tone: RunEnding.Tone) -> String {
+        switch tone {
+        case .success: return Term.green
+        case .warning: return Term.yellow
+        case .accent: return Term.accent
+        case .neutral: return Term.dim
+        case .danger: return Term.red
+        }
+    }
+
     static func theme(_ name: String) {
         let name = name.trimmingCharacters(in: .whitespaces)
         if !name.isEmpty {
@@ -356,10 +367,12 @@ final class CLI {
         case .failed: mark = Term.paint(Term.red, "✗")
         case .denied: mark = Term.paint(Term.yellow, "⊘")
         case .running: mark = Term.paint(Term.dim, "·")
+        case .skipped: mark = Term.paint(Term.yellow, "↻")
         }
-        let label = activity.tool.replacingOccurrences(of: "_", with: " ")
-        Term.line("  \(mark) \(Term.paint(Term.bold, label)) \(Term.clip(activity.subject.replacingOccurrences(of: "\n", with: " "), max(10, Term.width - label.count - 8)))" + (activity.state == .denied ? Term.paint(Term.dim, "  declined") : ""))
-        guard activity.tool == "run_shell" || activity.state == .failed else { return }
+        let label = Activity.label(activity.tool)
+        let note = activity.state == .denied ? "  declined" : activity.state == .skipped ? "  skipped · repeated" : ""
+        Term.line("  \(mark) \(Term.paint(Term.bold, label)) \(Term.clip(activity.subject.replacingOccurrences(of: "\n", with: " "), max(10, Term.width - label.count - 8 - (activity.state == .skipped ? note.count : 0))))" + Term.paint(Term.dim, note))
+        guard activity.state != .skipped, activity.tool == "run_shell" || activity.state == .failed else { return }
         let lines = activity.result.split(separator: "\n").map(String.init).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         let limit = activity.state == .failed ? 10 : 6
         if lines.count > limit { Term.line(Term.paint(Term.dim, "    │ … \(lines.count - limit) earlier lines")) }
@@ -402,19 +415,50 @@ final class CLI {
             }
         }
         Term.line()
+        // How the request ended, from the one table of endings. A session saved before endings existed shows its state.
+        let style = session.ending.flatMap { RunEnding.style($0.code) }
         let state: String
-        switch session.state {
-        case "Completed": state = Term.paint(Term.green, "✓ Completed")
-        case "Stopped": state = Term.paint(Term.yellow, "■ Stopped")
-        case "Failed": state = Term.paint(Term.red, "✗ Failed")
-        default: state = Term.paint(Term.yellow, "● " + session.state)
+        if let style {
+            state = Term.paint(CLI.toneColor(style.tone), style.glyph + " " + style.headline)
+        } else {
+            switch session.state {
+            case "Completed": state = Term.paint(Term.green, "✓ Completed")
+            case "Stopped": state = Term.paint(Term.yellow, "■ Stopped")
+            case "Failed": state = Term.paint(Term.red, "✗ Failed")
+            default: state = Term.paint(Term.yellow, "● " + session.state)
+            }
         }
-        let steps = session.activities.count - firstActivity
-        var facts = ["\(steps) tool call\(steps == 1 ? "" : "s")", seconds < 90 ? "\(Int(seconds))s" : String(format: "%.1f min", seconds / 60)]
+        // A call Mason skipped because the model repeated it is not a tool call that ran, nor a failed one.
+        let recent = session.activities.dropFirst(firstActivity)
+        let skipped = recent.filter { $0.state == .skipped }.count, steps = recent.count - skipped
+        var facts = ["\(steps) tool call\(steps == 1 ? "" : "s")"]
+        if skipped > 0 { facts.append("\(skipped) repeat\(skipped == 1 ? "" : "s") skipped") }
+        if let ended = session.ending, style != nil, ended.code != "done", ended.kept > 0 { facts.append(RunEnding.keptText(ended.kept)) }
+        facts.append(seconds < 90 ? "\(Int(seconds))s" : String(format: "%.1f min", seconds / 60))
         if let tokens = session.promptTokens { facts.append("\(tokens) tokens of context") }
         if let waiting = session.pendingInput, !waiting.isEmpty { facts.append("\(waiting.count) queued, /queue runs them") }
         Term.line("  " + state + Term.paint(Term.dim, "  ·  " + facts.joined(separator: "  ·  ")))
-        if !session.detail.isEmpty { Term.line("  " + Term.paint(Term.dim, session.detail)) }
+        guard let ending = session.ending, style != nil else {
+            if !session.detail.isEmpty { Term.line("  " + Term.paint(Term.dim, session.detail)) }
+            return
+        }
+        // Under the outcome, what happened and what to do next, by ending: dim, wrapped, indented.
+        func say(_ text: String) {
+            guard !text.isEmpty else { return }
+            for line in Term.wrap(text, max(30, Term.width - 6)) { Term.line("    " + Term.paint(Term.dim, line)) }
+        }
+        switch ending.code {
+        case "model_loop":
+            // The model looped, not Mason: said calmly, never as a failure.
+            say(session.repeatStop?.explanation(kept: ending.kept > 0) ?? session.detail)
+            say(RunEnding.hint(ending.code) ?? "")
+        case "model_stuck", "step_limit", "time_limit", "model_unavailable":
+            say(session.detail)
+            say(RunEnding.hint(ending.code) ?? "")
+        case "failed", "blocked", "unverified":
+            say(session.detail)
+        default: break
+        }
     }
 
     // MARK: approvals

@@ -67,6 +67,30 @@ enum Brand {
     static let caution = adaptive(light: 0x8A5A00, dark: 0xF2C66D)
     static let critical = adaptive(light: 0xAF2323, dark: 0xFF9D94)
     static let search = adaptive(light: 0x0F6E7A, dark: 0x8FD9E3)
+    /// The colour of a run ending's tone, from the same status colours.
+    static func tone(_ tone: RunEnding.Tone) -> Color {
+        switch tone {
+        case .success: return success
+        case .warning: return caution
+        case .accent: return accent
+        case .neutral: return muted
+        case .danger: return critical
+        }
+    }
+    /// The SF Symbol of a run ending.
+    static func endingIcon(_ code: String) -> String {
+        switch code {
+        case "done": return "checkmark.circle.fill"
+        case "unverified": return "circle.lefthalf.filled"
+        case "question": return "questionmark.circle"
+        case "model_loop": return "arrow.triangle.2.circlepath"
+        case "model_stuck", "blocked": return "nosign"
+        case "step_limit", "time_limit": return "pause.circle"
+        case "stopped": return "stop.circle"
+        case "model_unavailable": return "powerplug"
+        default: return "xmark.circle.fill"
+        }
+    }
     /// Model fit tones, each paired with its words in the panel.
     static let fitGood = success
     static let fitTight = caution
@@ -271,10 +295,12 @@ struct StatusPose: View {
     var body: some View {
         // Re-read every few seconds so "restored" gives way once its 30 seconds are over.
         TimelineView(.periodic(from: .now, by: 5)) { context in
-            if let shown = currentPose(at: context.date) {
+            let shown = currentPose(at: context.date)
+            if shown != nil || ended != nil {
                 HStack(spacing: 10) {
-                    PoseImage(pose: shown, height: 46)
+                    if let shown { PoseImage(pose: shown, height: 46) }
                     if model.running { ProgressView().controlSize(.small) }
+                    if let ended { EndingPill(code: ended.code, style: ended.style) }
                     Text(text).font(.callout).foregroundStyle(Brand.muted).lineLimit(2)
                     Spacer(minLength: 0)
                 }
@@ -291,12 +317,36 @@ struct StatusPose: View {
         let restored = model.restoredAt.map { now.timeIntervalSince($0) < 30 } ?? false
         let reviewable = session.turns.contains { !$0.undone && !$0.changes.isEmpty }
         return Pose.forStatus(state: model.running ? "Running" : session.state, hasTurns: !session.turns.isEmpty,
-                              runningTool: tool, restoredRecently: restored, reviewableChanges: reviewable)
+                              runningTool: tool, restoredRecently: restored, reviewableChanges: reviewable, ending: session.ending?.code)
+    }
+
+    /// How the latest request ended, when it is a known ending and nothing is running.
+    var ended: (code: String, style: RunEnding.Style)? {
+        guard !model.running, !session.turns.isEmpty, let ending = session.ending, let style = ending.style else { return nil }
+        return (ending.code, style)
     }
 
     var text: String {
         if model.running { return model.liveStatus.isEmpty ? "Working" : model.liveStatus }
+        // The pill already names the ending, so the text is what happened.
+        if ended != nil { return session.detail }
         return session.state + (session.detail.isEmpty ? "" : " · " + session.detail)
+    }
+}
+
+/// How a request ended, as a small pill in the ending's tone: its icon and headline.
+struct EndingPill: View {
+    let code: String
+    let style: RunEnding.Style
+
+    var body: some View {
+        let color = Brand.tone(style.tone)
+        Label(style.headline, systemImage: Brand.endingIcon(code))
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(color.opacity(0.14), in: Capsule())
+            .fixedSize()
     }
 }
 

@@ -292,7 +292,7 @@ internal sealed partial class Interactive
             token.Register(() => answer.TrySetCanceled(token));
             lock (approvals) approvals.Enqueue((request, answer));
             return answer.Task;
-        }, () => { }, error => failure = error);
+        }, () => { }, error => failure = error) { ModelName = profile!.DisplayName };
         var clock = Stopwatch.StartNew(); int frame = 0; bool stopping = false;
         Term.Line();
         var work = Task.Run(() => engine.Run(session, input, cancellation.Token));
@@ -356,13 +356,13 @@ internal sealed partial class Interactive
     }
     static void Show(CodeActivity activity)
     {
-        string mark = activity.State switch { "Completed" => Term.Paint(Term.Green, "✓"), "Failed" => Term.Paint(Term.Red, "✗"), "Denied" => Term.Paint(Term.Yellow, "⊘"), _ => Term.Paint(Term.Dim, "·") };
+        string mark = activity.State switch { "Completed" => Term.Paint(Term.Green, "✓"), "Failed" => Term.Paint(Term.Red, "✗"), "Denied" => Term.Paint(Term.Yellow, "⊘"), "Skipped" => Term.Paint(Term.Yellow, "↻"), _ => Term.Paint(Term.Dim, "·") };
         string label = Label(activity), subject = Subject(activity);
-        string note = activity.State is "Completed" or "Failed" ? "" : "  " + activity.State.ToLowerInvariant();
+        string note = activity.State switch { "Completed" or "Failed" => "", "Skipped" => "  skipped · repeated", var other => "  " + other.ToLowerInvariant() };
         if (activity.Authorization.Contains("rule", StringComparison.OrdinalIgnoreCase)) note += "  " + activity.Authorization.ToLowerInvariant();
         Term.Line($"  {mark} {Term.Paint(Term.Bold, label)} {Term.Clip(subject, Math.Max(10, Term.Width - label.Length - note.Length - 8))}{Term.Paint(Term.Dim, note)}");
         bool command = activity.Tool is "run_command" or "run_shell" or "run_workflow";
-        if (!command && activity.State != "Failed") return;
+        if (!command && activity.State != "Failed" || activity.State == "Skipped") return;
         var lines = CodeActivityText.Result(activity).ReplaceLineEndings("\n").Split('\n').Select(l => l.TrimEnd()).Where(l => l.Length > 0).ToArray();
         int limit = activity.State == "Failed" ? 10 : 6;
         if (lines.Length > limit) Term.Line(Term.Paint(Term.Dim, $"    │ … {lines.Length - limit} earlier lines"));
@@ -395,19 +395,28 @@ internal sealed partial class Interactive
             Term.Line(Term.Paint(Term.Dim, "  /diff shows the changes · /undo puts everything from this request back"));
         }
         Term.Line();
-        string state = session.State switch
-        {
-            "Completed" => Term.Paint(Term.Green, "✓ Completed"), "Stopped" => Term.Paint(Term.Yellow, "■ Stopped"),
-            "Failed" => Term.Paint(Term.Red, "✗ Failed"), var other => Term.Paint(Term.Yellow, "● " + other)
-        };
+        // One table decides the glyph, colour and words. Red only when something broke; what the model did is amber.
+        var ending = session.Ending;
+        string state = CodeRunEnding.Look(ending?.Code) is { } look
+            ? Term.Paint(look.Tone switch { CodeEndingTone.Success => Term.Green, CodeEndingTone.Warning => Term.Yellow, CodeEndingTone.Accent => Term.Accent, CodeEndingTone.Danger => Term.Red, _ => Term.Dim }, look.Glyph + " " + look.Headline)
+            : session.State switch
+            {
+                "Completed" => Term.Paint(Term.Green, "✓ Completed"), "Stopped" => Term.Paint(Term.Yellow, "■ Stopped"),
+                "Failed" => Term.Paint(Term.Red, "✗ Failed"), var other => Term.Paint(Term.Yellow, "● " + other)
+            };
         var activities = session.Activities.Skip(firstActivity).ToArray();
         var facts = new List<string>();
         if (activities.Length > 0) facts.Add(CodeProtocol.ActivitySummary(activities));
+        if (ending?.KeptText is { } kept) facts.Add(kept);
         facts.Add(elapsed.TotalSeconds < 90 ? $"{elapsed.TotalSeconds:0}s" : $"{elapsed.TotalMinutes:0.#} min");
         if (context.Length > 0) facts.Add(context.Split(" · ")[0]);
         Term.Line("  " + state + Term.Paint(Term.Dim, "  ·  " + string.Join("  ·  ", facts)));
         string detail = failure?.Message ?? (session.State == "Completed" || added.Any(t => t.Role == "assistant" && t.Text.Contains(session.Detail, StringComparison.Ordinal)) ? "" : session.Detail);
-        if (detail.Length > 0) Term.Line("  " + Term.Paint(Term.Dim, detail));
+        void Explain(string text) { foreach (var line in Wrap(text, Term.Width - 6)) Term.Line("    " + Term.Paint(Term.Dim, line)); }
+        // The model looped: the outcome line already says so; underneath, what happened and that it was the model's doing.
+        if (ending?.Code == CodeRunEnding.ModelLoop && session.RepeatStop is { } repeat) Explain(repeat.Explanation(ending.Kept > 0));
+        else if (detail.Length > 0) Explain(detail);
+        if (ending != null && CodeRunEnding.Hint(ending.Code) is { Length: > 0 } hint) Explain(hint);
         if (session.PendingInput.Count > 0) Term.Line(Term.Paint(Term.Dim, $"  {session.PendingInput.Count} queued message(s) · /queue resumes them"));
     }
 

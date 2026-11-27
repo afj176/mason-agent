@@ -11,7 +11,7 @@ static class CodeNativeChecks
         "create_file","replace_file","run_command","run_shell","open_preview","verify_acceptance","ask_user","enable_tools",
         "inspect_symbol","computer_use","desktop_observe","desktop_act","start_job","poll_job","stop_job","run_workflow",
         "repository_map","start_terminal","terminal_input","terminal_status","terminal_stop","mcp_resources","mcp_read","read_documentation",
-        "read_skill","mcp_tools","mcp_call","search_next","read_lines","git_status","desktop_visual","delegate_readonly","semantic_search"
+        "read_skill","mcp_tools","mcp_call","search_next","read_lines","git_status","desktop_visual","delegate_readonly","semantic_search","suggest_note"
     };
     public static async Task Replay(string original,string destination)
     {
@@ -71,7 +71,7 @@ static class CodeNativeChecks
             var workspace=Path.Combine(root,"workspace");var session=store.New(workspace);session.ActionLimit=2;session.Permission=CodePermission.WorkspaceEdits;
             var read=new CodeAction("", "list_files",JsonSerializer.SerializeToElement(new{path=".",limit=100}));
             await new CodeEngine(store,new ScriptedModel(read,read,new CodeAction("", "create_file",JsonSerializer.SerializeToElement(new{path="past-budget.txt",content="bad"}))),(_,_)=>throw new Exception("Unexpected review"),()=>{}).Run(session,"Use the bounded run.",default);
-            check(session.State=="Failed"&&session.Activities.Count==2&&!File.Exists(Path.Combine(workspace,"past-budget.txt")),"configurable action budget stops before a later mutation and retains receipts");
+            check(session.State=="Stopped"&&session.Ending==new CodeRunEnding(CodeRunEnding.StepLimit,0)&&session.Detail.Contains("2-step limit")&&session.Activities.Count==2&&!File.Exists(Path.Combine(workspace,"past-budget.txt")),"configurable action budget pauses before a later mutation, retains receipts and says it was the step limit");
         }
         using(var store=new CodeStore(Path.Combine(root,"reader-race")))
         {

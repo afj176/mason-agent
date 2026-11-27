@@ -22,10 +22,20 @@ public enum Pose: String, CaseIterable, Sendable {
     /// The pose beside a session's status, or nil when there is nothing to show (no requests yet, or a quiet state).
     /// `runningTool` is the tool of the latest step still running; `restoredRecently` is true within 30 seconds of an
     /// undo, redo or restore; `reviewableChanges` is true when the session left changes that were not put back.
-    public static func forStatus(state: String, hasTurns: Bool, runningTool: String?, restoredRecently: Bool, reviewableChanges: Bool) -> Pose? {
+    /// `ending` is the code of how the latest request ended; a known one decides the pose, so a model that looped or a
+    /// limit that paused the request never shows the failed pose. Without one, the state decides, as before endings.
+    public static func forStatus(state: String, hasTurns: Bool, runningTool: String?, restoredRecently: Bool, reviewableChanges: Bool, ending: String? = nil) -> Pose? {
         guard hasTurns else { return nil }
         if state == "Running" { return forTool(runningTool) }
         if restoredRecently { return .restored }
+        if state != "Awaiting review", let ending, RunEnding.style(ending) != nil {
+            switch ending {
+            case "done": return reviewableChanges ? .readyToReview : .connected
+            case "question": return .listening
+            case "unverified", "model_unavailable", "failed": return .checkFailed
+            default: return nil
+            }
+        }
         switch state {
         case "Awaiting review": return .awaitingApproval
         case "Waiting for input": return .listening

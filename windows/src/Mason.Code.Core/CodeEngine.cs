@@ -7,6 +7,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
     Func<CodeApproval, CancellationToken, Task<bool>> approve, Action changed,Action<Exception>? diagnostic=null)
 {
     static string S(JsonElement a, string key) => a.GetProperty(key).GetString() ?? throw new ArgumentException(key + " must be text.");
+    /// <summary>The model's display name, used when Mason explains that the model repeated itself.</summary>
+    public string ModelName { get; init; } = "";
     CancellationTokenSource? activeTurn;
     CodeSession? activeSession;
     public void SendWhileRunning(CodeSession session,string text,bool steer,bool includeReview = false)
@@ -113,7 +115,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             : JsonSerializer.Serialize(new {request=modelRequest,references,host_resume_context=handoff})));
         if (session.Title == "New session") session.Title = input.Length > 55 ? input[..55] + "…" : input;
         session.ViewerDismissed = false;
-        session.Draft = ""; session.State = "Running"; session.Detail = "Preparing workspace context…";
+        session.Draft = ""; session.State = "Running"; session.Detail = "Preparing workspace context…"; session.RepeatStop = null; session.Ending = null;
         // A suggestion left undecided goes with the request it came from; each request may make one.
         if (followUp == null) session.SuggestedNote = null;
         if (followUp == null) session.Evidence.Clear();
@@ -135,6 +137,9 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         string? failedSourceCheck = null;
         int repairs = 0, completionCorrections = 0, repeatedActions = 0, pathErrors = 0;
         CodeAction? lastAction = null;
+        // Results of the identical calls in a row ending with the latest one, and whether each was a patient wait.
+        var streak = new List<(string Result, bool Waited)>();
+        string? endCode = null;
         string? previousReadResult = null;
         Guid? previousFileRead = null;
         bool revisitRead = false;
@@ -318,11 +323,18 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     cancellation.ThrowIfCancellationRequested();
                     if (action.Tool == "ask_user") question = ReadQuestion(action.Arguments);
                 }
+                catch (HttpRequestException) { endCode = CodeRunEnding.ModelUnavailable; throw; }
+                catch (OperationCanceledException error) when (!cancellation.IsCancellationRequested)
+                {
+                    // The HTTP client gave up waiting; nothing here asked it to stop.
+                    endCode = CodeRunEnding.ModelUnavailable;
+                    throw new HttpRequestException("The model stopped answering before it finished its response.", error);
+                }
                 catch (CodeResponseException error)
                 {
                     repairs++; session.LiveMessage = "";
                     session.Activities.Add(new() { Tool = "model_response", State = "Failed", Result = error.Message + "\n" + error.Response });
-                    if (repairs > 2) throw new InvalidOperationException("Three consecutive model responses were invalid or incomplete. " + error.Message, error);
+                    if (repairs > 2) { endCode = CodeRunEnding.ModelStuck; throw new InvalidOperationException("Three consecutive model responses were invalid or incomplete. " + error.Message, error); }
                     session.Messages.Add(new("user", CodeProtocol.ResponseRepairPrefix + error.Message +
                         " Return one complete action. If the output was incomplete, use a smaller complete file or edit and continue in separate actions. " +
                         "Avoid repeated text and resume from saved tool receipts."));
@@ -419,9 +431,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 var activity = new CodeActivity { Tool = action.Tool, Arguments = action.Arguments.GetRawText() }; session.Activities.Add(activity); turn.ActivityCount = 1;
                 session.Detail = "Working · " + action.Tool.Replace('_', ' '); Save();
                 repeatedActions = lastAction != null && SameOperation(lastAction, action) ? repeatedActions + 1 : 1;
+                if (repeatedActions == 1) streak.Clear();
                 lastAction = action;
                 CodeToolResult result;
-                bool invalidPath = false;
+                bool invalidPath = false, waited = false;
                 try
                 {
                     if(verificationOnly && action.Tool!="verify_acceptance") throw new UnauthorizedAccessException("This request verifies the pinned project contract. Use verify_acceptance.");
@@ -434,7 +447,9 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         activity.Authorization = "Previously declined";
                         throw new UnauthorizedAccessException("This exact operation was already declined during this run. Ask the user for a new instruction instead of repeating it.");
                     }
-                    if(repeatedActions>=3)throw new InvalidOperationException("The same tool request was repeated three times without an intervening action. Execution stopped before this repeat; inspect the receipts and change strategy.");
+                    // The model already made this exact call twice in a row and got the same result both times: Mason does not
+                    // run it a third time, and the run ends below. A changed result is progress, and a poll that waited is patience.
+                    if(Looping(streak))throw new CodeRepeatException();
                     if(attemptedPageRepair!=null && scope.Read(attemptedPageRepair.Path).Sha256!=S(action.Arguments,"expected_sha256"))
                         throw new CodeStaleEditException("The file changed; read it again before previewing the correction.");
                     if(attemptedPageRepair!=null && acceptance!=null && session.Permission==CodePermission.Auto &&
@@ -452,7 +467,9 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                         }
                     }
                     cancellation.ThrowIfCancellationRequested();
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
                     result = await Execute(scope, session, action, activity, services, cancellation);
+                    waited = action.Tool is "poll_job" or "terminal_status" && clock.Elapsed >= TimeSpan.FromSeconds(1);
                     // Commands can create files even when they exit with an error.
                     refreshInventory = result.ChangedFile != null || result.CreatedDirectory || action.Tool is "run_command" or "run_shell";
                     activity.State = result.Failed ? "Failed" : "Completed"; activity.Result = result.Content;
@@ -491,7 +508,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     }
                     if (activity.Authorization == "Declined") declined.Add(action);
                     invalidPath = error is CodeWorkspacePathException or CodeWorkspaceDirectoryException;
-                    activity.State = error is UnauthorizedAccessException ? "Denied" : "Failed";
+                    activity.State = error is UnauthorizedAccessException ? "Denied" : error is CodeRepeatException ? "Skipped" : "Failed";
                     activity.Result = invalidPath
                         ? error.Message + " The selected workspace root is '.'. Correct the argument using a workspace-relative path. For a new root-level file, use its filename directly."
                         : error.Message;
@@ -515,6 +532,9 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     modelReceipt = JsonSerializer.Serialize(new { path = file.RootElement.GetProperty("Path"), sha256 = file.RootElement.GetProperty("Sha256"),
                         unchanged_since_activity = previousFileRead, guidance = "The same file and hash were already returned. Use the previous contents for a change, or finish now if the request is satisfied." });
                 }
+                if (activity.State != "Skipped") streak.Add((activity.Result, waited));
+                // Fair warning: the second identical call came back the same, so the model hears that a third will not run.
+                if (activity.State != "Skipped" && !sameFileRead && Looping(streak)) modelReceipt += "\n\n[Mason: this is the same result as your previous identical call. Use it, try something different, or finish. Mason will not run this exact call a third time.]";
                 previousFileRead = fileRead ? activity.Id : null;
                 previousReadResult = successfulRead ? result.Content : null;
                 if (action.Tool is ("run_command" or "run_shell" or "run_workflow") && activity.State is ("Completed" or "Failed"))
@@ -561,7 +581,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 }
                 Save();
                 if (activity.State == "Completed") failedAttempts.Clear();
-                else
+                else if (activity.State != "Skipped")
                 {
                     failedAttempts.Add((action, activity.Result));
                     bool SameFailure((CodeAction Action, string Result) prior) =>
@@ -570,7 +590,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                             JsonElement.DeepEquals(oldPath, path));
                     if (failedAttempts.Count(SameFailure) >= 3)
                     {
-                        session.State = "Blocked";
+                        session.State = "Blocked"; endCode = CodeRunEnding.ModelStuck;
                         session.Detail = "The same operation failed three times without a successful tool action. See activity for the last error.";
                         Save(); return;
                     }
@@ -578,21 +598,42 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 pathErrors = invalidPath ? pathErrors + 1 : 0;
                 if (pathErrors >= 2)
                 {
-                    session.State = "Blocked";
+                    session.State = "Blocked"; endCode = CodeRunEnding.ModelStuck;
                     session.Detail = "The model could not produce a valid path after correction. The selected workspace root is '.'. Use a relative filename or try another model.";
                     Save(); return;
                 }
                 if(result.RuntimeFailure is {} failure)
                 {
-                    session.State="Blocked";session.Detail="Validation blocked · "+failure.Summary+" Completed files are retained; automatic retries stopped.";
+                    session.State="Blocked";endCode=CodeRunEnding.Blocked;session.Detail="Validation blocked · "+failure.Summary+" Completed files are retained; automatic retries stopped.";
                     Save();return;
                 }
-                if(repeatedActions>=3)throw new InvalidOperationException("Stopped a repeated-tool loop after three identical requests. Completed work and activity are retained; inspect the failure and continue with a different approach.");
+                if(activity.State=="Skipped")
+                {
+                    // A model loop is the model's doing, not a failure: what already landed stands, and the session says plainly what happened.
+                    string subject=CodeActivityText.Command(activity), label=action.Tool.Replace('_',' ');
+                    session.RepeatStop=new(action.Tool,subject==label?"":subject,repeatedActions,ModelName);
+                    session.State="Stopped";endCode=CodeRunEnding.ModelLoop;
+                    session.Detail=session.RepeatStop.Detail(delivered);
+                    session.LiveMessage="";Save();return;
+                }
             }
-            throw new InvalidOperationException($"Stopped at the {session.ActionLimit}-response run limit. Inspect the activity and continue with a new instruction.");
+            session.LiveMessage = ""; session.State = "Stopped"; endCode = CodeRunEnding.StepLimit;
+            session.Detail = $"Mason paused this request at its {session.ActionLimit}-step limit. Completed edits and receipts are kept.";
+            Save();
         }
-        catch (OperationCanceledException) { user.PlanningInterrupted=session.Mode=="build" && user.Acceptance==null;session.LiveMessage = ""; session.State = "Stopped"; session.Detail = callerCancellation.IsCancellationRequested?"Stopped · completed edits are retained. Pending operations will not be replayed.":"Stopped at the 30-minute run budget · completed edits and receipts are retained."; Save(); }
+        catch (OperationCanceledException) { user.PlanningInterrupted=session.Mode=="build" && user.Acceptance==null;session.LiveMessage = ""; session.State = "Stopped";
+            endCode = callerCancellation.IsCancellationRequested ? CodeRunEnding.Stopped : CodeRunEnding.TimeLimit;
+            session.Detail = callerCancellation.IsCancellationRequested?"Stopped · completed edits are retained. Pending operations will not be replayed.":"Mason paused this request at its 30-minute time limit. Completed edits and receipts are kept."; Save(); }
         catch (Exception error) { try{diagnostic?.Invoke(error);}catch{ /* Diagnostics cannot suppress the failure receipt. */ }session.LiveMessage = ""; session.State = "Failed"; session.Detail = error.Message; Save(); }
+        finally
+        {
+            // Every way out of a request leaves one ending, which the terminal and the app draw from a single table.
+            if (session.State is not ("Running" or "Awaiting review"))
+            {
+                session.Ending = new(endCode ?? CodeRunEnding.FromState(session.State), changedFiles.Count);
+                try { Save(); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            }
+        }
         async Task<bool> VerifyCurrentWork(CodeAcceptancePlan plan)
         {
             if(failedCommands.Count>0||session.UnverifiedJobs.Count>0)return false;
@@ -786,6 +827,10 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         catch (Exception error) { session.State = previousState; session.Detail = error.Message; Save(); }
         void Save() { session.Updated = DateTimeOffset.UtcNow; store.Save(session); changed(); }
     }
+    /// <summary>Two identical calls in a row returned the same result, and neither was a poll that waited for its job.</summary>
+    internal static bool Looping(List<(string Result, bool Waited)> streak) =>
+        streak.Count >= 2 && streak[^1].Result == streak[^2].Result && !streak[^1].Waited && !streak[^2].Waited;
+
     static bool SameOperation(CodeAction left, CodeAction right) =>
         left.Tool == right.Tool && JsonElement.DeepEquals(left.Arguments, right.Arguments);
 
@@ -832,11 +877,18 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                     var started=tasks.Start(Path.Combine(AppContext.BaseDirectory,"mason.exe"),scope.Root,"Terminal · "+launch.Executable,"","terminal",CodePermission.Auto,terminal:launch);
                     session.Terminals.Add(started);return new(JsonSerializer.Serialize(new{id=started}));
                 }
-                CodeProtocol.Exact(a,tool=="terminal_input"?["id","line","eof"]:["id"]);
+                CodeProtocol.Exact(a,tool switch{"terminal_input"=>["id","line","eof"],"terminal_status"=>["id","wait_ms"],_=>["id"]});
                 var id=Guid.Parse(S(a,"id"));
                 if(!session.Terminals.Contains(id) || !string.Equals(tasks.Spec(id).Workspace,scope.Root,StringComparison.OrdinalIgnoreCase))throw new UnauthorizedAccessException("Unknown terminal in this session.");
                 if(tool=="terminal_stop")tasks.Cancel(id);
                 if(tool=="terminal_input")tasks.SendLine(id,a.GetProperty("eof").GetBoolean()?null:S(a,"line"));
+                if(tool=="terminal_status"){
+                    // Waiting here lets a model watch a long build without spinning through its steps.
+                    int waitMs=a.GetProperty("wait_ms").GetInt32();
+                    if(waitMs is <0 or >10000)throw new ArgumentException("Wait must be between 0 and 10000 ms.");
+                    var until=DateTimeOffset.UtcNow.AddMilliseconds(waitMs);
+                    while(tasks.Status(id).Active && DateTimeOffset.UtcNow<until)await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(200,Math.Max(1,(until-DateTimeOffset.UtcNow).TotalMilliseconds))),ct);
+                }
                 return new(JsonSerializer.Serialize(new{status=tasks.Status(id),events=tasks.Tail(id).TakeLast(4)}));
             }
             case "desktop_visual":

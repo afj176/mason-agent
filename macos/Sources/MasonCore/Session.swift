@@ -42,13 +42,108 @@ public struct ChatMessage: Codable, Equatable {
 }
 
 public struct Activity: Codable, Equatable, Identifiable {
-    public enum State: String, Codable { case running, completed, failed, denied }
+    /// `skipped`: Mason did not run the call because the model had already made it twice in a row with the same result.
+    public enum State: String, Codable { case running, completed, failed, denied, skipped }
     public var id = UUID()
     public var tool: String
     public var subject: String
     public var state: State
     public var result: String
     public var at = Date()
+
+    /// How a tool is named on screen: "write_file" reads "write file".
+    public static func label(_ tool: String) -> String { tool.replacingOccurrences(of: "_", with: " ") }
+}
+
+/// Set when Mason stopped a request because the model kept making the same call and getting the same result.
+/// Cleared when the next request starts.
+public struct RepeatStop: Codable, Equatable {
+    /// The raw tool name, as the model called it.
+    public var tool: String
+    /// What the call was about, as its activity row shows it: a path, a command…
+    public var subject: String
+    /// How many times in a row the model asked for the call, the skipped one included.
+    public var times: Int
+    /// The display name of the model that repeated itself, or empty when it is not known.
+    public var model: String
+    public init(tool: String, subject: String, times: Int = 3, model: String) { self.tool = tool; self.subject = subject; self.times = times; self.model = model }
+
+    public static let headline = "The model repeated itself"
+    public static let result = "Not run: the model already made this exact call twice in a row and got the same result both times."
+    /// Added to what the model sees after the second identical call came back the same, so the stop is no surprise.
+    public static let warning = "\n\n[Mason: this is the same result as your previous identical call. Use it, try something different, or finish. Mason will not run this exact call a third time.]"
+    public static let origin = "This came from the model, not Mason."
+    public static let next = "Send another message to continue, or choose a larger model with /model."
+
+    var speaker: String { model.trimmingCharacters(in: .whitespaces).isEmpty ? "The model" : model }
+    var call: String { Activity.label(tool) + (subject.isEmpty ? "" : " " + subject.replacingOccurrences(of: "\n", with: " ")) }
+    static func ending(kept: Bool) -> String { kept ? "Your work so far is kept." : "Nothing was changed." }
+
+    /// The session's detail line.
+    public func detail(kept: Bool) -> String {
+        "\(speaker) kept repeating \(call) with the same result, so Mason stopped it. " + RepeatStop.ending(kept: kept)
+    }
+    /// The sentences the terminal and the app show under the outcome.
+    public func explanation(kept: Bool) -> String {
+        "\(speaker) asked for \(call) \(times) times in a row and got the same result each time. Mason skipped the last one and stopped here instead of looping. " + RepeatStop.ending(kept: kept)
+    }
+}
+
+/// How a request ended, saved with the session and cleared when the next request starts. `code` is one of
+/// `RunEnding.codes`; `kept` is how many files the request changed that are still changed when it ended.
+public struct RunEnding: Codable, Equatable {
+    public var code: String
+    public var kept: Int
+    public init(code: String, kept: Int = 0) { self.code = code; self.kept = kept }
+
+    public enum Tone: String, Sendable { case success, warning, accent, neutral, danger }
+    public struct Style: Equatable, Sendable {
+        public let glyph: String
+        public let tone: Tone
+        public let headline: String
+        /// Who or what ended the request, in a few words.
+        public let cause: String
+    }
+
+    /// Every code, in the order of the table.
+    public static let codes = ["done", "unverified", "question", "model_loop", "model_stuck", "step_limit", "time_limit", "blocked", "stopped", "model_unavailable", "failed"]
+
+    /// The one table of endings: glyph, tone, headline and cause for a code, or nil for an unknown one (an older
+    /// session), which then shows as its state did before.
+    public static func style(_ code: String) -> Style? {
+        switch code {
+        case "done": return Style(glyph: "✓", tone: .success, headline: "Done", cause: "model finished")
+        case "unverified": return Style(glyph: "◐", tone: .warning, headline: "Needs a check", cause: "checks")
+        case "question": return Style(glyph: "?", tone: .accent, headline: "Needs your answer", cause: "model asked")
+        case "model_loop": return Style(glyph: "↻", tone: .warning, headline: "Model looped", cause: "model")
+        case "model_stuck": return Style(glyph: "⊘", tone: .warning, headline: "Model stuck", cause: "model")
+        case "step_limit": return Style(glyph: "⏸", tone: .warning, headline: "Paused at the step limit", cause: "Mason limit")
+        case "time_limit": return Style(glyph: "⏸", tone: .warning, headline: "Paused at the time limit", cause: "Mason limit")
+        case "blocked": return Style(glyph: "⊘", tone: .warning, headline: "Blocked by checks", cause: "project")
+        case "stopped": return Style(glyph: "■", tone: .neutral, headline: "Stopped by you", cause: "you")
+        case "model_unavailable": return Style(glyph: "✗", tone: .danger, headline: "Model unavailable", cause: "model server")
+        case "failed": return Style(glyph: "✗", tone: .danger, headline: "Failed", cause: "Mason")
+        default: return nil
+        }
+    }
+    public var style: Style? { RunEnding.style(code) }
+
+    /// The line said after the detail, by code, in the terminal and on the end card; nil when there is none.
+    /// The app has no slash commands, so with `terminal` false the hints name the place instead.
+    public static func hint(_ code: String, terminal: Bool = true) -> String? {
+        let larger = terminal ? "choose a larger model with /model." : "choose a larger model."
+        switch code {
+        case "model_loop": return RepeatStop.origin + " Send another message to continue, or " + larger
+        case "model_stuck": return RepeatStop.origin + " Try rephrasing, or " + larger
+        case "step_limit", "time_limit": return "Send another message to continue from here."
+        case "model_unavailable": return terminal ? "Start it again with /models, or choose another with /model." : "Start it again in Models, or choose another model."
+        default: return nil
+        }
+    }
+    /// The endings that get a card at the end of their request in the app.
+    public static let carded: Set<String> = ["model_loop", "model_stuck", "step_limit", "time_limit", "model_unavailable", "blocked"]
+    /// "1 file kept", "3 files kept".
+    public static func keptText(_ count: Int) -> String { "\(count) file\(count == 1 ? "" : "s") kept" }
 }
 
 /// One file as it was before a request first touched it, so the request can be undone.
@@ -155,6 +250,10 @@ public struct Session: Codable, Identifiable {
     public var desktop: DesktopWindow?
     /// A note the model suggested with suggest_note, until the user remembers or dismisses it.
     public var suggestedNote: NoteSuggestion?
+    /// Set when the latest request ended because the model repeated one call; cleared when the next request starts.
+    public var repeatStop: RepeatStop?
+    /// How the latest request ended; nil while one runs and in sessions saved before endings existed.
+    public var ending: RunEnding?
     public init(workspace: String) { self.workspace = workspace }
 }
 

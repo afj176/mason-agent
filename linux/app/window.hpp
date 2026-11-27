@@ -235,6 +235,8 @@ private:
     Gtk::Box state_row_{Gtk::Orientation::HORIZONTAL, 10};
     PoseView* state_pose_ = nullptr;
     Gtk::Label state_label_;
+    /// How the latest request ended: the ending's glyph and headline in its tone, in front of the status text.
+    Gtk::Label ending_pill_;
     std::string state_shown_;
     sigc::connection restored_timer_;
     void refresh_state();

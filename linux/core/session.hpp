@@ -33,9 +33,45 @@ struct ChatMessage {
 struct Activity {
     std::string id = new_id();
     std::string tool, subject;
-    std::string state = "running";  ///< running, completed, failed or denied
+    std::string state = "running";  ///< running, completed, failed, denied or skipped (a repeat Mason did not run)
     std::string result;
 };
+
+/// The model kept asking for the same tool call and got the same result each time, so Mason did not run the last one
+/// and stopped the request there. Cleared when the next request starts.
+struct RepeatStop {
+    std::string tool;     ///< The tool's name, as the model called it.
+    std::string subject;  ///< What the call was about, as the activity shows it: a path, a command.
+    int times = 3;        ///< How many times in a row the model asked, the skipped call included.
+    std::string model;    ///< The model that ran, or empty when it is not known.
+    bool kept = false;    ///< The request had already changed a file or run a command when Mason stopped it.
+
+    static constexpr const char* kOrigin = "This came from the model, not Mason.";
+    /// The tool and subject as the transcript shows them: "write file index.html".
+    std::string call() const;
+    std::string who() const { return model.empty() ? "The model" : model; }
+    /// For the session's detail: "<who> kept repeating <call> with the same result, so Mason stopped it. …"
+    std::string detail() const;
+    /// Shown under the outcome in the CLI and the app.
+    std::string explanation() const;
+};
+
+/// How a request ended, saved with the session and cleared when the next request starts. `code` is one of the codes
+/// ending_style knows; `kept` is how many files the request changed that are still changed when it ended.
+struct RunEnding {
+    std::string code;
+    int kept = 0;
+};
+
+/// How an ending looks, the same in the CLI and the app. `tone` is success, warning, accent, neutral or danger.
+struct EndingStyle {
+    std::string glyph, tone, headline, cause;
+};
+/// The one table of endings: done, unverified, question, model_loop, model_stuck, step_limit, time_limit, blocked,
+/// stopped, model_unavailable and failed. Nothing for an unknown code, so an old session falls back to its state.
+std::optional<EndingStyle> ending_style(const std::string& code);
+/// The line said after an ending's detail, or empty when the ending has none.
+std::string ending_hint(const std::string& code, bool terminal = true);
 
 /// One file as it was before a request first touched it, so the request can be undone.
 struct FileChange {
@@ -172,6 +208,10 @@ struct Session {
     std::vector<Milestone> milestones;
     /// The window of another app the user attached, which Mason may read and, with approval, operate.
     std::optional<DesktopWindow> desktop;
+    /// Set when the latest request ended because the model repeated a tool call.
+    std::optional<RepeatStop> repeat_stop;
+    /// How the latest request ended; empty while one runs and in sessions saved before endings existed.
+    std::optional<RunEnding> ending;
 };
 
 json message_json(const ChatMessage& message);

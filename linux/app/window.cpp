@@ -63,6 +63,58 @@ Gtk::Label* text_label(const std::string& text, bool selectable = true) {
 
 std::string label_of(const std::string& tool) { return replace_all(tool, "_", " "); }
 
+/// The endings that get a card at the end of the transcript: the ones the user should understand before going on.
+bool has_end_card(const std::string& code) {
+    return code == "model_loop" || code == "model_stuck" || code == "step_limit" || code == "time_limit" || code == "model_unavailable" || code == "blocked";
+}
+
+/// At the end of a request that a loop, a limit, the model server or the project's checks ended: a calm card in the
+/// ending's tone (warning, or danger only when the model server is gone), never a failure for what the model did.
+Gtk::Widget* ending_card(const Session& session, const EndingStyle& look, const std::function<void()>& review) {
+    const RunEnding& ending = *session.ending;
+    auto* card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+    card->add_css_class("ending-card");
+    card->add_css_class(look.tone == "danger" ? "tone-danger" : "tone-warning");
+    card->set_margin_start(38);
+    auto* glyph = Gtk::make_managed<Gtk::Image>();
+    glyph->set_from_icon_name(ending.code == "model_loop" ? "view-refresh-symbolic"
+                              : ending.code == "step_limit" || ending.code == "time_limit" ? "media-playback-pause-symbolic"
+                              : ending.code == "model_unavailable" ? "network-offline-symbolic" : "action-unavailable-symbolic");
+    glyph->set_pixel_size(20);
+    glyph->set_valign(Gtk::Align::START);
+    glyph->add_css_class("ending-glyph");
+    auto* text = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+    text->set_hexpand(true);
+    auto* title = Gtk::make_managed<Gtk::Label>(look.headline);
+    title->set_xalign(0);
+    title->add_css_class("ending-title");
+    text->append(*title);
+    const std::string body = ending.code == "model_loop" && session.repeat_stop ? session.repeat_stop->explanation() : session.detail;
+    if (!body.empty()) text->append(*text_label(body));
+    if (const std::string hint = ending_hint(ending.code, false); !hint.empty()) {
+        auto* line = dim_label(hint);
+        line->add_css_class("caption");
+        text->append(*line);
+    }
+    if (ending.kept > 0) {
+        auto* kept = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        auto* count = dim_label(std::to_string(ending.kept) + (ending.kept == 1 ? " file kept ·" : " files kept ·"));
+        count->add_css_class("caption");
+        count->set_hexpand(false);
+        auto* open = Gtk::make_managed<Gtk::Button>("Review changes");
+        open->add_css_class("flat");
+        open->add_css_class("changed-link");
+        open->add_css_class("caption");
+        open->signal_clicked().connect(review);
+        kept->append(*count);
+        kept->append(*open);
+        text->append(*kept);
+    }
+    card->append(*glyph);
+    card->append(*text);
+    return card;
+}
+
 /// Changed lines with two lines of context; a row with kind 0 marks a gap.
 std::vector<DiffLine> visible_rows(const std::vector<DiffLine>& rows) {
     std::vector<bool> keep(rows.size(), false);
@@ -266,7 +318,11 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     state_label_.set_xalign(0);
     state_label_.set_hexpand(true);
     state_label_.set_ellipsize(Pango::EllipsizeMode::END);
+    ending_pill_.add_css_class("state-pill");
+    ending_pill_.set_valign(Gtk::Align::CENTER);
+    ending_pill_.set_visible(false);
     state_row_.append(*state_pose_);
+    state_row_.append(ending_pill_);
     state_row_.append(state_label_);
     state_row_.set_visible(false);
     auto* conversation = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
@@ -524,6 +580,13 @@ void MainWindow::refresh_state() {
         } else if (session->state == "Awaiting review") {
             mood = pose::approval;
             meaning = "waiting for your decision";
+        } else if (const auto look = session->ending ? ending_style(session->ending->code) : std::nullopt; look && session->ending->code != "done") {
+            // How the request ended picks the pose: a question waits for the answer, a failure shows the failed pose, and
+            // anything the model or a limit caused stays calm.
+            const std::string& code = session->ending->code;
+            if (code == "question") { mood = pose::listening; meaning = "waiting for your answer"; }
+            else if (code == "unverified" || code == "model_unavailable" || code == "failed") { mood = pose::failed; meaning = look->headline; }
+            else { mood = pose::connected; meaning = look->headline; }
         } else if (session->state == "Needs your answer") {
             mood = pose::listening;
             meaning = "waiting for your answer";
@@ -538,9 +601,20 @@ void MainWindow::refresh_state() {
         }
     }
     std::string words = controller_.running ? (controller_.live_status.empty() ? "Working" : controller_.live_status) : session ? session->state : "";
+    // Once a request has ended, a pill says how, in the ending's tone, and the text beside it says what happened.
+    const std::optional<EndingStyle> look = !controller_.running && !controller_.approval && session && session->ending ? ending_style(session->ending->code) : std::nullopt;
+    ending_pill_.set_visible(look.has_value());
+    if (look) {
+        static const char* const tones[] = {"state-done", "state-recheck", "state-ready", "state-blocked", "state-danger"};
+        for (const char* tone : tones) ending_pill_.remove_css_class(tone);
+        ending_pill_.add_css_class(look->tone == "success" ? "state-done" : look->tone == "warning" ? "state-recheck" : look->tone == "accent" ? "state-ready" : look->tone == "danger" ? "state-danger" : "state-blocked");
+        ending_pill_.set_text(look->glyph + " " + look->headline);
+        words = session->detail;
+    }
     words = utf8_prefix(replace_all(words, "\n", " "), 160);
     state_row_.set_visible(!mood.empty());
     state_label_.set_text(words);
+    state_label_.set_tooltip_text(look ? session->detail : "");
     if (!mood.empty() && mood != state_shown_) {
         state_shown_ = mood;
         set_pose(*state_pose_, mood, 46, meaning);
@@ -553,7 +627,7 @@ void MainWindow::refresh_state() {
 
 void MainWindow::refresh_sidebar() {
     std::string fingerprint = controller_.selection + "|";
-    for (const Session& item : controller_.sessions()) fingerprint += item.id + item.title + item.state + "|";
+    for (const Session& item : controller_.sessions()) fingerprint += item.id + item.title + item.state + (item.ending ? item.ending->code : "") + "|";
     if (fingerprint == sidebar_shown_) return;
     sidebar_shown_ = fingerprint;
     while (Gtk::Widget* child = sidebar_.get_first_child()) sidebar_.remove(*child);
@@ -587,9 +661,13 @@ void MainWindow::refresh_sidebar() {
             auto* title = Gtk::make_managed<Gtk::Label>(item.title);
             title->set_xalign(0);
             title->set_ellipsize(Pango::EllipsizeMode::END);
-            auto* state = Gtk::make_managed<Gtk::Label>(item.state);
+            // An ended request says how it ended: a danger ending in the error colour, one that needs the user in warning.
+            const std::optional<EndingStyle> look = item.ending && item.state != "Running" ? ending_style(item.ending->code) : std::nullopt;
+            auto* state = Gtk::make_managed<Gtk::Label>(look ? look->headline : item.state);
             state->set_xalign(0);
             state->add_css_class("session-state");
+            if (look && look->tone == "danger") state->add_css_class("error");
+            else if (look && (look->tone == "warning" || look->tone == "accent")) state->add_css_class("warning");
             text->append(*title);
             text->append(*state);
             text->set_hexpand(true);
@@ -644,13 +722,16 @@ Gtk::Widget* MainWindow::activity_widget(const Activity& activity) {
     } else {
         // Set by icon name: Gtk::Image's string constructor takes a file path.
         auto* icon = Gtk::make_managed<Gtk::Image>();
-        icon->set_from_icon_name(activity.state == "completed" ? "emblem-ok-symbolic" : activity.state == "denied" ? "action-unavailable-symbolic" : "dialog-error-symbolic");
-        icon->add_css_class(activity.state == "completed" ? "success" : activity.state == "denied" ? "warning" : "error");
+        // A repeat Mason skipped is not a failure: it shows the repeat glyph, not the error mark.
+        const bool skipped = activity.state == "skipped";
+        icon->set_from_icon_name(activity.state == "completed" ? "emblem-ok-symbolic" : activity.state == "denied" ? "action-unavailable-symbolic" : skipped ? "view-refresh-symbolic" : "dialog-error-symbolic");
+        icon->add_css_class(activity.state == "completed" ? "success" : activity.state == "denied" || skipped ? "warning" : "error");
+        if (skipped) icon->set_tooltip_text("Skipped: the model asked for this exact call three times in a row");
         row->append(*icon);
     }
     auto* name = Gtk::make_managed<Gtk::Label>();
     name->set_markup("<b>" + escape(label_of(activity.tool)) + "</b>");
-    auto* subject = dim_label(replace_all(activity.subject, "\n", " ") + (activity.state == "denied" ? "  · declined" : ""));
+    auto* subject = dim_label(replace_all(activity.subject, "\n", " ") + (activity.state == "denied" ? "  · declined" : activity.state == "skipped" ? "  · Skipped · repeated" : ""));
     subject->set_wrap(false);
     subject->set_ellipsize(Pango::EllipsizeMode::MIDDLE);
     subject->set_hexpand(true);
@@ -817,8 +898,9 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
     }
     if (!live && (!activities.empty() || !turn.changes.empty())) {
         // What the request amounted to, in one line, and the way to its changes.
-        int reads = 0, edits = 0, commands = 0, other = 0;
+        int reads = 0, edits = 0, commands = 0, other = 0, repeats = 0;
         for (const Activity& activity : activities) {
+            if (activity.state == "skipped") repeats++;
             if (activity.state != "completed") continue;
             if (activity.tool == "read_file" || activity.tool == "read_lines" || activity.tool == "list_files" || activity.tool == "search_files" || activity.tool == "search_next") reads++;
             else if (activity.tool == "edit_file" || activity.tool == "write_file" || activity.tool == "apply_edits") edits++;
@@ -831,6 +913,7 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
         count(edits, "edit", "edits");
         count(commands, "command", "commands");
         count(other, "other step", "other steps");
+        count(repeats, "repeat skipped", "repeats skipped");
         auto* line = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
         auto* summary = Gtk::make_managed<Gtk::Label>(parts.empty() ? "No steps completed" : join(parts, " · "));
         summary->add_css_class("summary-line");
@@ -939,7 +1022,8 @@ void MainWindow::refresh_transcript() {
     const Session* session = controller_.session();
     std::string fingerprint;
     if (session) {
-        fingerprint = session->id + "|" + std::to_string(session->turns.size()) + "|" + session->state + "|" + session->detail + "|" + std::to_string(session->activities.size()) + "|" + (controller_.running ? "run" : "idle");
+        fingerprint = session->id + "|" + std::to_string(session->turns.size()) + "|" + session->state + "|" + session->detail + "|" + std::to_string(session->activities.size()) + "|" + (controller_.running ? "run" : "idle") +
+                      (session->ending ? "|end:" + session->ending->code + ":" + std::to_string(session->ending->kept) : "");
         for (const Turn& turn : session->turns) fingerprint += turn.undone ? "u" : "-";
         for (const Activity& activity : controller_.live_activities) fingerprint += activity.id + activity.state;
         if (controller_.approval) fingerprint += "|ask:" + controller_.approval->title;
@@ -972,7 +1056,10 @@ void MainWindow::refresh_transcript() {
                 hint->set_halign(Gtk::Align::CENTER);
                 transcript_.append(*hint);
             }
-            if (!controller_.running && !session->detail.empty()) {
+            const std::optional<EndingStyle> look = session->ending ? ending_style(session->ending->code) : std::nullopt;
+            if (!controller_.running && look && has_end_card(session->ending->code) && !session->turns.empty()) {
+                transcript_.append(*ending_card(*session, *look, [this] { changes_toggle_.set_active(true); }));
+            } else if (!controller_.running && !session->detail.empty()) {
                 auto* detail = dim_label(session->detail);
                 if (session->state == "Failed") { detail->remove_css_class("dim-label"); detail->add_css_class("error"); }
                 transcript_.append(*detail);

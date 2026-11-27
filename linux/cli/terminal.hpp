@@ -41,6 +41,20 @@ inline std::string clip(const std::string& text, int limit) {
     if (limit < 2 || static_cast<int>(mason::utf8_length(text)) <= limit) return text;
     return mason::utf8_prefix(text, static_cast<size_t>(limit - 1)) + "…";
 }
+/// Breaks text into lines of at most `columns` characters at spaces; a word longer than a line stays whole.
+inline std::vector<std::string> wrap(const std::string& text, int columns) {
+    std::vector<std::string> lines;
+    std::string current;
+    for (const std::string& word : mason::split(text, ' ', false)) {
+        if (!current.empty() && static_cast<int>(mason::utf8_length(current) + 1 + mason::utf8_length(word)) > columns) {
+            lines.push_back(current);
+            current.clear();
+        }
+        current += (current.empty() ? "" : " ") + word;
+    }
+    if (!current.empty()) lines.push_back(current);
+    return lines;
+}
 inline std::string pad(const std::string& text, size_t columns) {
     const size_t length = mason::utf8_length(text);
     return length >= columns ? text : text + std::string(columns - length, ' ');

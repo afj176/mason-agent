@@ -191,7 +191,7 @@ long http_post_lines(const std::string& url, const std::vector<std::string>& hea
     const CURLcode code = curl_easy_perform(handle.curl);
     if (sink.failure) std::rethrow_exception(sink.failure);
     if (code == CURLE_ABORTED_BY_CALLBACK && is_cancelled(cancel)) throw Cancelled();
-    if (code != CURLE_OK) throw Error("The model server did not answer: " + std::string(error[0] ? error : curl_easy_strerror(code)));
+    if (code != CURLE_OK) throw ModelUnavailable("The model server did not answer: " + std::string(error[0] ? error : curl_easy_strerror(code)));
     if (!sink.buffer.empty()) on_line(sink.buffer);
     long status = 0;
     curl_easy_getinfo(handle.curl, CURLINFO_RESPONSE_CODE, &status);
@@ -395,7 +395,7 @@ ModelReply OpenAIClient::complete(const std::vector<ChatMessage>& messages, cons
                                         cancel, &error_body);
     if (status != 200) {
         const std::string detail = trim(error_body);
-        throw Error("The model server returned HTTP " + std::to_string(status) + "." + (detail.empty() ? "" : " " + utf8_prefix(detail, 600)));
+        throw ModelUnavailable("The model server returned HTTP " + std::to_string(status) + "." + (detail.empty() ? "" : " " + utf8_prefix(detail, 600)));
     }
     return assembler.finish();
 }

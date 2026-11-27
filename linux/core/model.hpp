@@ -6,6 +6,11 @@
 
 namespace mason {
 
+/// The model server could not be reached, or answered with an HTTP failure. A request ends as "model unavailable".
+struct ModelUnavailable : Error {
+    using Error::Error;
+};
+
 // ---- HTTP ------------------------------------------------------------------------------------------------------
 
 struct HttpResponse {
