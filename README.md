@@ -12,7 +12,7 @@
 
 </div>
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/code-dark.png"><img src="docs/images/code-light.png" alt="A Mason Agent coding session on Windows: a request to fix CSV parsing in ledger-lite, the agent's explanation of the fix, and 3 of 3 checks passed"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/code-dark.png"><img src="docs/images/code-light.png" alt="A Mason Agent coding session on Windows: the agent's explanation of a CSV parsing fix, 3 of 3 checks passed, a suggested note to remember, and the Notes tab on the request box"></picture>
 
 Add a project folder, ask for a change, and review every edit before you keep it. Your code and your conversations stay on your computer: models are reached only on localhost, and there is no account and no telemetry.
 
@@ -41,6 +41,7 @@ A GPU is recommended. Mason shows whether each model fits in your memory before 
 - **Checks before it says done.** Language servers check each edit, and your project's tests run before a request finishes, so the model fixes what they catch.
 - **Your agents, commands and MCP servers.** Markdown agents and slash commands in `.mason/`, and the ones you keep in `.claude/` and `.opencode/`. MCP tools are called only when you switch them on.
 - **Chat.** Talk a problem through with a model, apart from your coding sessions, with documents and pictures attached.
+- **Notes.** Keep short facts about the project in the Notes tray under the request box. Mason reads every one with each request, and can suggest one for you to keep.
 - **Schedules and notifications.** Run a request hourly, daily or weekly, unattended. Your system tells you when a session finishes or needs you.
 - **Themes.** Five theme families, each in light and dark, shared by the app and `mason`.
 
@@ -106,6 +107,7 @@ Type a request and each step prints as it finishes. Approvals take one key: `y` 
 | `/ask` · `/build` | Answer questions only, or make changes |
 | `/new` · `/resume` | Start a session, or continue an earlier one |
 | `/models` | The models on this computer; `start`, `search`, `download` and `setup` manage them |
+| `/notes` · `/note TEXT` | The notes Mason reads with every request; add one, `/notes remove N`, `/notes clear` |
 | `/theme` | Choose the theme the app and `mason` share |
 | `/help` | Everything else |
 

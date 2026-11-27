@@ -60,7 +60,7 @@ public sealed partial class MainWindow
         var reviewHost = new ContentControl { HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Stretch };
         ComboBox viewPicker = null!;
         var viewModes = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
-        CodeWorkspaceView View() => session?.WorkspaceView ?? CodeWorkspaceView.Workbench;
+        CodeWorkspaceView View() => session?.WorkspaceView == CodeWorkspaceView.Review ? CodeWorkspaceView.Review : CodeWorkspaceView.Workbench;
         Action? viewerChanged = null; // assigned once the page exists; refreshes counts outside the viewer
         bool updating = false, refreshQueued = false, emptySidebarVisible = true; string[] allFiles = []; int fileGeneration = 0; string? forcedPanel = null; CodeGitStatus? gitStatus = null;
         Button send = null!, openFolder = null!, branch = null!, changeButton = null!, preview = null!;
@@ -71,7 +71,7 @@ public sealed partial class MainWindow
         Border projectSurface = null!;
         HyperlinkButton reference = null!, activityButton = null!;
         ToggleButton sideToggle = null!, viewerToggle = null!, pinned = null!;
-        KeyboardAccelerator workspaceShortcut = null!, viewerShortcut = null!;
+        KeyboardAccelerator workspaceShortcut = null!, viewerShortcut = null!, notesShortcut = null!;
         TabView tabs = null!;
         Grid sideBody = null!, viewer = null!, center = null!;
         StackPanel toolbarLeft=null!,toolbarRight=null!,outputPanel=null!; Grid composerTools=null!;
@@ -345,7 +345,27 @@ public sealed partial class MainWindow
         progressRow.Children.Add(Row(stateMood, spinner));
         Grid.SetColumn(state, 1);
         progressRow.Children.Add(state);
-        stateRow = Toolbar(progressRow, stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow); Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
+        stateRow = Toolbar(progressRow, stop); Grid.SetRow(stateRow, 2); transcriptBody.Children.Add(stateRow);
+        notesTray = new NotesTray(
+            () => session == null ? null : new NotesPlace(store.SettingsRoot, new CodeWorkspace(session.Workspace), store.ProjectFor(session)?.Notes ?? []),
+            () => codeOperation != null,
+            () => session?.Tabs.FirstOrDefault(t => t.Key == session.SelectedTab && t.Kind == "file")?.Target);
+        // Both span the conversation and the request box, anchored to the bottom: the tray tucks 14 px behind the
+        // request box and the tab sits on its top edge. Drawing order puts the tray behind, the tab in front.
+        foreach (var layer in new FrameworkElement[] { notesTray.Tray, notesTray.Tab }) { Grid.SetRowSpan(layer, 4); layer.VerticalAlignment = VerticalAlignment.Bottom; }
+        // On the right, so it never covers the status pose that sits at the left above the request box.
+        notesTray.Tab.HorizontalAlignment = HorizontalAlignment.Right;
+        void PlaceNotes()
+        {
+            notesTray.Tray.Margin = new Thickness(10, 0, 10, Math.Max(0, composer.ActualHeight - 14));
+            notesTray.Tray.MaxHeight = Math.Max(160, transcriptBody.ActualHeight - composer.ActualHeight - 24);
+            notesTray.Tab.Margin = new Thickness(0, 0, 26, Math.Max(0, composer.ActualHeight - 1));
+        }
+        composer.SizeChanged += (_, _) => PlaceNotes(); transcriptBody.SizeChanged += (_, _) => PlaceNotes();
+        transcriptBody.Children.Add(notesTray.Tray);
+        Grid.SetRow(composer, 3); transcriptBody.Children.Add(composer);
+        transcriptBody.Children.Add(notesTray.Tab);
+        notesTray.Changed += () => notesTray.Tab.Visibility = session == null ? Visibility.Collapsed : Visibility.Visible;
         void UpdateStatusRow() => stateRow.Visibility = session?.State == "Completed" && state.Text == session.Detail
             ? Visibility.Collapsed : Visibility.Visible;
         state.RegisterPropertyChangedCallback(TextBlock.TextProperty, (_, _) => UpdateStatusRow());
@@ -529,10 +549,10 @@ public sealed partial class MainWindow
         // One toolbar row at every width: where you are on the left, preview and viewer on the right.
         // Labels shrink to icons in Arrange instead of wrapping onto a second row.
         toolbarLeft = Row(sideToggle, projectSwitcher, branch);
-        viewPicker = new ComboBox { ItemsSource = Enum.GetValues<CodeWorkspaceView>(), MinWidth = 115 };
+        viewPicker = new ComboBox { ItemsSource = CodeViews, MinWidth = 115 };
         AutomationProperties.SetName(viewPicker, "Coding workspace view");
         viewPicker.SelectionChanged += (_, _) => { if (!updating && viewPicker.SelectedItem is CodeWorkspaceView view) SelectView(view); };
-        foreach (var view in Enum.GetValues<CodeWorkspaceView>())
+        foreach (var view in CodeViews)
         {
             var choice = SegmentToggle(new ToggleButton { Content = view.ToString(), Tag = view });
             AutomationProperties.SetName(choice, view + " view");
@@ -557,13 +577,14 @@ public sealed partial class MainWindow
         }
         void CaptureViewer(string? kind)
         {
-            Navigate("Code"); CaptureProject(); if (session == null) return;
+            Navigate("Code"); CaptureProject(); notesTray.Close(); if (session == null) return;
             if (kind != null) OpenTab(kind, "", true);
             else if (viewer.Visibility == Visibility.Visible) { CodePanels.Hide(session); forcedPanel = null; Arrange(); }
         }
         extraCaptures.Add(("code-session", () => CaptureViewer(null)));
         extraCaptures.Add(("code-changes", () => CaptureViewer("changes")));
         extraCaptures.Add(("code-harness", () => CaptureViewer("harness")));
+        extraCaptures.Add(("code-notes", () => { CaptureViewer(null); notesTray.Open(); }));
         openCodeProject = owner => { if (codeOperation != null) { state.Text = "Finish or stop the current run before switching projects."; return; } Navigate("Code"); if (owner != project) SelectProject(owner); };
         addCodeProject = OpenWorkspace;
         compactCodeContext = CompactContext;
@@ -571,8 +592,9 @@ public sealed partial class MainWindow
         center.SizeChanged += (_, _) => {title.MaxWidth = folderPath.MaxWidth = Math.Max(100, center.ActualWidth - 190);ArrangeComposer();};
         workspaceShortcut = Shortcut(VirtualKey.B, VirtualKeyModifiers.Control, ToggleWorkspace);
         viewerShortcut = Shortcut(VirtualKey.V, VirtualKeyModifiers.Control | VirtualKeyModifiers.Menu, ToggleViewer);
-        root.KeyboardAccelerators.Add(workspaceShortcut); root.KeyboardAccelerators.Add(viewerShortcut);
-        void Shortcuts() { workspaceShortcut.IsEnabled = page.Visibility == Visibility.Visible; viewerShortcut.IsEnabled = page.Visibility == Visibility.Visible && session?.Tabs.Count > 0; }
+        notesShortcut = Shortcut(VirtualKey.N, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => notesTray.Toggle());
+        root.KeyboardAccelerators.Add(workspaceShortcut); root.KeyboardAccelerators.Add(viewerShortcut); root.KeyboardAccelerators.Add(notesShortcut);
+        void Shortcuts() { workspaceShortcut.IsEnabled = page.Visibility == Visibility.Visible; viewerShortcut.IsEnabled = page.Visibility == Visibility.Visible && session?.Tabs.Count > 0; notesShortcut.IsEnabled = page.Visibility == Visibility.Visible && session != null; }
         deleteSession.Click += async (_, _) => await DeleteSession();
         projectMenu.Opening+=(_,_)=>RefreshProjectMenu();
         sessions.ContextRequested += (_, e) =>
@@ -845,8 +867,9 @@ public sealed partial class MainWindow
             try { custom = CodeCustomization.Commands(store.SettingsRoot, session.Workspace); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             foreach (var command in custom)
                 yield return new TitleHit("\uE756", "/" + command.Name + (command.Description.Length > 0 ? " · " + command.Description : ""), "Custom command", () => { Navigate("Code"); draft.Text = "/" + command.Name + " "; draft.Focus(FocusState.Programmatic); draft.SelectionStart = draft.Text.Length; });
-            foreach (var view in Enum.GetValues<CodeWorkspaceView>())
+            foreach (var view in CodeViews)
                 yield return Command(view + " view", () => SelectView(view));
+            yield return Command("Notes", () => notesTray.Open());
             yield return Command("Review session changes", () => OpenTab("changes", "", true));
             yield return Command("View activity", () => OpenTab("activity", "", true));
             yield return Command("View context checkpoints", () => OpenTab("context", "", true));
@@ -891,6 +914,7 @@ public sealed partial class MainWindow
             foreach (var entry in viewerEntries.Values) entry.Dispose(); viewerEntries.Clear();
             reviewDesk?.Dispose(); reviewDesk = null; reviewHost.Content = null;
             session = selected;project=owner; updating = true; pendingTranscriptTail = true; followTail = true;
+            notesTray.Close(); notesTray.RefreshCount(); notesTray.Tab.Visibility = selected == null ? Visibility.Collapsed : Visibility.Visible;
             try
             {
                 RenderProjects();
@@ -1053,6 +1077,15 @@ public sealed partial class MainWindow
                 resultActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16 };
                 RefreshResultActions();
                 transcript.Children.Add(resultActions);
+                if (session.SuggestedNote is { Length: > 0 } suggested)
+                {
+                    var owner = session;
+                    void Decided() { owner.SuggestedNote = null; TrySaveCurrent(); RenderTranscript(); }
+                    transcript.Children.Add(NoteSuggestionCard(suggested, notesTray.Full,
+                        remember: () => { try { state.Text = notesTray.Add(suggested); Decided(); } catch (Exception e) when (e is ArgumentException or InvalidOperationException or IOException) { state.Text = e.Message; } },
+                        edit: () => { Decided(); notesTray.Open(suggested); },
+                        dismiss: () => { try { CodeNotes.Dismiss(store.SettingsRoot, owner.Workspace, suggested); } catch (IOException) { } Decided(); }));
+                }
             }
             if (session.LiveMessage.Length > 0)
             {
@@ -1150,9 +1183,9 @@ public sealed partial class MainWindow
             profiles.MinWidth=130;permissions.MinWidth=140;
             ArrangeComposer();
             bool hasArtifacts = session?.Tabs.Count > 0;
-            bool review = View() == CodeWorkspaceView.Review, notebook = View() == CodeWorkspaceView.Notebook;
+            bool review = View() == CodeWorkspaceView.Review;
             bool sidebar = (!review || forcedPanel == "workspace") && anyProject && (session?.SidebarVisible ?? emptySidebarVisible) && (width >= 760 || forcedPanel == "workspace");
-            bool showViewer = !review && !notebook && hasArtifacts && session!.ViewerVisible && (width >= 1000 || forcedPanel == "viewer") && !(width <= 1120 && forcedPanel == "workspace");
+            bool showViewer = !review && hasArtifacts && session!.ViewerVisible && (width >= 1000 || forcedPanel == "viewer") && !(width <= 1120 && forcedPanel == "workspace");
             if (showViewer && width - (sidebar ? projectPanelWidth+12 : 0) < 1000) sidebar = false;
             bool projectsOnly=sidebar&&width<640;if(projectsOnly)showViewer=false;
             bool viewerOnly = showViewer && width < 1000;
@@ -1166,12 +1199,12 @@ public sealed partial class MainWindow
             viewPicker.Visibility = session != null && width < 845 ? Visibility.Visible : Visibility.Collapsed;
             if (viewPicker.SelectedItem is not CodeWorkspaceView picked || picked != View()) viewPicker.SelectedItem = View();
             foreach (ToggleButton choice in viewModes.Children) choice.IsChecked = (CodeWorkspaceView)choice.Tag == View();
-            title.FontSize = notebook ? 38 : 24;
-            center.MaxWidth = notebook ? 1320 : double.PositiveInfinity;
-            center.Padding = notebook && width >= 900 ? new Thickness(28, 0, 28, 0) : new Thickness(0);
-            transcriptBody.MaxWidth = notebook ? 1320 : 960;
-            transcript.MaxWidth = notebook ? 1160 : 820;
-            transcript.HorizontalAlignment = notebook ? HorizontalAlignment.Left : HorizontalAlignment.Center;
+            title.FontSize = 24;
+            center.MaxWidth = double.PositiveInfinity;
+            center.Padding = new Thickness(0);
+            transcriptBody.MaxWidth = 960;
+            transcript.MaxWidth = 820;
+            transcript.HorizontalAlignment = HorizontalAlignment.Center;
             viewerToggle.Visibility = review ? Visibility.Collapsed : Visibility.Visible;
             double ratio = Math.Clamp(session?.ViewerFraction ?? .53, .28, .67);
             center.Visibility = viewerOnly ? Visibility.Collapsed : Visibility.Visible;
@@ -1332,6 +1365,15 @@ public sealed partial class MainWindow
             if (session == null) { state.Text = "Open a workspace folder first."; return; }
             if (SelectedChatProfile(profiles) is not AiEndpointProfile profile) { state.Text = "Select a coding model from Models & endpoints."; return; }
             string input = draft.Text.Trim(); if (input.Length == 0 && session.ReviewComments.Count == 0) return;
+            if (input is "/note" or "/notes") { updating = true; draft.Text = ""; session.Draft = ""; updating = false; notesTray.Open(); return; }
+            if (input.StartsWith("/note ", StringComparison.OrdinalIgnoreCase) || input.StartsWith("/notes add ", StringComparison.OrdinalIgnoreCase))
+            {
+                var words = input[(input.StartsWith("/notes add ", StringComparison.OrdinalIgnoreCase) ? 11 : 6)..];
+                try { state.Text = notesTray.Add(words); updating = true; draft.Text = ""; session.Draft = ""; updating = false; }
+                catch (Exception e) when (e is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException) { state.Text = e.Message; }
+                return;
+            }
+            notesTray.Close();
             followTail = true; pendingTranscriptTail = true;
             var active = session; using var cancellation = new CancellationTokenSource(); codeOperation = cancellation; aiOperation = cancellation; draftSave.Stop(); Enable();
             try

@@ -33,7 +33,7 @@ Everything here works in the Windows, macOS and Linux apps. Where a feature is r
 - **Agents and commands.** Markdown files in `.mason/agents` and `.mason/commands`. Mason also reads the ones in `.claude/` and `.opencode/`.
 - **Skills.** Instructions in `.mason/skills/NAME/SKILL.md` that the agent reads when the work calls for them.
 - **MCP servers.** Add a server on this computer and switch on the tools Mason may use. Every call asks first unless you saved a rule.
-- **Project notes.** Short facts about the project that go to the model with every request.
+- **Notes.** Short facts about the project, kept in the Notes tray under the request box (the Notes tab, Ctrl+Shift+N on Windows and Linux, ⌥⌘N on macOS, or `/note TEXT`). Mason reads every current note, up to 12, with each request. A note can be about a file; when that file changes it is not sent until you keep it again. After a request Mason may suggest one note for you to Remember or Dismiss.
 - **Themes.** Five theme families, each in light and dark, shared by the app and `mason`. Choose one in Appearance (the gear menu on Windows, Settings on macOS and Linux) or with `/theme`.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="images/themes-dark.png"><img src="images/themes-light.png" alt="The same coding session in each theme family, light above dark: Blueprint, Evergreen, Graphite, Kiln and Retro Neon"></picture>

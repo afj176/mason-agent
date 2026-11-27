@@ -319,6 +319,7 @@ internal sealed partial class Interactive
         try { await work; } catch (OperationCanceledException) { } catch (Exception error) { failure ??= error; }
         Flush(ref shown);
         Outcome(first, turns, clock.Elapsed, failure);
+        OfferSuggestedNote();
     }
 
     /// <summary>What the status line says: the model's streamed words, then the running tool, then the engine's own detail.</summary>
@@ -502,6 +503,8 @@ internal sealed partial class Interactive
                 return true;
             case "/status": Status(); return true;
             case "/theme": Theme(rest); return true;
+            case "/notes": Notes(rest); return true;
+            case "/note": Notes(rest.Trim().Length == 0 ? "" : "add " + rest); return true;
             case "/diff" or "/changes": Diff(rest); return true;
             case "/undo" or "/redo": Rewind(name == "/undo"); return true;
             case "/rules": Rules(rest); return true;
@@ -593,6 +596,7 @@ internal sealed partial class Interactive
             ("/commands", "Custom commands from .mason/commands (run as /name arguments)"),
             ("/queue", "Resume input queued before a stop"),
             ("/status", "Session, model, permission and storage"),
+            ("/notes · /note TEXT", "Notes Mason reads with every request; add, remove N or clear them"),
             ("/theme [name]", "List the theme families, or choose one (shared with Mason Agent)"),
             ("/exit", "Leave (Ctrl+C twice also works)"),
         ];

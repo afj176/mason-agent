@@ -62,7 +62,7 @@ static class CodingProjectChecks
 
         string removal = Path.Combine(area, "removal");
         Guid removedId, lastId, keptId;
-        var noteId = Guid.NewGuid();
+        Guid noteId;
         Dictionary<string, byte[]> keptBytes;
         using (var store = new CodeStore(removal))
         {
@@ -70,7 +70,7 @@ static class CodingProjectChecks
             var last = store.New(a);
             last.Draft = "Recover this draft"; store.Save(last);
             removedId = store.ProjectFor(last)!.Id; lastId = last.Id;
-            store.SaveNote(removedId, noteId, "Remember the route", "route.txt");
+            noteId = CodeNotes.Add(removal, new CodeWorkspace(a), "Remember the route", "route.txt").Id;
             var kept = store.New(b); keptId = store.ProjectFor(kept)!.Id;
             keptBytes = Directory.GetFiles(Path.Combine(removal, "code-sessions"), "*.json")
                 .Concat(new[] { Path.Combine(a, "route.txt"), Path.Combine(b, "route.txt") })
@@ -96,7 +96,7 @@ static class CodingProjectChecks
             check(store.Projects.Single().Id == keptId && store.ProjectForWorkspace(a) == null,
                 "retained session journals cannot repopulate a removed project on restart");
             var restored = store.AddProject(Path.Combine(a, "."));
-            check(restored.Id == removedId && restored.Notes.Single().Id == noteId && store.LastSession(removedId)?.Id == lastId &&
+            check(restored.Id == removedId && CodeNotes.Load(removal, a).Single().Id == noteId && store.LastSession(removedId)?.Id == lastId &&
                 store.LastSession(removedId)?.Draft == "Recover this draft" && store.SessionsFor(removedId).Length == 2,
                 "re-adding the folder restores notes, both conversations and the last selected draft");
             store.RemoveProject(keptId);
