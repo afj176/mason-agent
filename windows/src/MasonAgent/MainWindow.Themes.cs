@@ -18,16 +18,22 @@ public sealed partial class MainWindow
         for (int r = 0; r < 2; r++) grid.RowDefinitions.Add(new() { Height = GridLength.Auto });
         var cards = new List<(Button Card, ThemeFamily Family)>();
 
+        // The chosen card has a 2 px border in the active family's accent; colours are read for the picker's own
+        // light or dark theme, and again whenever that theme or the family changes.
         void Mark()
         {
+            bool dark = grid.ActualTheme == ElementTheme.Dark;
             foreach (var (card, family) in cards)
             {
                 bool on = family == ThemePalette.Current;
                 card.BorderThickness = new Thickness(on ? 2 : 1);
-                card.BorderBrush = on ? (Brush)Application.Current.Resources["AccentFillColorDefaultBrush"] : (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"];
+                if (BrandHighContrast) card.ClearValue(Control.BorderBrushProperty);
+                else card.BorderBrush = new SolidColorBrush(on ? ThemePalette.Accent(dark) : ThemePalette.Line(dark));
                 AutomationProperties.SetItemStatus(card, on ? "Selected" : "");
             }
         }
+        grid.Loaded += (_, _) => Mark();
+        grid.ActualThemeChanged += (_, _) => Mark();
 
         for (int i = 0; i < ThemeFamilies.All.Count; i++)
         {

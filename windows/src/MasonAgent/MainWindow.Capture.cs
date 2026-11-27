@@ -12,6 +12,8 @@ public sealed partial class MainWindow
 {
     /// <summary>Further screens (settings pages, dialogs) register themselves here for review captures.</summary>
     readonly List<(string Name, Action Open)> extraCaptures = [];
+    // The Appearance flyout, captured on its own because popups are not part of the window's render.
+    Microsoft.UI.Xaml.Controls.Button? appearanceButton; FrameworkElement? appearancePanel;
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr window);
 
     internal async Task CaptureForReview(string folder)
@@ -44,12 +46,18 @@ public sealed partial class MainWindow
         {
             if (family != ThemePalette.Current) ApplyThemeFamily(family);
             root.RequestedTheme = theme;
-            foreach (var (name, go) in shots)
+            foreach (var (name, go) in shots.Append(("appearance", () => { if (appearancePanel != null) appearancePanel.RequestedTheme = theme; appearanceButton?.Flyout?.ShowAt(appearanceButton); })))
             {
                 try { go(); } catch (Exception error) { File.WriteAllText(Path.Combine(folder, name + "-error.txt"), error.ToString()); continue; }
                 await Task.Delay(900);
                 var bitmap = new RenderTargetBitmap();
-                await bitmap.RenderAsync(root);
+                bool flyout = name == "appearance" && appearancePanel != null;
+                // The flyout's acrylic is not part of a render, so the panel stands on the flyout's fallback colour.
+                if (flyout && appearancePanel is Microsoft.UI.Xaml.Controls.Panel surface)
+                    surface.Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(theme == ElementTheme.Dark ? ThemePalette.Card(true) : Microsoft.UI.Colors.White);
+                await bitmap.RenderAsync(flyout ? appearancePanel : root);
+                if (flyout && appearancePanel is Microsoft.UI.Xaml.Controls.Panel shown) shown.ClearValue(Microsoft.UI.Xaml.Controls.Panel.BackgroundProperty);
+                if (flyout) appearanceButton?.Flyout?.Hide();
                 var pixels = await bitmap.GetPixelsAsync();
                 var path = Path.Combine(folder, named ? $"{name}-{family.Slug}-{theme.ToString().ToLowerInvariant()}.png" : $"{name}-{theme.ToString().ToLowerInvariant()}.png");
                 using var stream = new Windows.Storage.Streams.InMemoryRandomAccessStream();

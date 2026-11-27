@@ -145,6 +145,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(motion);
         var button = SubtleIconButton("\uE713", "Appearance and motion", (_, _) => { });
         button.Flyout = new Flyout { Content = panel, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight };
+        appearanceButton = button; appearancePanel = panel;
         return button;
     }
 
