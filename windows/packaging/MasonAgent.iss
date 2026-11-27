@@ -50,7 +50,11 @@ Source: "art\*.png"; Flags: dontcopy
 [Icons]
 Name: "{group}\Mason Agent"; Filename: "{app}\MasonAgent.exe"; AppUserModelID: "MasonAgent.Desktop"
 [Run]
-Filename: "{app}\MasonAgent.exe"; Description: "Open Mason Agent"; Flags: nowait postinstall skipifsilent
+; Opened through Explorer, not by Setup itself. Inno Setup 6 passes Setup's RedirectionGuard protection on to programs
+; it starts, and with it Windows refuses the junctions and symlinks model folders use (error 448, "untrusted mount
+; point"): Models would report "Windows blocked access through local model links" until Mason was reopened from Start.
+; Started by Explorer, Mason runs exactly as it does from the Start menu.
+Filename: "{win}\explorer.exe"; Parameters: """{app}\MasonAgent.exe"""; Description: "Open Mason Agent"; Flags: nowait postinstall skipifsilent
 [InstallDelete]
 ; Files earlier releases installed that this one no longer ships: the WebView2 libraries, Windows AI /
 ; ONNX Runtime / DirectML files the full Windows App SDK package brought in, and retired assets. Setup

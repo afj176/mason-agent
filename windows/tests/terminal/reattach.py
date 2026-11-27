@@ -35,14 +35,19 @@ def main(cli, area):
         for i in range(12):
             invoke("terminal-send", "--id", task, "--line", str(i))
         invoke("terminal-eof", "--id", task)
-        until = time.monotonic() + 45
+        # Each check starts the CLI afresh, which is slow on a busy release runner, so the wait is generous;
+        # a real hang still fails, and says what the task was doing.
+        until = time.monotonic() + 120
         while True:
             result = invoke("task-show", "--id", task)
             if not result["status"]["Active"]:
                 break
             if time.monotonic() >= until:
-                raise RuntimeError("The terminal did not exit after EOF")
-            time.sleep(.25)
+                pending = list((profile / "background-tasks").glob("*/input/*.json"))
+                tail = [json.loads(row).get("type") for row in result["events"][-8:]]
+                raise RuntimeError(f"The terminal did not exit after EOF. State: {result['status'].get('State')}; "
+                                   f"input files not yet read: {len(pending)}; last events: {tail}")
+            time.sleep(.5)
         events = [json.loads(row) for row in result["events"]]
         output = next(e["detail"]["output"] for e in events if e["type"] == "terminal.exit")
         expected = [f"receipt {i}" for i in range(12)] + ["count=12"]
