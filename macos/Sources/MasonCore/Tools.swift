@@ -245,6 +245,8 @@ extension Agent {
                               parameters: schema(["path": ["type": "string", "description": "Folder to map, relative to the project. Use . for the whole project."], "query": text], required: ["path", "query"])))
         tools.append(ToolSpec(name: "ask_user", description: "Ask the user one question when you cannot continue without their answer (a choice only they can make, or a missing fact). The request stops and their reply continues it. Do not use it for things you can find out yourself.",
                               parameters: schema(["question": text], required: ["question"])))
+        tools.append(ToolSpec(name: "suggest_note", description: "Suggest one short, lasting fact about this project for the user to remember (a convention they corrected, the command that runs the tests, where something lives). The user decides whether to keep it; nothing is saved by this call. At most once per request; never secrets or one-off details.",
+                              parameters: schema(["text": ["type": "string", "minLength": 1, "maxLength": ProjectNotes.textLimit] as [String: Any]], required: ["text"])))
         tools.append(ToolSpec(name: "navigate_code", description: "Find where a name is defined, used or tested in a project folder. Returns labelled text candidates with file and line; they are whole-word matches, not a compiler's answer.",
                               parameters: schema(["path": ["type": "string", "description": "Folder to look in, relative to the project. Use . for the whole project."], "symbol": text, "mode": ["type": "string", "enum": ["definitions", "references", "tests"]]], required: ["path", "symbol", "mode"])))
         if SymbolService.available || LanguageServers.available {
@@ -340,6 +342,14 @@ extension Agent {
             guard let question = text("question")?.trimmingCharacters(in: .whitespacesAndNewlines), !question.isEmpty, question.count <= 2000 else { throw MasonError("ask_user needs a question of up to 2,000 characters.") }
             pendingQuestion = question
             return (.completed, "Asked the user. The request stops here; their reply will come as the next message.")
+
+        case "suggest_note":
+            guard !noteSuggested else { throw MasonError("Only one note can be suggested per request.") }
+            let suggested = (text("text") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if let problem = ProjectNotes.suggestionProblem(suggested, workspace: workspace.root.path, home: home) { throw MasonError(problem) }
+            noteSuggested = true
+            session.suggestedNote = NoteSuggestion(text: suggested, turn: session.turns.last?.id)
+            return (.completed, "Shown to the user, who decides whether to keep it. Continue with the request.")
 
         case "navigate_code":
             guard let symbol = text("symbol"), let mode = text("mode") else { throw MasonError("navigate_code needs a symbol and a mode.") }

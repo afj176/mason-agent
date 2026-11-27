@@ -91,6 +91,8 @@ public final class Agent {
     var enabledGroups: Set<String> = []
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     var pendingQuestion: String?
+    /// Whether the model already suggested a note in this request; it may suggest one per request.
+    var noteSuggested = false
     /// The reviewer that reads a request's changes before it may finish. Normally the model chosen with /roles; a test supplies its own.
     public var reviewer: ChatModel?
     /// The project's policy, read when a request starts.
@@ -195,6 +197,7 @@ public final class Agent {
         Make the smallest change that does what was asked, then check your work when a quick check exists.
         \(session.askOnly || session.permission == .readOnly ? "This session is read-only: answer from what you read; do not edit files or run commands." : "")
         \(servers.isEmpty ? "" : "The user registered these MCP servers: " + servers.map(\.name).joined(separator: ", ") + ". Use mcp_tools to see what one offers before calling it.")
+        When you learn a short, lasting fact about this project worth remembering every time, you may suggest it once per request with suggest_note; the user decides whether to keep it.
         When you are done, reply in plain text with a short summary of what you did and anything the user should verify. Do not claim a check passed unless you ran it.
         """
     }
@@ -370,6 +373,7 @@ public final class Agent {
             var finished = false, asked = false
             var baselineTaken = false, baseline: CommandResult?, repairs = 0
             pendingQuestion = nil
+            noteSuggested = false
             // In Auto, Mason works out what it can check for itself before the work starts.
             var plan: DerivedPlan?
             if derivesChecks, session.permission == .auto, !session.askOnly {
@@ -549,7 +553,7 @@ public final class Agent {
         let arguments = (try? JSONSerialization.jsonObject(with: Data(call.arguments.utf8)) as? [String: Any]) ?? [:]
         func text(_ key: String) -> String? { arguments[key] as? String }
         let named = text("command") ?? text("path") ?? text("query") ?? text("name") ?? text("id") ?? text("question")
-        let subject = named ?? [text("server"), text("tool") ?? text("uri")].compactMap { $0 }.joined(separator: "/")
+        let subject = call.name == "suggest_note" ? (text("text") ?? "") : named ?? [text("server"), text("tool") ?? text("uri")].compactMap { $0 }.joined(separator: "/")
         var activity = Activity(tool: call.name, subject: subject, state: .running, result: "")
         session.activities.append(activity)
         emit(.activityStarted(activity))
