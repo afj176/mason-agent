@@ -389,7 +389,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     adw_view_switcher_set_policy(ADW_VIEW_SWITCHER(switcher), ADW_VIEW_SWITCHER_POLICY_WIDE);
 
     changes_toggle_.set_icon_name("view-dual-symbolic");
-    changes_toggle_.set_tooltip_text("Show Moments: what Mason did, and the files, changes and pages it made");
+    changes_toggle_.set_tooltip_text("Show Moments: what Mason did, and the files, changes and pages it made (Ctrl+Alt+V)");
     changes_toggle_.signal_toggled().connect([this] {
         side_.set_visible(changes_toggle_.get_active());
         refresh_changes();
@@ -517,6 +517,12 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         }
         if (key == GDK_KEY_Escape && notes_open() && notes_editing_.empty() && !notes_about_popover_.get_visible()) {
             open_notes(false);
+            return true;
+        }
+        // Ctrl+Alt+V shows and hides the side panel (Moments), as it shows and hides the viewer on Windows.
+        const Gdk::ModifierType viewer = Gdk::ModifierType::CONTROL_MASK | Gdk::ModifierType::ALT_MASK;
+        if ((key == GDK_KEY_v || key == GDK_KEY_V) && (state & viewer) == viewer && on_code) {
+            changes_toggle_.set_active(!changes_toggle_.get_active());
             return true;
         }
         return false;
