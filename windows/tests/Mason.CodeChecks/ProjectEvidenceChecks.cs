@@ -33,16 +33,42 @@ internal static class ProjectEvidenceChecks
             ["flutter-json","""{"type":"testStart","test":{"id":1,"name":"tax"}}"""+"\n"+"""{"type":"testDone","testID":1,"result":"success"}""","tax"]];
         if(examples.Any(t=>CodeProjectTests.Parse(t[0],t[1]).GetValueOrDefault(t[2])!="passed"))throw new Exception("Test reporter identity lost.");
         var profile=Path.Combine(Path.GetDirectoryName(area)!,"notes-profile");
-        var noteId=Guid.NewGuid();
-        using(var store=new CodeStore(profile)){var p=store.AddProject(scope.Root);store.SaveNote(p.Id,noteId,"contract in price",price.Path);}
-        using(var store=new CodeStore(profile)){
-            var p=store.ProjectForWorkspace(scope.Root)!;
-            if(!CodeStore.NoteCurrent(scope,p.Notes.Single()))throw new Exception("Project note did not persist.");
-            var file=scope.Read(price.Path);scope.Edit(file.Path,file.Sha256,file.Content,"module.exports = null;",(_,_)=>{});
-            if(CodeStore.NoteCurrent(scope,p.Notes.Single()))throw new Exception("Stale project note remained current.");
-            store.ForgetNote(p.Id,noteId);
-        }
-        using(var store=new CodeStore(profile))if(store.ProjectForWorkspace(scope.Root)!.Notes.Length!=0)throw new Exception("Forgotten project note restored.");
+        Directory.CreateDirectory(profile);
+        var noteId=CodeNotes.Add(profile,scope,"contract in price",price.Path).Id;
+        if(!CodeNotes.Current(scope,CodeNotes.Load(profile,scope.Root).Single()))throw new Exception("Project note did not persist.");
+        var priceFile=scope.Read(price.Path);scope.Edit(priceFile.Path,priceFile.Sha256,priceFile.Content,"module.exports = null;",(_,_)=>{});
+        if(CodeNotes.Current(scope,CodeNotes.Load(profile,scope.Root).Single())||CodeNotes.Context(profile,scope).Length!=0)throw new Exception("Stale project note remained current or was sent.");
+        CodeNotes.Refresh(profile,scope,noteId);
+        if(!CodeNotes.Current(scope,CodeNotes.Load(profile,scope.Root).Single())||!CodeNotes.Context(profile,scope).Contains("contract in price"))throw new Exception("Keep anyway did not tie the note to the file as it is now.");
+        CodeNotes.Edit(profile,scope.Root,noteId,"contract lives in price.cjs");
+        if(CodeNotes.Load(profile,scope.Root).Single().Text!="contract lives in price.cjs")throw new Exception("Editing a note lost its words.");
+        var removedNote=CodeNotes.Remove(profile,scope.Root,noteId)!;
+        if(CodeNotes.Load(profile,scope.Root).Length!=0)throw new Exception("A removed note was kept.");
+        CodeNotes.Restore(profile,scope.Root,[removedNote]);
+        if(CodeNotes.Load(profile,scope.Root).Single().Id!=noteId)throw new Exception("Undo did not put the note back.");
+        // Every current note is sent, newest first, up to twelve; a thirteenth and an over-long note are refused.
+        for(int n=2;n<=CodeNotes.Limit;n++)CodeNotes.Add(profile,scope,$"fact {n}");
+        bool refusedFull=false,refusedLong=false,refusedSame=false;
+        try{CodeNotes.Add(profile,scope,"one too many");}catch(InvalidOperationException){refusedFull=true;}
+        var cleared=CodeNotes.Clear(profile,scope.Root);
+        try{CodeNotes.Add(profile,scope,new string('x',CodeNotes.TextLimit+1));}catch(ArgumentException){refusedLong=true;}
+        CodeNotes.Add(profile,scope,"We use pnpm");
+        try{CodeNotes.Add(profile,scope,"  we use   PNPM ");}catch(InvalidOperationException){refusedSame=true;}
+        if(!refusedFull||!refusedLong||!refusedSame||cleared.Length!=CodeNotes.Limit)throw new Exception("Note limits were not enforced.");
+        CodeNotes.Clear(profile,scope.Root);CodeNotes.Restore(profile,scope.Root,cleared);
+        var context=CodeNotes.Context(profile,scope).Split('\n');
+        if(context.Length!=CodeNotes.Limit||!context[0].Contains("fact 12"))throw new Exception("Mason did not read every current note, newest first.");
+        // A suggestion must be new: not kept already and not one the user dismissed.
+        bool kept=false,dismissed=false;
+        try{CodeNotes.CheckSuggestion(profile,scope.Root,"fact 3");}catch(InvalidOperationException){kept=true;}
+        CodeNotes.Dismiss(profile,scope.Root,"Run make test");
+        try{CodeNotes.CheckSuggestion(profile,scope.Root,"run make TEST");}catch(InvalidOperationException){dismissed=true;}
+        if(!kept||!dismissed||CodeNotes.CheckSuggestion(profile,scope.Root,"The API lives in /v2")!="The API lives in /v2")throw new Exception("Note suggestions were not checked.");
+        // Notes saved in the project list by earlier versions move to the data folder once.
+        var legacyHome=Path.Combine(Path.GetDirectoryName(area)!,"notes-legacy");
+        var legacy=new ProjectNote(Guid.NewGuid(),"older note","",null,DateTimeOffset.UtcNow);
+        if(CodeNotes.Load(legacyHome,scope.Root,[legacy]).Single().Id!=legacy.Id||CodeNotes.Load(legacyHome,scope.Root).Single().Id!=legacy.Id)
+            throw new Exception("Notes from the project list did not move to the notes file.");
         var codec=new CodeWorkspace(Directory.CreateDirectory(Path.Combine(area,"codec")).FullName);
         codec.CreateDirectory(".mason");
         var impl=codec.Create("codec.cjs","exports.encode=s=>s.replaceAll(' ','%20'); exports.decode=s=>s.replaceAll('%20',' ');");

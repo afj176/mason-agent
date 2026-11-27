@@ -83,8 +83,9 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         var scope = new CodeWorkspace(session.Workspace);
         var listing = await Task.Run(() => scope.Files(".", 120), cancellation);
         var instructions = scope.Instructions();
-        var projectNotes = store.ProjectFor(session)?.Notes ?? [];
-        string NotesContext() => string.Join("\n", projectNotes.Where(n => CodeStore.NoteCurrent(scope,n)).OrderByDescending(n => n.Saved).Take(6).Select(n => JsonSerializer.Serialize(new { n.Text, n.Source })));
+        // Notes are read fresh, so a note added in the app or in mason reaches the next model call.
+        var legacyNotes = store.ProjectFor(session)?.Notes ?? [];
+        string NotesContext() => CodeNotes.Context(store.SettingsRoot, scope, legacyNotes);
         string mapContext="";
         bool firstMap=true;
         string notesContext = NotesContext();
@@ -113,6 +114,8 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
         if (session.Title == "New session") session.Title = input.Length > 55 ? input[..55] + "…" : input;
         session.ViewerDismissed = false;
         session.Draft = ""; session.State = "Running"; session.Detail = "Preparing workspace context…";
+        // A suggestion left undecided goes with the request it came from; each request may make one.
+        if (followUp == null) session.SuggestedNote = null;
         if (followUp == null) session.Evidence.Clear();
         if (followUp == null) session.ReviewComments.RemoveAll(c => review.Any(sent => sent.Id == c.Id));
         session.Updated = DateTimeOffset.UtcNow;
@@ -238,7 +241,7 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
                 {
                     listing = await Task.Run(() => scope.Files(".", 120), cancellation);
                     instructions = scope.Instructions();
-                    if (projectNotes.Length != 0) notesContext = NotesContext();
+                    notesContext = NotesContext();
                     if (session.Milestones.Length != 0) planContext = CodeMilestones.Context(scope, session.Milestones);
                     refreshInventory = false;
                 }
@@ -926,6 +929,11 @@ public sealed class CodeEngine(CodeStore store, ICodeModel model,
             case "navigate_code":
                 CodeProtocol.Exact(a,"path","symbol","mode");
                 return new(JsonSerializer.Serialize(await Task.Run(()=>CodeNavigation.Query(scope,S(a,"path"),S(a,"symbol"),S(a,"mode"),session.Activities,ct),ct)));
+            case "suggest_note":
+                CodeProtocol.Exact(a, "text");
+                if (session.SuggestedNote != null) throw new InvalidOperationException("Only one note can be suggested per request.");
+                session.SuggestedNote = CodeNotes.CheckSuggestion(store.SettingsRoot, session.Workspace, S(a, "text"));
+                return new("Shown to the user, who decides whether to keep it. Continue with the request.");
             case "verify_acceptance":
                 CodeProtocol.Exact(a);
                 var contract = session.Turns.LastOrDefault(t=>t.Role=="user")?.Acceptance;

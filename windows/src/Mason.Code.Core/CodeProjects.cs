@@ -11,6 +11,7 @@ public sealed class CodeProject
     public string Workspace { get; init; }="";
     public Guid? LastSessionId { get; set; }
     public bool Expanded { get; set; }
+    /// <summary>Notes saved by earlier versions. CodeNotes moves them to the data folder the first time they are read.</summary>
     public ProjectNote[] Notes { get; set; } = [];
     public CodeShellKind? PreferredShell { get; set; }
     [JsonIgnore] public string Name=>Path.GetFileName(Workspace) is {Length:>0} name?name:Workspace;
@@ -40,32 +41,7 @@ public sealed partial class CodeStore
     CodeProject RequireProject(Guid id)=>projectState.Projects.SingleOrDefault(p=>p.Id==id)??throw new ArgumentException("The selected project is not registered.");
     public CodeProject? ProjectFor(CodeSession session)=>projectState.Projects.FirstOrDefault(p=>SameProject(p.Workspace,session.Workspace));
     public CodeProject? ProjectForWorkspace(string workspace)=>projectState.Projects.FirstOrDefault(p=>SameProject(p.Workspace,workspace));
-    public void SaveNote(Guid projectId, Guid id, string text, string source)
-    {
-        var owner = RequireProject(projectId);
-        text = text.Trim(); source = source.Trim();
-        if (text.Length is 0 or > 1000 || id == Guid.Empty) throw new ArgumentException("Use 1–1,000 characters for the project note.");
-        var file = source.Length == 0 ? null : new CodeWorkspace(owner.Workspace).Read(source);
-        var note = new ProjectNote(id, text, file?.Path ?? "", file?.Sha256, DateTimeOffset.UtcNow);
-        var prior = owner.Notes;
-        var next = prior.Any(n => n.Id == id) ? prior.Select(n => n.Id == id ? note : n).ToArray() : prior.Append(note).ToArray();
-        if (next.Length > 48) throw new InvalidDataException("This project already has 48 notes.");
-        owner.Notes = next;
-        try { SaveProjects(); } catch { owner.Notes = prior; throw; }
-    }
-    public void ForgetNote(Guid projectId, Guid id)
-    {
-        var owner = RequireProject(projectId);
-        var prior = owner.Notes;
-        owner.Notes = prior.Where(n => n.Id != id).ToArray();
-        try { SaveProjects(); } catch { owner.Notes = prior; throw; }
-    }
-    public static bool NoteCurrent(CodeWorkspace scope, ProjectNote note)
-    {
-        if (note.Source.Length == 0) return true;
-        try { return scope.Read(note.Source).Sha256 == note.SourceHash; }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or InvalidDataException) { return false; }
-    }
+    public static bool NoteCurrent(CodeWorkspace scope, ProjectNote note) => CodeNotes.Current(scope, note);
     public void SetProjectShell(Guid id,CodeShellKind shell)
     {
         if(!Enum.IsDefined(shell))throw new ArgumentException("Unknown shell.");

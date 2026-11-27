@@ -136,37 +136,6 @@ public sealed partial class MainWindow
         var refresh = CodeLink("Recheck inputs", (_, _) => { try { Render(); } catch (Exception e) { message.Text = e.Message; } });
         var body = Stack(Heading("Session plan"), milestones, details, Row(add, edit, verify, remove), refresh,
             Heading("Repository map", 19), query, Row(search, inspect), matches, message);
-        if (codeStore?.ProjectFor(session) is {} project)
-        {
-            var notes = new ListView { MaxHeight = 150, SelectionMode = ListViewSelectionMode.Single };
-            var visible = Array.Empty<ProjectNote>();
-            void ShowNotes()
-            {
-                visible = project.Notes;
-                notes.ItemsSource = visible.Select(n => n.Text + (n.Source.Length == 0 ? "" : " · " + n.Source) +
-                    (CodeStore.NoteCurrent(scope, n) ? "" : " · source changed")).ToArray();
-            }
-            async Task EditNote(ProjectNote? previous)
-            {
-                var note = new TextBox { Header = "Project decision or convention", Text = previous?.Text ?? "", AcceptsReturn = true, MaxLength = 1000 };
-                var source = new TextBox { Header = "Supporting workspace file (optional)", Text = previous?.Source ?? SelectedPaths().FirstOrDefault() ?? "" };
-                var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme, Title = "Project memory",
-                    Content = Stack(note, source), PrimaryButtonText = "Save", CloseButtonText = "Cancel" };
-                if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-                {
-                    codeStore.SaveNote(project.Id, previous?.Id ?? Guid.NewGuid(), note.Text, source.Text); ShowNotes();
-                }
-            }
-            var addNote = Button("Add note", async (_,_) => await Guard(() => EditNote(null), true));
-            var editNote = Button("Edit note", async (_,_) => { if (notes.SelectedIndex >= 0) await Guard(() => EditNote(visible[notes.SelectedIndex]), true); });
-            var forget = CodeLink("Forget", async (_,_) => await Guard(() =>
-            {
-                if (notes.SelectedIndex >= 0) { codeStore.ForgetNote(project.Id, visible[notes.SelectedIndex].Id); ShowNotes(); }
-                return Task.CompletedTask;
-            }, true));
-            body.Children.Add(Heading("Project memory", 19)); body.Children.Add(notes); body.Children.Add(Row(addNote, editNote, forget));
-            ShowNotes();
-        }
         body.Padding = new Thickness(18);
         Render();
         return CodeScroll(body);
