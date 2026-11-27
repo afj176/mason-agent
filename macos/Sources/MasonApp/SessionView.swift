@@ -149,6 +149,11 @@ struct TurnView: View {
                                     .help("Show what changed")
                             }
                             if turn.undone { Text("Undone").font(.caption).foregroundStyle(Brand.caution) }
+                            if let first = activities.first {
+                                Button("View activity") { model.showActivity(first.id) }
+                                    .buttonStyle(.plain).foregroundStyle(Brand.accent)
+                                    .help("Show this request's steps in the Activity panel")
+                            }
                         }
                     }
                     if !live, let session = model.session, let ending = session.ending, RunEnding.carded.contains(ending.code),
@@ -463,21 +468,14 @@ struct ChangesView: View {
     @EnvironmentObject var model: AppModel
     let session: Session
 
-    var changes: [FileChange] {
-        var merged: [String: FileChange] = [:], order: [String] = []
-        for turn in session.turns where !turn.undone {
-            for change in turn.changes {
-                if var existing = merged[change.path] { existing.after = change.after; existing.afterBlob = change.afterBlob; existing.afterMissing = change.afterMissing; merged[change.path] = existing } else { merged[change.path] = change; order.append(change.path) }
-            }
-        }
-        return order.compactMap { merged[$0] }
-    }
+    var changes: [FileChange] { ActivityScenes.sessionChanges(session) }
 
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
                 Picker("Show", selection: $model.panel) {
                     Text("Changes").tag("changes")
+                    Text("Activity").tag("activity")
                     Text("Plan").tag("plan")
                     Text("Files").tag("files")
                     Text("Website").tag("website")
@@ -494,7 +492,9 @@ struct ChangesView: View {
             }
             .padding(12)
             Divider()
-            if model.panel == "plan" {
+            if model.panel == "activity" {
+                LiveViewer(session: session)
+            } else if model.panel == "plan" {
                 MilestonesView(session: session)
             } else if model.panel == "files" {
                 FilesPanel(session: session)

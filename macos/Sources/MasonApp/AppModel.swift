@@ -22,8 +22,12 @@ final class AppModel: ObservableObject {
     @Published var sessions: [Session] = []
     @Published var selection: UUID?
     @Published var draft = ""
-    /// What the side panel shows: changes, plan, files or website.
+    /// What the side panel shows: changes, activity, plan, files or website.
     @Published var panel = "changes"
+    /// The step the Activity panel shows: nil follows the run; otherwise "plan", "end" or the id of a step's first call.
+    @Published var activityPick: String?
+    /// The Activity panel shows each call's subject and result as they are, instead of the summary.
+    @Published var activityRaw = false
     /// The file being read in the Files panel, and the line the model pointed at.
     @Published var fileShown: String?
     @Published var fileLine = 1

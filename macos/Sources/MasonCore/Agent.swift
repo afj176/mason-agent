@@ -639,6 +639,8 @@ public final class Agent {
     /// What a call is about, as its activity row shows it: the command, path, query or name it names.
     static func subject(of call: ToolCall, arguments: [String: Any]) -> String {
         func text(_ key: String) -> String? { arguments[key] as? String }
+        // A command with exact arguments reads as the line it runs: python3 -m unittest -v.
+        if call.name == "run_command", let program = text("program") { return ([program] + ((arguments["arguments"] as? [String]) ?? [])).joined(separator: " ") }
         let named = text("command") ?? text("path") ?? text("query") ?? text("name") ?? text("id") ?? text("question")
         return call.name == "suggest_note" ? (text("text") ?? "") : named ?? [text("server"), text("tool") ?? text("uri")].compactMap { $0 }.joined(separator: "/")
     }
