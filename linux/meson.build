@@ -22,7 +22,7 @@ endif
 
 core_sources = files(
   'core/util.cpp', 'core/workspace.cpp', 'core/session.cpp', 'core/model.cpp',
-  'core/shell.cpp', 'core/harness.cpp', 'core/tools.cpp', 'core/browser.cpp', 'core/planning.cpp', 'core/semantic.cpp', 'core/desktop.cpp', 'core/acceptance.cpp', 'core/transfer.cpp', 'core/navigation.cpp', 'core/language.cpp', 'core/generation.cpp', 'core/gpu.cpp', 'core/notes.cpp', 'core/palette.cpp', 'core/script.cpp', 'core/experiments.cpp', 'core/delivery.cpp', 'core/background.cpp', 'core/roles.cpp', 'core/project_tests.cpp', 'core/preview.cpp', 'core/network.cpp', 'core/policy.cpp', 'core/bundles.cpp', 'core/browse.cpp', 'core/derived.cpp', 'core/mcp.cpp', 'core/chat.cpp', 'core/schedules.cpp', 'core/agent.cpp', 'core/models.cpp', 'core/model_memory.cpp', 'core/theme.cpp',
+  'core/shell.cpp', 'core/harness.cpp', 'core/tools.cpp', 'core/browser.cpp', 'core/planning.cpp', 'core/semantic.cpp', 'core/desktop.cpp', 'core/acceptance.cpp', 'core/transfer.cpp', 'core/navigation.cpp', 'core/language.cpp', 'core/generation.cpp', 'core/gpu.cpp', 'core/notes.cpp', 'core/palette.cpp', 'core/script.cpp', 'core/experiments.cpp', 'core/delivery.cpp', 'core/background.cpp', 'core/roles.cpp', 'core/project_tests.cpp', 'core/preview.cpp', 'core/network.cpp', 'core/policy.cpp', 'core/bundles.cpp', 'core/browse.cpp', 'core/derived.cpp', 'core/mcp.cpp', 'core/chat.cpp', 'core/schedules.cpp', 'core/agent.cpp', 'core/models.cpp', 'core/model_memory.cpp', 'core/theme.cpp', 'core/scenes.cpp',
 )
 core = static_library('masoncore', core_sources, dependencies: [curl, json, threads, atspi, gobject, x11], cpp_args: core_args)
 core_dep = declare_dependency(link_with: core, include_directories: include_directories('core'), dependencies: [curl, json, threads, atspi, gobject, x11])
@@ -54,7 +54,7 @@ if get_option('app')
   app_args = webkit.found() ? ['-DMASON_HAVE_WEBKIT'] : []
   gnome = import('gnome')
   app_resources = gnome.compile_resources('mason-resources', 'app/mason.gresource.xml', source_dir: ['packaging', '../windows/src/MasonAgent/Assets'])
-  app_sources = files('app/main.cpp', 'app/window.cpp', 'app/style.cpp', 'app/models_page.cpp', 'app/model_detail.cpp', 'app/chat_page.cpp', 'app/settings_page.cpp', 'app/controller.cpp', 'app/panels.cpp', 'app/notes_tray.cpp')
+  app_sources = files('app/main.cpp', 'app/window.cpp', 'app/style.cpp', 'app/models_page.cpp', 'app/model_detail.cpp', 'app/chat_page.cpp', 'app/settings_page.cpp', 'app/controller.cpp', 'app/panels.cpp', 'app/notes_tray.cpp', 'app/activity_panel.cpp')
   executable('mason-agent', app_sources, app_resources, dependencies: [core_dep, gtkmm, adwaita, webkit], cpp_args: app_args, install: true)
   install_data('packaging/site.masonagent.MasonAgent.desktop', install_dir: get_option('datadir') / 'applications')
   install_data('packaging/site.masonagent.MasonAgent.metainfo.xml', install_dir: get_option('datadir') / 'metainfo')
