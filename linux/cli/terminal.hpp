@@ -11,6 +11,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "pixel_icon.hpp"
+#include "theme.hpp"
 #include "util.hpp"
 
 namespace term {
@@ -21,7 +23,8 @@ inline const bool interactive = isatty(0) && isatty(1);
 inline const char* const reset = "\x1b[0m";
 inline const char* const bold = "\x1b[1m";
 inline const char* const dim = "\x1b[2m";
-inline const char* const accent = "\x1b[38;2;195;194;255m";
+/// The theme family's accent; use_theme sets it from the family saved in appearance.json.
+inline const char* accent = "\x1b[38;2;180;184;255m";
 inline const char* const green = "\x1b[38;2;120;200;140m";
 inline const char* const red = "\x1b[38;2;240;120;120m";
 inline const char* const yellow = "\x1b[38;2;230;190;110m";
@@ -53,9 +56,58 @@ inline int height() {
     if (ioctl(1, TIOCGWINSZ, &size) == 0 && size.ws_row > 0) return size.ws_row;
     return 24;
 }
-/// The selected cell of a picker: accent background with dark text.
-inline const char* const selected = "\x1b[1;48;2;195;194;255;38;2;23;26;43m";
+/// The selected cell of a picker: accent background with the family's on-accent text.
+inline const char* selected = "\x1b[1;48;2;180;184;255;38;2;21;27;48m";
 inline const char* const inverse = "\x1b[7m";
+
+/// The theme family chosen in Mason Agent's Appearance or with /theme (appearance.json), used for the accent colour.
+inline const mason::theme::Family* family = &mason::theme::default_family();
+
+/// A light terminal background gets the family's light-mode accent. COLORFGBG ("15;0") is the only widely set
+/// hint; without it the terminal is taken to be dark, as most are.
+inline bool light_background() {
+    const char* colors = std::getenv("COLORFGBG");
+    if (!colors || !*colors) return false;
+    const std::string text = colors;
+    const std::string last = text.substr(text.rfind(';') == std::string::npos ? 0 : text.rfind(';') + 1);
+    return last == "7" || last == "15";
+}
+
+inline std::string rgb_code(uint32_t c) { return std::to_string((c >> 16) & 0xFF) + ";" + std::to_string((c >> 8) & 0xFF) + ";" + std::to_string(c & 0xFF); }
+
+inline void use_theme(const mason::theme::Family& chosen) {
+    static std::string accent_code, selected_code;
+    family = &chosen;
+    const mason::theme::Tokens& tokens = chosen.tokens(!light_background());
+    accent_code = "\x1b[38;2;" + rgb_code(tokens.accent) + "m";
+    selected_code = "\x1b[1;48;2;" + rgb_code(tokens.accent) + ";38;2;" + rgb_code(tokens.on_accent) + "m";
+    accent = accent_code.c_str();
+    selected = selected_code.c_str();
+}
+
+/// The app icon drawn with half blocks (two pixel rows per line) in 24-bit colour, one string per line.
+/// Empty when colour is off or the terminal is narrower than 80 columns.
+inline std::vector<std::string> picture() {
+    std::vector<std::string> lines;
+    if (!styled || width() < 80) return lines;
+    auto rgb = [](const char* hex) { return std::to_string(std::stoi(std::string(hex, 2), nullptr, 16)) + ";" + std::to_string(std::stoi(std::string(hex + 2, 2), nullptr, 16)) + ";" + std::to_string(std::stoi(std::string(hex + 4, 2), nullptr, 16)); };
+    for (int row = 0; row < pixel_icon::size / 2; row++) {
+        std::string line;
+        const char* top = pixel_icon::pixels[row * 2];
+        const char* bottom = pixel_icon::pixels[row * 2 + 1];
+        for (int x = 0; x < pixel_icon::size; x++) {
+            const char* upper = top + x * 6;
+            const char* lower = bottom + x * 6;
+            const bool upper_clear = upper[0] == '.', lower_clear = lower[0] == '.';
+            if (upper_clear && lower_clear) line += std::string(reset) + " ";
+            else if (lower_clear) line += std::string(reset) + "\x1b[38;2;" + rgb(upper) + "m▀";
+            else if (upper_clear) line += std::string(reset) + "\x1b[38;2;" + rgb(lower) + "m▄";
+            else line += "\x1b[38;2;" + rgb(upper) + "m\x1b[48;2;" + rgb(lower) + "m▀";
+        }
+        lines.push_back(line + reset);
+    }
+    return lines;
+}
 
 namespace detail {
 inline std::mutex lock;

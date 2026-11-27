@@ -125,6 +125,7 @@ void Controller::fork_session(const std::string& turn_id, bool restore_files) {
         replace(made.session);
         selection = made.session.id;
         forked_request = made.request;
+        if (restore_files) restored_at = std::chrono::steady_clock::now();
         notice.emit(made.session.detail);
     } catch (const std::exception& error) {
         notice.emit(error.what());
@@ -702,6 +703,7 @@ void Controller::send_chat(const std::string& text) {
     if (chat_thread_.joinable()) chat_thread_.join();
     chat_running = true;
     chat_live.clear();
+    chat_problem.clear();
     chat_cancel_ = make_cancel();
     const std::vector<ChatAttachment> files = chat_attachments;
     chat_attachments.clear();
@@ -724,6 +726,7 @@ void Controller::send_chat(const std::string& text) {
             chats_ = chat_store_->conversations();
             chat_running = false;
             chat_live.clear();
+            chat_problem = problem;
             changed.emit();
             if (!problem.empty()) notice.emit(problem);
         });
@@ -916,6 +919,7 @@ void Controller::undo(bool redo) {
             return;
         }
         replace(updated);
+        restored_at = std::chrono::steady_clock::now();
         std::string message = std::to_string(result->restored.size()) + (result->restored.size() == 1 ? " file " : " files ") + (redo ? "reapplied." : "put back.");
         if (!result->skipped.empty()) message += " Changed since and left alone: " + join(result->skipped, ", ") + ".";
         notice.emit(message);

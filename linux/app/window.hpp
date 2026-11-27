@@ -102,8 +102,15 @@ public:
 
 private:
     Controller& controller_;
+    Gtk::Box page_{Gtk::Orientation::VERTICAL, 24};
     Gtk::Box content_{Gtk::Orientation::VERTICAL, 24};
     std::string shown_;  ///< A fingerprint of what is displayed, so unchanged state does not rebuild the page.
+    /// Appearance: light, dark or the system's, and the theme family with a light and dark preview of each.
+    void build_appearance();
+    void show_appearance();
+    GtkWidget* mode_row_ = nullptr;
+    std::vector<std::pair<Gtk::ToggleButton*, const theme::Family*>> family_buttons_;
+    bool showing_appearance_ = false;
 };
 
 /// The Chat page: saved conversations, the selected one, and a message box. Chat has no tools.
@@ -220,6 +227,16 @@ private:
     ChatPage chat_;
     SettingsPage settings_;
     Gtk::Label* live_label_ = nullptr;  ///< Shows the model's streamed words; owned by the transcript and reset when it is rebuilt.
+    /// The welcome page's pose: first launch until a project exists, then the open-project pose.
+    PoseView* welcome_pose_ = nullptr;
+    std::string welcome_shown_;
+    /// The session's state row above the request box: a pose for the state, and the state in words.
+    Gtk::Box state_row_{Gtk::Orientation::HORIZONTAL, 10};
+    PoseView* state_pose_ = nullptr;
+    Gtk::Label state_label_;
+    std::string state_shown_;
+    sigc::connection restored_timer_;
+    void refresh_state();
     bool updating_ = false;
     std::string sidebar_shown_, transcript_shown_, changes_shown_;
 };
