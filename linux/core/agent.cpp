@@ -105,6 +105,7 @@ std::string system_prompt(const Session& session) {
            "Use the tools to inspect the project before changing it, and call one tool at a time. Read a file before editing it.\n"
            "Make the smallest change that does what was asked, then check your work when a quick check exists.\n" +
            (read_only ? "This session is read-only: answer from what you read; do not edit files or run commands.\n" : "") +
+           "When the user corrects a convention or you learn a lasting fact about this project, you may offer it once with suggest_note; the user decides whether to keep it.\n"
            "When you are done, reply in plain text with a short summary of what you did and anything the user should verify. "
            "Do not claim a check passed unless you ran it.";
 }
@@ -233,6 +234,8 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
                     schema({{"path", {{"type", "string"}, {"description", "Folder to map, relative to the project. Use . for the whole project."}}}, {"query", text}}, {"path", "query"})});
     list.push_back({"ask_user", "Ask the user one question when you cannot continue without their answer (a choice only they can make, or a missing fact). The request stops and their reply continues it. Do not use it for things you can find out yourself.",
                     schema({{"question", text}}, {"question"})});
+    list.push_back({"suggest_note", "Suggest one short, lasting fact about this project for the user to remember (a convention they corrected, the command that runs the tests, where something lives). The user decides whether to keep it; nothing is saved by this call. At most once per request; never secrets or one-off details.",
+                    schema({{"text", {{"type", "string"}, {"minLength", 1}, {"maxLength", 280}}}}, {"text"})});
     list.push_back({"navigate_code", "Find where a name is defined, used or tested in a project folder. Returns labelled text candidates with file and line; they are whole-word matches, not a compiler's answer.",
                     schema({{"path", {{"type", "string"}, {"description", "Folder to look in, relative to the project. Use . for the whole project."}}}, {"symbol", text}, {"mode", {{"type", "string"}, {"enum", {"definitions", "references", "tests"}}}}},
                            {"path", "symbol", "mode"})});
@@ -364,6 +367,14 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         if (question.empty() || utf8_length(question) > 2000) throw Error("ask_user needs a question of up to 2,000 characters.");
         pending_question_ = question;
         return Outcome{"completed", "Asked the user. The request stops here; their reply will come as the next message."};
+    }
+    if (call.name == "suggest_note") {
+        if (suggested_note_) throw Error("Only one note can be suggested per request.");
+        const std::string note = trim(text("text").value_or(""));
+        if (const std::string problem = project_notes::suggestion_problem(note, workspace.root(), store_.home()); !problem.empty()) throw Error(problem);
+        suggested_note_ = true;
+        session.suggested_note = note;
+        return Outcome{"completed", "Shown to the user, who decides whether to keep it. Continue with the request."};
     }
     if (call.name == "navigate_code") {
         const auto symbol = text("symbol"), mode = text("mode");
@@ -872,6 +883,9 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
     const std::string prepared = customization::prepare(store_.home(), session, input);
     session.messages.push_back({"user", (session.pending_note.empty() ? "" : session.pending_note + "\n\n") + prepared, {}, ""});
     session.pending_note.clear();
+    // A suggestion belongs to the answer it came with; a new request leaves an undecided one behind.
+    session.suggested_note.clear();
+    suggested_note_ = false;
     Turn turn;
     turn.request = input;
     turn.first_activity = session.activities.size();
@@ -1130,7 +1144,7 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
     Activity activity;
     activity.tool = call.name;
     activity.subject = text("command").value_or(text("path").value_or(text("query").value_or("")));
-    if (activity.subject.empty()) activity.subject = text("name").value_or(text("id").value_or(text("question").value_or("")));
+    if (activity.subject.empty()) activity.subject = text("name").value_or(text("id").value_or(text("question").value_or(text("text").value_or(""))));
     if (activity.subject.empty() && text("server")) activity.subject = *text("server") + (text("tool") ? "/" + *text("tool") : text("uri") ? "/" + *text("uri") : "");
     session.activities.push_back(activity);
     const size_t slot = session.activities.size() - 1;

@@ -157,6 +157,8 @@ struct Session {
     int prompt_tokens = 0;
     /// Told to the model with the next request: what the user undid or redid outside the conversation.
     std::string pending_note;
+    /// A note Mason suggested with suggest_note in the latest request, until the user keeps or dismisses it.
+    std::string suggested_note;
     /// The custom agent whose instructions frame each request, if one is selected.
     std::string agent;
     /// Messages a compaction replaced with a summary, oldest first.

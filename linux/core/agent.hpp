@@ -144,6 +144,8 @@ private:
     std::vector<std::string> offered_names_;
     /// A question the model asked with ask_user. The request stops there and waits for the user's next message.
     std::optional<std::string> pending_question_;
+    /// Whether this request has suggested its one note with suggest_note.
+    bool suggested_note_ = false;
     ChatModel* reviewer_ = nullptr;
     /// The project's policy, read when a request starts.
     std::optional<ProjectPolicy> policy_;

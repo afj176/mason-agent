@@ -101,6 +101,7 @@ json to_json(const Session& session) {
                    {"permission", permission_key(session.permission)}, {"askOnly", session.ask_only}, {"state", session.state},
                    {"detail", session.detail}, {"updated", session.updated}, {"messages", messages}, {"activities", activities},
                    {"turns", turns}, {"promptTokens", session.prompt_tokens}, {"pendingNote", session.pending_note}};
+    if (!session.suggested_note.empty()) result["suggestedNote"] = session.suggested_note;
     if (!session.agent.empty()) result["agent"] = session.agent;
     if (!session.network.empty()) result["network"] = session.network;
     if (session.compactions > 0) result["compactions"] = session.compactions;
@@ -143,6 +144,7 @@ Session session_from_json(const json& value) {
     session.updated = value.value("updated", now_iso());
     session.prompt_tokens = value.value("promptTokens", 0);
     session.pending_note = value.value("pendingNote", "");
+    session.suggested_note = value.value("suggestedNote", "");
     session.agent = value.value("agent", "");
     session.compactions = value.value("compactions", 0);
     for (const json& item : value.value("pendingInput", json::array())) {

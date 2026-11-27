@@ -6,7 +6,7 @@ namespace mason::palette {
 
 const std::vector<std::pair<std::string, std::string>>& commands() {
     static const std::vector<std::pair<std::string, std::string>> all = {
-        {"/notes", "Notes kept for this project and given to the model"},
+        {"/notes", "Notes Mason reads with every request in this project"},
         {"/languages", "The language server that checks each language's edits"},
         {"/generation", "Temperature, top P and the like, for the model in use"},
         {"/experiment", "Try something in a copy of the project"},
