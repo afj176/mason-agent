@@ -173,7 +173,19 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         const std::string text = draft_.get_buffer()->get_text();
         const Session* current = controller_.session();
         if ((trim(text).empty() && (!current || current->comments.empty())) || controller_.running) return;
+        // /note or /notes alone opens the Notes tray, and /notes clear asks there first.
+        const std::string typed = to_lower(trim(text));
+        if (typed == "/note" || typed == "/notes" || typed == "/notes clear") {
+            draft_.get_buffer()->set_text("");
+            open_notes(true);
+            if (typed == "/notes clear" && !notes_.empty()) {
+                notes_confirming_ = true;
+                refresh_notes();
+            }
+            return;
+        }
         draft_.get_buffer()->set_text("");
+        if (notes_open()) open_notes(false);
         controller_.send(text);
     });
     stop_.add_css_class("destructive-action");
@@ -183,6 +195,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         const std::string text = draft_.get_buffer()->get_text();
         if (trim(text).empty() || !controller_.running) return;
         draft_.get_buffer()->set_text("");
+        if (notes_open()) open_notes(false);
         controller_.follow_up(text, steer);
     };
     queue_.set_tooltip_text("Handle this message after the current request completes (Ctrl+Enter)");
@@ -241,7 +254,9 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     adw_clamp_set_child(ADW_CLAMP(composer_clamp), GTK_WIDGET(composer_card->gobj()));
     auto* composer = Glib::wrap(composer_clamp);
     composer->set_margin(16);
-    composer->set_margin_top(6);
+    // Room for the Notes tab, which sits on the request box's top edge.
+    composer->set_margin_top(30);
+    composer_card_ = composer_card;
 
     // The session's state: a pose for what Mason is doing or what it needs, beside the state in words.
     state_row_.add_css_class("state-row");
@@ -265,8 +280,10 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     changes_scroll_.set_child(changes_);
     changes_scroll_.set_size_request(420, -1);
     changes_scroll_.set_visible(false);
+    conversation_overlay_.set_child(*conversation);
+    build_notes();
     auto* paned = Gtk::make_managed<Gtk::Paned>(Gtk::Orientation::HORIZONTAL);
-    paned->set_start_child(*conversation);
+    paned->set_start_child(conversation_overlay_);
     paned->set_end_child(changes_scroll_);
     paned->set_resize_start_child(true);
     paned->set_shrink_start_child(false);
@@ -406,6 +423,17 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
             show_palette();
             return true;
         }
+        // Ctrl+Shift+N opens and closes the Notes tray on the Code page; Esc closes it.
+        const bool on_code = adw_view_stack_get_visible_child(stack_) == GTK_WIDGET(session_stack_.gobj()) && controller_.session();
+        const Gdk::ModifierType chord = Gdk::ModifierType::CONTROL_MASK | Gdk::ModifierType::SHIFT_MASK;
+        if ((key == GDK_KEY_n || key == GDK_KEY_N) && (state & chord) == chord && on_code) {
+            open_notes(!notes_open());
+            return true;
+        }
+        if (key == GDK_KEY_Escape && notes_open() && notes_editing_.empty() && !notes_about_popover_.get_visible()) {
+            open_notes(false);
+            return true;
+        }
         return false;
     }, false);
     Glib::wrap(GTK_WINDOW(window_), true)->add_controller(shortcuts);
@@ -447,6 +475,8 @@ void MainWindow::open_project() {
 void MainWindow::refresh() {
     updating_ = true;
     refresh_sidebar();
+    load_notes(false);
+    refresh_notes();
     refresh_transcript();
     refresh_composer();
     refresh_changes();
@@ -913,6 +943,7 @@ void MainWindow::refresh_transcript() {
         for (const Turn& turn : session->turns) fingerprint += turn.undone ? "u" : "-";
         for (const Activity& activity : controller_.live_activities) fingerprint += activity.id + activity.state;
         if (controller_.approval) fingerprint += "|ask:" + controller_.approval->title;
+        if (!session->suggested_note.empty()) fingerprint += "|note:" + session->suggested_note + (notes_.size() >= project_notes::kLimit ? "full" : "");
     }
     if (fingerprint != transcript_shown_) {
         transcript_shown_ = fingerprint;
@@ -946,6 +977,8 @@ void MainWindow::refresh_transcript() {
                 if (session->state == "Failed") { detail->remove_css_class("dim-label"); detail->add_css_class("error"); }
                 transcript_.append(*detail);
             }
+            // A note Mason suggested with this answer, until the user keeps, edits or dismisses it.
+            if (!controller_.running && !session->suggested_note.empty() && !session->turns.empty()) transcript_.append(*suggestion_widget(session->suggested_note));
             if (controller_.approval) approval_slot_.append(*approval_widget(*controller_.approval));
         }
         // After the new widgets are laid out, show the newest part of the conversation.
@@ -953,7 +986,7 @@ void MainWindow::refresh_transcript() {
             auto adjustment = transcript_scroll_.get_vadjustment();
             adjustment->set_value(adjustment->get_upper());
             // The keyboard belongs in the request box, not on the first line of the conversation.
-            if (!controller_.approval && adw_view_stack_get_visible_child(stack_) == GTK_WIDGET(session_stack_.gobj())) draft_.grab_focus();
+            if (!controller_.approval && !notes_open() && adw_view_stack_get_visible_child(stack_) == GTK_WIDGET(session_stack_.gobj())) draft_.grab_focus();
         });
     }
     if (live_label_) {
