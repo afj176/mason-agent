@@ -12,7 +12,7 @@
 
 </div>
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/code-dark.png"><img src="docs/images/code-light.png" alt="A Mason Agent coding session on Windows: the agent's explanation of a CSV parsing fix, 3 of 3 checks passed, a suggested note to remember, and the Notes tab on the request box"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/code-dark.png"><img src="docs/images/code-light.png" alt="A Mason Agent coding session on Windows: the agent's explanation of a CSV parsing fix, 3 of 3 checks passed, a suggested note to remember, and Moments beside it showing the run's test, new file and change"></picture>
 
 Add a project folder, ask for a change, and review every edit before you keep it. Your code and your conversations stay on your computer: models are reached only on localhost, and there is no account and no telemetry.
 

@@ -674,7 +674,8 @@ public sealed partial class MainWindow
             if (kind != null) OpenTab(kind, "", true);
             else if (viewer.Visibility == Visibility.Visible) { CodePanels.Hide(session); forcedPanel = null; Arrange(); }
         }
-        extraCaptures.Add(("code-session", () => CaptureViewer(null)));
+        // The session as the README and site show it: the conversation with Moments open beside it.
+        extraCaptures.Add(("code-session", () => { CaptureViewer("activity"); if (session?.Tabs.FirstOrDefault(t => t.Kind == "activity") is { } moments) { moments.Location = null; moments.Scroll = 0; if (viewerEntries.TryGetValue(moments.Key, out var shown)) shown.Refresh?.Invoke(); } }));
         extraCaptures.Add(("code-changes", () => CaptureViewer("changes")));
         extraCaptures.Add(("code-harness", () => CaptureViewer("harness")));
         // The Live Viewer: the receipt it follows to when a run has ended, then one scene of each kind.

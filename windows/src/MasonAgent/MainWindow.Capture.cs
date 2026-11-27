@@ -34,6 +34,13 @@ public sealed partial class MainWindow
         foreach (var (name, page) in new[] { ("models-library", 0), ("models-discover", 3), ("models-downloads", 4), ("models-runtimes", 2), ("models-connections", 5) })
             shots.Add((name, () => { Navigate("Models and connections"); selectModelView?.Invoke(page); }));
         foreach (var (name, open) in extraCaptures) shots.Add((name, open));
+        // MASON_UI_CAPTURE_ONLY ("code-session,code-changes") captures just those screens. Some captures change the session
+        // (a new empty session, an opened settings tab), so the README and site shots are taken on their own.
+        if (Environment.GetEnvironmentVariable("MASON_UI_CAPTURE_ONLY") is { Length: > 0 } only)
+        {
+            var wanted = only.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            shots = shots.Where(s => wanted.Contains(s.Name)).ToList();
+        }
         // MASON_UI_CAPTURE_FAMILIES ("all" or a comma list such as "kiln,retro-neon") also captures each theme family;
         // without it only the current family is captured, under the original file names.
         var familyList = Environment.GetEnvironmentVariable("MASON_UI_CAPTURE_FAMILIES");
