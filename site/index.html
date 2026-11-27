@@ -6,8 +6,8 @@
 <title>Mason Agent: a coding workspace and command line for your local models</title>
 <meta name="description" content="Mason Agent is a coding workspace and command line that run on your own local models. Add a project, choose what the agent may do, and review every change. Native apps for Windows, macOS and Linux, each with the mason command line.">
 <link rel="canonical" href="https://masonagent.site/">
-<meta name="theme-color" content="#F8F6F2" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#171A2B" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F3F5FC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151B30" media="(prefers-color-scheme: dark)">
 <meta name="color-scheme" content="light dark">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Mason Agent">
@@ -17,7 +17,7 @@
 <meta property="og:image" content="https://masonagent.site/assets/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Mortar the wombat beside a Mason Agent coding session">
+<meta property="og:image:alt" content="The Mason Agent bear opening a workshop door beside a coding session that passed its checks">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Mason Agent: make the next move clear">
 <meta name="twitter:description" content="A coding workspace and command line that run on your own local models. For Windows, macOS and Linux.">
@@ -36,15 +36,13 @@
 <header class="site-header">
   <div class="bar">
     <a class="brand" href="#top" aria-label="Mason Agent, back to top">
-      <img class="brand-mascot" src="assets/mascot.png" alt="" width="40" height="40">
-      <picture>
-        <source srcset="assets/wordmark-dark.png" media="(prefers-color-scheme: dark)">
-        <img class="brand-wordmark" src="assets/wordmark-light.png" alt="Mason Agent" width="128" height="20">
-      </picture>
+      <img class="brand-icon" src="assets/icon.png" alt="" width="34" height="34">
+      <span class="brand-name" aria-hidden="true">Mason Agent</span>
     </a>
     <nav aria-label="Main">
       <ul>
         <li class="wide"><a href="#features">Features</a></li>
+        <li class="wide"><a href="#themes">Themes</a></li>
         <li class="wide"><a href="#platforms">Platforms</a></li>
         <li class="wide"><a href="#screenshots">Screenshots</a></li>
         <li><a href="#download">Download</a></li>
@@ -77,13 +75,30 @@
         <p class="fine">Free and open source. <a href="#download">Other formats, requirements and install steps</a></p>
       </div>
       <div class="hero-mascot">
-        <img src="assets/mortar.png" width="440" height="440" alt="Mortar, the violet paper-craft wombat who is Mason Agent's mascot, giving a thumbs up">
+        <img src="assets/poses/welcome.png" width="379" height="361" alt="The Mason Agent bear in work overalls opening a workshop door and waving you in">
       </div>
     </div>
     <div class="wrap">
       <figure class="hero-shot">
-        <img src="assets/code-dark.png" width="1600" height="1001" alt="A Mason Agent coding session in dark mode: the projects sidebar, a request to fix CSV parsing, and the agent's summary of two edited files and a passing test run" fetchpriority="high">
+        <picture>
+          <source srcset="assets/code-dark.webp" media="(prefers-color-scheme: dark)">
+          <img src="assets/code-light.webp" width="1600" height="1029" alt="A Mason Agent coding session on Windows: a request to fix CSV parsing in ledger-lite, the agent's explanation of the fix, and 3 of 3 checks passed" fetchpriority="high">
+        </picture>
       </figure>
+    </div>
+  </section>
+
+  <section class="story" aria-labelledby="story-title">
+    <div class="wrap">
+      <h2 id="story-title">One request, start to finish</h2>
+      <p class="section-lede">The same two characters show what Mason is doing in the app, so you can tell at a glance whether it is reading, editing or waiting for you.</p>
+      <ol class="steps">
+        <li class="step"><img src="assets/poses/listening.png" alt="" loading="lazy" decoding="async"><h3>You ask</h3><p>Describe a change, or ask about the project.</p></li>
+        <li class="step"><img src="assets/poses/reading-files.png" alt="" loading="lazy" decoding="async"><h3>It reads</h3><p>Mason opens and searches the files it needs.</p></li>
+        <li class="step"><img src="assets/poses/editing.png" alt="" loading="lazy" decoding="async"><h3>It edits</h3><p>Each edit waits for your approval unless you allowed it.</p></li>
+        <li class="step"><img src="assets/poses/running-checks.png" alt="" loading="lazy" decoding="async"><h3>It checks</h3><p>Tests and language servers catch mistakes before it moves on.</p></li>
+        <li class="step"><img src="assets/poses/ready-to-review.png" alt="" loading="lazy" decoding="async"><h3>You review</h3><p>Keep the diffs, or undo the whole request.</p></li>
+      </ol>
     </div>
   </section>
 
@@ -146,6 +161,29 @@
     </div>
   </section>
 
+  <section class="themes" id="themes" aria-labelledby="themes-title">
+    <div class="wrap">
+      <h2 id="themes-title">Five themes, light and dark</h2>
+      <p class="section-lede">Pick a family in the app's Appearance menu, or with <code>mason theme</code> in your terminal. Each one has a light and a dark version, and the app follows your system unless you choose.</p>
+      <div class="theme-view">
+        <ul class="theme-list" aria-label="Theme families">
+          <li><button type="button" data-family="blueprint" aria-pressed="true"><span class="swatch" aria-hidden="true"><span style="background:#F3F5FC"><i style="background:#374FAB"></i></span><span style="background:#151B30"><i style="background:#B4B8FF"></i></span></span>Blueprint</button></li>
+          <li><button type="button" data-family="evergreen" aria-pressed="false"><span class="swatch" aria-hidden="true"><span style="background:#F3F7F0"><i style="background:#22603F"></i></span><span style="background:#111E19"><i style="background:#95DDAF"></i></span></span>Evergreen</button></li>
+          <li><button type="button" data-family="graphite" aria-pressed="false"><span class="swatch" aria-hidden="true"><span style="background:#F6F7F9"><i style="background:#124FBB"></i></span><span style="background:#141619"><i style="background:#87B0FF"></i></span></span>Graphite</button></li>
+          <li><button type="button" data-family="kiln" aria-pressed="false"><span class="swatch" aria-hidden="true"><span style="background:#FBF5EE"><i style="background:#9F4125"></i></span><span style="background:#211915"><i style="background:#F2AB7E"></i></span></span>Kiln</button></li>
+          <li><button type="button" data-family="retro-neon" aria-pressed="false"><span class="swatch" aria-hidden="true"><span style="background:#F7F0FE"><i style="background:#8F267B"></i></span><span style="background:#191126"><i style="background:#DD8BC8"></i></span></span>Retro Neon</button></li>
+        </ul>
+        <figure class="theme-shot">
+          <picture>
+            <source id="theme-dark" srcset="assets/themes/blueprint-dark.webp" media="(prefers-color-scheme: dark)">
+            <img id="theme-image" src="assets/themes/blueprint-light.webp" width="1200" height="772" loading="lazy" decoding="async" alt="The coding session in the Blueprint theme">
+          </picture>
+          <figcaption id="theme-caption">Blueprint, the default. The picture follows your light or dark setting.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
   <section class="features" id="platforms" aria-labelledby="platforms-title">
     <div class="wrap">
       <h2 id="platforms-title">Native on each system</h2>
@@ -154,7 +192,7 @@
         <li class="card">
           <span class="status available">Available</span>
           <h3>Windows</h3>
-          <p>WinUI 3 and C#. Commands in Auto run in a Windows sandbox limited to your project. An installer or a portable ZIP.</p>
+          <p>WinUI 3 and C#. Commands in Auto run in a Windows sandbox limited to your project. An illustrated installer or a portable ZIP.</p>
           <p><a href="#download" data-platform="windows">Download for Windows</a></p>
         </li>
         <li class="card">
@@ -170,12 +208,13 @@
           <p><a href="#download" data-platform="linux">Download for Linux</a></p>
         </li>
       </ul>
-      <p class="section-lede">All three apps do the same things: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. They work out checks from a request and run them, and build a simple offline store with a built-in component. They have experiments in worktrees, pull request drafting, background tasks that outlive the app, separate reviewer and vision models, pinned project tests, a file viewer and a Website panel, network access you allow per host, project policy with hooks, installable bundles, pictures and documents in chat, and charts for tables in answers.</p>
-      <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, Mason starts a local model, reads a file, asks before editing it, and reports the change">
+      <p class="section-lede">All three apps do the same things: sessions, reviewed edits with diffs and full undo, commands with approvals and saved rules, the four permission modes, your own agents and commands, MCP servers, chat, queue and steer, schedules, verification receipts, comments on diff lines and a reviewing pass, milestones, pages and acceptance scenarios checked in a real browser, code search by meaning, a window you attach for Mason to read and operate, forking, exporting and importing sessions, finding definitions and references, and models: GGUF with llama.cpp and Transformers weights through Python. They work out checks from a request and run them, and build a simple offline store with a built-in component. They have experiments in worktrees, pull request drafting, background tasks that outlive the app, separate reviewer and vision models, pinned project tests, a file viewer and a Website panel, network access you allow per host, project policy with hooks, installable bundles, pictures and documents in chat, charts for tables in answers, and five light and dark themes.</p>
+      <div class="terminal" role="img" aria-label="A terminal session: the user types mason in a project folder, and Mason shows its app icon beside the start banner with the Blueprint theme, starts a local model, reads a file, asks before editing it, and shows the change">
         <pre><code><span class="t-dim">~/src/shop $</span> mason
-  <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
+<span class="banner"><span class="pixels" aria-hidden="true"><i></i><i style="background:#4a548a"></i><i style="background:#505892"></i><i style="background:#4f578e"></i><i style="background:#4e578d"></i><i style="background:#4d558b"></i><i style="background:#50578d"></i><i style="background:#495490"></i><i style="background:#4e568f"></i><i style="background:#4d558a"></i><i style="background:#4e568c"></i><i style="background:#4e578d"></i><i style="background:#4e568c"></i><i style="background:#4f5890"></i><i style="background:#4d548a"></i><i></i><i></i><i style="background:#4f5790"></i><i style="background:#50578e"></i><i style="background:#4e568c"></i><i style="background:#51588d"></i><i style="background:#555b92"></i><i style="background:#444e83"></i><i style="background:#524c64"></i><i style="background:#464b78"></i><i style="background:#505992"></i><i style="background:#51578d"></i><i style="background:#4f568d"></i><i style="background:#50578e"></i><i style="background:#4e568d"></i><i style="background:#525b95"></i><i style="background:#4c558a"></i><i style="background:#4b538a"></i><i style="background:#535992"></i><i style="background:#51588f"></i><i style="background:#535990"></i><i style="background:#444f8b"></i><i style="background:#324684"></i><i style="background:#554c56"></i><i style="background:#a56533"></i><i style="background:#6a4839"></i><i style="background:#354377"></i><i style="background:#4b558e"></i><i style="background:#51588e"></i><i style="background:#4b5388"></i><i style="background:#4d548b"></i><i style="background:#50578f"></i><i style="background:#4e558a"></i><i style="background:#4d568e"></i><i style="background:#3f4b7f"></i><i style="background:#404a7a"></i><i style="background:#37477d"></i><i style="background:#655b65"></i><i style="background:#a27352"></i><i style="background:#c87d42"></i><i style="background:#b86b36"></i><i style="background:#684739"></i><i style="background:#754e35"></i><i style="background:#53495d"></i><i style="background:#4f5995"></i><i style="background:#3f4876"></i><i style="background:#3a4672"></i><i style="background:#434d7e"></i><i style="background:#51598f"></i><i style="background:#3d4a7b"></i><i style="background:#855940"></i><i style="background:#9c5f35"></i><i style="background:#a06c46"></i><i style="background:#df863e"></i><i style="background:#d9782f"></i><i style="background:#cc6f2d"></i><i style="background:#cf6d25"></i><i style="background:#c8702f"></i><i style="background:#7e4e32"></i><i style="background:#714e44"></i><i style="background:#425194"></i><i style="background:#4b528d"></i><i style="background:#3f4984"></i><i style="background:#3a457b"></i><i style="background:#4e5789"></i><i style="background:#524c60"></i><i style="background:#ac6633"></i><i style="background:#975932"></i><i style="background:#df7a2d"></i><i style="background:#c96e2d"></i><i style="background:#c96e2c"></i><i style="background:#cd702d"></i><i style="background:#e89755"></i><i style="background:#8f5f41"></i><i style="background:#89502d"></i><i style="background:#2e3451"></i><i style="background:#50597b"></i><i style="background:#5e665e"></i><i style="background:#5d654b"></i><i style="background:#4c5571"></i><i style="background:#4f578d"></i><i style="background:#313b69"></i><i style="background:#865438"></i><i style="background:#d07430"></i><i style="background:#ca7130"></i><i style="background:#be6a2f"></i><i style="background:#c97435"></i><i style="background:#d7aa82"></i><i style="background:#4d5570"></i><i style="background:#706c6c"></i><i style="background:#d2834c"></i><i style="background:#424435"></i><i style="background:#ced049"></i><i style="background:#bebe59"></i><i style="background:#919651"></i><i style="background:#798040"></i><i style="background:#394379"></i><i style="background:#35427d"></i><i style="background:#3d405f"></i><i style="background:#ce752f"></i><i style="background:#e37d30"></i><i style="background:#90522c"></i><i style="background:#b9926f"></i><i style="background:#f0d9ac"></i><i style="background:#807069"></i><i style="background:#e4d0a8"></i><i style="background:#e3a171"></i><i style="background:#827124"></i><i style="background:#b7bc57"></i><i style="background:#bab98c"></i><i style="background:#6e764a"></i><i style="background:#cdcc61"></i><i style="background:#79805a"></i><i style="background:#39437c"></i><i style="background:#3c4161"></i><i style="background:#80563c"></i><i style="background:#925a37"></i><i style="background:#d1712a"></i><i style="background:#e7ae77"></i><i style="background:#d6c5a5"></i><i style="background:#ffebb7"></i><i style="background:#ffe8ad"></i><i style="background:#b57349"></i><i style="background:#5d6133"></i><i style="background:#a6ae31"></i><i style="background:#c6c449"></i><i style="background:#9fa159"></i><i style="background:#b6b74a"></i><i style="background:#697136"></i><i style="background:#32417e"></i><i style="background:#5b4b53"></i><i style="background:#d97a2f"></i><i style="background:#995c35"></i><i style="background:#7f4e32"></i><i style="background:#da8645"></i><i style="background:#e4bb8c"></i><i style="background:#e7b682"></i><i style="background:#d28445"></i><i style="background:#513c42"></i><i style="background:#1d2957"></i><i style="background:#544b43"></i><i style="background:#525d3c"></i><i style="background:#959b35"></i><i style="background:#b9b92b"></i><i style="background:#19283d"></i><i style="background:#2f3e77"></i><i style="background:#413947"></i><i style="background:#bb692d"></i><i style="background:#e27b2d"></i><i style="background:#8b5636"></i><i style="background:#a45f30"></i><i style="background:#d3742e"></i><i style="background:#cf702c"></i><i style="background:#a95e29"></i><i style="background:#2b3666"></i><i style="background:#56485a"></i><i style="background:#d87931"></i><i style="background:#a26344"></i><i style="background:#292d44"></i><i style="background:#21323d"></i><i style="background:#293557"></i><i style="background:#5f555d"></i><i style="background:#8c6043"></i><i style="background:#a25e30"></i><i style="background:#e37d2e"></i><i style="background:#7f5037"></i><i style="background:#5b4139"></i><i style="background:#e07b2a"></i><i style="background:#cf732d"></i><i style="background:#b76729"></i><i style="background:#343b69"></i><i style="background:#544556"></i><i style="background:#cd7129"></i><i style="background:#db7a30"></i><i style="background:#bf7238"></i><i style="background:#2c345c"></i><i style="background:#3a457d"></i><i style="background:#ae774d"></i><i style="background:#9c5e36"></i><i style="background:#d07530"></i><i style="background:#d9782d"></i><i style="background:#6f4d43"></i><i style="background:#34395c"></i><i style="background:#61494f"></i><i style="background:#504459"></i><i style="background:#44405e"></i><i style="background:#3a437c"></i><i style="background:#4c4359"></i><i style="background:#ce742d"></i><i style="background:#c87233"></i><i style="background:#db792e"></i><i style="background:#95664a"></i><i style="background:#2c3d75"></i><i style="background:#c46f2f"></i><i style="background:#ce7432"></i><i style="background:#ce7532"></i><i style="background:#d3752c"></i><i style="background:#564450"></i><i style="background:#35427d"></i><i style="background:#313c72"></i><i style="background:#313d72"></i><i style="background:#313c6d"></i><i style="background:#3d4477"></i><i style="background:#383d66"></i><i style="background:#b6682f"></i><i style="background:#d27631"></i><i style="background:#cb702e"></i><i style="background:#cc793a"></i><i style="background:#4a485f"></i><i></i><i style="background:#d67933"></i><i style="background:#d77933"></i><i style="background:#bc6b2e"></i><i style="background:#363a5e"></i><i style="background:#2d3864"></i><i style="background:#333a64"></i><i style="background:#353b66"></i><i style="background:#333b65"></i><i style="background:#2f3760"></i><i style="background:#2b3b70"></i><i style="background:#825338"></i><i style="background:#db792f"></i><i style="background:#cb7331"></i><i style="background:#dc7d36"></i><i style="background:#9f6742"></i><i></i><i></i><i style="background:#e37e30"></i><i style="background:#865437"></i><i style="background:#2a3769"></i><i style="background:#313861"></i><i style="background:#3c426f"></i><i style="background:#404471"></i><i style="background:#3d4370"></i><i style="background:#2e365d"></i><i style="background:#2f3b6f"></i><i style="background:#5f4644"></i><i style="background:#d9772c"></i><i style="background:#d37733"></i><i style="background:#cb722f"></i><i></i></span><span>  <span class="t-accent">Mason Agent</span>  <span class="t-dim">·  ~/src/shop</span>
+  <span class="t-dim">theme</span> <span class="t-accent">blueprint</span>  <span class="t-dim">·  review edits</span>
   <span class="t-dim">Nothing is answering yet, so Mason is starting the model you used last.</span>
-  <span class="t-ok">✓ Qwen2.5-Coder-7B is running</span>
+  <span class="t-ok">✓ Qwen2.5-Coder-7B is running</span></span></span>
 
 <span class="t-dim">review edits</span> <span class="t-accent">›</span> the cart total ignores the discount, fix it
   <span class="t-ok">✓</span> read file src/cart.py
@@ -184,37 +223,52 @@
   <span class="t-warn">▌</span> <span class="t-ok">+     return subtotal - discount(subtotal)</span>
   Allow?  y once   a always for this project…   n decline</code></pre>
       </div>
-      <p class="section-lede"><strong>The command line needs no setup flags.</strong> Run <code>mason</code> in a project folder. It uses a model that is already running, restarts the one you used last, or helps you choose or download one. <code>/models</code> searches and downloads from Hugging Face, <code>/diff</code> and <code>/undo</code> review and reverse changes, and <code>/permission</code> sets what Mason may do without asking.</p>
+      <p class="section-lede"><strong>The command line needs no setup flags.</strong> Run <code>mason</code> in a project folder. It uses a model that is already running, restarts the one you used last, or helps you choose or download one. <code>/models</code> searches and downloads from Hugging Face, <code>/diff</code> and <code>/undo</code> review and reverse changes, <code>/permission</code> sets what Mason may do without asking, and <code>/theme</code> picks the colours it shares with the app.</p>
     </div>
   </section>
 
   <section class="screens" id="screenshots" aria-labelledby="screens-title">
     <div class="wrap">
       <h2 id="screens-title">Screenshots</h2>
-      <p class="section-lede">One design, built natively three times: Fluent and Mica on Windows, SwiftUI on macOS, libadwaita on Linux. Each follows your light or dark setting, or you can choose. The pictures show each app in dark mode. The macOS and Linux pictures show a demonstration session played by a stand-in model.</p>
+      <p class="section-lede">One design, built natively three times: Fluent and Mica on Windows, SwiftUI on macOS, libadwaita on Linux. Each follows your light or dark setting, or you can choose, and so do these pictures. The Windows and Linux pictures show a demonstration session played by a stand-in model; the macOS picture shows the earlier design until it is retaken on a Mac.</p>
       <div class="gallery">
         <figure class="shot">
           <img src="assets/mac-app.png" width="1024" height="681" loading="lazy" decoding="async" alt="Mason Agent on macOS in dark mode: a request to fix a CSV importer, the four steps Mason took, its explanation, and a link to the two changed files">
           <figcaption>macOS: what Mason did for a request, step by step, and its summary.</figcaption>
         </figure>
         <figure class="shot">
-          <img src="assets/linux-app.png" width="1180" height="760" loading="lazy" decoding="async" alt="Mason Agent on Linux in dark mode: the same request and steps, with the Changes pane showing diffs of the two changed files">
-          <figcaption>Linux: a session beside the Changes pane, with a diff of each file it touched.</figcaption>
+          <picture>
+            <source srcset="assets/linux-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/linux-light.webp" width="1280" height="800" loading="lazy" decoding="async" alt="Mason Agent on Linux: a finished request that wrote one file, with the completed pose above the composer">
+          </picture>
+          <figcaption>Linux: a finished request, with the pose that shows how it ended.</figcaption>
         </figure>
         <figure class="shot wide">
-          <img src="assets/changes-dark.png" width="1600" height="1001" loading="lazy" decoding="async" alt="The Changes viewer beside a coding session, showing a unified diff of the edited importer with added and removed lines">
+          <picture>
+            <source srcset="assets/changes-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/changes-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="Review changes: a unified diff of the importer switching to csv.reader, beside the finished turn with 3 of 3 checks passed">
+          </picture>
           <figcaption>Windows: review a session's edits as diffs, then keep or restore them.</figcaption>
         </figure>
         <figure class="shot">
-          <img src="assets/chat-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="Chat: a question about reading CSV files with quoted commas in Python, the local model's answer with a code block, and the code opened in the Reference panel">
+          <picture>
+            <source srcset="assets/chat-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/chat-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="Chat: a new conversation with the listening pose, suggested prompts and the Reference panel">
+          </picture>
           <figcaption>Windows: chat with a local model. Conversations are saved on this computer.</figcaption>
         </figure>
         <figure class="shot">
-          <img src="assets/models-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="The Models library: GPU memory, a Quick setup button, and local GGUF models with what each can do for the coding agent">
+          <picture>
+            <source srcset="assets/models-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/models-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="The Models library: GPU memory, a Quick setup button, and local GGUF models with what each can do for the coding agent">
+          </picture>
           <figcaption>Windows: your local models, what each can do for the agent, and Quick setup.</figcaption>
         </figure>
         <figure class="shot wide">
-          <img src="assets/harness-dark.png" width="1600" height="1029" loading="lazy" decoding="async" alt="Harness settings beside a new coding session: saved allow and deny rules, a reviewer agent, two project commands and an MCP server">
+          <picture>
+            <source srcset="assets/harness-dark.webp" media="(prefers-color-scheme: dark)">
+            <img src="assets/harness-light.webp" width="1600" height="1029" loading="lazy" decoding="async" alt="Harness settings beside a finished coding session: saved approvals, agents and commands, MCP servers and scheduled runs">
+          </picture>
           <figcaption>Windows: saved approvals, your agents and commands, MCP servers and schedules on one settings page.</figcaption>
         </figure>
       </div>
@@ -225,7 +279,7 @@
     <div class="wrap">
       <div class="download-card">
         <div class="download-head">
-          <img src="assets/mortar.png" width="440" height="440" loading="lazy" decoding="async" alt="">
+          <img src="assets/poses/ready-to-install.png" width="315" height="260" loading="lazy" decoding="async" alt="">
           <div>
             <h2 id="download-title">Download Mason Agent</h2>
             <p>Free, from GitHub Releases. Choose your system.</p>
@@ -248,7 +302,7 @@
           <div class="download-grid">
             <div>
               <h4>Installer or portable</h4>
-              <p>The installer sets Mason Agent up for your Windows account, with no administrator rights needed. The portable ZIP runs from any folder: extract it and start <code>MasonAgent.exe</code>. Put an empty <code>portable.flag</code> file beside it to keep settings and sessions in a <code>data</code> folder next to the app.</p>
+              <p>The installer sets Mason Agent up for your Windows account, with no administrator rights needed, and follows Windows light or dark mode. The portable ZIP runs from any folder: extract it and start <code>MasonAgent.exe</code>. Put an empty <code>portable.flag</code> file beside it to keep settings and sessions in a <code>data</code> folder next to the app.</p>
             </div>
             <div>
               <h4>Requirements</h4>
@@ -334,6 +388,7 @@ cd mason-agent-*-linux-amd64 &amp;&amp; ./install.sh</code></pre>
       <p><a href="https://github.com/afj176/mason-agent">github.com/afj176/mason-agent</a></p>
       <p class="muted"><a href="https://github.com/afj176/mason-agent/blob/main/LICENSE">MIT License</a>.</p>
     </div>
+    <img class="footer-pose" src="assets/poses/connected.png" width="205" height="100" loading="lazy" decoding="async" alt="">
   </div>
 </footer>
 </body>

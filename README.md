@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/images/mortar.png" width="160" alt="Mortar, the Mason Agent mascot">
+<img src="docs/images/welcome.png" width="200" alt="The Mason Agent bear in work overalls opening a workshop door and waving you in">
 
 # Mason Agent
 
@@ -12,7 +12,7 @@
 
 </div>
 
-<img src="docs/images/code-dark.png" alt="A Mason Agent coding session in dark mode: projects sidebar, a request to fix CSV parsing, and the agent's summary of two edited files and a passing test run">
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/code-dark.png"><img src="docs/images/code-light.png" alt="A Mason Agent coding session on Windows: a request to fix CSV parsing in ledger-lite, the agent's explanation of the fix, and 3 of 3 checks passed"></picture>
 
 ## Platforms
 
@@ -26,7 +26,7 @@ Each platform has its own native app and its own engine, written for that system
 
 The three apps do the same things. Each one is built natively for its system, so the controls follow that system, and [What it does](#what-it-does) applies to all of them.
 
-Each platform lives in its own folder and builds on its own, with nothing shared but the brand kit, the docs and this README:
+Each platform lives in its own folder and builds on its own, with nothing shared but the docs and this README:
 
 | Folder | What it holds |
 | --- | --- |
@@ -41,7 +41,7 @@ Each platform lives in its own folder and builds on its own, with nothing shared
 
 Download from the [latest release](https://github.com/afj176/mason-agent/releases/latest):
 
-- **Installer** (`MasonAgent-Setup-x64.exe`, about 106 MB): installs for your Windows account into `%LOCALAPPDATA%\Programs\MasonAgent`; no administrator rights needed. From version 2.2.1 it can also add the `mason` command to your PATH. Requires Windows 11.
+- **Installer** (`MasonAgent-Setup-x64.exe`, about 106 MB): installs for your Windows account into `%LOCALAPPDATA%\Programs\MasonAgent`; no administrator rights needed. Its pages are illustrated and follow Windows light or dark mode. From version 2.2.1 it can also add the `mason` command to your PATH. Requires Windows 11.
 - **Portable ZIP** (`MasonAgent-win-x64.zip`, about 125 MB): extract the whole folder anywhere and run `MasonAgent.exe`. Runs on Windows 11 and on Windows 10 version 2004 or later.
 
 Both are x64 and self-contained (.NET and the Windows App SDK are included). Releases are not code-signed yet, so Windows SmartScreen may warn on first run: choose **More info → Run anyway**. SHA-256 files are attached to each release.
@@ -60,7 +60,7 @@ Git for Windows is optional and adds Git Bash as a shell for commands. Using Pow
 
 For macOS 14 or later on Apple silicon and Intel. Download from the [release page](https://github.com/afj176/mason-agent/releases/tag/preview):
 
-- **Installer** ([`MasonAgent-macos.pkg`](https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.pkg)): puts Mason Agent in Applications and links `mason` into `/usr/local/bin`, so it works in every terminal.
+- **Installer** ([`MasonAgent-macos.pkg`](https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.pkg)): puts Mason Agent in Applications and links `mason` into `/usr/local/bin`, so it works in every terminal. It opens with an illustrated welcome page and ends with an illustrated finish page.
 - **App only** ([`MasonAgent-macos.zip`](https://github.com/afj176/mason-agent/releases/download/preview/MasonAgent-macos.zip)): drag the app into Applications, then choose **Agent → Install Command Line Tool…** in the menu bar if you want `mason`.
 
 The app is signed ad hoc and not notarized by Apple, so macOS blocks it the first time. Open **System Settings → Privacy & Security** and choose **Open Anyway**; on macOS 14 you can also right-click the file and choose **Open**.
@@ -112,6 +112,7 @@ Type a request and each tool call prints as it finishes. Approvals take one key:
 | `/ask` · `/build` | Answer questions only, or make changes |
 | `/new` · `/resume` · `/compact` · `/status` | Start, continue, shrink or inspect a session |
 | `/model` | Switch between running models and saved connections |
+| `/theme` · `/theme NAME` | Show the theme families, or choose one. The app uses the same choice |
 | `/models` | The models on this computer and what each can do for the agent |
 | `/models start` · `/models stop` | Pick a context size with the memory each needs, then run a GGUF coding model with llama.cpp for this session. `/models start 1 16k` skips the picker |
 | `/models search TEXT` · `/models download REPO` | Find a model on Hugging Face, see its builds and which fit, download one |
@@ -121,6 +122,8 @@ Type a request and each tool call prints as it finishes. Approvals take one key:
 | `/notes` · `/notes add TEXT` | Notes kept for the project and given to the model with each request (macOS and Linux; in the app on Windows) |
 | `/generation` · `/generation NAME VALUE` | Temperature, top P and the like, kept for the model in use (macOS and Linux; in the app on Windows) |
 | `/comment` · `/review` · `/milestone` · `/accept` · `/window` · `/embeddings` · `/fork` · `/export` · `/import` | On macOS and Linux: pin a note to a line, have the model review the changes, keep a plan, run acceptance scenarios, attach a window, choose an embeddings server, fork a session from an earlier request, save or add a session as a file |
+
+In a wide colour terminal the start banner shows the app icon in half blocks, and the accent follows your theme. `mason theme NAME` sets the theme without starting a session.
 
 `/help` has the full list. Options when starting: `--workspace PATH`, `--resume [SESSION]`, a permission (`--read-only`, `--review`, `--edits`, `--auto`), and `--endpoint URL --model ID` for any OpenAI-compatible server on localhost.
 
@@ -152,7 +155,8 @@ This section applies to the Windows, macOS and Linux apps. Where a step is reach
 - **Queue and steer.** While a request runs, the request box sends follow-ups. **Queue** handles the message after the request completes; **Steer** interrupts what Mason is doing and handles it next. Messages left waiting by a stop or a failure stay with the session, and `/queue` picks them up (on macOS and Linux there is also a **Run Queued** button).
 - **Schedules and notifications.** Have a request run by itself hourly, daily, on weekdays or weekly. A scheduled run is unattended: nothing is approved for it. The app runs what is due while it is open, and a run missed while nothing was checking happens once, not once per missed time. When the window is in the background, a system notification tells you a session finished or is waiting for approval. On macOS and Linux, type `/schedule add NAME daily 09:00 -- REQUEST` (also `hourly :MM`, `weekdays`, `weekly DAY`, and `auto`) in the request box or in `mason`; the run is read-only unless you add `auto`, which lets it edit and run sandboxed commands, and `mason --run-due` runs what is due without the app.
 - **More for the agent to work with.** Background jobs: the agent can start a server, a watcher or a long test run, read its output while it works, and every job stops when the request ends. Project workflows: named commands in `mason.workflows.json` that the agent runs by name (on macOS and Linux, for example, `{"version": 1, "workflows": {"test": {"executable": "python3", "arguments": ["-m", "unittest"]}}}`). Skills: instructions in `.mason/skills/NAME/SKILL.md` (on macOS and Linux also `.claude/skills`) that the agent is told about and reads when the work calls for one. It can also read a range of lines from a large file, make several edits to a file in one step, see Git status, get an outline of the project (each source file and what it defines), put a question about a few files to a separate read-only context, and ask you a question when only you can answer; the request then waits for your reply. Jobs and workflows ask first like any command, and run sandboxed in Auto.
-- **Settings.** Settings hold the approvals saved for the project, with Revoke; the project's agents and slash commands; MCP servers, where you add a server, discover its tools and switch on the ones Mason may call; schedules, where you add, switch, remove or run one; and the light or dark theme.
+- **Settings.** Settings hold the approvals saved for the project, with Revoke; the project's agents and slash commands; MCP servers, where you add a server, discover its tools and switch on the ones Mason may call; schedules, where you add, switch, remove or run one; and the theme.
+- **Themes.** Five theme families, each with a light and a dark version: Blueprint (the default), Evergreen, Graphite, Kiln and Retro Neon. Choose one under Appearance in the gear menu on Windows, in Settings on macOS and Linux, or with `mason theme`. The app and `mason` share the choice, and the app follows your system's light or dark mode unless you pick one. A bear and a level-bot show what Mason is doing: reading, editing, running checks, waiting for your approval, or done.
 - **Verified by Mason.** Mason runs the project's checks itself and puts a receipt under the answer. On macOS and Linux, give the project a workflow named `verify` in `mason.workflows.json` (its tests, say). When a request changes files, Mason runs it once before the first change and again after the model says it is done, and the receipt says: passed, passes now and failed before, fails now and passed before, or failing as before. A regression is handed back to the model to repair, twice at most. Mason runs it in Auto (sandboxed), or after you choose Always Allow for the verify workflow; otherwise the receipt says it was not run.
 - **Comments, review and a plan.** Pin a comment to a line of a diff; comments go with your next request. A review has the model read what the session changed. A plan holds milestones: the files each covers and how it is checked, by a project workflow or by what you saw. A milestone needs checking again when one of its files changes. On macOS and Linux, the bubble beside a diff line in Changes pins the comment, and it is sent only while the file is unchanged; **Review** pins what the model finds as comments, and a finding is kept only when it quotes the line it names; milestones are in the **Plan** tab. In `mason` there: `/comment`, `/review` and `/milestone`.
 - **Pages in a real browser.** The agent can load a project page in a real browser with a fresh profile, click, fill and read it, and see its controls and script errors. macOS and Linux use Chrome, Chromium, Edge or Brave, whichever is installed, headless and with no network beyond this computer; Windows uses Edge. Put scenarios in `mason.acceptance.json` (the same format on all three systems) and Mason runs each at a phone width and a desktop width: ask it to verify them, or on macOS and Linux type `/accept` in `mason`. A contract that names a Python WSGI application runs it in a throwaway copy of the project, and can also check its responses and the rows in its database. On macOS and Linux that copy runs inside the sandbox.
@@ -179,15 +183,19 @@ This section applies to the Windows, macOS and Linux apps. Where a step is reach
 - **Transformers weights.** A folder with `config.json`, a tokenizer and `.safetensors` weights is listed with your models and served through your own Python with PyTorch and Transformers installed. On macOS and Linux, nothing is downloaded and no code from the model folder is run; `/models check` tests a folder without loading it, and `/models python PATH` chooses the Python.
 - **Models.** Lists the model files on your computer with what the agent can do with each, searches Hugging Face with a verdict on each result, installs a llama.cpp build for your hardware, downloads the build of a model you choose, and starts it. On macOS and Linux both downloads are verified against their published SHA-256, and a model Mason starts stops when Mason quits.
 
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/themes-dark.png"><img src="docs/images/themes-light.png" alt="The same coding session in each theme family, light above dark: Blueprint, Evergreen, Graphite, Kiln and Retro Neon"></picture>
+
 ## Windows app
 
 A WinUI 3 app with the engine written in C#, in [`windows/`](windows). [Download](#windows).
 
 | Review changes | Chat |
 | --- | --- |
-| <img src="docs/images/changes-dark.png" alt="Changes viewer showing a unified diff beside the session"> | <img src="docs/images/chat-dark.png" alt="Chat with a local model's answer, a code block and the Reference panel"> |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/changes-dark.png"><img src="docs/images/changes-light.png" alt="Review changes: a unified diff of the importer switching to csv.reader, beside the finished turn with its checks"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-dark.png"><img src="docs/images/chat-light.png" alt="Chat: a new conversation with suggested prompts and the Reference panel"></picture> |
 | **Models** | **Harness settings** |
-| <img src="docs/images/models-dark.png" alt="Model library with GPU memory, Quick setup and local GGUF models with their agent use"> | <img src="docs/images/harness-dark.png" alt="Harness settings with saved approvals, agents and commands, MCP servers and schedules"> |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/models-dark.png"><img src="docs/images/models-light.png" alt="Model library with GPU memory, Quick setup and local GGUF models with their agent use"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/harness-dark.png"><img src="docs/images/harness-light.png" alt="Harness settings beside a finished session: saved approvals, agents and commands, MCP servers and schedules"></picture> |
+
+The pictures show a demonstration session played by a stand-in model, in the Blueprint theme. The bear and level-bot appear at the moments that matter: the status row under a running session follows each step, and the approval card, check results, failures, the Models pages, notifications and the installer each have their own pose.
 
 ### In the Windows app
 
@@ -289,7 +297,7 @@ A SwiftUI app with the engine written in Swift, in [`macos/`](macos). [Download]
 
 A GTK 4 and libadwaita app with its engine in C++, in [`linux/`](linux). [Download](#linux). It has been built, packaged and run on Ubuntu 24.04, including a real request approved through the app against a local model.
 
-<img src="docs/images/linux-app.png" alt="Mason Agent on Linux in dark mode: the same request and steps, with the Changes pane showing diffs of the two changed files">
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/linux-dark.png"><img src="docs/images/linux-light.png" alt="Mason Agent on Linux: a finished request that wrote one file, with the completed pose above the request box"></picture>
 
 - **Sandbox.** In Auto, commands run under [bubblewrap](https://github.com/containers/bubblewrap): the system is read-only, only the project and a private `/tmp` are writable, credential folders such as `~/.ssh` and `~/.aws` are hidden, and there is no network. Where bubblewrap cannot create a sandbox, Auto refuses to run commands instead of running them unprotected.
 - **Settings.** Settings are in the Settings page.
