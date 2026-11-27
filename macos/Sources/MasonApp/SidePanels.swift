@@ -81,7 +81,7 @@ struct FileReader: View {
                                 }
                                 .font(.system(.callout, design: .monospaced))
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(pointed > 1 && index + 1 == pointed ? Color.orange.opacity(0.22) : Color.clear)
+                                .background(pointed > 1 && index + 1 == pointed ? Brand.caution.opacity(0.22) : Color.clear)
                                 .id(index + 1)
                             }
                         }

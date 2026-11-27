@@ -22,8 +22,12 @@ cp "$BIN/MasonAgent" "$APP/Contents/MacOS/MasonAgent"
 cp "$BIN/mason" "$APP/Contents/Resources/bin/mason"
 sed "s/__VERSION__/$VERSION/g" Packaging/Info.plist > "$APP/Contents/Info.plist"
 cp ../LICENSE ../THIRD-PARTY-NOTICES.md "$APP/Contents/Resources/"
-# The mascot, for the brand mark, Mason's answers and the welcome page.
-cp Packaging/mascot.png Packaging/welcome.png "$APP/Contents/Resources/"
+# The app icon for the brand header and Mason's answers, the bear and level-bot poses, and Manrope for titles:
+# the same files the Windows app ships.
+mkdir -p "$APP/Contents/Resources/Poses" "$APP/Contents/Resources/Fonts"
+cp ../windows/src/MasonAgent/Assets/Brand/icon.png "$APP/Contents/Resources/icon.png"
+cp ../windows/src/MasonAgent/Assets/Poses/*.png "$APP/Contents/Resources/Poses/"
+cp ../windows/src/MasonAgent/Assets/Fonts/Manrope.ttf ../windows/src/MasonAgent/Assets/Fonts/LICENSE-Manrope.txt "$APP/Contents/Resources/Fonts/"
 # The Python program that serves Transformers weights, and the list of architectures it accepts.
 mkdir -p "$APP/Contents/Resources/transformers"
 cp ../windows/scripts/Serve-Transformers.py ../windows/scripts/ModelAdapters.json "$APP/Contents/Resources/transformers/"
