@@ -284,7 +284,7 @@ Auto records a baseline and reruns the pinned check before completion. Results d
 
 A SwiftUI app with the engine written in Swift, in [`macos/`](macos). [Download](#macos). The screenshot is from the automated check on a Mac runner, where a stand-in model plays a short demonstration session.
 
-<img src="docs/images/mac-app.png" alt="Mason Agent on macOS in dark mode: a request to fix a CSV importer, the four steps Mason took, its explanation, and a link to the two changed files">
+<img src="docs/images/mac-app.png" alt="Mason Agent on macOS in dark mode: a request to fix a CSV importer, the four steps Mason took, its explanation and the completed pose">
 
 - **Sandbox.** In Auto, commands run under the macOS sandbox: they can write only inside the project and your temporary folder, cannot read `~/.ssh`, `~/.aws`, `~/.gnupg` or your keychains, and have no network access. Where the sandbox is unavailable, Auto refuses to run commands instead of running them unprotected.
 - **Settings.** Settings are in the Settings window (⌘,).
