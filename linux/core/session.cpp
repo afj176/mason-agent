@@ -1,6 +1,7 @@
 #include "session.hpp"
 
 #include <algorithm>
+#include <map>
 
 namespace mason {
 
@@ -29,6 +30,53 @@ Permission permission_from_key(const std::string& key) {
     if (key == "workspaceEdits") return Permission::WorkspaceEdits;
     if (key == "auto") return Permission::Auto;
     return Permission::ReviewEdits;
+}
+
+std::string RepeatStop::call() const {
+    const std::string label = replace_all(tool, "_", " ");
+    const std::string about = replace_all(subject, "\n", " ");
+    return about.empty() ? label : label + " " + about;
+}
+
+namespace {
+std::string kept_or_not(bool kept) { return kept ? "Your work so far is kept." : "Nothing was changed."; }
+}  // namespace
+
+std::string RepeatStop::detail() const {
+    return who() + " kept repeating " + call() + " with the same result, so Mason stopped it. " + kept_or_not(kept);
+}
+
+std::string RepeatStop::explanation() const {
+    return who() + " asked for " + call() + " " + std::to_string(times) + " times in a row and got the same result each time. Mason skipped the last one and stopped here instead of looping. " + kept_or_not(kept);
+}
+
+std::optional<EndingStyle> ending_style(const std::string& code) {
+    static const std::map<std::string, EndingStyle> table = {
+        {"done", {"✓", "success", "Done", "model finished"}},
+        {"unverified", {"◐", "warning", "Needs a check", "checks"}},
+        {"question", {"?", "accent", "Needs your answer", "model asked"}},
+        {"model_loop", {"↻", "warning", "Model looped", "model"}},
+        {"model_stuck", {"⊘", "warning", "Model stuck", "model"}},
+        {"step_limit", {"⏸", "warning", "Paused at the step limit", "Mason limit"}},
+        {"time_limit", {"⏸", "warning", "Paused at the time limit", "Mason limit"}},
+        {"blocked", {"⊘", "warning", "Blocked by checks", "project"}},
+        {"stopped", {"■", "neutral", "Stopped by you", "you"}},
+        {"model_unavailable", {"✗", "danger", "Model unavailable", "model server"}},
+        {"failed", {"✗", "danger", "Failed", "Mason"}},
+    };
+    const auto found = table.find(code);
+    if (found == table.end()) return std::nullopt;
+    return found->second;
+}
+
+std::string ending_hint(const std::string& code, bool terminal) {
+    // The app has no slash commands, so its hints name the place instead.
+    const std::string larger = terminal ? "choose a larger model with /model." : "choose a larger model.";
+    if (code == "model_loop") return std::string(RepeatStop::kOrigin) + " Send another message to continue, or " + larger;
+    if (code == "model_stuck") return std::string(RepeatStop::kOrigin) + " Try rephrasing, or " + larger;
+    if (code == "step_limit" || code == "time_limit") return "Send another message to continue from here.";
+    if (code == "model_unavailable") return terminal ? "Start it again with /models, or choose another with /model." : "Start it again in Models, or choose another model.";
+    return "";
 }
 
 std::string Verification::summary() const {
@@ -110,6 +158,8 @@ json to_json(const Session& session) {
         for (const FollowUp& item : session.pending_input) result["pendingInput"].push_back({{"id", item.id}, {"text", item.text}, {"steer", item.steer}});
     }
     if (session.desktop) result["desktop"] = {{"pid", session.desktop->pid}, {"app", session.desktop->app}, {"title", session.desktop->title}};
+    if (session.repeat_stop) result["repeatStop"] = {{"tool", session.repeat_stop->tool}, {"subject", session.repeat_stop->subject}, {"times", session.repeat_stop->times}, {"model", session.repeat_stop->model}, {"kept", session.repeat_stop->kept}};
+    if (session.ending) result["ending"] = {{"code", session.ending->code}, {"kept", session.ending->kept}};
     if (!session.comments.empty()) {
         result["comments"] = json::array();
         for (const ReviewComment& item : session.comments) {
@@ -151,6 +201,13 @@ Session session_from_json(const json& value) {
         if (item.is_object()) session.pending_input.push_back({item.value("id", new_id()), item.value("text", ""), item.value("steer", false)});
     }
     if (value.contains("desktop") && value["desktop"].is_object()) session.desktop = DesktopWindow{value["desktop"].value("pid", 0), value["desktop"].value("app", ""), value["desktop"].value("title", "")};
+    if (value.contains("repeatStop") && value["repeatStop"].is_object()) {
+        const json& stop = value["repeatStop"];
+        session.repeat_stop = RepeatStop{stop.value("tool", ""), stop.value("subject", ""), stop.value("times", 3), stop.value("model", ""), stop.value("kept", false)};
+    }
+    if (value.contains("ending") && value["ending"].is_object() && value["ending"].value("code", "") != "") {
+        session.ending = RunEnding{value["ending"].value("code", ""), value["ending"].value("kept", 0)};
+    }
     for (const json& item : value.value("comments", json::array())) {
         if (item.is_object()) session.comments.push_back({item.value("id", new_id()), item.value("path", ""), item.value("revision", ""), item.value("original", false), item.value("line", 0), item.value("quote", ""), item.value("note", "")});
     }

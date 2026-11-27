@@ -574,12 +574,15 @@ void Controller::send(const std::string& text) {
             { std::lock_guard<std::mutex> guard(agent_lock_); active_agent_ = nullptr; }
             working.state = "Failed";
             working.detail = error.what();
+            working.repeat_stop.reset();
+            working.ending = RunEnding{dynamic_cast<const ModelUnavailable*>(&error) ? "model_unavailable" : "failed", 0};
         }
         if (!*alive) return;
         post([this, working] {
             approval.reset();
             replace(working);
-            notification.emit(working.title, working.state + (working.detail.empty() ? "" : ": " + working.detail));
+            const std::optional<EndingStyle> look = working.ending ? ending_style(working.ending->code) : std::nullopt;
+            notification.emit(working.title, (look ? look->headline : working.state) + (working.detail.empty() ? "" : ": " + working.detail));
             running = false;
             waiting_follow_ups = 0;
             live_text.clear();

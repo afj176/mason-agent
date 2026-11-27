@@ -15,6 +15,12 @@ struct FileListing {
     bool truncated = false;
 };
 
+/// A path Mason will not use: outside the project, through a link out of it, or at excluded content. The agent counts
+/// these, because a model that cannot produce a valid path after being corrected is stuck.
+struct InvalidPath : Error {
+    using Error::Error;
+};
+
 /// A project folder. Every file tool goes through `resolve`, which keeps paths inside the folder,
 /// refuses links that lead out of it, and never addresses credentials or dependency folders.
 class Workspace {

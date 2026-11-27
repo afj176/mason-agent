@@ -3297,12 +3297,308 @@ static void test_verification() {
     }
 }
 
+/// A scripted model with the name its server reports.
+struct NamedModel : ScriptedModel {
+    std::string called;
+    std::string name() const override { return called; }
+};
+
+static const std::string kLoopWarning = "[Mason: this is the same result as your previous identical call. Use it, try something different, or finish. Mason will not run this exact call a third time.]";
+
+static size_t count_containing(const Session& session, const std::string& text) {
+    return static_cast<size_t>(std::count_if(session.messages.begin(), session.messages.end(), [&](const ChatMessage& message) { return message.role == "tool" && message.content.find(text) != std::string::npos; }));
+}
+
+static void test_repeat_stop() {
+    Sandbox box;
+    SessionStore store(box.home);
+    const auto never = [](const ApprovalRequest&) { return false; };
+
+    // looping(): the last two identical calls returned the same thing, and neither was a poll that waited.
+    using Streak = std::vector<Agent::StreakEntry>;
+    CHECK(!Agent::looping(Streak{}));
+    CHECK(!Agent::looping(Streak{{"a", false}}));
+    CHECK(Agent::looping(Streak{{"a", false}, {"a", false}}));
+    CHECK(!Agent::looping(Streak{{"a", false}, {"b", false}}));
+    CHECK(Agent::looping(Streak{{"x", false}, {"a", false}, {"a", false}}));
+    CHECK(!Agent::looping(Streak{{"a", true}, {"a", false}}));
+    CHECK(!Agent::looping(Streak{{"a", false}, {"a", true}}));
+
+    // A model that keeps writing the same file with the same content. The first write changes the file and the second
+    // changes nothing, so the third is the first identical result: the model is warned, and the fourth is not run. The
+    // request ends Stopped (never Completed or Failed) with what it wrote kept. Arguments compare as JSON, so different
+    // spacing is still the same call.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        NamedModel model;
+        model.called = "/models/LFM3-Omni-2B.gguf";
+        const json write = {{"path", "index.html"}, {"content", "<h1>Hi</h1>\n"}};
+        ModelReply last;
+        last.tool_calls.push_back({"call_last", "write_file", "{ \"content\" : \"<h1>Hi</h1>\\n\",  \"path\": \"index.html\" }"});
+        model.replies = {call("write_file", write), call("write_file", write), call("write_file", write), last};
+        std::vector<std::string> finished;
+        Agent agent(store, model, never, [&](const AgentEvent& event) { if (event.kind == AgentEvent::Kind::ActivityFinished) finished.push_back(event.activity.state); });
+        box.write("index.html", "old\n");
+        agent.run(session, "Make a page");
+        CHECK(model.replies.empty() && model.seen.size() == 4);
+        CHECK(finished == (std::vector<std::string>{"completed", "completed", "completed", "skipped"}));
+        CHECK(session.activities.size() == 4 && session.activities[3].tool == "write_file" && session.activities[3].subject == "index.html");
+        CHECK(session.activities[3].result == "Not run: the model already made this exact call twice in a row and got the same result both times.");
+        CHECK(box.read("index.html") == "<h1>Hi</h1>\n");
+        CHECK(session.state == "Stopped");
+        CHECK(session.ending && session.ending->code == "model_loop" && session.ending->kept == 1);
+        CHECK(session.repeat_stop && session.repeat_stop->tool == "write_file" && session.repeat_stop->subject == "index.html" && session.repeat_stop->times == 4 && session.repeat_stop->model == "LFM3-Omni-2B" && session.repeat_stop->kept);
+        CHECK(session.detail == "LFM3-Omni-2B kept repeating write file index.html with the same result, so Mason stopped it. Your work so far is kept.");
+        CHECK(session.repeat_stop->explanation() == "LFM3-Omni-2B asked for write file index.html 4 times in a row and got the same result each time. Mason skipped the last one and stopped here instead of looping. Your work so far is kept.");
+        // The model was warned exactly once, on the result it saw just before the skip; the activity row stays as it ran.
+        CHECK(count_containing(session, kLoopWarning) == 1 && session.messages[session.messages.size() - 3].content.find(kLoopWarning) != std::string::npos);
+        CHECK(session.activities[2].result.find("[Mason:") == std::string::npos);
+        // The skipped call is still answered, so the conversation stays valid for the next request.
+        CHECK(session.messages.back().role == "tool" && session.messages.back().tool_call_id == "call_last" && session.messages.back().content == session.activities[3].result);
+
+        // The record and the ending are saved with the session, and the next request clears them.
+        SessionStore reloaded(box.home);
+        const auto saved = std::find_if(reloaded.sessions().begin(), reloaded.sessions().end(), [&](const Session& item) { return item.id == session.id; });
+        CHECK(saved != reloaded.sessions().end() && saved->repeat_stop && saved->repeat_stop->subject == "index.html" && saved->repeat_stop->model == "LFM3-Omni-2B" && saved->repeat_stop->kept && saved->state == "Stopped");
+        CHECK(saved != reloaded.sessions().end() && saved->ending && saved->ending->code == "model_loop" && saved->ending->kept == 1);
+        model.replies = {say("Done.")};
+        agent.run(session, "Thanks");
+        CHECK(session.state == "Completed" && !session.repeat_stop && session.detail.empty() && session.ending && session.ending->code == "done");
+        CHECK(to_json(session).count("repeatStop") == 0);
+    }
+
+    // A read repeated with nothing changed: R, R (warned), skipped. Stopped, never Failed, "The model" when unnamed.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        NamedModel model;
+        model.replies = {call("read_file", {{"path", "calc.py"}}), call("read_file", {{"path", "calc.py"}}), call("read_file", {{"path", "calc.py"}})};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Look at calc");
+        CHECK(session.state == "Stopped" && session.ending && session.ending->code == "model_loop" && session.ending->kept == 0);
+        CHECK(session.activities.size() == 3 && session.activities[1].state == "completed" && session.activities[2].state == "skipped");
+        CHECK(session.repeat_stop && session.repeat_stop->tool == "read_file" && session.repeat_stop->subject == "calc.py" && session.repeat_stop->model.empty() && session.repeat_stop->times == 3 && !session.repeat_stop->kept);
+        CHECK(session.detail == "The model kept repeating read file calc.py with the same result, so Mason stopped it. Nothing was changed.");
+        CHECK(count_containing(session, kLoopWarning) == 1);
+    }
+
+    // A changing result is progress: the same read of a file that changes between reads never stops.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        NamedModel model;
+        const json a = {{"path", "notes.txt"}};
+        box.write("notes.txt", "0\n");
+        model.on_request = [&](size_t number) { box.write("notes.txt", std::to_string(number) + "\n"); };
+        model.replies = {call("read_file", a), call("read_file", a), call("read_file", a), call("read_file", a), say("It keeps changing.")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Watch notes");
+        CHECK(session.state == "Completed" && !session.repeat_stop && session.ending && session.ending->code == "done");
+        CHECK(session.activities.size() == 4 && count_containing(session, kLoopWarning) == 0);
+    }
+
+    // A different call in between starts the count again: A, A, B, A, A is not a loop.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        NamedModel model;
+        const json a = {{"path", "calc.py"}};
+        model.replies = {call("read_file", a), call("read_file", a), call("list_files", json::object()), call("read_file", a), call("read_file", a), say("Read it.")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Read calc");
+        CHECK(session.state == "Completed" && !session.repeat_stop && session.detail.empty());
+        CHECK(session.activities.size() == 5 && std::all_of(session.activities.begin(), session.activities.end(), [](const Activity& item) { return item.state == "completed"; }));
+    }
+
+    // Identical calls in one reply are the same loop.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        NamedModel model;
+        ModelReply many;
+        for (int i = 0; i < 4; i++) many.tool_calls.push_back({"call_" + std::to_string(i), "read_file", R"({"path":"calc.py"})"});
+        model.replies = {many};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Read calc");
+        CHECK(session.state == "Stopped" && session.repeat_stop);
+        CHECK(session.activities.size() == 3 && session.activities[2].state == "skipped");
+        // The call after the skipped one is closed too, so every call has an answer.
+        CHECK(std::count_if(session.messages.begin(), session.messages.end(), [](const ChatMessage& message) { return message.role == "tool"; }) == 4);
+    }
+}
+
+static void test_stuck_and_time_limit() {
+    Sandbox box;
+    SessionStore store(box.home);
+    const auto never = [](const ApprovalRequest&) { return false; };
+
+    // A path the project does not allow is its own kind of error.
+    {
+        Workspace workspace(box.project.string());
+        bool invalid = false;
+        try { workspace.resolve("../outside.txt"); } catch (const InvalidPath&) { invalid = true; }
+        CHECK(invalid);
+    }
+
+    // The same failure three times without a success in between: different edits that all miss in the same file.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        auto miss = [](const std::string& text) { return call("edit_file", {{"path", "calc.py"}, {"old_text", text}, {"new_text", "x"}}); };
+        model.replies = {miss("one"), miss("two"), miss("three"), say("never")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Fix add");
+        CHECK(model.replies.size() == 1);
+        CHECK(session.activities.size() == 3 && std::all_of(session.activities.begin(), session.activities.end(), [](const Activity& item) { return item.state == "failed"; }));
+        CHECK(session.state == "Stopped" && session.ending && session.ending->code == "model_stuck" && session.ending->kept == 0);
+        CHECK(session.detail == "The same operation failed three times without a successful tool action. See activity for the last error.");
+    }
+    // A success in between starts the count again.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        auto miss = [](const std::string& text) { return call("edit_file", {{"path", "calc.py"}, {"old_text", text}, {"new_text", "x"}}); };
+        model.replies = {miss("one"), miss("two"), call("list_files", json::object()), miss("three"), say("Gave up.")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Fix add");
+        CHECK(session.ending && session.ending->code == "done" && session.state == "Completed");
+    }
+
+    // Two invalid paths in a row: the model cannot produce a valid path after correction.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        model.replies = {call("read_file", {{"path", "../secret.txt"}}), call("write_file", {{"path", "/etc/hosts"}, {"content", "x"}}), say("never")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Read the secret");
+        CHECK(model.replies.size() == 1);
+        CHECK(session.state == "Stopped" && session.ending && session.ending->code == "model_stuck");
+        CHECK(session.detail == "The model could not produce a valid path after correction. Use a relative path or try another model.");
+    }
+    // A missing file is not an invalid path.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        model.replies = {call("read_file", {{"path", "missing.txt"}}), call("read_file", {{"path", "gone.txt"}}), say("Neither exists.")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Read them");
+        CHECK(session.ending && session.ending->code == "done");
+    }
+
+    // The time limit stops a slow request like a stop, but says why; what it wrote is kept.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        model.on_request = [&](size_t number) { if (number == 2) model.delay_ms = 5000; };
+        model.replies = {call("write_file", {{"path", "slow.txt"}, {"content", "s\n"}}), say("never")};
+        Agent agent(store, model, never, [](const AgentEvent&) {});
+        agent.time_limit = std::chrono::milliseconds(400);
+        const auto started = std::chrono::steady_clock::now();
+        agent.run(session, "Take your time");
+        CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(4));
+        CHECK(session.state == "Stopped" && session.ending && session.ending->code == "time_limit" && session.ending->kept == 1);
+        CHECK(session.detail == "Mason paused this request at its 1-second time limit. Completed edits and receipts are kept.");
+        CHECK(agent.time_limit == std::chrono::milliseconds(400) && Agent(store, model, never, [](const AgentEvent&) {}).time_limit == std::chrono::minutes(30));
+    }
+    // A user stop is still a stop, even with a time limit set.
+    {
+        Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+        ScriptedModel model;
+        const CancelToken cancel = make_cancel();
+        model.on_request = [&](size_t number) { if (number == 2) { model.delay_ms = 5000; cancel->store(true); } };
+        model.replies = {call("write_file", {{"path", "user.txt"}, {"content", "u\n"}}), say("never")};
+        Agent agent(store, model, never, [](const AgentEvent&) {});
+        agent.time_limit = std::chrono::seconds(20);
+        agent.run(session, "Write then wait", cancel);
+        CHECK(session.state == "Stopped" && session.ending && session.ending->code == "stopped" && session.ending->kept == 1);
+        CHECK(session.detail == "Stopped. Completed edits are kept.");
+    }
+}
+
+/// A model whose server is gone, or that breaks in some other way.
+struct BrokenModel : ChatModel {
+    bool unavailable = true;
+    std::string name() const override { return "broken"; }
+    ModelReply complete(const std::vector<ChatMessage>&, const std::vector<ToolSpec>&, const std::function<void(const std::string&)>&, const CancelToken&) override {
+        if (unavailable) throw ModelUnavailable("The model server did not answer: Connection refused");
+        throw std::runtime_error("Something else went wrong.");
+    }
+};
+
+static void test_run_endings() {
+    // The one table: every code maps, and an unknown one falls back to the state.
+    for (const char* code : {"done", "unverified", "question", "model_loop", "model_stuck", "step_limit", "time_limit", "blocked", "stopped", "model_unavailable", "failed"}) {
+        const auto look = ending_style(code);
+        CHECK(look && !look->glyph.empty() && !look->headline.empty() && !look->cause.empty());
+        CHECK(look && (look->tone == "success" || look->tone == "warning" || look->tone == "accent" || look->tone == "neutral" || look->tone == "danger"));
+    }
+    CHECK(!ending_style("") && !ending_style("Completed") && !ending_style("unknown"));
+    CHECK(ending_style("model_loop")->glyph == "↻" && ending_style("model_loop")->headline == "Model looped" && ending_style("model_loop")->tone == "warning");
+    CHECK(ending_style("stopped")->tone == "neutral" && ending_style("model_unavailable")->tone == "danger" && ending_style("done")->tone == "success" && ending_style("question")->tone == "accent");
+    CHECK(ending_hint("step_limit") == "Send another message to continue from here." && ending_hint("done").empty());
+
+    Sandbox box;
+    SessionStore store(box.home);
+    const auto never = [](const ApprovalRequest&) { return false; };
+
+    // done
+    Session session = store.create(box.project.string(), Permission::WorkspaceEdits);
+    {
+        ScriptedModel model;
+        model.replies = {say("Hello.")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Say hello");
+        CHECK(session.state == "Completed" && session.ending && session.ending->code == "done" && session.ending->kept == 0);
+    }
+    // question
+    {
+        ScriptedModel model;
+        model.replies = {call("ask_user", {{"question", "Which colour?"}})};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Paint it");
+        CHECK(session.state == "Needs your answer" && session.ending && session.ending->code == "question");
+    }
+    // step_limit: a small limit reached after two writes pauses the request, Stopped, with both files kept.
+    {
+        ScriptedModel model;
+        model.replies = {call("write_file", {{"path", "a.txt"}, {"content", "a\n"}}), call("write_file", {{"path", "b.txt"}, {"content", "b\n"}})};
+        Agent agent(store, model, never, [](const AgentEvent&) {});
+        agent.action_limit = 2;
+        agent.run(session, "Write two files");
+        CHECK(session.state == "Stopped" && session.ending && session.ending->code == "step_limit" && session.ending->kept == 2);
+        CHECK(session.detail == "Mason paused after 2 steps, its limit for one request.");
+        // Saved with the session.
+        SessionStore reloaded(box.home);
+        const auto saved = std::find_if(reloaded.sessions().begin(), reloaded.sessions().end(), [&](const Session& item) { return item.id == session.id; });
+        CHECK(saved != reloaded.sessions().end() && saved->ending && saved->ending->code == "step_limit" && saved->ending->kept == 2);
+    }
+    // stopped: the user stops the request after a write; the write is kept.
+    {
+        ScriptedModel model;
+        const CancelToken cancel = make_cancel();
+        model.delay_ms = 300;
+        model.on_request = [&](size_t number) { if (number == 2) cancel->store(true); };
+        model.replies = {call("write_file", {{"path", "c.txt"}, {"content", "c\n"}}), say("never")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Write c", cancel);
+        CHECK(session.state == "Stopped" && session.ending && session.ending->code == "stopped" && session.ending->kept == 1);
+    }
+    // model_unavailable and failed
+    {
+        BrokenModel model;
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Anything");
+        CHECK(session.state == "Failed" && session.ending && session.ending->code == "model_unavailable" && session.ending->kept == 0);
+        CHECK(session.detail.find("Connection refused") != std::string::npos);
+        model.unavailable = false;
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Anything");
+        CHECK(session.state == "Failed" && session.ending && session.ending->code == "failed" && session.detail == "Something else went wrong.");
+    }
+    // An ending is cleared when the next request starts: while it runs, there is none.
+    {
+        ScriptedModel model;
+        bool cleared = false;
+        model.on_request = [&](size_t) { cleared = !session.ending; };
+        model.replies = {say("Fine.")};
+        Agent(store, model, never, [](const AgentEvent&) {}).run(session, "Again");
+        CHECK(cleared && session.ending && session.ending->code == "done");
+    }
+    // A session saved before endings existed has none, and keeps working.
+    json old = to_json(session);
+    old.erase("ending");
+    CHECK(!session_from_json(old).ending);
+}
+
 int main(int argc, char** argv) {
     // Inside the sandbox this program is started as the forwarder to Mason's network relay.
     if (const auto forwarded = mason::network::maybe_forward(argc, argv)) return *forwarded;
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
-        {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"commands and rules", test_commands_and_rules},
+        {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"repeat stop", test_repeat_stop}, {"run endings", test_run_endings}, {"stuck models and the time limit", test_stuck_and_time_limit},{"commands and rules", test_commands_and_rules},
         {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };

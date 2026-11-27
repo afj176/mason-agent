@@ -375,11 +375,11 @@ private:
 
     void show(const Activity& activity) {
         const std::string mark = activity.state == "completed" ? paint(term::green, "✓") : activity.state == "failed" ? paint(term::red, "✗")
-                               : activity.state == "denied" ? paint(term::yellow, "⊘") : paint(term::dim, "·");
+                               : activity.state == "denied" ? paint(term::yellow, "⊘") : activity.state == "skipped" ? paint(term::yellow, "↻") : paint(term::dim, "·");
         const std::string label = label_of(activity.tool);
-        term::line("  " + mark + " " + paint(term::bold, label) + " " + term::clip(replace_all(activity.subject, "\n", " "), std::max(10, term::width() - static_cast<int>(label.size()) - 8)) +
-                   (activity.state == "denied" ? paint(term::dim, "  declined") : ""));
-        if (activity.tool != "run_shell" && activity.state != "failed") return;
+        const std::string note = activity.state == "denied" ? "  declined" : activity.state == "skipped" ? "  skipped · repeated" : "";
+        term::line("  " + mark + " " + paint(term::bold, label) + " " + term::clip(replace_all(activity.subject, "\n", " "), std::max(10, term::width() - static_cast<int>(label.size() + note.size()) - 8)) + paint(term::dim, note));
+        if (activity.state == "skipped" || (activity.tool != "run_shell" && activity.state != "failed")) return;
         std::vector<std::string> lines;
         for (const std::string& line : split(activity.result, '\n', false)) {
             if (!trim(line).empty()) lines.push_back(line);
@@ -408,8 +408,15 @@ private:
             term::line(paint(term::dim, "  /diff shows the changes · /undo puts the files back"));
         }
         term::line();
-        const std::string state = session_.state == "Completed" ? paint(term::green, "✓ Completed") : session_.state == "Stopped" ? paint(term::yellow, "■ Stopped")
-                                : session_.state == "Failed" ? paint(term::red, "✗ Failed") : paint(term::yellow, "● " + session_.state);
+        // How the request ended, from the one table of endings; a session saved before endings shows its state.
+        const std::optional<EndingStyle> look = session_.ending ? ending_style(session_.ending->code) : std::nullopt;
+        std::string state = session_.state == "Completed" ? paint(term::green, "✓ Completed") : session_.state == "Stopped" ? paint(term::yellow, "■ Stopped")
+                          : session_.state == "Failed" ? paint(term::red, "✗ Failed") : paint(term::yellow, "● " + session_.state);
+        if (look) {
+            const std::string tone = look->tone == "success" ? term::green : look->tone == "warning" ? term::yellow : look->tone == "accent" ? term::accent
+                                   : look->tone == "danger" ? term::red : term::dim;
+            state = paint(tone, look->glyph + " " + look->headline);
+        }
         const size_t steps = session_.activities.size() - first_activity;
         char elapsed[32];
         if (seconds < 90) std::snprintf(elapsed, sizeof elapsed, "%ds", static_cast<int>(seconds));
@@ -438,11 +445,28 @@ private:
             }
             term::line();
         }
-        std::string facts = std::to_string(steps) + " tool call" + (steps == 1 ? "" : "s") + "  ·  " + elapsed;
+        // A repeat Mason skipped is not a step the model took, nor a failed one: it is counted on its own.
+        const size_t skipped = static_cast<size_t>(std::count_if(session_.activities.begin() + static_cast<std::ptrdiff_t>(std::min(first_activity, session_.activities.size())), session_.activities.end(),
+                                                                 [](const Activity& activity) { return activity.state == "skipped"; }));
+        const size_t taken = steps - skipped;
+        std::string facts = std::to_string(taken) + " tool call" + (taken == 1 ? "" : "s");
+        if (skipped > 0) facts += "  ·  " + std::to_string(skipped) + (skipped == 1 ? " repeat skipped" : " repeats skipped");
+        facts += "  ·  " + std::string(elapsed);
         if (session_.prompt_tokens > 0) facts += "  ·  " + std::to_string(session_.prompt_tokens) + " tokens of context";
         if (!session_.pending_input.empty()) facts += "  ·  " + std::to_string(session_.pending_input.size()) + " queued, /queue runs them";
+        if (look && session_.ending->code != "done" && session_.ending->kept > 0) facts += "  ·  " + std::to_string(session_.ending->kept) + (session_.ending->kept == 1 ? " file kept" : " files kept");
         term::line("  " + state + paint(term::dim, "  ·  " + facts));
-        if (!session_.detail.empty()) term::line("  " + paint(term::dim, session_.detail));
+        if (look) {
+            // What the ending means, dim and wrapped under the outcome line; a model loop explains itself.
+            const std::string& code = session_.ending->code;
+            const int room = std::max(30, term::width() - 6);
+            auto say = [&](const std::string& text) { for (const std::string& line : term::wrap(text, room)) term::line("    " + paint(term::dim, line)); };
+            if (code == "model_loop" && session_.repeat_stop) say(session_.repeat_stop->explanation());
+            else if (code != "stopped" && code != "done" && code != "question" && !session_.detail.empty()) say(session_.detail);
+            if (const std::string hint = ending_hint(code); !hint.empty()) say(hint);
+        } else if (!session_.detail.empty()) {
+            term::line("  " + paint(term::dim, session_.detail));
+        }
         if (turn && !session_.suggested_note.empty()) suggested_note();
     }
 
