@@ -171,34 +171,7 @@ public sealed partial class MainWindow
                 };
                 entry.Refresh(); return entry;
             }
-            if (model.Kind == "activity")
-            {
-                string revision = "";
-                entry.Refresh = () =>
-                {
-                    var next = string.Join('|', session.Activities.Select(a => a.Id + a.State + a.Result)); if (revision == next && host.Content != null) return; revision = next;
-                    var body = new StackPanel { Spacing = 12, Margin = new Thickness(16) };
-                    var diagnostics=new ToggleSwitch{Header="Protocol diagnostics",IsOn=model.ViewMode=="raw"};
-                    diagnostics.Toggled+=(_,_)=>{model.ViewMode=diagnostics.IsOn?"raw":"";revision="";save();entry.Refresh?.Invoke();};
-                    body.Children.Add(Toolbar(Text("Run activity",22),diagnostics));body.Children.Add(CodeNote("Actual commands and results. Interrupted operations are not replayed."));
-                    if (session.Activities.Count == 0) body.Children.Add(CodeNote("No tools have run in this session."));
-                    foreach (var activity in session.Activities)
-                    {
-                        var result=model.ViewMode=="raw"?activity.Result:CodeActivityText.Result(activity);
-                        var value = result.Length > 12000 ? result[..12000] + "\n[Viewer clipped to 12,000 characters; full result remains in the session.]" : result;
-                        var intent = session.Turns.FirstOrDefault(t => t.Role == "assistant" && t.ActivityCount > 0 && t.FirstActivity < session.Activities.Count && session.Activities[t.FirstActivity] == activity)?.Text ?? "";
-                        // One card per tool call: what ran, how it was authorised, and what came back.
-                        var toolName = Text(activity.Tool.Replace('_', ' '), 15); toolName.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
-                        var entry = Stack(Toolbar(toolName, activity.State == "Skipped" ? Pill("↻ Skipped · repeated", Tone.Warn) : Badge(activity.State)), CodeNote(activity.Authorization));
-                        if (intent.Length > 0) entry.Children.Add(CodeNote(intent, 14));
-                        entry.Children.Add(ChatInline(model.ViewMode=="raw"?activity.Arguments:CodeActivityText.Command(activity),12,true));
-                        entry.Children.Add(ChatInline(value, 13, true));
-                        body.Children.Add(ChatSurface(entry, new Thickness(14, 10, 14, 12)));
-                    }
-                    var scroll = CodeScroll(body); scroll.Loaded += (_, _) => scroll.ChangeView(null, model.Scroll, null, true); scroll.ViewChanged += (_, _) => model.Scroll = scroll.VerticalOffset; host.Content = scroll;
-                };
-                entry.Refresh(); return entry;
-            }
+            if (model.Kind == "activity") { BuildLiveViewer(session, model, entry, host, save, open); return entry; }
             if (model.Kind == "answer") { host.Content = CodeDocumentScroll(CodeMarkdown(model.Target), model); return entry; }
             var path = scope.Resolve(model.Target); var extension = Path.GetExtension(path).ToLowerInvariant();
             if (extension == ".pdf") { BuildCodePdf(entry, host, path); return entry; }

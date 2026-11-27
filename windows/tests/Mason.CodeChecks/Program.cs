@@ -451,6 +451,29 @@ try
             "a read loop with nothing changed stops, not fails, and skips the third identical call");
         Check(loop.Messages.Any(m=>m.Content.Contains("\"Skipped\"")&&m.Content.Contains("got the same result both times")),"the skipped repeat is still answered in the model history");
         Check(CodeProtocol.ActivitySummary(loop.Activities).Contains("1 repeat skipped")&&!CodeProtocol.ActivitySummary(loop.Activities).Contains("failed"),"a skipped repeat is counted apart from failures");
+        var loopScenes=CodeScenes.Group(loop.Activities);
+        Check(loopScenes.Count==1&&loopScenes[0]==new CodeScene(CodeSceneKind.Read,0,3)&&CodeScenes.Label(loopScenes[0],loop.Activities)=="Read 1 file","repeated reads of one file form one read scene");
+        {
+            CodeActivity Call(string tool,object arguments,string result="",string state="Completed")=>new(){Tool=tool,Arguments=JsonSerializer.Serialize(arguments),Result=result,State=state};
+            var testRun=JsonSerializer.Serialize(new{ExitCode=1,Output="PASS auth.test.ts\nFAIL tests/upload.test.ts\n  ✕ returns 429 after the 10th upload (12 ms)\nTests:       1 failed, 41 passed, 42 total\n",Truncated=false});
+            var mixed=new[]{Call("read_file",new{path="src/a.ts"}),Call("search_text",new{query="limit"}),Call("read_file",new{path="tests\\a.test.ts"}),
+                Call("edit_file",new{path="./src/a.ts"}),Call("create_file",new{path="src/b.ts"}),Call("run_command",new{command="npm test"},testRun,"Failed"),Call("browser_load",new{url="http://127.0.0.1:5173/"}),Call("suggest_note",new{note="x"})};
+            var scenes=CodeScenes.Group(mixed);
+            Check(scenes.Select(s=>s.Kind).SequenceEqual(new[]{CodeSceneKind.Read,CodeSceneKind.Edit,CodeSceneKind.Command,CodeSceneKind.Page,CodeSceneKind.Other})&&scenes.Sum(s=>s.Count)==mixed.Length,"each call lands in exactly one scene, grouped by kind in order");
+            Check(CodeScenes.Label(scenes[0],mixed)=="Read 2 files, searched 1 time"&&CodeScenes.Label(scenes[1],mixed)=="Edited 2 files"&&CodeScenes.Label(scenes[2],mixed)=="Ran npm test","scene labels count distinct files and name the command");
+            Check(CodeScenes.PathOf(mixed[3])=="src/a.ts"&&CodeScenes.PathOf(mixed[2])=="tests/a.test.ts","paths are normalised for matching against changes");
+            Check(CodeScenes.Folders(mixed.Take(3)).SequenceEqual(new[]{("src/",1),("tests/",1)}),"folders count the reads under each top folder");
+            var summary=CodeScenes.Command(mixed[5]);
+            Check(summary.ExitCode==1&&summary.Passed==41&&summary.Failed==1&&summary.Failures.SequenceEqual(new[]{"FAIL tests/upload.test.ts","✕ returns 429 after the 10th upload (12 ms)"}),"a test run is read for exit code, counts and failing lines, not the summary line");
+            var dotnet=CodeScenes.Command(Call("run_command",new{command="dotnet test"},JsonSerializer.Serialize(new{ExitCode=1,Output="  Failed Mason.Tests.Upload [12 ms]\nFailed!  - Failed:     2, Passed:    41, Skipped:     0, Total:    43\n",Truncated=false})));
+            Check(dotnet.Passed==41&&dotnet.Failed==2,"dotnet test counts are read too");
+            var unittest=Call("run_command",new{executable=@"C:\Python314\python.exe",arguments=new[]{"-m","unittest","-v"}},JsonSerializer.Serialize(new{ExitCode=1,Output="test_a ... ok\nFAIL: test_b (t.T.test_b)\n\nRan 6 tests in 0.002s\n\nFAILED (failures=1, errors=1)\n",Truncated=false}));
+            var py=CodeScenes.Command(unittest);
+            Check(py.Passed==4&&py.Failed==2&&py.Failures.Contains("FAIL: test_b (t.T.test_b)"),"Python unittest counts come from Ran and FAILED");
+            Check(CodeScenes.Label(new CodeScene(CodeSceneKind.Command,0,1),[unittest])=="Ran python -m unittest -v","a command label names the program, not its folder");
+            var long_=Enumerable.Range(0,CodeScenes.MaxSceneLength+5).Select(i=>Call("read_file",new{path=$"f{i}.txt"})).ToArray();
+            Check(CodeScenes.Group(long_).Select(s=>s.Count).SequenceEqual(new[]{CodeScenes.MaxSceneLength,5}),"long runs split so no scene grows without bound");
+        }
 
         var made=Path.Combine(root,"loop-made");Directory.CreateDirectory(made);
         var created=loopStore.New(made);created.Permission=CodePermission.ReviewEdits;

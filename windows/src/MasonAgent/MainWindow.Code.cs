@@ -63,7 +63,7 @@ public sealed partial class MainWindow
         CodeWorkspaceView View() => session?.WorkspaceView == CodeWorkspaceView.Review ? CodeWorkspaceView.Review : CodeWorkspaceView.Workbench;
         Action? viewerChanged = null; // assigned once the page exists; refreshes counts outside the viewer
         bool updating = false, refreshQueued = false, emptySidebarVisible = true; string[] allFiles = []; int fileGeneration = 0; string? forcedPanel = null; CodeGitStatus? gitStatus = null;
-        Button send = null!, openFolder = null!, branch = null!, changeButton = null!, preview = null!;
+        Button send = null!, openFolder = null!, branch = null!, changeButton = null!, preview = null!, deliveryChip = null!, tasksChip = null!;
         Button websiteShortcut=null!;
         FrameworkElement composer = null!, sessionHeader = null!;
         Grid toolbar = null!; TextBlock viewerLabel = null!; Image stateMood = null!; string shownMood = "";
@@ -508,7 +508,7 @@ public sealed partial class MainWindow
         sessionMenu.Children.Add(reasoning);
         var agentHolder=new Border{Child=agentPicker,Margin=new Thickness(0,8,0,8)};sessionMenu.Children.Add(agentHolder);
         sessionMenu.Children.Add(Divider());
-        foreach(var item in new FrameworkElement[]{undoButton,redoButton,rewind,MenuItem("\uE8C8","Fork from a request…",ForkSession),MenuItem("\uEDE1","Export session…",ExportSession),MenuItem("\uE8B5","Import a session…",ImportSession),attach})sessionMenu.Children.Add(item);
+        foreach(var item in new FrameworkElement[]{undoButton,redoButton,rewind,MenuItem("\uE8C8","Fork from a request…",ForkSession),MenuItem("","Fork into a worktree…",ForkIntoWorktree),MenuItem("\uEDE1","Export session…",ExportSession),MenuItem("\uE8B5","Import a session…",ImportSession),attach})sessionMenu.Children.Add(item);
         sessionMenu.Children.Add(Divider());
         deleteSession.Style=Token("SubtleButtonStyle");deleteSession.HorizontalAlignment=HorizontalAlignment.Stretch;deleteSession.HorizontalContentAlignment=HorizontalAlignment.Left;deleteSession.Width=double.NaN;deleteSession.Content=Row(Glyph("\uE74D"),new TextBlock{Text="Delete session"});
         sessionMenu.Children.Add(deleteSession);
@@ -551,12 +551,27 @@ public sealed partial class MainWindow
             session.ViewerFraction = Math.Clamp((layout.ColumnDefinitions[2].ActualWidth - e.HorizontalChange) / available, .28, .67); Arrange();
         };
         splitter.DragCompleted += (_, _) => Save();
-        branch = Button("Repository", (_, _) => OpenTab("git", "", true)); branch.MaxWidth = 200;
+        branch = Button("Repository", (_, _) => { }); branch.MaxWidth = 200;
         ToolTipService.SetToolTip(branch, "Repository information for the selected project; this does not switch folders.");
+        // The branch chip holds repository and delivery; the pull request and background task chips appear only when there is something to show.
+        var branchMenu = Fluent.Acrylic(new MenuFlyout()); branch.Flyout = branchMenu;
+        branchMenu.Opening += (_, _) =>
+        {
+            branchMenu.Items.Clear();
+            MenuFlyoutItem Item(string text, string glyph, string kind) { var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph } }; item.Click += (_, _) => OpenTab(kind, "", true); return item; }
+            branchMenu.Items.Add(Item("Repository status", "", "git"));
+            branchMenu.Items.Add(Item(session?.Delivery?.Url != null ? "Pull request & CI" : "Commit & open pull request…", "", "delivery"));
+            if (session?.Experiment != null) branchMenu.Items.Add(Item("Review experiment patch", "", "experiment"));
+        };
+        deliveryChip = Button("Pull request", (_, _) => OpenTab("delivery", "", true)); deliveryChip.Visibility = Visibility.Collapsed;
+        deliveryChip.Content = Row(new FontIcon { Glyph = "", FontSize = 13 }, new TextBlock { Text = "Pull request" });
+        AutomationProperties.SetName(deliveryChip, "Pull request and CI feedback");
+        tasksChip = Button("Background", (_, _) => OpenTab("tasks", "", true)); tasksChip.Visibility = Visibility.Collapsed;
+        AutomationProperties.SetName(tasksChip, "Background tasks");
         models.Visibility = Visibility.Collapsed;
         // One toolbar row at every width: where you are on the left, preview and viewer on the right.
         // Labels shrink to icons in Arrange instead of wrapping onto a second row.
-        toolbarLeft = Row(sideToggle, projectSwitcher, branch);
+        toolbarLeft = Row(sideToggle, projectSwitcher, branch, deliveryChip, tasksChip);
         viewPicker = new ComboBox { ItemsSource = CodeViews, MinWidth = 115 };
         AutomationProperties.SetName(viewPicker, "Coding workspace view");
         viewPicker.SelectionChanged += (_, _) => { if (!updating && viewPicker.SelectedItem is CodeWorkspaceView view) SelectView(view); };
@@ -592,6 +607,10 @@ public sealed partial class MainWindow
         extraCaptures.Add(("code-session", () => CaptureViewer(null)));
         extraCaptures.Add(("code-changes", () => CaptureViewer("changes")));
         extraCaptures.Add(("code-harness", () => CaptureViewer("harness")));
+        // The Live Viewer: the receipt it follows to when a run has ended, then one scene of each kind.
+        extraCaptures.Add(("code-live", () => { CaptureViewer("activity"); if (session?.Tabs.FirstOrDefault(t => t.Kind == "activity") is { } live) { live.Location = null; if (viewerEntries.TryGetValue(live.Key, out var shown)) shown.Refresh?.Invoke(); } }));
+        foreach (var (name, kind) in new[] { ("code-live-read", CodeSceneKind.Read), ("code-live-edit", CodeSceneKind.Edit), ("code-live-run", CodeSceneKind.Command) })
+            extraCaptures.Add((name, () => { CaptureViewer(null); if (session != null) OpenActivity(session.Activities.FindIndex(a => CodeScenes.KindOf(a.Tool) == kind)); }));
         extraCaptures.Add(("code-notes", () => { CaptureViewer(null); notesTray.Open(); }));
         openCodeProject = owner => { if (codeOperation != null) { state.Text = "Finish or stop the current run before switching projects."; return; } Navigate("Code"); if (owner != project) SelectProject(owner); };
         addCodeProject = OpenWorkspace;
@@ -715,52 +734,43 @@ public sealed partial class MainWindow
             }
             else reviewDesk.Refresh();
         }
+        // The project menu picks projects. Viewer pages open from the session bar, the Live Viewer or the command search;
+        // settings sit under Project settings; forking into a worktree is a session action.
         void RefreshProjectMenu()
         {
             projectMenu.Items.Clear();
             foreach(var owner in store.Projects)
             {
-                var item=new MenuFlyoutItem{Text=ProjectLabel(owner,store.Projects),Icon=new FontIcon{Glyph="\uE8B7"},IsEnabled=codeOperation==null};
+                bool worktree=store.SessionsFor(owner.Id).Any(s=>s.Experiment!=null);
+                var item=new MenuFlyoutItem{Text=ProjectLabel(owner,store.Projects)+(worktree?"  · worktree":""),Icon=new FontIcon{Glyph=owner==project?"":""},IsEnabled=codeOperation==null};
                 ToolTipService.SetToolTip(item,owner.Workspace);item.Click+=(_,_)=>SelectProject(owner);projectMenu.Items.Add(item);
             }
             if(projectMenu.Items.Count>0)projectMenu.Items.Add(new MenuFlyoutSeparator());
-            if(session!=null){
-                var plan = new MenuFlyoutItem { Text = "Plan & repository map", Icon = new FontIcon { Glyph = "\uE8FD" } };
-                plan.Click += (_, _) => OpenTab("plan", "", true);
-                projectMenu.Items.Add(plan);
-                var delivery=new MenuFlyoutItem{Text="Git delivery & CI feedback"};delivery.Click+=(_,_)=>OpenTab("delivery","",true);projectMenu.Items.Add(delivery);
-                var settingsItem=new MenuFlyoutItem{Text="Project policy & extensions"};settingsItem.Click+=(_,_)=>OpenTab("harness","",true);projectMenu.Items.Add(settingsItem);
-                var roles=new MenuFlyoutItem{Text="Model roles & decision inspector"};
-                roles.Click+=(_,_)=>OpenTab("roles","",true);projectMenu.Items.Add(roles);
-                var jobs = new MenuFlyoutItem {Text="Background tasks"};
-                jobs.Click += (_,_) => OpenTab("tasks","",true); projectMenu.Items.Add(jobs);
-                var tree=new MenuFlyoutItem{Text="Fork session in an isolated worktree…",IsEnabled=codeOperation==null};
-                tree.Click+=async(_,_)=>{
-                    if(session==null||codeOperation!=null||dialogOpen)return;
-                    dialogOpen=true;
-                    try{
-                        var name=new TextBox{PlaceholderText="Task name"};
-                        var dlg=new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Create a Git worktree",Content=Stack(CodeNote("Fork the current checkout, including pending file edits, and continue in a sibling worktree."),name),PrimaryButtonText="Create",CloseButtonText="Cancel"};
-                        if(await dlg.ShowAsync()!=ContentDialogResult.Primary)return;
-                        var slug=name.Text.Trim();
-                        if(!System.Text.RegularExpressions.Regex.IsMatch(slug,@"\A[A-Za-z0-9][A-Za-z0-9_-]{0,48}\z"))throw new ArgumentException("Use a short task name with letters, digits, hyphens or underscores.");
-                        var dest=session.Workspace+"-"+slug;
-                        var origin=await CodeExperiment.Fork(session,dest,"mason/"+slug,CancellationToken.None);
-                        var fork=store.New(dest);fork.Experiment=origin;fork.Model=session.Model;fork.ReviewerModel=session.ReviewerModel;fork.VisualModel=session.VisualModel;
-                        fork.Permission=session.Permission;fork.Mode=session.Mode;fork.Milestones=session.Milestones.ToArray();
-                        fork.Messages.AddRange(session.Messages);
-                        fork.Turns.AddRange(session.Turns.Where(t=>!t.Rewound).Select(t=>new CodeTurn{Role=t.Role,Text=t.Text,Evidence=t.Evidence}));
-                        fork.Shell=session.Shell;fork.ShellExecutable=session.ShellExecutable;fork.Reasoning=session.Reasoning;
-                        fork.ManageRoleMemory=session.ManageRoleMemory;fork.RoleCallLimit=session.RoleCallLimit;fork.RecordModelDecisions=session.RecordModelDecisions;
-                        fork.Title=slug;store.Save(fork);
-                        Select(fork,store.ProjectForWorkspace(dest));
-                    }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
-                };
-                projectMenu.Items.Add(tree);
-                if(session.Experiment!=null){var compare=new MenuFlyoutItem{Text="Review experiment patch"};compare.Click+=(_,_)=>OpenTab("experiment","",true);projectMenu.Items.Add(compare);}
-            }
-            var add=new MenuFlyoutItem{Text="Add project…",Icon=new FontIcon{Glyph="\uE710"},IsEnabled=codeOperation==null};add.Click+=async(_,_)=>await OpenWorkspace();projectMenu.Items.Add(add);
+            var add=new MenuFlyoutItem{Text="Add project…",Icon=new FontIcon{Glyph=""},IsEnabled=codeOperation==null};add.Click+=async(_,_)=>await OpenWorkspace();projectMenu.Items.Add(add);
+            if(session!=null){var settingsItem=new MenuFlyoutItem{Text="Project settings…",Icon=new FontIcon{Glyph=""}};settingsItem.Click+=(_,_)=>OpenTab("harness","",true);projectMenu.Items.Add(settingsItem);}
             if (project != null) projectMenu.Items.Add(RemoveProjectItem(project));
+        }
+        async Task ForkIntoWorktree()
+        {
+            if(session==null||codeOperation!=null||dialogOpen)return;
+            dialogOpen=true;
+            try{
+                var name=new TextBox{PlaceholderText="Task name"};
+                var dlg=new ContentDialog{XamlRoot=root.XamlRoot,RequestedTheme=root.ActualTheme,Title="Create a Git worktree",Content=Stack(CodeNote("Fork the current checkout, including pending file edits, and continue in a sibling worktree."),name),PrimaryButtonText="Create",CloseButtonText="Cancel"};
+                if(await dlg.ShowAsync()!=ContentDialogResult.Primary)return;
+                var slug=name.Text.Trim();
+                if(!System.Text.RegularExpressions.Regex.IsMatch(slug,@"\A[A-Za-z0-9][A-Za-z0-9_-]{0,48}\z"))throw new ArgumentException("Use a short task name with letters, digits, hyphens or underscores.");
+                var dest=session.Workspace+"-"+slug;
+                var origin=await CodeExperiment.Fork(session,dest,"mason/"+slug,CancellationToken.None);
+                var fork=store.New(dest);fork.Experiment=origin;fork.Model=session.Model;fork.ReviewerModel=session.ReviewerModel;fork.VisualModel=session.VisualModel;
+                fork.Permission=session.Permission;fork.Mode=session.Mode;fork.Milestones=session.Milestones.ToArray();
+                fork.Messages.AddRange(session.Messages);
+                fork.Turns.AddRange(session.Turns.Where(t=>!t.Rewound).Select(t=>new CodeTurn{Role=t.Role,Text=t.Text,Evidence=t.Evidence}));
+                fork.Shell=session.Shell;fork.ShellExecutable=session.ShellExecutable;fork.Reasoning=session.Reasoning;
+                fork.ManageRoleMemory=session.ManageRoleMemory;fork.RoleCallLimit=session.RoleCallLimit;fork.RecordModelDecisions=session.RecordModelDecisions;
+                fork.Title=slug;store.Save(fork);
+                Select(fork,store.ProjectForWorkspace(dest));
+            }catch(Exception e){state.Text=e.Message;}finally{dialogOpen=false;}
         }
         MenuFlyoutItem RemoveProjectItem(CodeProject target)
         {
@@ -859,7 +869,18 @@ public sealed partial class MainWindow
             var observed = await CodeGit.Inspect(owner.Workspace, CancellationToken.None);
             if (owner != session) return;
             gitStatus = observed; branch.Content = observed.Branch=="Folder workspace"?"Repository":observed.Branch; ToolTipService.SetToolTip(branch, observed.Detail);
+            RefreshSessionChips(owner);
             footerText.Text = (project?.Name??Path.GetFileName(owner.Workspace))+" · "+observed.Branch + " · Session saved locally"; RenderFiles();
+        }
+        void RefreshSessionChips(CodeSession owner)
+        {
+            bool wide = page.ActualWidth >= 900;
+            deliveryChip.Visibility = owner.Delivery?.Url != null && wide ? Visibility.Visible : Visibility.Collapsed;
+            int running = 0;
+            try { var tasks = new LocalTasks(Store.Root); running = tasks.All(owner.Workspace).Count(id => tasks.Status(id).Active); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or InvalidDataException or System.Text.Json.JsonException) { }
+            tasksChip.Content = running + " background"; tasksChip.Visibility = running > 0 && wide ? Visibility.Visible : Visibility.Collapsed;
+            ToolTipService.SetToolTip(tasksChip, running == 1 ? "1 background task running" : running + " background tasks running");
         }
         IEnumerable<TitleHit> WorkspaceSearch()
         {
@@ -883,6 +904,11 @@ public sealed partial class MainWindow
             yield return Command("View context checkpoints", () => OpenTab("context", "", true));
             yield return Command("Plan & repository map", () => OpenTab("plan", "", true));
             yield return Command("Repository status", () => OpenTab("git", "", true));
+            yield return Command("Commit & open pull request", () => OpenTab("delivery", "", true));
+            yield return Command("Model roles & decisions", () => OpenTab("roles", "", true));
+            yield return Command("Background tasks", () => OpenTab("tasks", "", true));
+            yield return Command("Project settings", () => OpenTab("harness", "", true));
+            yield return Command("Fork session into a worktree", () => _ = ForkIntoWorktree());
             yield return Command("Open website", async () => await OpenWebsite());
             if (session.Tabs.Count > 0) yield return Command("Toggle task viewer", ToggleViewer);
             if (codeOperation == null)
@@ -1076,7 +1102,8 @@ public sealed partial class MainWindow
                 previousRole = turn.Role;
                 if (turn.Role == "assistant" && !activityShown && segmentEnd > segmentStart)
                 {
-                    transcript.Children.Add(Toolbar(CodeNote(CodeProtocol.ActivitySummary(session.Activities.Skip(segmentStart).Take(segmentEnd - segmentStart))), CodeLink("View activity", (_, _) => OpenTab("activity", "", true)))); activityShown = true;
+                    int start = segmentStart;
+                    transcript.Children.Add(Toolbar(CodeNote(CodeProtocol.ActivitySummary(session.Activities.Skip(segmentStart).Take(segmentEnd - segmentStart))), CodeLink("View activity", (_, _) => OpenActivity(start)))); activityShown = true;
                 }
             }
             AddTurnEvidence();
@@ -1140,6 +1167,15 @@ public sealed partial class MainWindow
             // Generated fenced text is inspected as a local native document; it is never executed.
             var entry = new CodeTab { Kind = "answer", Target = artifact.Content };
             OpenTab(entry.Kind, entry.Target, true);
+        }
+        // Opens the Live Viewer on the scene holding this call, so a summary line in the chat shows its own steps.
+        void OpenActivity(int index)
+        {
+            OpenTab("activity", "", true);
+            if (session?.Tabs.FirstOrDefault(t => t.Kind == "activity") is not { } tab || index < 0 || index >= session.Activities.Count) return;
+            tab.Location = session.Activities[index].Id.ToString();
+            if (viewerEntries.TryGetValue(tab.Key, out var live)) live.Refresh?.Invoke();
+            Save();
         }
         void OpenTab(string kind, string target, bool user)
         {

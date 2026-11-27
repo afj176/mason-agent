@@ -129,7 +129,7 @@ public sealed class CodeTab
     public string ViewMode { get; set; } = "";
     public string? DisplayTitle { get; set; }
     [JsonIgnore] public string Key => Kind + ":" + Target;
-    [JsonIgnore] public string Title => Kind switch { "changes" => "Changes", "context" => "Context", "plan" => "Plan & map", "tasks" => "Background tasks", "roles" => "Model roles", "experiment" => "Experiment patch", "harness" => "Harness settings", "delivery" => "Git delivery", "git" => "Repository", "activity" => "Activity", "answer" => "Answer", "web" => DisplayTitle ?? new Uri(Target).Authority, _ => System.IO.Path.GetFileName(Target) };
+    [JsonIgnore] public string Title => Kind switch { "changes" => "Changes", "context" => "Context", "plan" => "Plan & map", "tasks" => "Background tasks", "roles" => "Model roles", "experiment" => "Experiment patch", "harness" => "Project settings", "delivery" => "Git delivery", "git" => "Repository", "activity" => "Activity", "answer" => "Answer", "web" => DisplayTitle ?? new Uri(Target).Authority, _ => System.IO.Path.GetFileName(Target) };
 }
 public enum CodeWorkspaceView { Workbench, Review, Notebook }
 

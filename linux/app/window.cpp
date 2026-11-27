@@ -48,9 +48,7 @@ Gtk::Label* dim_label(const std::string& text) {
     return label;
 }
 
-namespace {
-
-Gtk::Label* text_label(const std::string& text, bool selectable = true) {
+Gtk::Label* text_label(const std::string& text, bool selectable) {
     auto* label = Gtk::make_managed<Gtk::Label>(text);
     label->set_xalign(0);
     label->set_wrap(true);
@@ -62,6 +60,8 @@ Gtk::Label* text_label(const std::string& text, bool selectable = true) {
 }
 
 std::string label_of(const std::string& tool) { return replace_all(tool, "_", " "); }
+
+namespace {
 
 /// The endings that get a card at the end of the transcript: the ones the user should understand before going on.
 bool has_end_card(const std::string& code) {
@@ -115,7 +115,8 @@ Gtk::Widget* ending_card(const Session& session, const EndingStyle& look, const 
     return card;
 }
 
-/// Changed lines with two lines of context; a row with kind 0 marks a gap.
+}  // namespace
+
 std::vector<DiffLine> visible_rows(const std::vector<DiffLine>& rows) {
     std::vector<bool> keep(rows.size(), false);
     for (size_t i = 0; i < rows.size(); i++) {
@@ -132,8 +133,6 @@ std::vector<DiffLine> visible_rows(const std::vector<DiffLine>& rows) {
     }
     return out;
 }
-
-}  // namespace
 
 MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : controller_(controller), models_(controller), chat_(controller), settings_(controller) {
     install_style();
@@ -918,12 +917,27 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
         auto* summary = Gtk::make_managed<Gtk::Label>(parts.empty() ? "No steps completed" : join(parts, " · "));
         summary->add_css_class("summary-line");
         line->append(*summary);
+        if (!activities.empty()) {
+            // Opens the Activity panel on this request's first scene.
+            auto* view = Gtk::make_managed<Gtk::Button>("View activity");
+            view->add_css_class("flat");
+            view->add_css_class("changed-link");
+            view->set_tooltip_text("Show what Mason did, step by step, in the Activity panel");
+            const std::string first = activities.front().id;
+            view->signal_clicked().connect([this, first] { Glib::signal_idle().connect_once([this, first] { show_activity(first); }); });
+            line->append(*view);
+        }
         if (!turn.changes.empty()) {
             auto* changed = Gtk::make_managed<Gtk::Button>(std::to_string(turn.changes.size()) + (turn.changes.size() == 1 ? " changed file" : " changed files"));
             changed->add_css_class("flat");
             changed->add_css_class("changed-link");
             changed->set_tooltip_text("Show what changed");
-            changed->signal_clicked().connect([this] { changes_toggle_.set_active(true); });
+            changed->signal_clicked().connect([this] {
+                panel_ = "changes";
+                changes_shown_.clear();
+                if (changes_toggle_.get_active()) Glib::signal_idle().connect_once([this] { refresh_changes(); });
+                else changes_toggle_.set_active(true);
+            });
             line->append(*changed);
         }
         if (turn.undone) {
@@ -1147,10 +1161,12 @@ void MainWindow::refresh_composer() {
 Gtk::Widget* MainWindow::panel_switch() {
     auto* box = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 0);
     box->add_css_class("linked");
+    box->add_css_class("panel-switch");
     box->set_hexpand(true);
     Gtk::ToggleButton* first = nullptr;
     const std::vector<std::array<std::string, 3>> panels = {
         {"changes", "Changes", "The files this session changed"},
+        {"activity", "Activity", "What Mason did, one scene at a time: reads, edits, commands and page checks"},
         {"plan", "Plan", "Milestones: the steps of the work, the files each covers and how each is checked"},
         {"files", "Files", "The project's files, to read"},
         {"website", "Website", "The project's pages: look at one, and pick an element to tell Mason about"},
@@ -1379,6 +1395,7 @@ void MainWindow::refresh_changes() {
     if (!changes_toggle_.get_active()) return;
     const Session* session = controller_.session();
     std::vector<FileChange> merged;
+    if (panel_ == "activity") { refresh_activity(); return; }
     if (panel_ == "plan") { refresh_plan(); return; }
     if (panel_ == "files") { refresh_files(); return; }
     if (panel_ == "website") { refresh_website(); return; }
