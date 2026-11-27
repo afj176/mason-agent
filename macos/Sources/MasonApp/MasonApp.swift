@@ -36,6 +36,10 @@ struct MasonAgentApp: App {
                 Button("Chat") { model.pane = .chat }.keyboardShortcut("2")
                 Button("Models") { model.pane = .models }.keyboardShortcut("3")
                 Divider()
+                // New Chat keeps ⌘⇧N, so Notes is ⌥⌘N.
+                Button(model.notesOpen ? "Hide Notes" : "Notes") { model.toggleNotes() }
+                    .keyboardShortcut("n", modifiers: [.command, .option])
+                    .disabled(model.pane != .code || model.session == nil)
                 Button("Search Mason…") { model.showPalette() }.keyboardShortcut("k")
             }
             CommandMenu("Agent") {

@@ -82,7 +82,6 @@ struct ProjectPane: View {
 
     var body: some View {
         Form {
-            NotesSection()
             if model.session == nil {
                 Text("Open a project to see its policy, experiments, pull request and background tasks.").foregroundStyle(.secondary)
             } else {
@@ -372,51 +371,6 @@ struct GenerationSection: View {
 
     func load() { values = model.endpoint.map { Generation.values(for: $0, home: home) } ?? [:] }
     func run(_ rest: String) { model.runControl("/generation", rest, then: load) }
-}
-
-/// The notes kept for the project of the session in view.
-struct NotesSection: View {
-    @EnvironmentObject var model: AppModel
-    @State private var notes: [ProjectNote] = []
-
-    var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
-    var workspace: Workspace? { model.session.flatMap { try? Workspace(path: $0.workspace) } }
-
-    var body: some View {
-        if let workspace {
-            Section {
-                if notes.isEmpty { Text("No notes for this project").foregroundStyle(.secondary) }
-                ForEach(notes) { note in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(note.text)
-                            if let source = note.source {
-                                Text(ProjectNotes.current(note, in: workspace) ? "About \(source)" : "About \(source), which has changed, so this is no longer sent")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
-                        Button("Remove") { remove(note) }
-                    }
-                }
-                CommandField(prompt: "Something worth telling the model every time", label: "Keep") { run("add " + $0) }
-                CommandField(prompt: "PATH  A note about that file", label: "Keep") { run("about " + $0) }
-            } header: {
-                Text("Project notes")
-            } footer: {
-                Text("Short facts about this project. The six newest are given to the model with each request, as background and not as instructions. A note about a file stops being sent once that file changes.")
-            }
-            .onAppear(perform: load)
-        }
-    }
-
-    func load() { notes = model.session.map { ProjectNotes.load(home: home, workspace: $0.workspace).sorted { $0.saved > $1.saved } } ?? [] }
-    func run(_ rest: String) { model.runControl("/notes", rest, then: load) }
-    func remove(_ note: ProjectNote) {
-        guard let session = model.session else { return }
-        do { try ProjectNotes.remove(note.id, workspace: session.workspace, home: home) } catch { model.notice = model.describe(error) }
-        load()
-    }
 }
 
 // MARK: the search box over everything

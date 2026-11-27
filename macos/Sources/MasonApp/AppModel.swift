@@ -63,6 +63,17 @@ final class AppModel: ObservableObject {
     @Published var milestoneBusy: UUID?
     /// True while the model is reading what the session changed.
     @Published var reviewing = false
+    /// The Notes tray over the end of the transcript: whether it is open, its field and the file a new note is about.
+    @Published var notesOpen = false
+    @Published var noteField = ""
+    @Published var noteSource: String?
+    /// The notes of the project in view, newest first, and those whose file changed since.
+    @Published var projectNotes: [ProjectNote] = []
+    @Published var staleNotes: Set<UUID> = []
+    /// What Undo in the tray puts back, while it shows.
+    @Published var notesUndo: NotesUndo?
+    /// True while the tray asks whether to clear every note.
+    @Published var notesConfirmClear = false
     private var chatStore: ChatStore?
     private var chatTask: Task<Void, Never>?
 
@@ -308,6 +319,15 @@ final class AppModel: ObservableObject {
         }
         // Commands that act on the project or on Mason itself, shared with the command line. What they say is shown as a notice.
         let word = text.split(separator: " ", maxSplits: 1).first.map { $0.lowercased() } ?? ""
+        // "/note" or "/notes" alone opens the Notes tray; "/notes clear" opens it asking first.
+        if word == "/note" || word == "/notes" {
+            let arguments = ProjectNotes.arguments(word, String(text.dropFirst(word.count)))
+            if arguments.isEmpty || arguments.lowercased() == "clear" {
+                draft = ""
+                openNotes(confirmClear: !arguments.isEmpty)
+                return
+            }
+        }
         if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language", "/generation", "/notes", "/note"].contains(word) {
             draft = ""
             hostCommand(word, String(text.dropFirst(word.count)).trimmingCharacters(in: .whitespaces), in: current)
@@ -319,6 +339,8 @@ final class AppModel: ObservableObject {
             return
         }
         draft = ""; running = true; liveText = ""; liveStatus = "Thinking"; liveActivities = []
+        // Sending a request closes the Notes tray.
+        closeNotes()
         // Show the request at once; the engine's copy replaces it when the run ends.
         var shown = current
         shown.turns.append(Turn(request: Review.request(text, comments: current.comments ?? []), firstActivity: current.activities.count))
@@ -361,6 +383,7 @@ final class AppModel: ObservableObject {
             try activeAgent.sendWhileRunning(text, steer: steer)
             draft = ""
             waitingFollowUps += 1
+            closeNotes()
         } catch { notice = describe(error) }
     }
 
@@ -400,6 +423,8 @@ final class AppModel: ObservableObject {
         running = false; liveText = ""; liveStatus = ""; liveActivities = []
         waitingFollowUps = 0
         runTask = nil
+        // The request may have changed a file a note is about.
+        reloadNotes()
     }
 
     func stop() { runTask?.cancel(); if let pending = approval { answer(pending, allow: false) } }

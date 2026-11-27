@@ -308,6 +308,45 @@ final class CLI {
         for activity in feed.takeFinished() { show(activity) }
         session = box.value
         outcome(firstActivity: firstActivity, turnsBefore: turnsBefore, seconds: Date().timeIntervalSince(started))
+        offerSuggestedNote(turnsBefore: turnsBefore)
+    }
+
+    /// /notes: the project's notes, newest first, each with its file and age.
+    func listNotes() {
+        let notes = ProjectNotes.newest(home: home, workspace: workspace.root.path)
+        Term.line()
+        if notes.isEmpty { Term.line(Term.paint(Term.dim, "  No notes for this project. /note TEXT adds one.")); return }
+        Term.line("  " + Term.paint(Term.bold, ProjectNotes.title))
+        for (index, note) in notes.enumerated() {
+            let stale = !ProjectNotes.current(note, in: workspace)
+            Term.line("  " + Term.paint(Term.dim, String(index + 1).leftPad(2)) + "  " + (stale ? Term.paint(Term.dim, note.text) : note.text))
+            Term.line("      " + Term.paint(stale ? Term.yellow : Term.dim, ProjectNotes.meta(note, in: workspace)))
+        }
+        Term.line(Term.paint(Term.dim, "  " + ProjectNotes.hint))
+    }
+
+    /// After the answer: a note the model suggested in this request. y remembers it, n dismisses it, Enter skips.
+    func offerSuggestedNote(turnsBefore: Int) {
+        guard let suggestion = session.suggestedNote, session.turns.dropFirst(turnsBefore).contains(where: { $0.id == suggestion.turn }) else { return }
+        let full = ProjectNotes.load(home: home, workspace: workspace.root.path).count >= ProjectNotes.limit
+        Term.line()
+        Term.line("  " + Term.paint(Term.accent + Term.bold, "Remember this for next time?"))
+        Term.line("  “" + suggestion.text + "”")
+        if full { Term.line(Term.paint(Term.dim, "  \(ProjectNotes.limit) of \(ProjectNotes.limit). Remove one to add another.")) }
+        guard Term.interactive else { return }
+        Term.write("  " + (full ? "" : Term.paint(Term.accent, "y") + " remember   ") + Term.paint(Term.accent, "n") + " dismiss   " + Term.paint(Term.dim, "Enter skips") + "  › ")
+        let answer = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        do {
+            if !full, answer == "y" || answer == "yes" {
+                try ProjectNotes.add(suggestion.text, workspace: workspace, home: home)
+                Term.line(Term.paint(Term.green, "  ✓ Remembered") + Term.paint(Term.dim, "  ·  /notes lists them"))
+            } else if answer == "n" || answer == "no" {
+                try ProjectNotes.dismiss(suggestion.text, workspace: workspace.root.path, home: home)
+                Term.line(Term.paint(Term.dim, "  Dismissed. Mason will not suggest it again."))
+            } else { return }
+            session.suggestedNote = nil
+            try store.save(session)
+        } catch { Term.line(Term.paint(Term.red, "  " + ((error as? MasonError)?.description ?? error.localizedDescription))) }
     }
 
     func show(_ activity: Activity) {
@@ -561,7 +600,17 @@ final class CLI {
             if rest.hasPrefix("install") { Term.line("  Installing. This can take a few minutes.") }
             for line in try await LanguageServers.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/notes", "/note":
-            for line in try ProjectNotes.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            let arguments = ProjectNotes.arguments(name, rest)
+            if arguments.isEmpty { listNotes(); break }
+            if arguments.lowercased() == "clear" {
+                let count = ProjectNotes.load(home: home, workspace: workspace.root.path).count
+                if count == 0 { Term.line(Term.paint(Term.dim, "  This project has no notes.")); break }
+                guard Term.interactive else { Term.line("  Clear all \(count) notes? Not confirmed: there is no terminal to ask."); break }
+                Term.write("  Clear all \(count) notes? [y/N] ")
+                let answer = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+                guard answer == "y" || answer == "yes" else { Term.line(Term.paint(Term.dim, "  Kept.")); break }
+            }
+            for line in try ProjectNotes.command(arguments, workspace: workspace, home: home).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/generation":
             for line in try Generation.command(rest, endpoint: endpoint).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/policy":
@@ -670,7 +719,8 @@ final class CLI {
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
             ("/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"),
             ("/languages", "The languages in this project and the language server that checks each; install one (see /languages help)"),
-            ("/notes", "Notes kept for this project and given to the model with each request (see /notes help)"),
+            ("/notes", "Notes for this project. Mason reads every note, up to 12, with each request (see /notes help)"),
+            ("/note TEXT", "Keep a note for this project, the same as /notes add TEXT"),
             ("/generation", "Temperature, top P and the like, kept for the model in use (see /generation help)"),
             ("/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"),
             ("/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"),
