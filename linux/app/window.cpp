@@ -107,7 +107,7 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     open_button->set_tooltip_text("Open a project folder");
     open_button->signal_clicked().connect([this] { open_project(); });
     auto* brand = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
-    brand->append(*mascot(28));
+    brand->append(*app_icon(26));
     auto* brand_name = Gtk::make_managed<Gtk::Label>("Mason Agent");
     brand_name->add_css_class("brand-title");
     brand->append(*brand_name);
@@ -243,8 +243,20 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     composer->set_margin(16);
     composer->set_margin_top(6);
 
+    // The session's state: a pose for what Mason is doing or what it needs, beside the state in words.
+    state_row_.add_css_class("state-row");
+    state_row_.set_margin_start(24);
+    state_row_.set_margin_end(24);
+    state_pose_ = pose_picture(pose::planning, 46, "planning");
+    state_label_.set_xalign(0);
+    state_label_.set_hexpand(true);
+    state_label_.set_ellipsize(Pango::EllipsizeMode::END);
+    state_row_.append(*state_pose_);
+    state_row_.append(state_label_);
+    state_row_.set_visible(false);
     auto* conversation = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
     conversation->append(transcript_scroll_);
+    conversation->append(state_row_);
     conversation->append(approval_slot_);
     conversation->append(*composer);
     conversation->set_size_request(420, -1);
@@ -264,7 +276,9 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     welcome->set_valign(Gtk::Align::CENTER);
     welcome->set_halign(Gtk::Align::CENTER);
     welcome->set_margin(32);
-    welcome->append(*welcome_art(230));
+    // The first launch shows the bear and the level-bot arriving; once projects exist, the open-project pose.
+    welcome_pose_ = pose_picture(pose::first_launch, 148, "welcome");
+    welcome->append(*welcome_pose_);
     auto* welcome_title = Gtk::make_managed<Gtk::Label>("Make the next move clear");
     welcome_title->add_css_class("welcome-title");
     auto* welcome_lede = Gtk::make_managed<Gtk::Label>("Open a project folder and ask Mason to read, explain or change it.\nIt runs on your own local model, and asks before each edit and command.");
@@ -303,17 +317,27 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     model_button_.signal_clicked().connect([this] { adw_view_stack_set_visible_child_name(stack_, "models"); });
     models_.open_chat.connect([this] { adw_view_stack_set_visible_child_name(stack_, "chat"); });
 
-    // Appearance: follow the system, or always light or dark.
+    // Appearance: follow the system, or always light or dark, and the theme family. Settings has the same choices with previews.
     auto appearance_menu = Gio::Menu::create();
-    appearance_menu->append("Follow System", "look.appearance::system");
-    appearance_menu->append("Light", "look.appearance::light");
-    appearance_menu->append("Dark", "look.appearance::dark");
+    auto modes = Gio::Menu::create();
+    modes->append("Follow System", "look.appearance::system");
+    modes->append("Light", "look.appearance::light");
+    modes->append("Dark", "look.appearance::dark");
+    appearance_menu->append_section(modes);
+    auto families = Gio::Menu::create();
+    for (const theme::Family& item : theme::families()) families->append(item.name, "look.family::" + item.slug());
+    appearance_menu->append_section("Theme", families);
     auto look = Gio::SimpleActionGroup::create();
-    const Appearance current = appearance();
-    look->add_action_radio_string("appearance", [look](const Glib::ustring& choice) {
+    auto mode_name = [] { const Appearance now = appearance(); return now == Appearance::Light ? "light" : now == Appearance::Dark ? "dark" : "system"; };
+    look->add_action_radio_string("appearance", [](const Glib::ustring& choice) {
         set_appearance(choice == "light" ? Appearance::Light : choice == "dark" ? Appearance::Dark : Appearance::System);
-        if (auto action = std::dynamic_pointer_cast<Gio::SimpleAction>(look->lookup_action("appearance"))) action->set_state(Glib::Variant<Glib::ustring>::create(choice));
-    }, current == Appearance::Light ? "light" : current == Appearance::Dark ? "dark" : "system");
+    }, mode_name());
+    look->add_action_radio_string("family", [](const Glib::ustring& choice) { set_family(theme::find(choice)); }, family().slug());
+    // Either place can change the look; both show the current choice.
+    appearance_changed().connect([look, mode_name] {
+        if (auto action = std::dynamic_pointer_cast<Gio::SimpleAction>(look->lookup_action("appearance"))) action->set_state(Glib::Variant<Glib::ustring>::create(mode_name()));
+        if (auto action = std::dynamic_pointer_cast<Gio::SimpleAction>(look->lookup_action("family"))) action->set_state(Glib::Variant<Glib::ustring>::create(family().slug()));
+    });
     auto* appearance_button = Gtk::make_managed<Gtk::MenuButton>();
     appearance_button->set_icon_name("weather-clear-night-symbolic");
     appearance_button->set_tooltip_text("Appearance");
@@ -431,6 +455,13 @@ void MainWindow::refresh() {
     settings_.refresh();
     const Session* session = controller_.session();
     session_stack_.set_visible_child(session ? "session" : "empty");
+    // Before any project, the first-launch pose; once there are projects to go back to, the open-project pose.
+    const std::string welcome = controller_.sessions().empty() ? pose::first_launch : pose::open_project;
+    if (welcome_pose_ && welcome != welcome_shown_) {
+        welcome_shown_ = welcome;
+        set_pose(*welcome_pose_, welcome, 148, welcome == pose::first_launch ? "welcome" : "open a project");
+    }
+    refresh_state();
     gtk_window_set_title(GTK_WINDOW(window_), session ? (session->title + " · Mason Agent").c_str() : "Mason Agent");
     model_button_.set_label(controller_.endpoint ? controller_.endpoint_name : "No model running");
     std::string doing = "Ready";
@@ -440,6 +471,54 @@ void MainWindow::refresh() {
     status_right_.set_text(session ? fs::path(session->workspace).filename().string() + " · " + permission_label(session->ask_only ? Permission::ReadOnly : session->permission) + " · Session saved on this computer" : "Everything stays on this computer");
     model_button_.set_tooltip_text(controller_.endpoint ? "Running at " + controller_.endpoint->url : "No model is running. Open Models to start one.");
     updating_ = false;
+}
+
+void MainWindow::refresh_state() {
+    const Session* session = controller_.session();
+    std::string mood, meaning;
+    const bool restored = std::chrono::steady_clock::now() - controller_.restored_at < std::chrono::seconds(30);
+    if (session && !session->turns.empty()) {
+        if (controller_.approval) {
+            // The approval card below carries the awaiting-approval pose, so the row stays out of the way.
+        } else if (controller_.running) {
+            // The latest tool call that is still running says what Mason is doing; between calls it is planning.
+            std::string tool;
+            for (auto it = controller_.live_activities.rbegin(); it != controller_.live_activities.rend(); ++it) {
+                if (it->state == "running") { tool = it->tool; break; }
+            }
+            mood = pose_for_tool(tool);
+            meaning = mood == pose::reading ? "reading files" : mood == pose::editing ? "editing" : mood == pose::checks ? "running checks" : "planning";
+        } else if (restored) {
+            mood = pose::restored;
+            meaning = "files restored";
+        } else if (session->state == "Awaiting review") {
+            mood = pose::approval;
+            meaning = "waiting for your decision";
+        } else if (session->state == "Needs your answer") {
+            mood = pose::listening;
+            meaning = "waiting for your answer";
+        } else if (session->state == "Completed") {
+            // Ready to review when the session left changes in place; connected and calm when it only answered.
+            const bool changes = std::any_of(session->turns.begin(), session->turns.end(), [](const Turn& turn) { return !turn.undone && !turn.changes.empty(); });
+            mood = changes ? pose::review : pose::connected;
+            meaning = changes ? "ready to review" : "finished";
+        } else if (session->state == "Failed" || session->state == "Blocked" || session->state == "Needs verification") {
+            mood = pose::failed;
+            meaning = "a check failed";
+        }
+    }
+    std::string words = controller_.running ? (controller_.live_status.empty() ? "Working" : controller_.live_status) : session ? session->state : "";
+    words = utf8_prefix(replace_all(words, "\n", " "), 160);
+    state_row_.set_visible(!mood.empty());
+    state_label_.set_text(words);
+    if (!mood.empty() && mood != state_shown_) {
+        state_shown_ = mood;
+        set_pose(*state_pose_, mood, 46, meaning);
+    }
+    // The restored pose lasts thirty seconds; look again then.
+    if (restored && !restored_timer_.connected()) {
+        restored_timer_ = Glib::signal_timeout().connect_seconds([this] { refresh_state(); return false; }, 31);
+    }
 }
 
 void MainWindow::refresh_sidebar() {
@@ -631,7 +710,14 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
             popover->popup();
         });
         request->add_controller(click);
-        request->signal_destroy().connect([popover] { popover->unparent(); });
+        // The box may already have let go of the menu (and its wrapper) by now, so only a menu still attached is released.
+        g_signal_connect(request->gobj(), "destroy", G_CALLBACK(+[](GtkWidget* owner, gpointer) {
+            for (GtkWidget* child = gtk_widget_get_first_child(owner); child;) {
+                GtkWidget* next = gtk_widget_get_next_sibling(child);
+                if (GTK_IS_POPOVER(child)) gtk_widget_unparent(child);
+                child = next;
+            }
+        }), nullptr);
     }
 
     auto* reply = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
@@ -659,14 +745,20 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
         const DerivedReceipt& receipt = *turn.checks;
         const bool ran = std::any_of(receipt.results.begin(), receipt.results.end(), [](const DerivedResult& result) { return result.state != "notRun"; });
         const bool good = derived::passed(receipt);
-        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-        auto* icon = Gtk::make_managed<Gtk::Image>();
-        icon->set_from_icon_name(!ran ? "dialog-information-symbolic" : good ? "emblem-ok-symbolic" : "dialog-error-symbolic");
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
         auto* label = Gtk::make_managed<Gtk::Label>(derived::summary(receipt));
         label->set_xalign(0);
         label->set_wrap(true);
-        for (Gtk::Widget* part : {static_cast<Gtk::Widget*>(icon), static_cast<Gtk::Widget*>(label)}) part->add_css_class(!ran ? "warning" : good ? "success" : "error");
-        row->append(*icon);
+        label->add_css_class(!ran ? "warning" : good ? "success" : "error");
+        if (ran) {
+            // Checks that passed show the running-checks pose; a failed check, the check-failed pose.
+            row->append(*pose_picture(good ? pose::checks : pose::failed, 48, good ? "checks passed" : "a check failed"));
+        } else {
+            auto* icon = Gtk::make_managed<Gtk::Image>();
+            icon->set_from_icon_name("dialog-information-symbolic");
+            icon->add_css_class("warning");
+            row->append(*icon);
+        }
         row->append(*label);
         row->set_tooltip_text(derived::report(receipt));
         reply->append(*row);
@@ -676,13 +768,19 @@ Gtk::Widget* MainWindow::turn_widget(const Turn& turn, const std::vector<Activit
         const Verification& receipt = *turn.verification;
         const bool good = receipt.verdict == "passed" || receipt.verdict == "fixed";
         const bool quiet = receipt.verdict == "notRun" || receipt.verdict == "failingBefore";
-        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
-        auto* icon = Gtk::make_managed<Gtk::Image>();
-        icon->set_from_icon_name(good ? "emblem-ok-symbolic" : quiet ? "dialog-information-symbolic" : "dialog-error-symbolic");
+        auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
         auto* label = Gtk::make_managed<Gtk::Label>("Verified by Mason: " + receipt.summary() + (receipt.repairs > 0 ? " · after " + std::to_string(receipt.repairs) + (receipt.repairs == 1 ? " repair" : " repairs") : ""));
         label->set_xalign(0);
-        for (Gtk::Widget* part : {static_cast<Gtk::Widget*>(icon), static_cast<Gtk::Widget*>(label)}) part->add_css_class(good ? "success" : quiet ? "warning" : "error");
-        row->append(*icon);
+        label->set_wrap(true);
+        label->add_css_class(good ? "success" : quiet ? "warning" : "error");
+        if (quiet) {
+            auto* icon = Gtk::make_managed<Gtk::Image>();
+            icon->set_from_icon_name("dialog-information-symbolic");
+            icon->add_css_class("warning");
+            row->append(*icon);
+        } else {
+            row->append(*pose_picture(good ? pose::checks : pose::failed, 48, good ? "checks passed" : "a check failed"));
+        }
         row->append(*label);
         row->set_tooltip_text(receipt.command + (receipt.output.empty() ? "" : "\n\n" + utf8_suffix(receipt.output, 600)));
         reply->append(*row);
@@ -740,8 +838,12 @@ Gtk::Widget* MainWindow::approval_widget(const ApprovalRequest& request) {
     card->set_margin_bottom(4);
     auto* heading = Gtk::make_managed<Gtk::Label>("Review " + tool);
     heading->set_xalign(0);
+    heading->set_hexpand(true);
     heading->add_css_class("heading");
-    card->append(*heading);
+    auto* top = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 14);
+    top->append(*pose_picture(pose::approval, 70, "waiting for your decision"));
+    top->append(*heading);
+    card->append(*top);
     auto* title = text_label(utf8_prefix(request.title, 1200));
     title->add_css_class("monospace");
     card->append(*title);
@@ -831,9 +933,12 @@ void MainWindow::refresh_transcript() {
                 transcript_.append(*turn_widget(session->turns[i], activities, live));
             }
             if (session->turns.empty()) {
+                // A new session: the bear and the level-bot listen for the first request.
+                auto* face = pose_picture(pose::listening, 120, "listening");
+                face->set_margin_top(60);
+                transcript_.append(*face);
                 auto* hint = dim_label("Ask a question about this project, or describe a change.");
                 hint->set_halign(Gtk::Align::CENTER);
-                hint->set_margin_top(80);
                 transcript_.append(*hint);
             }
             if (!controller_.running && !session->detail.empty()) {

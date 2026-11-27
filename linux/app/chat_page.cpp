@@ -278,9 +278,8 @@ void ChatPage::refresh() {
             hint->set_wrap(true);
             hint->set_justify(Gtk::Justification::CENTER);
             hint->set_halign(Gtk::Align::CENTER);
-            auto* face = mascot(72);
-            face->set_halign(Gtk::Align::CENTER);
-            face->set_margin_top(70);
+            auto* face = pose_picture(pose::listening, 120, "listening");
+            face->set_margin_top(60);
             transcript_.append(*face);
             transcript_.append(*hint);
         }
@@ -298,14 +297,30 @@ void ChatPage::refresh() {
             }
         }
         if (controller_.chat_running) {
-            auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+            // The answer being written: the planning pose beside the streamed words.
+            auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
+            auto* face = pose_picture(pose::planning, 34, "working on the answer");
+            face->set_valign(Gtk::Align::START);
             auto* spinner = Gtk::make_managed<Gtk::Spinner>();
             spinner->start();
+            spinner->set_valign(Gtk::Align::CENTER);
             live_label_ = wrapped("Thinking");
             live_label_->add_css_class("dim-label");
+            live_label_->set_hexpand(true);
+            row->append(*face);
             row->append(*spinner);
             row->append(*live_label_);
             transcript_.append(*row);
+        } else if (chat && !chat->messages.empty() && chat->messages.back().role == "user") {
+            // The question was saved but no answer came back.
+            auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
+            row->append(*pose_picture(pose::failed, 40, "no answer"));
+            auto* note = wrapped(controller_.chat_problem.empty() ? "No answer arrived. Send the message again to retry." : "No answer arrived: " + controller_.chat_problem);
+            note->add_css_class("error");
+            note->set_hexpand(true);
+            row->append(*note);
+            transcript_.append(*speaker(true));
+            transcript_.append(*message_body(*row));
         }
         // Show the newest message once the new rows have a size.
         Glib::signal_idle().connect_once([this] {

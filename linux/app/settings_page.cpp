@@ -1,4 +1,5 @@
 // The Settings page: saved approvals, agents and commands, MCP servers, and schedules, in one place.
+#include <cmath>
 #include "window.hpp"
 
 #include "background.hpp"
@@ -76,12 +77,135 @@ Gtk::Entry* entry_row(AdwPreferencesGroup* into, const std::string& title, const
 }  // namespace
 
 SettingsPage::SettingsPage(Controller& controller) : controller_(controller) {
-    content_.set_margin(24);
+    page_.set_margin(24);
+    build_appearance();
+    page_.append(content_);
     GtkWidget* clamp = adw_clamp_new();
     adw_clamp_set_maximum_size(ADW_CLAMP(clamp), 860);
-    adw_clamp_set_child(ADW_CLAMP(clamp), GTK_WIDGET(content_.gobj()));
+    adw_clamp_set_child(ADW_CLAMP(clamp), GTK_WIDGET(page_.gobj()));
     gtk_scrolled_window_set_child(gobj(), clamp);
     set_policy(Gtk::PolicyType::NEVER, Gtk::PolicyType::AUTOMATIC);
+}
+
+namespace {
+
+/// A small picture of one mode of a family: the window, its side pane, a card, a line of text and an accent button.
+Gtk::DrawingArea* theme_preview(const theme::Family& family, bool dark) {
+    auto* area = Gtk::make_managed<Gtk::DrawingArea>();
+    area->set_content_width(76);
+    area->set_content_height(50);
+    const theme::Tokens tokens = family.tokens(dark);
+    area->set_draw_func([tokens](const Cairo::RefPtr<Cairo::Context>& cr, int width, int height) {
+        auto colour = [&cr](uint32_t rgb) { cr->set_source_rgb(((rgb >> 16) & 0xFF) / 255.0, ((rgb >> 8) & 0xFF) / 255.0, (rgb & 0xFF) / 255.0); };
+        auto rounded = [&cr](double x, double y, double w, double h, double r) {
+            cr->begin_new_sub_path();
+            cr->arc(x + w - r, y + r, r, -M_PI / 2, 0);
+            cr->arc(x + w - r, y + h - r, r, 0, M_PI / 2);
+            cr->arc(x + r, y + h - r, r, M_PI / 2, M_PI);
+            cr->arc(x + r, y + r, r, M_PI, 3 * M_PI / 2);
+            cr->close_path();
+        };
+        rounded(0.5, 0.5, width - 1, height - 1, 7);
+        colour(tokens.background);
+        cr->fill_preserve();
+        colour(tokens.line);
+        cr->set_line_width(1);
+        cr->stroke();
+        cr->save();
+        rounded(0.5, 0.5, width - 1, height - 1, 7);
+        cr->clip();
+        colour(tokens.pane);
+        cr->rectangle(0, 0, width * 0.26, height);
+        cr->fill();
+        cr->restore();
+        const double left = width * 0.26 + 6;
+        rounded(left, 7, width - left - 6, height - 14, 4);
+        colour(tokens.card);
+        cr->fill_preserve();
+        colour(tokens.line);
+        cr->stroke();
+        colour(tokens.text);
+        cr->rectangle(left + 5, 13, (width - left - 16) * 0.8, 3);
+        cr->fill();
+        cr->rectangle(left + 5, 19, (width - left - 16) * 0.5, 3);
+        cr->fill();
+        rounded(left + 5, height - 20, 22, 8, 4);
+        colour(tokens.accent);
+        cr->fill();
+    });
+    return area;
+}
+
+}  // namespace
+
+void SettingsPage::build_appearance() {
+    GtkWidget* group = adw_preferences_group_new();
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(group), "Appearance");
+    adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(group), "Light, dark, or the system's choice, and a theme family. The mason command uses the same family for its accent.");
+
+    mode_row_ = adw_combo_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(mode_row_), "Style");
+    GtkStringList* modes = gtk_string_list_new(nullptr);
+    for (const char* name : {"Follow System", "Light", "Dark"}) gtk_string_list_append(modes, name);
+    adw_combo_row_set_model(ADW_COMBO_ROW(mode_row_), G_LIST_MODEL(modes));
+    g_object_unref(modes);
+    g_signal_connect(mode_row_, "notify::selected", G_CALLBACK(+[](GObject* row, GParamSpec*, gpointer self) {
+        auto* page = static_cast<SettingsPage*>(self);
+        if (page->showing_appearance_) return;
+        const guint chosen = adw_combo_row_get_selected(ADW_COMBO_ROW(row));
+        set_appearance(chosen == 1 ? Appearance::Light : chosen == 2 ? Appearance::Dark : Appearance::System);
+    }), this);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), mode_row_);
+
+    // One choice per family: the name, then its light and dark previews.
+    auto* choices = Gtk::make_managed<Gtk::FlowBox>();
+    choices->set_selection_mode(Gtk::SelectionMode::NONE);
+    choices->set_homogeneous(true);
+    choices->set_min_children_per_line(2);
+    choices->set_max_children_per_line(5);
+    choices->set_column_spacing(10);
+    choices->set_row_spacing(10);
+    choices->set_margin_top(12);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(choices->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Theme family", -1);
+    Gtk::ToggleButton* first = nullptr;
+    for (const theme::Family& item : theme::families()) {
+        auto* button = Gtk::make_managed<Gtk::ToggleButton>();
+        button->add_css_class("theme-choice");
+        if (first) button->set_group(*first);
+        else first = button;
+        auto* inside = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+        auto* name = Gtk::make_managed<Gtk::Label>(item.name);
+        name->add_css_class("theme-choice-name");
+        name->set_xalign(0);
+        auto* previews = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+        previews->append(*theme_preview(item, false));
+        previews->append(*theme_preview(item, true));
+        inside->append(*name);
+        inside->append(*previews);
+        button->set_child(*inside);
+        button->set_tooltip_text(item.name + (&item == &theme::default_family() ? " (default): light and dark" : ": light and dark"));
+        gtk_accessible_update_property(GTK_ACCESSIBLE(button->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, (item.name + " theme").c_str(), -1);
+        const theme::Family* chosen = &item;
+        button->signal_toggled().connect([this, button, chosen] {
+            if (showing_appearance_ || !button->get_active()) return;
+            set_family(*chosen);
+        });
+        choices->append(*button);
+        family_buttons_.push_back({button, chosen});
+    }
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(group), GTK_WIDGET(choices->gobj()));
+    gtk_box_append(page_.gobj(), group);
+    show_appearance();
+    // The header's Appearance menu changes the same choices.
+    appearance_changed().connect([this] { show_appearance(); });
+}
+
+void SettingsPage::show_appearance() {
+    showing_appearance_ = true;
+    const Appearance mode = appearance();
+    adw_combo_row_set_selected(ADW_COMBO_ROW(mode_row_), mode == Appearance::Light ? 1 : mode == Appearance::Dark ? 2 : 0);
+    for (const auto& [button, item] : family_buttons_) button->set_active(item == &family());
+    showing_appearance_ = false;
 }
 
 void SettingsPage::refresh() {

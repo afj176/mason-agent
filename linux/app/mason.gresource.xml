@@ -1,7 +1,23 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- The app icon comes from linux/packaging; the pose stills are the Windows app's (windows/src/MasonAgent/Assets/Poses). -->
 <gresources>
   <gresource prefix="/site/masonagent/MasonAgent">
-    <file alias="mascot.png">assets/mascot.png</file>
-    <file alias="welcome.png">assets/welcome.png</file>
+    <file alias="icon.png">site.masonagent.MasonAgent.png</file>
+    <file alias="poses/open-project.png">Poses/open-project.png</file>
+    <file alias="poses/listening.png">Poses/listening.png</file>
+    <file alias="poses/reading-files.png">Poses/reading-files.png</file>
+    <file alias="poses/planning.png">Poses/planning.png</file>
+    <file alias="poses/editing.png">Poses/editing.png</file>
+    <file alias="poses/running-checks.png">Poses/running-checks.png</file>
+    <file alias="poses/ready-to-review.png">Poses/ready-to-review.png</file>
+    <file alias="poses/choose-model.png">Poses/choose-model.png</file>
+    <file alias="poses/downloading.png">Poses/downloading.png</file>
+    <file alias="poses/loading-model.png">Poses/loading-model.png</file>
+    <file alias="poses/connected.png">Poses/connected.png</file>
+    <file alias="poses/awaiting-approval.png">Poses/awaiting-approval.png</file>
+    <file alias="poses/check-failed.png">Poses/check-failed.png</file>
+    <file alias="poses/restored.png">Poses/restored.png</file>
+    <file alias="poses/needs-attention.png">Poses/needs-attention.png</file>
+    <file alias="poses/first-launch.png">Poses/first-launch.png</file>
   </gresource>
 </gresources>
