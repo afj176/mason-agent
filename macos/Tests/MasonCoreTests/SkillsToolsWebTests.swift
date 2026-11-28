@@ -391,6 +391,24 @@ final class SkillsToolsWebTests: XCTestCase {
         XCTAssertTrue(Chat.offeredTools(conversation, model: again, home: home).isEmpty, "with the computer's network off, Chat has no web tools")
     }
 
+    func testAChatStoreReloadsWhatAnotherStoreSaved() throws {
+        let app = try ChatStore(home: home), terminal = try ChatStore(home: home)
+        var first = try app.create()
+        first.title = "From the app"
+        try app.save(first)
+        XCTAssertTrue(terminal.conversations.isEmpty)
+        try terminal.reload()
+        XCTAssertEqual(terminal.conversations.map(\.title), ["From the app"])
+        var continued = terminal.conversations[0]
+        continued.messages.append(ChatMessage(role: "user", content: "Hello from mason chat"))
+        try terminal.save(continued)
+        Thread.sleep(forTimeInterval: 1.1)  // dates are saved to the second
+        let second = try terminal.create()
+        try app.reload()
+        XCTAssertEqual(app.conversations.map(\.id), [second.id, first.id], "newest first")
+        XCTAssertEqual(app.conversations.last?.messages.last?.content, "Hello from mason chat")
+    }
+
     func testChatReadsComputerSkillsAndStopsOfferingToolsAfterEightRounds() async throws {
         try put("skills/tone/SKILL.md", "---\ndescription: How to write replies\n---\nBe brief.", under: home)
         try installBundle(["tone": "---\ndescription: hidden\n---\nNo.", "cite": "---\ndescription: Cite sources\n---\nCite."])

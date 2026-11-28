@@ -130,11 +130,17 @@ public final class ChatStore {
     public init(home: URL = DataHome.url) throws {
         folder = home.appendingPathComponent("chats")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try reload()
+    }
+
+    /// Reads the folder again, newest first, so chats another Mason (the app or `mason chat`) saved since are seen.
+    public func reload() throws {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        var found: [ChatConversation] = []
         for file in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) where file.pathExtension == "json" {
-            if let data = try? Data(contentsOf: file), let conversation = try? decoder.decode(ChatConversation.self, from: data) { conversations.append(conversation) }
+            if let data = try? Data(contentsOf: file), let conversation = try? decoder.decode(ChatConversation.self, from: data) { found.append(conversation) }
         }
-        conversations.sort { $0.updated > $1.updated }
+        conversations = found.sorted { $0.updated > $1.updated }
     }
 
     public func create() throws -> ChatConversation {

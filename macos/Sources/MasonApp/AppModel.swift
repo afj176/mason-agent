@@ -58,7 +58,12 @@ final class AppModel: ObservableObject {
     var paletteItems: [PaletteItem] = []
 
     /// Which part of the window is showing.
-    @Published var pane: Pane = .code
+    @Published var pane: Pane = .code {
+        // Chats mason chat saved since are picked up when the Chat page is shown.
+        didSet { if pane == .chat, oldValue != .chat { reloadChats() } }
+    }
+    /// The observer that reloads chats when Mason becomes the active app.
+    private var activeObserver: NSObjectProtocol?
     /// Whether the files the session changed are shown beside the conversation.
     @Published var showChanges = false
     @Published var chats: [ChatConversation] = []
@@ -128,6 +133,9 @@ final class AppModel: ObservableObject {
             chats = opened.conversations
             chatSelection = chats.first?.id
         }
+        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.reloadChats() }
+        }
         Task { await refreshModels(startLastIfNeeded: true) }
         // Scheduled requests are checked shortly after launch and then every minute while the app is open.
         scheduleTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in Task { @MainActor in await self?.runDueSchedules() } }
@@ -190,6 +198,15 @@ final class AppModel: ObservableObject {
     // MARK: chat
 
     var chat: ChatConversation? { chats.first { $0.id == chatSelection } }
+
+    /// Reads the chats folder again, so a chat mason chat started or continued shows here. The selected chat shows its
+    /// version on disk. Nothing is reloaded while a reply is being written, so a running reply is never replaced.
+    func reloadChats() {
+        guard let chatStore, !chatRunning else { return }
+        do { try chatStore.reload() } catch { return }
+        chats = chatStore.conversations
+        if let selected = chatSelection, !chats.contains(where: { $0.id == selected }) { chatSelection = chats.first?.id }
+    }
 
     func newChat() {
         guard let chatStore else { return }

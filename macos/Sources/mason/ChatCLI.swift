@@ -136,6 +136,8 @@ final class ChatCLI {
             attachments = []
             Term.line(Term.paint(Term.dim, "  New chat."))
         case "/resume":
+            // The app may have started or continued chats since this one began.
+            try store.reload()
             let recent = store.conversations.filter { $0.messages.count > 1 }.prefix(20).map { $0 }
             guard !recent.isEmpty else { Term.line(Term.paint(Term.dim, "  No saved chats yet.")); break }
             var choice = Int(rest)
@@ -187,8 +189,8 @@ final class ChatCLI {
             ("/resume [number]", "List recent chats and continue one"),
             ("/attach FILE", "Attach a text file, picture, PDF or Word document to your next message (up to 5)"),
             ("/reasoning off|low|medium|high|default", "How much the model thinks before answering"),
-            ("/tools", "Which tools this chat may use"),
-            ("/tools on|off web|skills|mcp", "Switch the web, skills or MCP servers on or off for this chat"),
+            ("/tools", "This chat's tools: web, skills and MCP, each on or off"),
+            ("/tools on|off web|skills|mcp", "Switch one on or off for this chat"),
             ("/model [number]", "List running model servers, or switch to one"),
             ("/help", "This list"),
             ("/exit", "Leave"),
