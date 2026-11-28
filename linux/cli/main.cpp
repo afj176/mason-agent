@@ -568,7 +568,10 @@ private:
     bool command(const std::string& input) {
         const size_t space = input.find(' ');
         std::string name = to_lower(input.substr(0, space)), rest = space == std::string::npos ? "" : trim(input.substr(space + 1));
-        if (name == "/read" || name == "/review" || name == "/edits" || name == "/auto") { rest = name.substr(1); name = "/permission"; }
+        // "/review changes" asks the model to review; a bare "/review" is the permission shortcut.
+        const bool review_changes = name == "/review" && rest.rfind("changes", 0) == 0;
+        if (review_changes) rest = rest.size() > 7 ? rest.substr(8) : "";
+        if (!review_changes && (name == "/read" || name == "/review" || name == "/edits" || name == "/auto")) { rest = name.substr(1); name = "/permission"; }
         if (name == "/exit" || name == "/quit") return false;
         if (name == "/help" || name == "/?") { help(); return true; }
         if (name == "/new") {
@@ -919,7 +922,7 @@ private:
             {"/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"},
             {"/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"},
             {"/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"},
-            {"/review", "Have the model read what this session changed and pin what it finds as comments"},
+            {"/review changes", "Have the model read what this session changed and pin what it finds as comments"},
             {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},
             {"/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"},
             {"/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"},
