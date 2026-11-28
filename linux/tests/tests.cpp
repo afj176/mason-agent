@@ -3398,11 +3398,16 @@ static void test_chat_tools() {
     terminal.save(made);
     CHECK(app.conversations().size() == before);
     app.reload();
-    CHECK(app.conversations().size() == before + 1 && app.conversations().front().id == made.id && app.conversations().front().title == "From the terminal");
+    // Saved times are to the second, so find the chat by id rather than by position.
+    const auto seen = [&]() -> const ChatConversation* {
+        for (const ChatConversation& chat : app.conversations()) if (chat.id == made.id) return &chat;
+        return nullptr;
+    };
+    CHECK(app.conversations().size() == before + 1 && seen() && seen()->title == "From the terminal");
     made.messages.push_back({"user", "One more", {}, ""});
     terminal.save(made);
     app.reload();
-    CHECK(app.conversations().front().messages.size() == 1 && app.conversations().front().messages[0].content == "One more");
+    CHECK(seen() && seen()->messages.size() == 1 && seen()->messages[0].content == "One more");
 }
 
 static void test_tool_groups() {
