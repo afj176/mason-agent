@@ -5,12 +5,12 @@ internal sealed partial class Interactive
 {
     static readonly (string, string)[] HarnessHelp =
     [
-        ("/skills", "List this project's skills: on, off or hidden, where each comes from"),
+        ("/skills", "Every skill: on, off or hidden, where it comes from and what it is for"),
         ("/skills show NAME", "Print a skill's path and its SKILL.md"),
-        ("/skills new NAME [description]", "Make a skill in .mason/skills and print its path"),
+        ("/skills new NAME [description]", "Make a skill in .mason/skills"),
         ("/skills on|off NAME", "Switch a skill on or off for this project"),
-        ("/skill NAME [request]", "Run a request with a skill"),
-        ("/tools", "The tools Mason may use here, by group, and your MCP servers"),
+        ("/skill NAME [request]", "Run a request that follows a skill"),
+        ("/tools", "Every tool by group, on or off for this project, then your MCP servers"),
         ("/tools on|off NAME", "Switch a tool on or off for this project"),
         ("/network [default|ask|off]", CodeNetworkSettings.Help),
         ("/mcp", "List your MCP servers and the tools Mason may call"),
