@@ -107,7 +107,7 @@ internal static class SkillsToolsWebChecks
             CodeNetworkSettings.SessionCommand("off", offline, profile);
             bool refused = false;
             try { services.Enable("web", offline); } catch (UnauthorizedAccessException) { refused = true; }
-            check(offline.Network == CodeNetworkMode.Offline && refused && !services.Enabled.Contains("web_fetch"), "/network off stops the web group from being offered");
+            check(offline.Network == CodeNetworkMode.Off && refused && !services.Enabled.Contains("web_fetch"), "/network off stops the web group from being offered");
             CodeNetworkSettings.SessionCommand("ask", offline, profile);
             services.Enable("web", offline);
             check(services.Enabled.IsSupersetOf(["web_fetch", "web_search"]), "/network ask offers the web group in a read-only session");
@@ -119,15 +119,49 @@ internal static class SkillsToolsWebChecks
             check(CodeNetworkSettings.Computer(Directory.CreateDirectory(Path.Combine(area, "unset")).FullName) == CodeNetworkMode.Default && fresh.Network == CodeNetworkMode.Default &&
                   !CodeNetworkSettings.CommandsAsk(fresh.Network) && services.Enabled.IsSupersetOf(["web_fetch", "web_search"]),
                 "The default leaves commands in Auto offline and still offers the web group");
-            check(CodeNetworkSettings.CommandsAsk(CodeNetworkMode.Ask) && !CodeNetworkSettings.CommandsAsk(CodeNetworkMode.Offline) && !CodeNetworkSettings.WebOffered(CodeNetworkMode.Offline),
+            check(CodeNetworkSettings.CommandsAsk(CodeNetworkMode.Ask) && !CodeNetworkSettings.CommandsAsk(CodeNetworkMode.Off) && !CodeNetworkSettings.WebOffered(CodeNetworkMode.Off),
                 "ask lets commands and the web tools ask; off gives neither");
             CodeNetworkSettings.SessionCommand("default", fresh, profile);
             check(fresh.Network == CodeNetworkMode.Default && CodeNetworkSettings.SessionCommand("", fresh, profile).StartsWith("This session: Default: commands in Auto are offline"), "/network default says plainly what it means");
         }
+        // A session saved before the web tools wrote Offline (0) only because it was the one default: it reads as Default.
+        var legacyRoot = Path.Combine(area, "store-legacy"); Guid legacyId;
+        using (var store = new CodeStore(legacyRoot, profile)) { var legacyMade = store.New(project); legacyId = legacyMade.Id; store.Save(legacyMade); }
+        foreach (var file in Directory.GetFiles(legacyRoot, legacyId.ToString("N") + ".json", SearchOption.AllDirectories))
+            File.WriteAllText(file, System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(file), "\"Network\":\\s*\\d+", "\"Network\": \"Offline\""));
+        using (var store = new CodeStore(legacyRoot, profile))
+        {
+            var legacy = store.Sessions.Single(s => s.Id == legacyId);
+            await using var services = new CodeRunServices(new CodeWorkspace(project), default, [], profile);
+            services.Enable("web", legacy);
+            check(legacy.Network == CodeNetworkMode.Default && services.Enabled.Contains("web_fetch") && !CodeNetworkSettings.CommandsAsk(legacy.Network),
+                "A session saved with \"Network\":\"Offline\" reads as Default, with the web group offered");
+            check(JsonSerializer.Deserialize<CodeNetworkMode>("0") == CodeNetworkMode.Default && JsonSerializer.Deserialize<CodeNetworkMode>("3") == CodeNetworkMode.Off &&
+                  JsonSerializer.Serialize(CodeNetworkMode.Off) == "3" && JsonSerializer.Deserialize<CodeNetworkMode>(JsonSerializer.Serialize(CodeNetworkMode.Ask)) == CodeNetworkMode.Ask,
+                "The explicit off is stored under a value older versions never wrote");
+        }
+
+        // ── A chat store shared by the app and mason chat ─────────────────────────────────────────────
+        var shared = Directory.CreateDirectory(Path.Combine(area, "shared-chat")).FullName;
+        using (var app = new ChatLibrary(shared))
+        using (var cli = new ChatLibrary(shared))
+        {
+            var fromApp = app.New(); fromApp.Title = "From the app"; fromApp.Turns.Add(new ChatTurn { Text = "app question" });
+            var fromCli = cli.New(); fromCli.Title = "From the terminal"; fromCli.Turns.Add(new ChatTurn { Text = "terminal question" });
+            app.Save(); cli.Save();
+            fromApp.Turns.Add(new ChatTurn { Role = "assistant", Text = "app answer" }); app.Save();
+            using (var later = new ChatLibrary(shared))
+                check(later.State.Conversations.Count == 2 && later.State.Conversations.Single(c => c.Id == fromApp.Id).Turns.Count == 2 && later.State.Conversations.Single(c => c.Id == fromCli.Id).Turns[0].Text == "terminal question",
+                    "Two chat stores adding messages to different conversations both survive");
+            cli.Refresh();
+            check(cli.State.Conversations.Single(c => c.Id == fromApp.Id).Turns.Count == 2 && cli.State.Conversations.Contains(fromCli), "Refresh picks up another writer's conversations and keeps the ones held");
+            app.State.Conversations.Remove(fromApp); app.Save();
+            using (var after = new ChatLibrary(shared)) check(after.State.Conversations.Select(c => c.Id).SequenceEqual([fromCli.Id]), "Deleting one conversation leaves the other writer's alone");
+        }
         using (var store = new CodeStore(Path.Combine(area, "store-default"), profile)) check(store.New(project).Network == CodeNetworkMode.Default, "With nothing set, a new session gets the default");
-        CodeNetworkSettings.SetComputer(profile, CodeNetworkMode.Offline);
+        CodeNetworkSettings.SetComputer(profile, CodeNetworkMode.Off);
         check(ChatTools.Offered(profile, new ChatToolSwitches()).All(t => !t.StartsWith("web_", StringComparison.Ordinal)), "When the computer's setting is off, Chat has no web tools");
-        using (var store = new CodeStore(Path.Combine(area, "store-offline"), profile)) check(store.New(project).Network == CodeNetworkMode.Offline, "A new session starts with the computer's setting");
+        using (var store = new CodeStore(Path.Combine(area, "store-offline"), profile)) check(store.New(project).Network == CodeNetworkMode.Off, "A new session starts with the computer's setting");
         CodeNetworkSettings.SetComputer(profile, CodeNetworkMode.Default);
         check(!File.Exists(Path.Combine(profile, "network.json")) && ChatTools.Offered(profile, new ChatToolSwitches()).Contains("web_fetch") && !ChatTools.Offered(profile, new ChatToolSwitches { Web = false }).Contains("web_fetch"), "Chat offers the web per conversation when the computer allows it");
 

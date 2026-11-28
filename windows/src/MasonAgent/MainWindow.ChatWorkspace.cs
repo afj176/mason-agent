@@ -295,8 +295,19 @@ public sealed partial class MainWindow
             catch(Exception error){if(generation==serverGeneration){serverUnreachable=true;contextStatus.Text=error.Message;modelState.Text="Connection unavailable · check Models";}}
             finally { if(generation==serverGeneration){ServerControls(); BudgetPreview(); QueueContextUsage();} }
         }
+        // mason chat shares this history: take in what it added or changed before listing or opening conversations.
+        void Sync()
+        {
+            if (busy) return;
+            var before = conversation.Updated;
+            try { library.Refresh(); }
+            catch (Exception error) when (error is IOException or InvalidDataException or System.Text.Json.JsonException) { state.Text = "History could not be refreshed: " + error.Message; return; }
+            if (!saved.Conversations.Contains(conversation)) conversation = saved.Conversations.OrderByDescending(c => c.Updated).FirstOrDefault() ?? library.New();
+            if (conversation.Updated != before) { title.Text = conversation.Title; RenderTranscript(); }
+        }
         void History()
         {
+            Sync();
             refreshingHistory = true;
             var query = historySearch.Text.Trim(); string lastGroup = "";
             var items = saved.Conversations.Where(c => query.Length == 0 || c.Title.Contains(query, StringComparison.OrdinalIgnoreCase) || c.Turns.Any(t => t.Text.Contains(query, StringComparison.OrdinalIgnoreCase)))
@@ -433,7 +444,7 @@ public sealed partial class MainWindow
         };
         void Select(ChatConversation selected)
         {
-            conversation = selected; saved.Selected = selected.Id; editing = null; loading = true;
+            Sync(); conversation = selected; saved.Selected = selected.Id; editing = null; loading = true;
             state.Text = "Ready · draft context is counted by the selected local server; generation starts when you choose Send.";
             title.Text = conversation.Title; message.Text = conversation.Draft; system.Text = conversation.SystemPrompt; LoadSettings(); loading = false;
             refreshNativeChatProfiles(); RenderTranscript(); RenderDraft(); RefreshArtifacts(); History(); Save();

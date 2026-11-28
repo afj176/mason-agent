@@ -111,7 +111,7 @@ public sealed partial class MainWindow
         AutomationProperties.SetName(shells, "Workspace command shell");
         var shellPath = CodeNote("Direct executables · no implicit shell", 11); shellPath.TextWrapping = TextWrapping.Wrap;
         var environment = Button("Environment", (_,_)=>{});
-        var networkModes=new ComboBox{ItemsSource=new[]{"Off: no internet","Ask for commands and web","Commands offline, web asks"},SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};AutomationProperties.SetName(networkModes,"Command network policy");
+        var networkModes=new ComboBox{ItemsSource=CodeNetworkSettings.ModeLabels,SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};AutomationProperties.SetName(networkModes,"Command network policy");
         AutomationProperties.SetName(environment,"Project coding environment");
         var environmentHint=CodeNote("Any source language · execution depends on installed, sandbox-compatible toolchains.");environmentHint.MaxWidth=330;environmentHint.TextWrapping=TextWrapping.Wrap;
         var networkHint=CodeNote("Auto keeps direct sockets blocked. Node/npm, pip HTTPS and .NET SDK NuGet restore can ask for public HTTPS destinations. Other clients remain offline. Reviewed commands run with your Windows account.");networkHint.MaxWidth=330;networkHint.TextWrapping=TextWrapping.Wrap;
@@ -728,7 +728,7 @@ public sealed partial class MainWindow
         files.SelectionChanged += (_, _) => reference.IsEnabled = codeOperation == null && CodeExplorerSelection(files) is { Directory: false };
         profiles.SelectionChanged += (_, _) => { if (!updating && session != null) { session.Model = SelectedChatProfile(profiles)?.Id; Save(); } };
         permissions.SelectionChanged += (_, _) => { if (!updating && session != null) { session.Permission = (CodePermission)Math.Max(0, permissions.SelectedIndex); ShowShell(); Enable(); Save(); } };
-        networkModes.SelectionChanged+=(_,_)=>{if(!updating&&session!=null&&codeOperation==null){session.Network=(CodeNetworkMode)Math.Max(0,networkModes.SelectedIndex);Enable();Save();}};
+        networkModes.SelectionChanged+=(_,_)=>{if(!updating&&session!=null&&codeOperation==null){session.Network=CodeNetworkSettings.Modes[Math.Max(0,networkModes.SelectedIndex)];Enable();Save();}};
         shells.SelectionChanged += (_, _) =>
         {
             if (updating || session == null || codeOperation != null) return;
@@ -1033,7 +1033,7 @@ public sealed partial class MainWindow
                 folderLabel.Text=project?.Name??"Choose project";folderPath.Text=project?.Workspace??"";ToolTipService.SetToolTip(projectSwitcher,project?.Workspace??"Add or switch a coding project");
                 fileProject.Text=project?.Name??"No project selected";ToolTipService.SetToolTip(fileProject,project?.Workspace??"");fileState.Text="";
                 permissions.SelectedIndex = (int)(selected?.Permission ?? CodePermission.ReadOnly);
-                shells.SelectedIndex = (int)(selected?.Shell ?? CodeShellKind.Recommended);networkModes.SelectedIndex=(int)(selected?.Network??CodeNetworkMode.Default); ShowShell();SidebarTab(selected?.SidebarFiles==true);
+                shells.SelectedIndex = (int)(selected?.Shell ?? CodeShellKind.Recommended);networkModes.SelectedIndex=Array.IndexOf(CodeNetworkSettings.Modes,selected?.Network??CodeNetworkMode.Default); ShowShell();SidebarTab(selected?.SidebarFiles==true);
                 agentMode.SelectedIndex = selected?.Mode == "ask" ? 1 : 0;
                 reasoning.SelectedItem = (selected?.Reasoning ?? "default") switch { "off" => "Off", "low" => "Low", "medium" => "Medium", "high" => "High", _ => "Default" };
                 forcedPanel = null;

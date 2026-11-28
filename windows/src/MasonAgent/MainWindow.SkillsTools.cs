@@ -117,13 +117,12 @@ public sealed partial class MainWindow
         void Render()
         {
             host.Children.Clear();
-            // Three settings, listed in the order of CodeNetworkMode: Offline, Ask, Default.
-            var modes = new ComboBox { ItemsSource = new[] { "Off: no internet", "Ask for commands and web", "Default: commands offline, web asks" }, SelectedIndex = (int)CodeNetworkSettings.Computer(Store.Root), MinWidth = 260 };
+            var modes = new ComboBox { ItemsSource = CodeNetworkSettings.ModeLabels, SelectedIndex = Array.IndexOf(CodeNetworkSettings.Modes, CodeNetworkSettings.Computer(Store.Root)), MinWidth = 260 };
             AutomationProperties.SetName(modes, "Internet for new sessions and Chat");
             modes.SelectionChanged += (_, _) =>
             {
                 if (modes.SelectedIndex < 0) return;
-                var mode = (CodeNetworkMode)modes.SelectedIndex;
+                var mode = CodeNetworkSettings.Modes[modes.SelectedIndex];
                 try { CodeNetworkSettings.SetComputer(Store.Root, mode); say(CodeNetworkSettings.Describe(mode)); }
                 catch (Exception e) { fail(e); Render(); }
             };

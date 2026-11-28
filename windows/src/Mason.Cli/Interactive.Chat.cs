@@ -48,7 +48,7 @@ internal sealed partial class Interactive
         try { library = new ChatLibrary(host); }
         catch (IOException)
         {
-            Console.Error.WriteLine("Mason Agent has the chat history open. Close Mason Agent, then run mason chat again.");
+            Console.Error.WriteLine("The chat history is busy. Try mason chat again in a moment.");
             return 1;
         }
         using (library)
@@ -131,6 +131,7 @@ internal sealed partial class Interactive
                 return true;
             case "/resume":
             {
+                library.Refresh();
                 var recent = library.State.Conversations.Where(c => c.Turns.Count > 0).OrderByDescending(c => c.Updated).Take(20).ToList();
                 if (recent.Count == 0) { Term.Line(Term.Paint(Term.Dim, "  There are no earlier chats yet.")); return true; }
                 if (rest.Length == 0)

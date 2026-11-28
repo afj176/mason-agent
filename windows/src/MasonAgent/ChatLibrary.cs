@@ -58,48 +58,120 @@ public sealed class ChatLibraryState
     public List<ChatConversation> Conversations { get; set; } = [];
 }
 
-/// <summary>Separate from database workspaces. No credentials or database state are retained here.</summary>
+/// <summary>
+/// Separate from database workspaces. No credentials or database state are retained here. The app and mason chat
+/// share one chat-library.json, so the lock is held only for one read or one write, never while a window is open. A
+/// save merges per conversation: conversations this instance changed (or deleted) replace those on disk, and every
+/// other conversation keeps what is on disk, so two writers to different conversations never clobber each other.
+/// <see cref="Refresh"/> picks up what another writer added or changed.
+/// </summary>
 public sealed class ChatLibrary : IDisposable
 {
     readonly string root;
-    readonly FileStream lease;
     public ChatLibraryState State { get; }
+    /// <summary>Each conversation as it was when last read from or written to disk, to tell what this instance changed.</summary>
+    readonly Dictionary<Guid, string> synced = [];
+    static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+    string LibraryPath => Path.Combine(root, "chat-library.json");
+
     public ChatLibrary(string root)
     {
         this.root = root;
         Directory.CreateDirectory(root);
-        lease = new FileStream(Path.Combine(root, "chat-library.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-        try
-        {
-            var path = Path.Combine(root, "chat-library.json");
-            if (File.Exists(path) && new FileInfo(path).Length > 32 * 1024 * 1024) throw new InvalidDataException("Chat library exceeds its 32 MiB limit.");
-            State = File.Exists(path) ? JsonSerializer.Deserialize<ChatLibraryState>(File.ReadAllText(path)) ?? throw new InvalidDataException("Chat library is empty.") : new();
-            if (State.Version != 1 || State.Conversations is null || State.Conversations.Count > 200 || State.Conversations.Any(c => c.Turns is null || c.DraftAttachments is null || c.Compactions is null || c.Title is null || c.SystemPrompt is null || c.Draft is null || c.CompactionStatus is null))
-                throw new InvalidDataException("Unsupported or invalid chat library. The original file has been preserved.");
-            foreach(var conversation in State.Conversations)
-            {
-                if(conversation.Generation is null||conversation.MaxTokens<1)throw new InvalidDataException("Invalid saved generation settings. The original file has been preserved.");
-                conversation.Generation.Validate();
-                conversation.Tools ??= new();
-                foreach (var snapshot in conversation.Compactions) snapshot.Validate();
-            }
-            foreach (var turn in State.Conversations.SelectMany(c => c.Turns))
-            {
-                if (turn.Role is not ("user" or "assistant") || turn.Text is null || turn.Attachments is null || turn.RequestText is null || turn.Reasoning is null || turn.StatusDetail is null || turn.BudgetSummary is null)
-                    throw new InvalidDataException("Invalid saved chat turn. The original file has been preserved.");
-                turn.Steps ??= [];
-                if (turn.State == "Streaming") turn.State = "Interrupted · excluded from context";
-            }
-        }
-        catch { lease.Dispose(); throw; }
+        State = Locked(Read);
+        MarkInterrupted(State.Conversations);
+        foreach (var conversation in State.Conversations) synced[conversation.Id] = Snapshot(conversation);
     }
-    public void Save()
+
+    static string Snapshot(ChatConversation conversation) => JsonSerializer.Serialize(conversation);
+
+    /// <summary>Runs one read or write under the lock file, waiting up to 10 seconds for another writer to finish.</summary>
+    T Locked<T>(Func<T> action)
     {
-        var json = JsonSerializer.Serialize(State, new JsonSerializerOptions { WriteIndented = true });
-        if (Encoding.UTF8.GetByteCount(json) > 32 * 1024 * 1024) throw new InvalidDataException("Chat history reached 32 MiB. Export and delete old conversations before saving more.");
-        var path = Path.Combine(root, "chat-library.json"); var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        try { File.WriteAllText(temp, json); File.Move(temp, path, true); }
-        finally { if (File.Exists(temp)) File.Delete(temp); }
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (true)
+        {
+            FileStream lease;
+            try { lease = new FileStream(Path.Combine(root, "chat-library.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException) when (DateTime.UtcNow < deadline) { Thread.Sleep(25); continue; }
+            using (lease) return action();
+        }
+    }
+
+    ChatLibraryState Read()
+    {
+        var path = LibraryPath;
+        if (File.Exists(path) && new FileInfo(path).Length > 32 * 1024 * 1024) throw new InvalidDataException("Chat library exceeds its 32 MiB limit.");
+        var state = File.Exists(path) ? JsonSerializer.Deserialize<ChatLibraryState>(File.ReadAllText(path)) ?? throw new InvalidDataException("Chat library is empty.") : new();
+        if (state.Version != 1 || state.Conversations is null || state.Conversations.Count > 200 || state.Conversations.Any(c => c.Turns is null || c.DraftAttachments is null || c.Compactions is null || c.Title is null || c.SystemPrompt is null || c.Draft is null || c.CompactionStatus is null))
+            throw new InvalidDataException("Unsupported or invalid chat library. The original file has been preserved.");
+        foreach (var conversation in state.Conversations)
+        {
+            if (conversation.Generation is null || conversation.MaxTokens < 1) throw new InvalidDataException("Invalid saved generation settings. The original file has been preserved.");
+            conversation.Generation.Validate();
+            conversation.Tools ??= new();
+            foreach (var snapshot in conversation.Compactions) snapshot.Validate();
+        }
+        foreach (var turn in state.Conversations.SelectMany(c => c.Turns))
+        {
+            if (turn.Role is not ("user" or "assistant") || turn.Text is null || turn.Attachments is null || turn.RequestText is null || turn.Reasoning is null || turn.StatusDetail is null || turn.BudgetSummary is null)
+                throw new InvalidDataException("Invalid saved chat turn. The original file has been preserved.");
+            turn.Steps ??= [];
+        }
+        return state;
+    }
+
+    /// <summary>A streaming answer still being written here is this instance's own; on disk it may be one that stopped.</summary>
+    static void MarkInterrupted(IEnumerable<ChatConversation> conversations)
+    {
+        foreach (var turn in conversations.SelectMany(c => c.Turns)) if (turn.State == "Streaming") turn.State = "Interrupted · excluded from context";
+    }
+
+    /// <summary>Takes in what other writers added or changed, keeping this instance's own unsaved changes. Conversation
+    /// objects already held keep their identity; their contents are brought up to date.</summary>
+    public void Refresh() => Locked(() => { Merge(Read(), write: false); return 0; });
+
+    public void Save() => Locked(() => { Merge(Read(), write: true); return 0; });
+
+    void Merge(ChatLibraryState disk, bool write)
+    {
+        var mine = State.Conversations.ToDictionary(c => c.Id);
+        var changed = State.Conversations.Where(c => !synced.TryGetValue(c.Id, out var before) || before != Snapshot(c)).Select(c => c.Id).ToHashSet();
+        var deleted = synced.Keys.Where(id => !mine.ContainsKey(id)).ToHashSet();
+        var merged = new List<ChatConversation>();
+        foreach (var theirs in disk.Conversations)
+        {
+            if (deleted.Contains(theirs.Id)) continue;
+            if (changed.Contains(theirs.Id)) { merged.Add(mine[theirs.Id]); continue; }
+            if (mine.TryGetValue(theirs.Id, out var held))
+            {
+                // Same conversation, changed only elsewhere: bring the held object up to date in place.
+                if (synced.GetValueOrDefault(theirs.Id) != Snapshot(theirs))
+                {
+                    if (!write) MarkInterrupted([theirs]);
+                    foreach (var property in typeof(ChatConversation).GetProperties().Where(p => p.CanWrite)) property.SetValue(held, property.GetValue(theirs));
+                }
+                merged.Add(held);
+            }
+            else { if (!write) MarkInterrupted([theirs]); merged.Add(theirs); }
+        }
+        // Conversations made here and not yet on disk, in the order this instance holds them.
+        foreach (var conversation in State.Conversations) if (!merged.Contains(conversation) && (changed.Contains(conversation.Id) || !disk.Conversations.Any(c => c.Id == conversation.Id)) && !deleted.Contains(conversation.Id)) merged.Add(conversation);
+        if (merged.Count > 200) throw new InvalidOperationException("Export and delete an old conversation before adding more than 200.");
+        if (write)
+        {
+            // The library file keeps this instance's own view of which conversation is open.
+            var output = new ChatLibraryState { Version = 1, LibraryOpen = State.LibraryOpen, PreviewOpen = State.PreviewOpen, Selected = State.Selected, Conversations = merged };
+            var json = JsonSerializer.Serialize(output, Indented);
+            if (Encoding.UTF8.GetByteCount(json) > 32 * 1024 * 1024) throw new InvalidDataException("Chat history reached 32 MiB. Export and delete old conversations before saving more.");
+            var path = LibraryPath; var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try { File.WriteAllText(temp, json); File.Move(temp, path, true); }
+            finally { if (File.Exists(temp)) File.Delete(temp); }
+        }
+        State.Conversations.Clear(); State.Conversations.AddRange(merged);
+        synced.Clear();
+        foreach (var conversation in merged) synced[conversation.Id] = Snapshot(conversation);
+        if (!write && disk.Conversations.Count > 0 && State.Selected is { } selected && !State.Conversations.Any(c => c.Id == selected)) State.Selected = null;
     }
     public ChatConversation New(Guid? profile = null)
     {
@@ -150,7 +222,7 @@ public sealed class ChatLibrary : IDisposable
         if (text.Length > 128000) throw new ArgumentException("The attachment exceeds 128,000 text characters.");
         return new(Guid.NewGuid(), info.Name, extension switch { ".md" or ".markdown" or ".docx" => "markdown", ".csv" => "csv", ".tsv" => "tsv", ".json" => "json", ".html" or ".htm" => "html", _ => "text" }, text, extension);
     }
-    public void Dispose() => lease.Dispose();
+    public void Dispose() { }
 }
 
 public static class ChatRequests
