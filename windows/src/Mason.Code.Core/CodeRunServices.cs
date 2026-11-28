@@ -75,12 +75,12 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
     public CodeRepositorySearch Search {get;}=new(scope);
     public int WorkerCalls {get;set;}
     public HashSet<string> Enabled {get;}=new(StringComparer.Ordinal);
-    readonly Lazy<IReadOnlyList<CodeSkill>> skills=new(()=>CodeSkills.List(settingsRoot,scope.Root));
-    /// <summary>Every skill for this project, hidden and switched-off ones included.</summary>
-    public IReadOnlyList<CodeSkill> SkillList=>skills.Value;
+    /// <summary>Every skill for this project, hidden and switched-off ones included. Read fresh on every use, so a
+    /// bundle or skill switched off during a run is gone from that run at once.</summary>
+    public IReadOnlyList<CodeSkill> SkillList=>CodeSkills.List(settingsRoot,scope.Root);
     /// <summary>The skills the agent may read: not hidden, not switched off.</summary>
-    public string[] Skills=>skills.Value.Where(s=>!s.Hidden&&s.Enabled).Select(s=>s.Name).ToArray();
-    public string Skill(string name)=>CodeSkills.Read(skills.Value,name);
+    public string[] Skills=>SkillList.Where(s=>!s.Hidden&&s.Enabled).Select(s=>s.Name).ToArray();
+    public string Skill(string name)=>CodeSkills.Read(SkillList,name);
     /// <summary>Hosts answered in this request: allowed ones are not asked again, denied ones stay denied.</summary>
     public HashSet<string> WebAllowed {get;}=new(StringComparer.Ordinal);
     public HashSet<string> WebDenied {get;}=new(StringComparer.Ordinal);
