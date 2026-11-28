@@ -608,7 +608,7 @@ internal sealed partial class Interactive
             case "/comment" or "/comments": await Comment(rest); return true;
             case "/accept" or "/acceptance": await Accept(); return true;
             case "/window" or "/windows": Window(rest); return true;
-            case "/embeddings": Embeddings(rest); return true;
+            case "/embeddings": await Embeddings(rest); return true;
         }
         if (CodeCustomization.Expand(CodeCustomization.Commands(host, scope.Root), input) != null) return null;
         Term.Line(Term.Paint(Term.Yellow, "  Unknown command " + name + ".") + Term.Paint(Term.Dim, " /help lists them."));

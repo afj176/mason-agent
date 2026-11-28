@@ -23,7 +23,7 @@ internal sealed partial class Interactive
         ("/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"),
         ("/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"),
         ("/window [NUMBER|off]", "List open windows, or attach one so Mason can read and (with your OK) operate it"),
-        ("/embeddings [NUMBER|auto]", "Choose the embeddings connection Mason uses to search code by meaning"),
+        ("/embeddings [URL MODEL]", "Choose an embeddings server so Mason can search code by meaning"),
         ("/schedule", "List scheduled requests; add, switch, remove or run one (see /schedule help)"),
         ("/sessions delete NUMBER", "Delete one of this folder's sessions, after you confirm"),
         ("/agent new NAME · /commands new NAME", "Create a custom agent or command in .mason from the starting template"),
@@ -94,7 +94,7 @@ internal sealed partial class Interactive
         var example = CodeCustomization.Example(agent);
         var path = CodeCustomization.Create(scope.Root, agent, name, example.Description, example.Body, askOnly: agent);
         Term.Line("  Created " + Term.Paint(Term.Bold, path));
-        Term.Line(Term.Paint(Term.Dim, agent ? "  Edit its description and instructions, then use it with /agent " + name.Trim() + "." : "  Edit its description and request template ($ARGUMENTS, $1–$9), then run it as /" + name.Trim() + "."));
+        if (!OpenInEditor(path)) Term.Line(Term.Paint(Term.Dim, agent ? "  Edit its description and instructions, then use it with /agent " + name.Trim() + "." : "  Edit its description and request template ($ARGUMENTS, $1–$9), then run it as /" + name.Trim() + "."));
     }
 
     void DeleteSession(string rest)
@@ -589,7 +589,14 @@ internal sealed partial class Interactive
         Lines("Attached " + open[number - 1] + ". Mason can read its controls, and asks before pressing or changing anything.");
     }
 
-    void Embeddings(string rest)
+    const string EmbeddingsHelp =
+        "/embeddings                       Show the embeddings server used to search code by meaning\n" +
+        "/embeddings URL MODEL [KEY]       Choose one (any server with /v1/embeddings, such as llama-server --embedding)\n" +
+        "/embeddings rerank URL MODEL      Also reorder the best matches with a /v1/rerank server   ·   rerank auto\n" +
+        "/embeddings NUMBER                Choose a saved embeddings connection   ·   /embeddings auto: the one checked connection\n" +
+        "/embeddings test                  Embed a line of code to check the server answers";
+
+    async Task Embeddings(string rest)
     {
         var all = Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? [];
         bool Passed(AiEndpointProfile p, AiCapability capability) => p.Checks.Any(c => c.Capability == capability && c.State == "Passed");
@@ -597,27 +604,69 @@ internal sealed partial class Interactive
         var rerankers = all.Where(p => p.ManagedCapability == AiCapability.Reranking || Passed(p, AiCapability.Reranking)).ToArray();
         var saved = CodeSearchSettings.Read();
         var words = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 1 && words[0].Equals("help", StringComparison.OrdinalIgnoreCase)) { Lines(EmbeddingsHelp); return; }
+        if (words.Length == 1 && words[0].Equals("test", StringComparison.OrdinalIgnoreCase))
+        {
+            var current = (saved.Embeddings is { } chosen ? all.FirstOrDefault(p => p.Id == chosen) : CodeSearchModels.Pick(all, null, AiCapability.Embeddings)) ?? throw new ArgumentException("Choose a server first: /embeddings URL MODEL");
+            var result = await CheckConnection(current, AiCapability.Embeddings);
+            Lines(current.Model + " at " + current.Endpoint + ": " + result.State.ToLowerInvariant() + (result.Detail.Length > 0 ? " · " + result.Detail : ""));
+            return;
+        }
         bool rerank = words.Length > 0 && words[0].Equals("rerank", StringComparison.OrdinalIgnoreCase);
+        var args = rerank ? words.Skip(1).ToArray() : words;
+        var capability = rerank ? AiCapability.Reranking : AiCapability.Embeddings;
+        // The macOS and Linux form: a server and model. It is saved as a connection and checked, as the app's Test & save does.
+        if (args.Length >= 2 && (args[0].Contains("://") || args[0].Contains(':')) && !int.TryParse(args[0], out _))
+        {
+            if (args.Length > 3 || rerank && args.Length > 2) throw new ArgumentException("Write it as /embeddings URL MODEL [KEY], for example /embeddings http://127.0.0.1:8081/ nomic-embed-text");
+            var endpoint = LocalAiClient.ValidateEndpoint(args[0]).AbsoluteUri;
+            var existing = all.FirstOrDefault(p => p.Endpoint == endpoint && p.Model == args[1]);
+            var made = (existing ?? new AiEndpointProfile { Name = args[1], Endpoint = endpoint, Model = args[1] }) with
+            {
+                Secret = args.Length == 3 ? Store.Protect(args[2]) : existing?.Secret ?? "",
+                Checks = existing != null && args.Length < 3 ? existing.Checks : [],
+            };
+            all = [.. all.Where(p => p.Id != made.Id), made];
+            Store.Write("ai-connections.json", all);
+            var result = await CheckConnection(made, capability);
+            Store.Write(CodeSearchSettings.File, rerank ? saved with { Reranker = made.Id } : saved with { Embeddings = made.Id });
+            Lines(result.State == "Passed"
+                ? (rerank ? "The best matches are reranked by " + made.Model + "." : "Mason will search code by meaning with " + made.Model + " at " + endpoint + ". /embeddings test checks it answers.")
+                : "Saved " + made.Model + " at " + endpoint + " and chose it, but its " + (rerank ? "reranking" : "embeddings") + " check did not pass: " + result.Detail +
+                  "\nCode search waits until it does; /embeddings test tries again.");
+            return;
+        }
         var choices = rerank ? rerankers : embedders;
-        var given = rerank ? words.Skip(1).FirstOrDefault() : words.FirstOrDefault();
+        var given = args.FirstOrDefault();
         if (given == null)
         {
             var lines = new List<string>();
-            string Name(Guid? id, AiEndpointProfile[] options, string automatic) => id is { } value ? options.FirstOrDefault(p => p.Id == value)?.DisplayName ?? "a removed connection" : automatic;
-            lines.Add("Embeddings: " + Name(saved.Embeddings, embedders, "automatic (the one checked embeddings connection)") + "   Reranker: " + Name(saved.Reranker, rerankers, "automatic (the one checked reranker, if any)"));
-            for (int i = 0; i < choices.Length; i++) lines.Add($"{i + 1}. {choices[i].DisplayName}  ·  {choices[i].Endpoint}{(Passed(choices[i], rerank ? AiCapability.Reranking : AiCapability.Embeddings) ? "" : "  ·  not checked yet")}");
-            if (choices.Length == 0) lines.Add(rerank ? "No reranking connection is saved." : "No embeddings connection is saved. Start one in Mason Agent's Models (My models → Code search), or connect one there.");
+            string Name(Guid? id, AiEndpointProfile[] options, string automatic) => id is { } value ? all.Where(p => p.Id == value).Select(p => p.Model + " at " + p.Endpoint + (options.Any(o => o.Id == value) ? "" : " (its check has not passed; /embeddings test tries again)")).FirstOrDefault() ?? "a removed connection" : automatic;
+            lines.Add("Embeddings: " + Name(saved.Embeddings, embedders, "automatic (the one checked embeddings connection)") + "\nReranker: " + Name(saved.Reranker, rerankers, "automatic (the one checked reranker, if any)"));
+            for (int i = 0; i < choices.Length; i++) lines.Add($"{i + 1}. {choices[i].DisplayName}  ·  {choices[i].Endpoint}{(Passed(choices[i], capability) ? "" : "  ·  not checked yet")}");
+            if (choices.Length == 0) lines.Add(rerank ? "No reranking connection has passed its check." : "No embeddings connection has passed its check. /embeddings URL MODEL chooses one, or start one in Mason Agent's Models (My models → Code search).");
             lines.Add(CodeSemanticIndex.Available ? "Mason offers the model semantic_search in every session." : "Code search by meaning is off until a checked embeddings connection is answering.");
-            lines.Add("Choose with /embeddings NUMBER or /embeddings auto; the reranker with /embeddings rerank NUMBER|auto.");
+            lines.Add("/embeddings help shows how to choose.");
             Lines(string.Join("\n", lines));
             return;
         }
         Guid? picked = given.Equals("auto", StringComparison.OrdinalIgnoreCase) ? null
             : int.TryParse(given, out var number) && number >= 1 && number <= choices.Length ? choices[number - 1].Id
-            : throw new ArgumentException("Use a number from /embeddings" + (rerank ? " rerank" : "") + ", or auto.");
+            : throw new ArgumentException("Use /embeddings URL MODEL, a number from /embeddings" + (rerank ? " rerank" : "") + ", or auto.");
         var next = rerank ? saved with { Reranker = picked } : saved with { Embeddings = picked };
         Store.Write(CodeSearchSettings.File, next);
         Lines((rerank ? "Reranker: " : "Embeddings: ") + (picked is { } id ? choices.First(p => p.Id == id).DisplayName : "automatic") + ". This applies to every session, in the app too.");
+    }
+
+    /// <summary>Runs the app's capability check on a saved connection and records the result in ai-connections.json.</summary>
+    async Task<AiCheck> CheckConnection(AiEndpointProfile connection, AiCapability capability)
+    {
+        string secret;
+        try { secret = Store.Unprotect(connection.Secret); } catch (Exception e) when (e is System.Security.Cryptography.CryptographicException or FormatException) { secret = ""; }
+        var result = await Busy("Checking " + connection.Model, async token => { using var client = new LocalAiClient(); return await client.Check(connection, capability, secret, token); });
+        var all = Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? [];
+        Store.Write("ai-connections.json", all.Select(p => p.Id == connection.Id ? p with { Checks = p.Checks.Where(c => c.Capability != capability).Append(result).ToList() } : p).ToList());
+        return result;
     }
 
     /// <summary>The semantic_search tool, routed to the assigned embeddings and reranking connections, as in the app.</summary>

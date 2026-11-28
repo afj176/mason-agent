@@ -60,7 +60,7 @@ internal sealed partial class Interactive
                 if (parts.Length == 0) throw new ArgumentException("Use /skills new NAME [description].");
                 var file = CodeSkills.Create(scope.Root, parts[0], parts.Length > 1 ? parts[1] : "");
                 Term.Line("  " + Term.Paint(Term.Green, "✓") + " Created " + file);
-                Term.Line(Term.Paint(Term.Dim, "  Fill in when to use it and its steps. Mason lists it with every request in this project."));
+                if (!OpenInEditor(file)) Term.Line(Term.Paint(Term.Dim, "  Fill in when to use it and its steps. Mason lists it with every request in this project."));
                 return;
             }
             case "on" or "off":
@@ -72,6 +72,28 @@ internal sealed partial class Interactive
             }
             default:
                 throw new ArgumentException("Use /skills, /skills show NAME, /skills new NAME [description], /skills on NAME or /skills off NAME.");
+        }
+    }
+
+    /// <summary>Opens a file Mason just created in $VISUAL or $EDITOR, as the macOS and Linux CLIs do, and waits for it to close.
+    /// False when neither is set, there is no terminal, or the editor could not start; the caller then prints its hint.</summary>
+    internal static bool OpenInEditor(string path)
+    {
+        var editor = new[] { "VISUAL", "EDITOR" }.Select(Environment.GetEnvironmentVariable).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v))?.Trim();
+        if (editor == null || !Term.Interactive) return false;
+        try
+        {
+            // Through cmd, so an editor given with its own options ("code --wait") works. /s keeps the quoting as written.
+            var start = new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/d /s /c \"" + editor + " \"" + path + "\"\"") { UseShellExecute = false };
+            Term.Line(Term.Paint(Term.Dim, "  Opening it in " + editor + "…"));
+            using var process = System.Diagnostics.Process.Start(start);
+            process?.WaitForExit();
+            return process != null;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Term.Line(Term.Paint(Term.Yellow, "  " + editor + " did not start: " + e.Message));
+            return false;
         }
     }
 
