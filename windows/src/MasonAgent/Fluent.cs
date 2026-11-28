@@ -280,24 +280,13 @@ static class Fluent
     // ── Materials ───────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Transient surfaces (menus, flyouts) take the desktop acrylic material, so they read as floating glass over
-    /// whatever is behind the window. High contrast keeps the solid system surface.
+    /// Transient surfaces (menus, flyouts) keep the presenter's own acrylic fill, the themed
+    /// AcrylicBackgroundFillColorDefaultBrush (ThemePalette), which falls back to a solid colour whenever Windows does
+    /// not draw acrylic. A desktop SystemBackdrop under a transparent presenter is not used: when the backdrop is not
+    /// drawn (transparency effects off, battery saver, remote sessions) the flyout had no background and its text
+    /// sat directly over the page.
     /// </summary>
-    public static T Acrylic<T>(T flyout) where T : FlyoutBase
-    {
-        if (HighContrast) return flyout;
-        flyout.SystemBackdrop = new DesktopAcrylicBackdrop();
-        // The presenter paints its own fill over the backdrop; clear it so the material shows through.
-        static Style Clear(Type presenter, Style? existing)
-        {
-            var style = new Style(presenter) { BasedOn = existing };
-            style.Setters.Add(new Setter(Control.BackgroundProperty, new SolidColorBrush(Microsoft.UI.Colors.Transparent)));
-            return style;
-        }
-        if (flyout is MenuFlyout menu) menu.MenuFlyoutPresenterStyle = Clear(typeof(MenuFlyoutPresenter), menu.MenuFlyoutPresenterStyle);
-        else if (flyout is Flyout plain) plain.FlyoutPresenterStyle = Clear(typeof(FlyoutPresenter), plain.FlyoutPresenterStyle);
-        return flyout;
-    }
+    public static T Acrylic<T>(T flyout) where T : FlyoutBase => flyout;
 
     // ── Scroll depth ────────────────────────────────────────────────────────────────────────────────
 

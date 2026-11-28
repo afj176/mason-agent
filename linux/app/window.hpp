@@ -214,6 +214,11 @@ private:
     Gtk::Box approval_slot_{Gtk::Orientation::VERTICAL, 0};
     Gtk::TextView draft_;
     Gtk::DropDown permission_;
+    /// The project environment: the shell commands run in and this session's network choice (as /network).
+    Gtk::MenuButton environment_button_;
+    Gtk::Popover environment_popover_;
+    Gtk::DropDown network_;
+    Gtk::Label network_hint_;
     Gtk::Button send_{"Send"}, stop_{"Stop"}, queue_{"Queue"}, steer_{"Steer"}, run_queued_;
     Gtk::Label waiting_;
     Gtk::Button model_button_;
