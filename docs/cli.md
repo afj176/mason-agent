@@ -25,10 +25,19 @@ Type a request and each step prints as it finishes. Approvals take one key: `y` 
 | `/models search TEXT` · `/models download REPO` | Find and download a model from Hugging Face |
 | `/models setup` | Install llama.cpp and download a model that fits |
 | `/rules` · `/agent` · `/commands` | Saved approvals, and your agents and commands |
+| `/skills` · `/skills new NAME` · `/skills on\|off NAME` | Every skill and where it comes from; make one; switch one for this project |
+| `/skill NAME request` | Run a request that follows a skill |
+| `/tools` · `/tools on\|off NAME` | Every tool by group; switch one for this project |
+| `/network default\|ask\|off` | The web asks before each site; `ask` lets commands in Auto ask too; `off` is no internet |
+| `/mcp` · `/bundle` · `/policy` | MCP servers, installed bundles and the project's policy |
 | `/languages` | The language servers that check your code; install a missing one |
 | `/notes` · `/note TEXT` | The notes Mason reads with every request; add one, `/notes about PATH TEXT`, `/notes remove N`, `/notes clear` |
 | `/theme` | Choose the theme the app and `mason` share |
 | `/help` | Everything else |
+
+## Chat
+
+`mason chat` is a plain conversation, apart from your project, that shares its history with the app's Chat. It can search and read the web, use skills and call MCP servers, asking first. `/attach FILE` adds a document or picture, `/reasoning` sets how long the model thinks, `/tools` switches web, skills and MCP, and `/resume` picks up an earlier chat. `mason chat --resume` continues the latest.
 
 ## Options
 
