@@ -78,7 +78,35 @@ public static class ThemeFamilies
     }
 
     /// <summary>Saves the family into appearance.json, keeping every other appearance setting the app wrote.</summary>
-    public static void Save(string dataHome, ThemeFamily family)
+    public static void Save(string dataHome, ThemeFamily family) => SaveValue(dataHome, "Family", family.Name);
+
+    /// <summary>The light or dark mode saved in appearance.json ("Theme"): Default (follow Windows), Light or Dark.
+    /// The app reads the same value for its Appearance setting.</summary>
+    public static string SavedMode(string dataHome)
+    {
+        try
+        {
+            var path = Path.Combine(dataHome, "appearance.json");
+            if (!File.Exists(path)) return "Default";
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            return document.RootElement.TryGetProperty("Theme", out var mode) && mode.ValueKind == JsonValueKind.String && mode.GetString() is "Light" or "Dark" ? mode.GetString()! : "Default";
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return "Default"; }
+    }
+
+    /// <summary>Saves light, dark or system (Default) as the app's mode, keeping every other appearance setting.</summary>
+    public static string SaveMode(string dataHome, string mode)
+    {
+        var value = mode.Trim().ToLowerInvariant() switch
+        {
+            "light" => "Light", "dark" => "Dark", "system" or "auto" or "default" => "Default",
+            _ => throw new ArgumentException("Choose light, dark or system.")
+        };
+        SaveValue(dataHome, "Theme", value);
+        return value;
+    }
+
+    static void SaveValue(string dataHome, string key, string value)
     {
         Directory.CreateDirectory(dataHome);
         var path = Path.Combine(dataHome, "appearance.json");
@@ -89,7 +117,7 @@ public static class ThemeFamilies
             if (document.RootElement.ValueKind == JsonValueKind.Object)
                 foreach (var property in document.RootElement.EnumerateObject()) values[property.Name] = property.Value.Clone();
         }
-        values["Family"] = JsonSerializer.SerializeToElement(family.Name);
+        values[key] = JsonSerializer.SerializeToElement(value);
         var temp = path + ".tmp";
         File.WriteAllText(temp, JsonSerializer.Serialize(values, new JsonSerializerOptions { WriteIndented = true }));
         File.Move(temp, path, true);

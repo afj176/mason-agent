@@ -27,6 +27,57 @@ public sealed record CodeSampling(double? Temperature = null, double? TopP = nul
         if (Temperature is { } t) options.Temperature = t; if (TopP is { } p) options.TopP = p; if (TopK is { } k) options.TopK = k;
         if (MinP is { } m) options.MinP = m; if (RepeatPenalty is { } r) options.RepeatPenalty = r; if (Seed is { } s) options.Seed = s;
     }
+
+    public const string Help =
+        "/generation                  The generation settings kept for the model in use\n" +
+        "/generation NAME VALUE       Set one: temperature (0–2), top_p (0–1), top_k (1–1000), min_p (0–1), repeat_penalty (0–2), seed\n" +
+        "/generation NAME off         Leave one to the server's default\n" +
+        "/generation clear            Leave them all to the server's defaults\n" +
+        "They apply to this connection whenever it works as the coding agent. Chats have their own options.";
+
+    static readonly (string Key, string Label, double Low, double High, bool Whole)[] Fields =
+        [("temperature", "Temperature", 0, 2, false), ("top_p", "Top P", 0, 1, false), ("top_k", "Top K", 1, 1000, true),
+         ("min_p", "Min P", 0, 1, false), ("repeat_penalty", "Repeat penalty", 0, 2, false), ("seed", "Seed", 0, int.MaxValue, true)];
+
+    double? Get(string key) => key switch { "temperature" => Temperature, "top_p" => TopP, "top_k" => TopK, "min_p" => MinP, "repeat_penalty" => RepeatPenalty, _ => Seed };
+    CodeSampling With(string key, double? v) => key switch
+    {
+        "temperature" => this with { Temperature = v }, "top_p" => this with { TopP = v }, "top_k" => this with { TopK = v is { } k ? (int)k : null },
+        "min_p" => this with { MinP = v }, "repeat_penalty" => this with { RepeatPenalty = v }, _ => this with { Seed = v is { } s ? (int)s : null }
+    };
+    static string Shown(double value) => value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>The CLI's /generation for one connection: show, set or clear the sampling the app's
+    /// "Coding generation" fields keep. <paramref name="save"/> receives the new settings (null for the defaults).</summary>
+    public static string Command(string rest, AiEndpointProfile profile, Action<CodeSampling?> save)
+    {
+        var words = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length > 0 && words[0].Equals("help", StringComparison.OrdinalIgnoreCase)) return Help;
+        var kept = profile.Sampling ?? new CodeSampling();
+        if (words.Length == 0)
+            return string.Join("\n", new[] { "Generation settings for " + profile.Model + " at " + profile.Endpoint + ":" }
+                .Concat(Fields.Select(f => f.Key + "  ·  " + (kept.Get(f.Key) is { } v ? Shown(v) : "the server's default"))));
+        if (words.Length == 1 && words[0].Equals("clear", StringComparison.OrdinalIgnoreCase))
+        {
+            save(null);
+            return "Generation settings for " + profile.Model + " are left to the server's defaults.";
+        }
+        var key = words.Length == 2 ? words[0].ToLowerInvariant().Replace('-', '_') : "";
+        if (Array.FindIndex(Fields, f => f.Key == key) is var index && index < 0)
+            throw new ArgumentException("Use /generation NAME VALUE, with one of: " + string.Join(", ", Fields.Select(f => f.Key)) + ".");
+        var field = Fields[index];
+        if (words[1].ToLowerInvariant() is "off" or "default" or "none")
+        {
+            var cleared = kept.With(key, null);
+            save(cleared.Empty ? null : cleared);
+            return field.Label + " is left to the server's default for " + profile.Model + ".";
+        }
+        if (!double.TryParse(words[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) || !double.IsFinite(value) ||
+            value < field.Low || value > field.High || field.Whole && value != Math.Round(value))
+            throw new ArgumentException(field.Label + " is a " + (field.Whole ? "whole number" : "number") + " from " + Shown(field.Low) + " to " + Shown(field.High) + ", or off.");
+        save(kept.With(key, value));
+        return field.Label + " is " + Shown(value) + " for " + profile.Model + ".";
+    }
 }
 public sealed record AiEndpointProfile
 {
