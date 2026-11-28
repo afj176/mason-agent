@@ -636,6 +636,10 @@ final class CLI {
                 for (index, rule) in rules.rules.enumerated() { Term.line("  \(Term.paint(Term.dim, String(index + 1).leftPad(2)))  \(Term.paint(Term.green, "allow"))  \(rule.tool.replacingOccurrences(of: "_", with: " "))  \(Term.paint(Term.cyan, rule.prefix))") }
                 Term.line(Term.paint(Term.dim, "  Remove one with /rules revoke NUMBER. Rules never widen the sandbox."))
             }
+        case "/compact" where rest.lowercased() == "auto" || rest.lowercased().hasPrefix("auto "):
+            let said = try Compaction.autoText(String(rest.dropFirst(4)).trimmingCharacters(in: .whitespaces), current: session.compactsAutomatically)
+            if said.on != session.compactsAutomatically { session.automaticCompaction = said.on; try store.save(session) }
+            Term.line("  " + said.text)
         case "/compact":
             guard session.messages.count > 2 else { Term.line(Term.paint(Term.dim, "  There is nothing to compact yet.")); break }
             guard let endpoint, let model = try? OpenAIClient(endpoint) else { throw MasonError("Compaction needs a running model. /models lists the ones on this computer.") }
@@ -834,6 +838,7 @@ final class CLI {
             ("/diff [path]", "Show what this session changed"),
             ("/undo · /redo", "Put back, or reapply, everything the latest request changed"),
             ("/compact", "Replace the conversation so far with a summary to free context"),
+            ("/compact auto on|off", "Compact automatically when the context fills up, or never"),
             ("/queue", "Run the messages you queued, after a stop or a failure"),
             ("/reasoning off|low|medium|high|default", "How much the model thinks before answering, for this session"),
             ("/agent [name|none]", "List your custom agents, or use one for this session"),

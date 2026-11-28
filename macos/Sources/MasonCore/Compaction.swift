@@ -14,6 +14,27 @@ public enum Compaction {
         return Double(used) >= Double(window) * threshold
     }
 
+    /// What a coding run stops with when its context is full and automatic compaction is off (the same words as Windows).
+    public static let fullMessage = "Coding context is full and automatic compaction is off. Originals are retained; compact manually or load a larger context."
+    /// What a chat stops with in the same case. Chat has no manual compaction.
+    public static let chatFullMessage = "Chat context is full and automatic compaction is off. Originals are retained; start a new chat or load a larger context."
+
+    /// True when the last request left no room to work: under 5% of the context (and at least 128 tokens) is free.
+    public static func full(promptTokens: Int?, window: Int?) -> Bool {
+        guard let window, window > 0, let used = promptTokens else { return false }
+        return window - used < max(128, window / 20)
+    }
+
+    /// The words /compact auto prints, shared by mason and its tests. `on` is the setting after the command.
+    public static func autoText(_ argument: String, current: Bool, chat: Bool = false) throws -> (on: Bool, text: String) {
+        switch argument.lowercased() {
+        case "": return (current, "Automatic compaction is \(current ? "on" : "off") · /compact auto on | off")
+        case "on": return (true, "Automatic compaction on: a long conversation is summarized when the context fills up.")
+        case "off": return (false, chat ? "Automatic compaction off: the full history is sent until you start a new chat." : "Automatic compaction off: the full history is sent until you /compact.")
+        default: throw MasonError("Use /compact auto on or /compact auto off.")
+        }
+    }
+
     /// Where the kept tail begins when `keep` recent messages stay as they are. A tool result is never separated
     /// from the assistant message that asked for it.
     static func cut(_ messages: [ChatMessage], keep: Int) -> Int {

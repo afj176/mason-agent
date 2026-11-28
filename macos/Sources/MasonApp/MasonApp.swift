@@ -30,6 +30,8 @@ struct MasonAgentApp: App {
                 Button("Undo Last Request's Edits") { model.undo() }.keyboardShortcut("z", modifiers: [.command, .option]).disabled(model.running)
                 Button("Redo Last Request's Edits") { model.undo(redo: true) }.keyboardShortcut("z", modifiers: [.command, .option, .shift]).disabled(model.running)
                 Button("Compact Conversation") { model.compact() }.disabled(model.running)
+                Toggle("Compact Automatically", isOn: Binding(get: { model.session?.compactsAutomatically ?? true }, set: { model.setAutomaticCompaction($0) }))
+                    .disabled(model.session == nil || model.running)
             }
             CommandGroup(after: .sidebar) {
                 Button("Code") { model.pane = .code }.keyboardShortcut("1")

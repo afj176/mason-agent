@@ -1,6 +1,17 @@
 import XCTest
 @testable import MasonCore
 
+/// A server that answers HTTP 400 to any request that offers tools, as servers without tool support do.
+final class ToolRefusingModel: ChatModel {
+    let name = "refuses-tools-" + UUID().uuidString
+    var seenTools: [[String]] = []
+    func complete(messages: [ChatMessage], tools: [ToolSpec], onText: @escaping (String) -> Void) async throws -> ModelReply {
+        seenTools.append(tools.map(\.name))
+        if !tools.isEmpty { throw MasonError.http(400, "The model server returned HTTP 400. {\"error\":\"tools param requires --jinja flag\"}") }
+        return ModelReply(text: seenTools.count == 2 ? "Hi without tools." : "Again without tools.")
+    }
+}
+
 /// The core behind /agent new, /commands new, /reasoning and /theme light|dark|system.
 final class CliParityTests: XCTestCase {
     var folder: URL!
@@ -45,6 +56,73 @@ final class CliParityTests: XCTestCase {
         XCTAssertEqual(object["reasoning"] as? String, "low")
         object["reasoning"] = nil
         XCTAssertNil(try JSONDecoder().decode(Session.self, from: JSONSerialization.data(withJSONObject: object)).reasoning)
+    }
+
+    func testWithAutomaticCompactionOffAFullContextStopsTheRunUncompacted() async throws {
+        let home = folder.appendingPathComponent("home")
+        let store = try SessionStore(home: home)
+        var session = try store.create(workspace: try Workspace(path: folder.path).root.path)
+        XCTAssertTrue(session.compactsAutomatically, "on by default")
+        session.messages = [ChatMessage(role: "system", content: "s"), ChatMessage(role: "user", content: "one"), ChatMessage(role: "assistant", content: "two"),
+                            ChatMessage(role: "user", content: "three"), ChatMessage(role: "assistant", content: "four")]
+        session.promptTokens = 990
+        session.automaticCompaction = false
+        let model = ScriptedModel([ModelReply(text: "A summary."), ModelReply(text: "Done.")])
+        model.window = 1000
+        await Agent(store: store, model: model, approve: { _ in true }, emit: { _ in }).run(&session, request: "Go on")
+        XCTAssertEqual(session.state, "Failed")
+        XCTAssertEqual(session.detail, Compaction.fullMessage)
+        XCTAssertNil(session.compactions, "nothing was summarized")
+        XCTAssertTrue(model.seen.isEmpty, "the model was not asked")
+        XCTAssertEqual(try Compaction.autoText("", current: false).text, "Automatic compaction is off · /compact auto on | off")
+        XCTAssertEqual(try Compaction.autoText("on", current: false).on, true)
+        XCTAssertThrowsError(try Compaction.autoText("sometimes", current: true))
+
+        // A session saved before the setting existed decodes as on.
+        let data = try JSONEncoder().encode(Session(workspace: folder.path))
+        var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertNil(object["automaticCompaction"])
+        object["automaticCompaction"] = nil
+        XCTAssertTrue(try JSONDecoder().decode(Session.self, from: JSONSerialization.data(withJSONObject: object)).compactsAutomatically)
+        XCTAssertTrue(try JSONDecoder().decode(ChatConversation.self, from: JSONEncoder().encode(ChatConversation())).compactsAutomatically)
+    }
+
+    func testAChatWithAutomaticCompactionOffStopsWhenFull() async throws {
+        let chats = try ChatStore(home: folder.appendingPathComponent("home"))
+        var conversation = try chats.create()
+        conversation.automaticCompaction = false
+        conversation.promptTokens = 995
+        let model = ScriptedModel([ModelReply(text: "A summary."), ModelReply(text: "Hi.")])
+        model.window = 1000
+        do {
+            try await Chat.send(&conversation, text: "Hello", model: model, store: chats) { _ in }
+            XCTFail("a full chat with compaction off stops")
+        } catch { XCTAssertEqual((error as? MasonError)?.description, Compaction.chatFullMessage) }
+        XCTAssertTrue(model.seen.isEmpty)
+    }
+
+    func testAServerThatRefusesToolsGetsTheMessageAgainWithoutThem() async throws {
+        let home = folder.appendingPathComponent("home")
+        let skill = home.appendingPathComponent("skills/notes/SKILL.md")
+        try FileManager.default.createDirectory(at: skill.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "---\nname: notes\ndescription: Notes\n---\n\nTake notes.\n".write(to: skill, atomically: true, encoding: .utf8)
+        let chats = try ChatStore(home: home)
+        var conversation = try chats.create()
+        let model = ToolRefusingModel()
+        XCTAssertTrue(Chat.canCallTools(model))
+        XCTAssertFalse(Chat.offeredTools(conversation, model: model, home: home).isEmpty, "the skill is offered")
+        try await Chat.send(&conversation, text: "Hello", model: model, store: chats, tools: ChatTools(home: home, approve: { _ in .no })) { _ in }
+        XCTAssertEqual(model.seenTools.count, 2)
+        XCTAssertTrue(model.seenTools[0].contains("read_skill") && model.seenTools[1].isEmpty, "refused once with tools, then answered without them")
+        XCTAssertEqual(conversation.messages.last?.content, "Hi without tools.")
+        XCTAssertFalse(Chat.canCallTools(model), "the connection is remembered as unable to call tools")
+        XCTAssertTrue(Chat.offeredTools(conversation, model: model, home: home).isEmpty)
+        try await Chat.send(&conversation, text: "Again", model: model, store: chats, tools: ChatTools(home: home, approve: { _ in .no })) { _ in }
+        XCTAssertEqual(model.seenTools.last, [], "later messages go without tools")
+        XCTAssertTrue(Chat.refusesTools(MasonError.http(501, "The model server returned HTTP 501.")))
+        XCTAssertTrue(Chat.refusesTools(MasonError.http(500, "The model server returned HTTP 500. tools are not supported")))
+        XCTAssertFalse(Chat.refusesTools(MasonError.http(500, "The model server returned HTTP 500.")))
+        XCTAssertFalse(Chat.refusesTools(MasonError("tool")), "not an answer from the server")
     }
 
     func testAppearanceModeIsSavedWhereTheAppReadsIt() throws {

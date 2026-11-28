@@ -329,6 +329,7 @@ struct ChatOptionsButton: View {
                         Text("High").tag("high")
                     }
                     TextField("Most tokens in one answer (left to the server)", text: $limit).textFieldStyle(.roundedBorder)
+                    Toggle("Automatic conversation compaction", isOn: Binding(get: { chat.compactsAutomatically }, set: { model.setChatAutomaticCompaction($0) }))
                     Text("Reference: text the model is given with every message").font(.caption).foregroundStyle(.secondary)
                     TextEditor(text: $reference).font(.callout).frame(height: 150)
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))

@@ -453,7 +453,10 @@ public final class Agent {
             let window = await model.contextWindow()
             for _ in 0..<stepLimit {
                 try Task.checkCancellation()
-                if Compaction.needed(session, window: window) {
+                if !session.compactsAutomatically {
+                    // Off: never summarized by itself; a full context stops the run, with the originals kept.
+                    if Compaction.full(promptTokens: session.promptTokens, window: window) { throw MasonError(Compaction.fullMessage) }
+                } else if Compaction.needed(session, window: window) {
                     emit(.status("Compacting the conversation"))
                     if try await Compaction.compact(&session, model: model, keep: 6) { try? store.save(session) }
                     else { session.promptTokens = nil }

@@ -169,6 +169,11 @@ final class ChatCLI {
             try Chat.configure(&conversation, reasoning: level, maxTokens: conversation.maxTokens ?? 0, reference: conversation.reference ?? "")
             try store.save(conversation)
             Term.line(Term.paint(Term.dim, "  Reasoning: " + (level == "default" ? "the server's default" : level)))
+        case "/compact":
+            guard rest.lowercased() == "auto" || rest.lowercased().hasPrefix("auto ") else { throw MasonError("Use /compact auto on or /compact auto off.") }
+            let said = try Compaction.autoText(String(rest.dropFirst(4)).trimmingCharacters(in: .whitespaces), current: conversation.compactsAutomatically, chat: true)
+            if said.on != conversation.compactsAutomatically { conversation.automaticCompaction = said.on; try store.save(conversation) }
+            Term.line("  " + said.text)
         case "/tools":
             let words = rest.lowercased().split(separator: " ").map(String.init)
             if words.count == 2, ["on", "off"].contains(words[0]) {
@@ -189,6 +194,7 @@ final class ChatCLI {
             ("/resume [number]", "List recent chats and continue one"),
             ("/attach FILE", "Attach a text file, picture, PDF or Word document to your next message (up to 5)"),
             ("/reasoning off|low|medium|high|default", "How much the model thinks before answering"),
+            ("/compact auto on|off", "Compact automatically when the context fills up, or never"),
             ("/tools", "This chat's tools: web, skills and MCP, each on or off"),
             ("/tools on|off web|skills|mcp", "Switch one on or off for this chat"),
             ("/model [number]", "List running model servers, or switch to one"),
@@ -243,6 +249,8 @@ final class ChatCLI {
             return
         }
         let feed = ChatFeed(), box = Box(conversation), files = attachments, store = store, started = Date()
+        let couldCallTools = Chat.canCallTools(client)
+        defer { if couldCallTools, !Chat.canCallTools(client) { Term.line(Term.paint(Term.yellow, "  This model can't call tools.") + Term.paint(Term.dim, " The message was sent without them; this chat's tools stay off until mason restarts.")) } }
         attachments = []
         let tools = ChatTools(home: home, approve: { request in await withCheckedContinuation { feed.ask(request, $0) } }, onStep: feed.step)
         let task = Task {
