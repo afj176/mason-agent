@@ -36,16 +36,29 @@ internal static class SkillsToolsWebChecks
         Write(Path.Combine(project, ".agents", "skills", "review", "SKILL.md"), "Review with no front matter.\n");
         Write(Path.Combine(project, ".claude", "skills", "bad name", "SKILL.md"), "---\ndescription: invalid folder name\n---\n");
         CodeBundles.Save(profile, new HarnessBundle("tools", "1.0", new() { ["lint"] = "---\ndescription: Lint the code\n---\nRun the linter." }, [], []), true);
+        Thread.Sleep(30);
         CodeBundles.Save(profile, new HarnessBundle("unused", "1.0", new() { ["hidden"] = "---\ndescription: Off bundle\n---\nNo." }, [], []), false);
+        Thread.Sleep(30);
+        CodeBundles.Save(profile, new HarnessBundle("zeta", "1.0", new() { ["lint"] = "---\ndescription: Zeta lint\n---\nZeta.", ["deploy"] = "---\ndescription: Zeta deploy\n---\nZeta." }, [], []), true);
+        Thread.Sleep(30);
+        // Installed last but first by name: install order decides, not the name.
+        CodeBundles.Save(profile, new HarnessBundle("alpha", "1.0", new() { ["lint"] = "---\ndescription: Alpha lint\n---\nAlpha." }, [], []), true);
+        // Updating a bundle keeps its place.
+        CodeBundles.Save(profile, new HarnessBundle("tools", "1.1", new() { ["lint"] = "---\ndescription: Lint the code\n---\nRun the linter." }, [], []), true);
         var skills = CodeSkills.List(profile, project);
-        check(skills.Select(s => s.Name + "|" + s.Source + "|" + s.State).SequenceEqual(["deploy|project|on", "deploy|.claude|hidden", "deploy|.agents|hidden", "review|.agents|on", "tools/lint|bundle tools|on"]),
-            "Skills load in order: .mason/skills, .claude/skills, .agents/skills, then enabled bundles named bundle/key");
+        check(skills.Select(s => s.Name + "|" + s.Source + "|" + s.State).SequenceEqual(["deploy|project|on", "deploy|.claude|hidden", "deploy|.agents|hidden", "review|.agents|on",
+                "lint|bundle tools|on", "deploy|bundle zeta|hidden", "lint|bundle zeta|hidden", "lint|bundle alpha|hidden"]),
+            "Skills load in order: .mason/skills, .claude/skills, .agents/skills, then enabled bundles by install order, each skill under its plain name");
         check(skills[1].ShadowedBy == ".mason/skills/deploy" && skills[2].ShadowedBy == ".mason/skills/deploy", "A shadowed skill names the one that hides it");
+        check(skills[5].ShadowedBy == ".mason/skills/deploy" && skills[6].ShadowedBy == "bundle tools" && skills[7].ShadowedBy == "bundle tools",
+            "A project skill hides a bundle's skill of the same name, and the bundle installed first hides a later one");
         check(skills[0].Description == "Ship to staging" && skills[3].Summary == "No description" && skills[4].Description == "Lint the code",
             "Descriptions come from front matter, bundle skills included; none reads No description");
-        check(CodeSkills.Read(skills, "deploy").Contains("Run deploy.cmd.") && !CodeSkills.Read(skills, "deploy").Contains("Old steps"), "read_skill returns the winning skill's body");
+        check(CodeSkills.Read(skills, "deploy").Contains("Run deploy.cmd.") && !CodeSkills.Read(skills, "deploy").Contains("Old steps") && CodeSkills.Read(skills, "lint") == "Run the linter.",
+            "read_skill returns the winning skill's body");
+        check(CodeSkills.Computer(profile).Where(s => s.Name == "lint").Select(s => s.Source).SequenceEqual(["bundle tools"]), "Chat's skills keep only the first bundle's skill of a name");
         var prompt = CodeSkills.Prompt(CodeSkills.Active(profile, project));
-        check(prompt.Contains("- deploy: Ship to staging") && prompt.Contains("- review: No description") && prompt.Contains("- tools/lint: Lint the code") && prompt.EndsWith(CodeSkills.PromptRule),
+        check(prompt.Contains("- deploy: Ship to staging") && prompt.Contains("- review: No description") && prompt.Contains("- lint: Lint the code") && !prompt.Contains("Zeta") && !prompt.Contains("Alpha") && prompt.EndsWith(CodeSkills.PromptRule),
             "The prompt lists each enabled skill as NAME: description, then the read_skill line");
 
         // ── disabledSkills ────────────────────────────────────────────────────────────────────────────
@@ -296,9 +309,9 @@ internal static class SkillsToolsWebChecks
         Write(Path.Combine(folder, "mcp.json"), "[{\"name\":\"notes\",\"endpoint\":\"http://127.0.0.1:9000/mcp\",\"tools\":[\"search\"]}]");
         var said = CodeBundles.Command("install " + folder, profile);
         check(said.StartsWith("Installed writing 1.2: 2 files of skills and docs.") && said.Contains("They are not in use: /bundle servers writing shows them."), "/bundle install FOLDER installs skills and docs and keeps its servers out of use");
-        check(CodeSkills.List(profile, project).Any(s => s.Name == "writing/style" && s.Description == "Apply the house style") && !CodeMcpRegistry.Active(profile).Any(s => s.Name.Contains("notes")),
+        check(CodeSkills.List(profile, project).Any(s => s.Name == "style" && s.Source == "bundle writing" && s.Description == "Apply the house style") && !CodeMcpRegistry.Active(profile).Any(s => s.Name.Contains("notes")),
             "An installed bundle's skills are available and its servers are not");
         check(CodeBundles.Command("servers writing add", profile).StartsWith("Added, switched off: notes") && CodeMcpRegistry.ReadAll(profile).Single(s => s.Name == "notes").Enabled == false, "/bundle servers NAME add adds them switched off");
-        check(CodeBundles.Command("remove writing", profile) == "Removed writing." && !CodeSkills.List(profile, project).Any(s => s.Name.StartsWith("writing/")), "/bundle remove NAME removes it");
+        check(CodeBundles.Command("remove writing", profile) == "Removed writing." && !CodeSkills.List(profile, project).Any(s => s.Source == "bundle writing"), "/bundle remove NAME removes it");
     }
 }
