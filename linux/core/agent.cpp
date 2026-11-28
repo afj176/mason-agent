@@ -6,6 +6,7 @@
 #include "planning.hpp"
 #include "roles.hpp"
 #include "bundles.hpp"
+#include "chat.hpp"
 #include "notes.hpp"
 
 #include <algorithm>
@@ -687,7 +688,14 @@ const FollowUp* next_follow_up(const std::vector<FollowUp>& pending) {
 }
 }  // namespace
 
+void Agent::apply_reasoning(const std::string& level, ChatModel& model) {
+    ChatModel* inner = &model;
+    while (auto* role = dynamic_cast<RoleModel*>(inner)) inner = &role->base();
+    if (auto* client = dynamic_cast<OpenAIClient*>(inner)) client->add_extra_body(chat::reasoning_body(level));
+}
+
 void Agent::run(Session& session, const std::string& request, const CancelToken& cancel) {
+    apply_reasoning(session.reasoning, model_);
     std::string input = request;
     if (to_lower(trim(request)) == "/queue") {
         const FollowUp* next = next_follow_up(session.pending_input);
@@ -1009,7 +1017,10 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         const int window = model_.context_window();
         for (int step = 0; step < action_limit; step++) {
             check_cancel(cancel);
-            if (compaction::needed(session, window)) {
+            if (!session.automatic_compaction) {
+                // Off: never summarized by itself; a full context stops the run, with the originals kept.
+                if (compaction::full(session.prompt_tokens, window)) throw Error(compaction::kFullMessage);
+            } else if (compaction::needed(session, window)) {
                 emit_({AgentEvent::Kind::Status, "Compacting the conversation", {}});
                 if (compaction::compact(session, model_, 6, cancel)) store_.save(session);
                 else session.prompt_tokens = 0;

@@ -81,4 +81,22 @@ void save(const fs::path& data_home, const Family& family) {
     write_file_atomic(path, values.dump(2));
 }
 
+std::string saved_mode(const fs::path& data_home) {
+    try {
+        const fs::path path = data_home / "appearance";
+        if (!fs::exists(path)) return "system";
+        const std::string saved = trim(read_file(path));
+        if (saved == "light" || saved == "dark") return saved;
+    } catch (const std::exception&) {
+        // Nothing chosen yet.
+    }
+    return "system";
+}
+
+void save_mode(const fs::path& data_home, const std::string& mode) {
+    if (mode != "light" && mode != "dark" && mode != "system") throw Error("Choose light, dark or system.");
+    fs::create_directories(data_home);
+    write_file_atomic(data_home / "appearance", mode);
+}
+
 }  // namespace mason::theme

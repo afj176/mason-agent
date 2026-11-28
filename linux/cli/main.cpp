@@ -54,6 +54,17 @@ std::string label_of(const std::string& tool) { return replace_all(tool, "_", " 
 /// /theme and "mason theme": lists the families, or saves one to appearance.json for the CLI and the app.
 void theme_command(const std::string& asked) {
     const std::string name = trim(asked);
+    const std::string mode = to_lower(name);
+    if (mode == "light" || mode == "dark" || mode == "system") {
+        try {
+            theme::save_mode(data_home(), mode);
+        } catch (const std::exception& error) {
+            term::line(paint(term::red, "  The mode could not be saved: ") + error.what());
+            return;
+        }
+        term::line("  " + paint(std::string(term::accent) + term::bold, "✓") + " Mode set to " + paint(term::accent, mode) + paint(term::dim, ". Mason Agent uses it the next time it starts."));
+        return;
+    }
     if (!name.empty()) {
         const theme::Family* found = theme::try_find(name);
         if (!found) {
@@ -73,7 +84,8 @@ void theme_command(const std::string& asked) {
         const std::string swatch = term::styled ? "\x1b[38;2;" + term::rgb_code(item.dark.accent) + "m■" + term::reset + " \x1b[38;2;" + term::rgb_code(item.light.accent) + "m■" + term::reset : "";
         term::line("  " + (current ? paint(std::string(term::accent) + term::bold, "›") : std::string(" ")) + " " + swatch + " " + term::pad(item.slug(), 12) + (current ? paint(term::dim, "current") : ""));
     }
-    term::line(paint(term::dim, "  /theme NAME chooses one. It is shared with Mason Agent's Appearance setting."));
+    term::line(paint(term::dim, "  Mode: " + theme::saved_mode(data_home())));
+    term::line(paint(term::dim, "  /theme NAME chooses one; /theme light|dark|system sets the mode. Both are shared with Mason Agent."));
 }
 
 /// What the engine reports while a request runs, handed from its thread to the terminal loop.
@@ -556,7 +568,10 @@ private:
     bool command(const std::string& input) {
         const size_t space = input.find(' ');
         std::string name = to_lower(input.substr(0, space)), rest = space == std::string::npos ? "" : trim(input.substr(space + 1));
-        if (name == "/read" || name == "/review" || name == "/edits" || name == "/auto") { rest = name.substr(1); name = "/permission"; }
+        // "/review changes" asks the model to review; a bare "/review" is the permission shortcut.
+        const bool review_changes = name == "/review" && rest.rfind("changes", 0) == 0;
+        if (review_changes) rest = rest.size() > 7 ? rest.substr(8) : "";
+        if (!review_changes && (name == "/read" || name == "/review" || name == "/edits" || name == "/auto")) { rest = name.substr(1); name = "/permission"; }
         if (name == "/exit" || name == "/quit") return false;
         if (name == "/help" || name == "/?") { help(); return true; }
         if (name == "/new") {
@@ -575,6 +590,28 @@ private:
             for (const Session& item : store_.sessions_in(workspace_.root())) {
                 if ((!item.turns.empty() || item.id == session_.id) && mine.size() < 20) mine.push_back(item);
             }
+            const std::vector<std::string> words = split(rest, ' ', false);
+            if (!words.empty() && to_lower(words[0]) == "delete") {
+                const int chosen = words.size() == 2 ? std::atoi(words[1].c_str()) : 0;
+                if (chosen < 1 || static_cast<size_t>(chosen) > mine.size()) throw Error("Use /sessions delete NUMBER. /sessions lists them.");
+                const Session doomed = mine[static_cast<size_t>(chosen) - 1];
+                const std::string question = "Delete session " + std::to_string(chosen) + ", " + doomed.title + "?";
+                if (!term::interactive) { term::line("  " + question + " Not confirmed: there is no terminal to ask."); return true; }
+                term::write("  " + question + " y/n ");
+                const std::string answer = to_lower(trim(read_line().value_or("")));
+                if (answer != "y" && answer != "yes") { term::line(paint(term::dim, "  Kept.")); return true; }
+                store_.remove(doomed.id);
+                term::line(paint(term::dim, "  Deleted " + doomed.title + "."));
+                if (doomed.id == session_.id) {
+                    // The session in use is gone: carry on in a fresh one with the same permission.
+                    const Session previous = session_;
+                    session_ = store_.create(workspace_.root(), previous.permission);
+                    session_.ask_only = previous.ask_only;
+                    store_.save(session_);
+                    term::line(paint(term::dim, "  New session · " + mode_name()));
+                }
+                return true;
+            }
             const int number = rest.empty() ? 0 : std::atoi(rest.c_str());
             if (number >= 1 && static_cast<size_t>(number) <= mine.size()) {
                 session_ = mine[static_cast<size_t>(number) - 1];
@@ -587,7 +624,7 @@ private:
                 term::line("  " + paint(term::dim, term::left_pad(std::to_string(i + 1), 2)) + "  " + (current ? paint(term::bold, term::clip(mine[i].title, 60)) : term::clip(mine[i].title, 60)) +
                            paint(term::dim, "  ·  " + mine[i].state + (current ? "  ← current" : "")));
             }
-            term::line(paint(term::dim, "  Continue one with /resume NUMBER."));
+            term::line(paint(term::dim, "  Continue one with /resume NUMBER; delete one with /sessions delete NUMBER."));
             return true;
         }
         if (name == "/ask") {
@@ -628,7 +665,37 @@ private:
             return true;
         }
         if (name == "/rules") { rules(rest); return true; }
+        if (name == "/compact" && (to_lower(rest) == "auto" || to_lower(rest).rfind("auto ", 0) == 0)) {
+            const auto [on, said] = compaction::auto_text(to_lower(rest).substr(4), session_.automatic_compaction);
+            if (on != session_.automatic_compaction) {
+                session_.automatic_compaction = on;
+                store_.save(session_);
+            }
+            term::line("  " + said);
+            return true;
+        }
         if (name == "/compact") { compact(); return true; }
+        if (name == "/reasoning") {
+            const std::string level = to_lower(rest);
+            if (level.empty()) {
+                term::line("  Reasoning: " + (session_.reasoning.empty() ? std::string("the server's default") : session_.reasoning) + paint(term::dim, "  ·  /reasoning off|low|medium|high|default"));
+                return true;
+            }
+            if (level != "default" && level != "off" && level != "low" && level != "medium" && level != "high") throw Error("Use /reasoning off, low, medium, high or default.");
+            session_.reasoning = level == "default" ? "" : level;
+            store_.save(session_);
+            term::line(paint(term::dim, "  Reasoning: " + (level == "default" ? std::string("the server's default") : level)));
+            return true;
+        }
+        const std::vector<std::string> parts = split(rest, ' ', false);
+        if ((name == "/agent" || name == "/agents" || name == "/commands") && !parts.empty() && to_lower(parts[0]) == "new") {
+            const bool is_command = name == "/commands";
+            if (parts.size() != 2) throw Error(std::string("Use ") + (is_command ? "/commands" : "/agent") + " new NAME.");
+            const fs::path made = customization::create(workspace_, parts[1], is_command);
+            term::line("  Made " + made.string());
+            open_in_editor(made);
+            return true;
+        }
         if (name == "/agent" || name == "/agents") { agent(rest); return true; }
         if (name == "/commands") { commands(); return true; }
         if (name == "/queue") {
@@ -832,14 +899,19 @@ private:
         const std::pair<const char*, const char*> rows[] = {
             {"/new [request]", "Start a separate session, optionally with its first request"},
             {"/resume [number]", "List this folder's sessions, or continue one"},
+            {"/sessions delete NUMBER", "Delete a session from this folder, after you confirm"},
             {"/ask · /build", "Answer questions only, or make changes"},
             {"/permission read|review|edits|auto", "What Mason may do without asking (also /review, /edits, /auto)"},
             {"/diff [path]", "Show what this session changed"},
             {"/undo · /redo", "Put back, or reapply, everything the latest request changed"},
             {"/compact", "Replace the conversation so far with a summary to free context"},
+            {"/compact auto on|off", "Compact automatically when the context fills up, or never"},
             {"/queue", "Run the messages you queued, after a stop or a failure"},
+            {"/reasoning off|low|medium|high|default", "How much the model thinks before answering, for this session"},
             {"/agent [name|none]", "List your custom agents, or use one for this session"},
+            {"/agent new NAME", "Make .mason/agents/NAME.md and open it"},
             {"/commands", "List your custom slash commands"},
+            {"/commands new NAME", "Make .mason/commands/NAME.md and open it"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
             {"/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"},
@@ -860,7 +932,7 @@ private:
             {"/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"},
             {"/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"},
             {"/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"},
-            {"/review", "Have the model read what this session changed and pin what it finds as comments"},
+            {"/review changes", "Have the model read what this session changed and pin what it finds as comments"},
             {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},
             {"/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"},
             {"/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"},
@@ -884,6 +956,7 @@ private:
             {"/models runtime", "Install or update llama.cpp"},
             {"/status", "Session, model, permission and storage"},
             {"/theme [name]", "List the theme families, or choose one (shared with Mason Agent)"},
+            {"/theme light|dark|system", "Choose the light or dark mode, or follow the system (shared with Mason Agent)"},
             {"/exit", "Leave (Ctrl+C twice also works)"},
         };
         term::line();
@@ -936,6 +1009,16 @@ private:
         throw Error("No agent named " + rest + ". /agent lists them.");
     }
 
+    /// Opens a file in $VISUAL or $EDITOR, when one is set and there is a terminal, and waits for it to close.
+    void open_in_editor(const fs::path& file) {
+        const char* visual = std::getenv("VISUAL");
+        const char* editor = visual && *visual ? visual : std::getenv("EDITOR");
+        if (!editor || !*editor || !term::interactive) return;
+        term::raw(false);
+        const int status = std::system((std::string(editor) + " " + shell::quote(file.string())).c_str());
+        if (status != 0) term::line(paint(term::yellow, "  The editor ended with an error; the file is kept."));
+    }
+
     /// /skills: list, show, new, on and off. A new skill opens in $VISUAL or $EDITOR when one is set.
     void skills_command(const std::string& rest) {
         const std::vector<std::string> words = split(trim(rest), ' ', false);
@@ -944,13 +1027,7 @@ private:
             const std::string description = join(std::vector<std::string>(words.begin() + 2, words.end()), " ");
             const fs::path made = skills::create(workspace_, words[1], description);
             term::line("  " + paint(term::green, "✓") + " Made " + made.string());
-            const char* visual = std::getenv("VISUAL");
-            const char* editor = visual && *visual ? visual : std::getenv("EDITOR");
-            if (editor && *editor && term::interactive) {
-                term::raw(false);
-                const int status = std::system((std::string(editor) + " " + shell::quote(made.string())).c_str());
-                if (status != 0) term::line(paint(term::yellow, "  The editor ended with an error; the file is kept."));
-            }
+            open_in_editor(made);
             return;
         }
         const std::string said = skills::command(rest, workspace_, store_.home());
@@ -1072,6 +1149,7 @@ private:
         row("Mode", mode_name());
         row("Shell", shell::path() + (shell::sandbox_available() ? paint(term::dim, "  ·  sandbox available for Auto") : paint(term::yellow, "  ·  no sandbox: Auto refuses commands")));
         if (!session_.agent.empty()) row("Agent", session_.agent);
+        if (!session_.reasoning.empty()) row("Reasoning", session_.reasoning);
         if (session_.prompt_tokens > 0) row("Context", std::to_string(session_.prompt_tokens) + " tokens in the last request");
         if (session_.compactions > 0) row("Compacted", std::to_string(session_.compactions) + (session_.compactions == 1 ? " time; " : " times; ") + std::to_string(session_.archived.size()) + " messages archived");
         row("Stored in", store_.folder().string());
@@ -1876,6 +1954,8 @@ private:
     ChatTools tools() const {
         ChatTools made;
         made.home = home_;
+        // A server that refused tools earlier in this run is sent none.
+        if (endpoint) made.calls_tools = chat::calls_tools(OpenAIClient(*endpoint));
         return made;
     }
 
@@ -1930,6 +2010,7 @@ private:
         OpenAIClient model(*endpoint);
         ChatFeed feed;
         ChatTools with = tools();
+        const bool could_call_tools = with.calls_tools;
         with.approve = [&](const ApprovalRequest& request) { return feed.ask(request); };
         with.step = [&](const Activity& step) {
             std::lock_guard<std::mutex> guard(feed.lock);
@@ -1994,6 +2075,9 @@ private:
         term::raw(false);
         // Whatever happened, the store has the conversation as far as it got.
         conversation_ = working;
+        if (could_call_tools && !chat::calls_tools(model)) {
+            term::line(paint(term::yellow, std::string("  ") + chat::kNoTools) + paint(term::dim, " The message was sent without them; this chat's tools stay off until mason restarts."));
+        }
         if (!problem.empty()) {
             term::line(paint(problem == "Stopped." ? term::yellow : term::red, "  " + problem));
             return;
@@ -2012,6 +2096,7 @@ private:
                 {"/resume [number]", "List recent chats, or continue one"},
                 {"/attach FILE", "Attach a text file, picture, PDF or Word document to the next message (up to 5)"},
                 {"/reasoning off|low|medium|high|default", "How much the model thinks before it answers"},
+                {"/compact auto on|off", "Compact automatically when the context fills up, or never"},
                 {"/tools", "This chat's tools: web, skills and MCP, each on or off"},
                 {"/tools on|off web|skills|mcp", "Switch one on or off for this chat"},
                 {"/model [number]", "List running model servers, or switch to one"},
@@ -2074,6 +2159,17 @@ private:
             term::line(paint(term::dim, "  Reasoning: " + to_lower(rest) + "."));
             return true;
         }
+        if (name == "/compact") {
+            const std::string asked = to_lower(rest);
+            if (asked != "auto" && asked.rfind("auto ", 0) != 0) throw Error("Use /compact auto on or /compact auto off.");
+            const auto [on, said] = compaction::auto_text(asked.substr(4), conversation_.automatic_compaction, true);
+            if (on != conversation_.automatic_compaction) {
+                conversation_.automatic_compaction = on;
+                store_.save(conversation_);
+            }
+            term::line("  " + said);
+            return true;
+        }
         if (name == "/tools") {
             const std::vector<std::string> words = split(rest, ' ', false);
             if (!words.empty()) {
@@ -2123,8 +2219,8 @@ const char* const kUsage =
     "  read skills and call MCP servers, asking first. --resume continues the latest chat.\n"
     "mason --run-due\n"
     "  Runs the scheduled requests that are due, unattended, and exits. For cron or a systemd timer; the app does this itself while open.\n"
-    "mason theme [blueprint|evergreen|graphite|kiln|retro-neon]\n"
-    "  Lists the theme families, or chooses one for the CLI and Mason Agent.\n";
+    "mason theme [blueprint|evergreen|graphite|kiln|retro-neon|light|dark|system]\n"
+    "  Lists the theme families, or chooses one or the light/dark mode for the CLI and Mason Agent.\n";
 
 }  // namespace
 

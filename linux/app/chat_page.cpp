@@ -153,7 +153,13 @@ ChatPage::ChatPage(Controller& controller) : Gtk::Box(Gtk::Orientation::HORIZONT
         options_shown_.clear();
         controller_.configure_chat(levels[std::min<guint>(4, options_reasoning_.get_selected())], digits.empty() ? 0 : std::stoi(digits), options_reference_.get_buffer()->get_text());
     });
-    for (Gtk::Widget* widget : std::vector<Gtk::Widget*>{reasoning_label, &options_reasoning_, limit_label, &options_limit_, reference_label, reference_scroll, apply}) panel->append(*widget);
+    // Applies at once, like the Tools switches.
+    options_auto_compact_.set_label("Automatic conversation compaction");
+    options_auto_compact_.set_tooltip_text("Summarize a long conversation when the context fills up. Off, the full history is sent until the context is full.");
+    options_auto_compact_.signal_toggled().connect([this] {
+        if (!options_updating_) controller_.set_chat_automatic_compaction(options_auto_compact_.get_active());
+    });
+    for (Gtk::Widget* widget : std::vector<Gtk::Widget*>{reasoning_label, &options_reasoning_, limit_label, &options_limit_, &options_auto_compact_, reference_label, reference_scroll, apply}) panel->append(*widget);
     options_popover_.set_child(*panel);
     options_.set_popover(options_popover_);
     buttons->append(options_);
@@ -252,13 +258,16 @@ void ChatPage::refresh_buttons() {
     options_.set_sensitive(has_chat && !running);
     if (const ChatConversation* current = controller_.chat()) {
         // The popover shows the selected chat's own settings; it is filled when the chat or its settings change, not while typing.
-        const std::string print = current->id + "|" + current->reasoning + "|" + std::to_string(current->max_tokens) + "|" + std::to_string(current->reference.size());
+        const std::string print = current->id + "|" + current->reasoning + "|" + std::to_string(current->max_tokens) + "|" + std::to_string(current->reference.size()) + (current->automatic_compaction ? "|a" : "|-");
         if (print != options_shown_) {
             options_shown_ = print;
             const std::string& level = current->reasoning;
             options_reasoning_.set_selected(level == "off" ? 1 : level == "low" ? 2 : level == "medium" ? 3 : level == "high" ? 4 : 0);
             options_limit_.set_text(current->max_tokens > 0 ? std::to_string(current->max_tokens) : "");
             options_reference_.get_buffer()->set_text(current->reference);
+            options_updating_ = true;
+            options_auto_compact_.set_active(current->automatic_compaction);
+            options_updating_ = false;
             const bool set = !level.empty() || current->max_tokens > 0 || !current->reference.empty();
             options_.set_label(set ? "Options •" : "Options");
         }

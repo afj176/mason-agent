@@ -479,6 +479,16 @@ void Controller::send(const std::string& text) {
     // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
     const std::string lowered = to_lower(input);
     if (lowered == "/compact") { compact(); return; }
+    if (lowered == "/compact auto" || starts_with(lowered, "/compact auto ")) {
+        try {
+            const auto [on, said] = compaction::auto_text(lowered.substr(13), current->automatic_compaction);
+            if (on != current->automatic_compaction) set_automatic_compaction(current->id, on);
+            else notice.emit(said);
+        } catch (const std::exception& error) {
+            notice.emit(error.what());
+        }
+        return;
+    }
     if (lowered == "/mcp") { show_mcp_servers(); return; }
     if (lowered == "/schedule" || lowered == "/schedules" || starts_with(lowered, "/schedule ")) {
         const size_t space = input.find(' ');
@@ -878,6 +888,37 @@ void Controller::compact() {
             notice.emit(message);
         });
     });
+}
+
+void Controller::set_automatic_compaction(const std::string& id, bool on) {
+    if (running || !store_) return;
+    const auto found = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& item) { return item.id == id; });
+    if (found == sessions_.end()) return;
+    Session updated = *found;
+    updated.automatic_compaction = on;
+    try {
+        store_->save(updated);
+        replace(updated);
+        changed.emit();
+        notice.emit(compaction::auto_text(on ? "on" : "off", on).second);
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+}
+
+void Controller::set_chat_automatic_compaction(bool on) {
+    const ChatConversation* current = chat();
+    if (!current || !chat_store_ || chat_running || current->automatic_compaction == on) return;
+    ChatConversation updated = *current;
+    updated.automatic_compaction = on;
+    try {
+        chat_store_->save(updated);
+        chats_ = chat_store_->conversations();
+        chat_selection = updated.id;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
 }
 
 void Controller::choose_agent(const std::string& name) {
