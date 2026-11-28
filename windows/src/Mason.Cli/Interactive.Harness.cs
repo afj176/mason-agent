@@ -12,7 +12,7 @@ internal sealed partial class Interactive
         ("/skill NAME [request]", "Run a request with a skill"),
         ("/tools", "The tools Mason may use here, by group, and your MCP servers"),
         ("/tools on|off NAME", "Switch a tool on or off for this project"),
-        ("/network", CodeNetworkSettings.Help + " (/network ask, /network off)"),
+        ("/network [default|ask|off]", CodeNetworkSettings.Help),
         ("/mcp", "List your MCP servers and the tools Mason may call"),
         ("/mcp add NAME URL|PROGRAM [ARGS]", "Register a server on this computer, then choose its tools"),
         ("/mcp allow NAME TOOL…|all", "Choose which of a server's tools Mason may call"),

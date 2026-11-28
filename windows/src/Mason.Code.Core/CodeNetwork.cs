@@ -11,7 +11,9 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Mason.Code;
 
-public enum CodeNetworkMode { Offline, Ask }
+/// <summary>Offline: no internet at all. Ask: commands in Auto and the web tools ask per host. Default (unset): commands
+/// in Auto stay offline as before, and web_fetch/web_search ask per host.</summary>
+public enum CodeNetworkMode { Offline, Ask, Default }
 
 /// <summary>Exact destination policy. Untrusted clients never choose an already-connected host socket.</summary>
 public static class CodeNetworkPolicy

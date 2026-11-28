@@ -111,7 +111,7 @@ public sealed partial class MainWindow
         AutomationProperties.SetName(shells, "Workspace command shell");
         var shellPath = CodeNote("Direct executables · no implicit shell", 11); shellPath.TextWrapping = TextWrapping.Wrap;
         var environment = Button("Environment", (_,_)=>{});
-        var networkModes=new ComboBox{ItemsSource=new[]{"Offline","Ask when needed"},SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};AutomationProperties.SetName(networkModes,"Command network policy");
+        var networkModes=new ComboBox{ItemsSource=new[]{"Off: no internet","Ask for commands and web","Commands offline, web asks"},SelectedIndex=0,HorizontalAlignment=HorizontalAlignment.Stretch};AutomationProperties.SetName(networkModes,"Command network policy");
         AutomationProperties.SetName(environment,"Project coding environment");
         var environmentHint=CodeNote("Any source language · execution depends on installed, sandbox-compatible toolchains.");environmentHint.MaxWidth=330;environmentHint.TextWrapping=TextWrapping.Wrap;
         var networkHint=CodeNote("Auto keeps direct sockets blocked. Node/npm, pip HTTPS and .NET SDK NuGet restore can ask for public HTTPS destinations. Other clients remain offline. Reviewed commands run with your Windows account.");networkHint.MaxWidth=330;networkHint.TextWrapping=TextWrapping.Wrap;
@@ -1033,7 +1033,7 @@ public sealed partial class MainWindow
                 folderLabel.Text=project?.Name??"Choose project";folderPath.Text=project?.Workspace??"";ToolTipService.SetToolTip(projectSwitcher,project?.Workspace??"Add or switch a coding project");
                 fileProject.Text=project?.Name??"No project selected";ToolTipService.SetToolTip(fileProject,project?.Workspace??"");fileState.Text="";
                 permissions.SelectedIndex = (int)(selected?.Permission ?? CodePermission.ReadOnly);
-                shells.SelectedIndex = (int)(selected?.Shell ?? CodeShellKind.Recommended);networkModes.SelectedIndex=(int)(selected?.Network??CodeNetworkMode.Offline); ShowShell();SidebarTab(selected?.SidebarFiles==true);
+                shells.SelectedIndex = (int)(selected?.Shell ?? CodeShellKind.Recommended);networkModes.SelectedIndex=(int)(selected?.Network??CodeNetworkMode.Default); ShowShell();SidebarTab(selected?.SidebarFiles==true);
                 agentMode.SelectedIndex = selected?.Mode == "ask" ? 1 : 0;
                 reasoning.SelectedItem = (selected?.Reasoning ?? "default") switch { "off" => "Off", "low" => "Low", "medium" => "Medium", "high" => "High", _ => "Default" };
                 forcedPanel = null;
@@ -1449,6 +1449,19 @@ public sealed partial class MainWindow
                 catch (Exception e) { ruleNote.Text = e.Message; }
             }, true);
             always.Flyout = new Flyout { Content = Stack(new TextBlock { Text = "Always allow " + toolName, Style = Token("MasonBodyStrong") }, rule, ruleNote, saveRule) };
+            // A host is kept exactly, not as a prefix: one list per project for commands and the web tools.
+            if (request.Tool == "network")
+            {
+                always.Flyout = null;
+                always.Content = new TextBlock { Text = "Always for this project" };
+                always.Click += (_, _) =>
+                {
+                    try { if (owner != null) CodeNetworkSettings.Allow(store.SettingsRoot, owner.Workspace, request.RuleSubject); completion.TrySetResult(true); }
+                    catch (Exception e) { ToolTipService.SetToolTip(always, e.Message); }
+                };
+                allow.Content = Row(Glyph(""), new TextBlock { Text = "Once" });
+                decline.Content = Row(Glyph(""), new TextBlock { Text = "No" });
+            }
             AutomationProperties.SetName(always, "Always allow " + toolName + " in this project");
             AutomationProperties.SetName(allow, "Allow " + toolName + " once"); AutomationProperties.SetName(decline, "Decline " + toolName);
             var icon = MascotImage(PoseApproval, 70, "waiting for your decision");

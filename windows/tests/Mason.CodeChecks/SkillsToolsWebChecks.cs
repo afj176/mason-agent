@@ -85,6 +85,7 @@ internal static class SkillsToolsWebChecks
             foreach (var group in new[] { "code", "docs", "workflows", "jobs", "browser", "mcp", "web" }) services.Enable(group, auto);
             offered.UnionWith(services.Enabled);
         }
+        check(CodeSchema.NativeTools().GetRawText().Length <= 32000 && CodeSchema.NativeTools().GetArrayLength() <= 64, "Every native tool together still fits one request's tool definitions");
         var missing = offered.Where(t => CodeToolCatalog.Find(t) == null).ToArray();
         check(missing.Length == 0, "Every tool the engine can offer is in the catalogue" + (missing.Length > 0 ? ": missing " + string.Join(", ", missing) : ""));
         check(CodeToolCatalog.All.All(t => offered.Contains(t.Name) && CodeToolCatalog.Groups.Contains(t.Group) && t.Line.Length > 0) && CodeToolCatalog.All.Select(t => t.Name).Distinct().Count() == CodeToolCatalog.All.Count,
@@ -111,11 +112,24 @@ internal static class SkillsToolsWebChecks
             services.Enable("web", offline);
             check(services.Enabled.IsSupersetOf(["web_fetch", "web_search"]), "/network ask offers the web group in a read-only session");
         }
+        await using (var services = new CodeRunServices(new CodeWorkspace(project), default, [], profile))
+        {
+            var fresh = new CodeSession { Workspace = project, Mode = "build", Permission = CodePermission.Auto };
+            services.Enable("web", fresh);
+            check(CodeNetworkSettings.Computer(Directory.CreateDirectory(Path.Combine(area, "unset")).FullName) == CodeNetworkMode.Default && fresh.Network == CodeNetworkMode.Default &&
+                  !CodeNetworkSettings.CommandsAsk(fresh.Network) && services.Enabled.IsSupersetOf(["web_fetch", "web_search"]),
+                "The default leaves commands in Auto offline and still offers the web group");
+            check(CodeNetworkSettings.CommandsAsk(CodeNetworkMode.Ask) && !CodeNetworkSettings.CommandsAsk(CodeNetworkMode.Offline) && !CodeNetworkSettings.WebOffered(CodeNetworkMode.Offline),
+                "ask lets commands and the web tools ask; off gives neither");
+            CodeNetworkSettings.SessionCommand("default", fresh, profile);
+            check(fresh.Network == CodeNetworkMode.Default && CodeNetworkSettings.SessionCommand("", fresh, profile).StartsWith("This session: Default: commands in Auto are offline"), "/network default says plainly what it means");
+        }
+        using (var store = new CodeStore(Path.Combine(area, "store-default"), profile)) check(store.New(project).Network == CodeNetworkMode.Default, "With nothing set, a new session gets the default");
         CodeNetworkSettings.SetComputer(profile, CodeNetworkMode.Offline);
         check(ChatTools.Offered(profile, new ChatToolSwitches()).All(t => !t.StartsWith("web_", StringComparison.Ordinal)), "When the computer's setting is off, Chat has no web tools");
         using (var store = new CodeStore(Path.Combine(area, "store-offline"), profile)) check(store.New(project).Network == CodeNetworkMode.Offline, "A new session starts with the computer's setting");
-        CodeNetworkSettings.SetComputer(profile, CodeNetworkMode.Ask);
-        check(ChatTools.Offered(profile, new ChatToolSwitches()).Contains("web_fetch") && !ChatTools.Offered(profile, new ChatToolSwitches { Web = false }).Contains("web_fetch"), "Chat offers the web per conversation when the computer allows it");
+        CodeNetworkSettings.SetComputer(profile, CodeNetworkMode.Default);
+        check(!File.Exists(Path.Combine(profile, "network.json")) && ChatTools.Offered(profile, new ChatToolSwitches()).Contains("web_fetch") && !ChatTools.Offered(profile, new ChatToolSwitches { Web = false }).Contains("web_fetch"), "Chat offers the web per conversation when the computer allows it");
 
         // ── Web hosts and redirects ───────────────────────────────────────────────────────────────────
         bool Denied(string url) { try { CodeWeb.Destination(url); return false; } catch (Exception e) when (e is UnauthorizedAccessException or ArgumentException) { return true; } }

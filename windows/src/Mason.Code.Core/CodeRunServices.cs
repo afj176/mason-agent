@@ -95,7 +95,7 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
             "browser" when auto=>["computer_use"],
             "mcp" when auto=>["mcp_tools","mcp_call","mcp_resources","mcp_read"],
             // Reading the web changes nothing here, so it is offered in every mode; every new host still asks.
-            "web" when session.Network==CodeNetworkMode.Ask=>["web_fetch","web_search"],
+            "web" when CodeNetworkSettings.WebOffered(session.Network)=>["web_fetch","web_search"],
             "web"=>throw new UnauthorizedAccessException("This session has no internet. The user can turn it on with /network ask."),
             _=>throw new UnauthorizedAccessException("Capability is unavailable in this session mode.")
         };

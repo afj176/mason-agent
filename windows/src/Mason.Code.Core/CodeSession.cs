@@ -157,7 +157,7 @@ public sealed class CodeSession
     public bool RecordModelDecisions { get; set; }
     public Guid? Model { get; set; }
     public CodePermission Permission { get; set; } = CodePermission.ReadOnly;
-    public CodeNetworkMode Network { get; set; } = CodeNetworkMode.Offline;
+    public CodeNetworkMode Network { get; set; } = CodeNetworkMode.Default;
     // Missing legacy JSON fields retain their original routing; CodeStore.New chooses Recommended.
     public CodeShellKind Shell { get; set; } = CodeShellKind.Direct;
     public string? ShellExecutable { get; set; }

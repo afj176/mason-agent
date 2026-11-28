@@ -3,9 +3,10 @@ using System.Text.Json;
 namespace Mason.Code;
 
 /// <summary>
-/// The internet setting: whether sandboxed commands in Auto and the web_fetch and web_search tools ask before each host,
-/// or have no internet. The computer's setting lives in network.json ({"mode":"ask"|"offline"}, ask when unset) and is
-/// what a new session starts with; /network changes one session. "Always" answers are approval rules with the tool
+/// The internet setting, for the computer (network.json, {"mode":"ask"|"offline"}) and for each session (/network).
+/// Unset, the default: sandboxed commands in Auto have no network, as before, and web_fetch/web_search ask per host.
+/// "ask": commands and the web tools both ask per host. "off": neither; the web group is not offered and Chat has no
+/// web tools. A new session starts with the computer's setting. "Always" answers are approval rules with the tool
 /// "network" and the exact host, one list per project, shared by the command relay and the web tools. Chat, which has
 /// no project, keeps its own computer-wide list in chat-hosts.json.
 /// </summary>
@@ -22,20 +23,36 @@ public static class CodeNetworkSettings
         try
         {
             var path = File_(root);
-            if (!File.Exists(path) || new FileInfo(path).Length > 4096) return CodeNetworkMode.Ask;
+            if (!File.Exists(path) || new FileInfo(path).Length > 4096) return CodeNetworkMode.Default;
             using var json = JsonDocument.Parse(File.ReadAllText(path));
-            return json.RootElement.TryGetProperty("mode", out var mode) && mode.GetString() == "offline" ? CodeNetworkMode.Offline : CodeNetworkMode.Ask;
+            return (json.RootElement.TryGetProperty("mode", out var mode) ? mode.GetString() : null) switch { "offline" => CodeNetworkMode.Offline, "ask" => CodeNetworkMode.Ask, _ => CodeNetworkMode.Default };
         }
-        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException or InvalidOperationException) { return CodeNetworkMode.Ask; }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException or InvalidOperationException) { return CodeNetworkMode.Default; }
     }
 
+    /// <summary>Saves the computer's setting; Default removes it, so the computer is back to the default.</summary>
     public static void SetComputer(string root, CodeNetworkMode mode)
     {
+        var path = File_(root);
+        if (mode == CodeNetworkMode.Default) { if (File.Exists(path)) File.Delete(path); return; }
         Directory.CreateDirectory(root);
-        var path = File_(root); var temp = path + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
+        var temp = path + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
         File.WriteAllText(temp, JsonSerializer.Serialize(new { mode = mode == CodeNetworkMode.Ask ? "ask" : "offline" }));
         File.Move(temp, path, true);
     }
+
+    /// <summary>Whether sandboxed commands in Auto may ask for a host: only with "ask".</summary>
+    public static bool CommandsAsk(CodeNetworkMode mode) => mode == CodeNetworkMode.Ask;
+    /// <summary>Whether web_fetch and web_search are offered: with "ask" and the default, never with "off".</summary>
+    public static bool WebOffered(CodeNetworkMode mode) => mode != CodeNetworkMode.Offline;
+
+    /// <summary>What a setting means, in one plain sentence.</summary>
+    public static string Describe(CodeNetworkMode mode) => mode switch
+    {
+        CodeNetworkMode.Ask => "Commands in Auto and web_fetch/web_search ask before each new host.",
+        CodeNetworkMode.Offline => "No internet: commands in Auto are offline and web_fetch/web_search are not offered.",
+        _ => "Default: commands in Auto are offline; web_fetch/web_search ask before each new host.",
+    };
 
     /// <summary>The hosts the user chose to always allow for this project. A rule names one host exactly.</summary>
     public static SortedSet<string> AlwaysAllowed(string root, string workspace) =>
@@ -70,10 +87,10 @@ public static class CodeNetworkSettings
         File.Move(temp, path, true);
     }
 
-    static string Name(CodeNetworkMode mode) => mode == CodeNetworkMode.Ask ? "ask" : "off";
+    static string Name(CodeNetworkMode mode) => mode switch { CodeNetworkMode.Ask => "ask", CodeNetworkMode.Offline => "off", _ => "default" };
 
-    /// <summary>/network in a session: ask and off choose for this session, default follows the computer, and
-    /// "computer ask" or "computer off" changes the computer's setting.</summary>
+    /// <summary>/network in a session: ask, off or default choose for this session, and "computer ask|off|default"
+    /// changes the computer's setting.</summary>
     public static string SessionCommand(string rest, CodeSession session, string root)
     {
         var words = rest.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -81,19 +98,18 @@ public static class CodeNetworkSettings
         {
             case "ask": session.Network = CodeNetworkMode.Ask; break;
             case "off": session.Network = CodeNetworkMode.Offline; break;
-            case "default": session.Network = Computer(root); break;
+            case "default": session.Network = CodeNetworkMode.Default; break;
             case "computer": return Command(string.Join(' ', words.Skip(1)), root);
             case null: break;
             default:
-                return "/network                 " + Help + "\n" +
-                       "/network ask             Ask before a sandboxed command or web_fetch/web_search reaches a new host over HTTPS\n" +
-                       "/network off             No internet in this session: commands in Auto are offline and the web tools are not offered\n" +
-                       "/network default         Follow the computer's setting\n" +
-                       "/network computer ask    Change the computer's setting (or: computer off)";
+                return "/network                      " + Help + "\n" +
+                       "/network default              Commands in Auto are offline; web_fetch/web_search ask before each new host\n" +
+                       "/network ask                  Commands in Auto and web_fetch/web_search ask before each new host\n" +
+                       "/network off                  No internet: commands are offline and the web tools are not offered\n" +
+                       "/network computer ask|off|default   The setting new sessions and Chat start with";
         }
-        var said = session.Network == CodeNetworkMode.Ask
-            ? "This session asks before each new host: sandboxed commands in Auto and web_fetch/web_search. An answer lasts for that request; Always keeps a host for this project."
-            : "This session has no internet: commands in Auto are offline and web_fetch/web_search are not offered.";
+        var said = "This session: " + Describe(session.Network);
+        if (session.Network != CodeNetworkMode.Offline) said += " An answer lasts for that request; Always keeps a host for this project.";
         said += "\nThe computer's setting is " + Name(Computer(root)) + ".";
         var allowed = AlwaysAllowed(root, session.Workspace);
         if (allowed.Count > 0) said += "\nAlways allowed in this project: " + string.Join(", ", allowed);
@@ -104,10 +120,9 @@ public static class CodeNetworkSettings
     public static string Command(string rest, string root)
     {
         var word = rest.Trim().ToLowerInvariant();
-        if (word is "ask" or "off") SetComputer(root, word == "ask" ? CodeNetworkMode.Ask : CodeNetworkMode.Offline);
-        else if (word.Length > 0) return "/network computer ask    New sessions and Chat ask before each new host over HTTPS\n/network computer off    New sessions and Chat have no internet";
-        return Computer(root) == CodeNetworkMode.Ask
-            ? "On this computer, new sessions and Chat ask before each new host. Only HTTPS to public hosts is reachable: not this computer, not your local network, not plain HTTP."
-            : "On this computer, new sessions and Chat have no internet. /network computer ask lets them ask for a host over HTTPS.";
+        if (word is "ask" or "off" or "default") SetComputer(root, word == "ask" ? CodeNetworkMode.Ask : word == "off" ? CodeNetworkMode.Offline : CodeNetworkMode.Default);
+        else if (word.Length > 0) return "/network computer default   New sessions: commands offline, web tools ask. Chat: web tools ask\n/network computer ask       New sessions: commands and web tools ask. Chat: web tools ask\n/network computer off       New sessions and Chat have no internet";
+        return "On this computer, new sessions start with: " + Describe(Computer(root)) + (Computer(root) == CodeNetworkMode.Offline ? " Chat has no web tools." : " In Chat, web_fetch/web_search ask before each new host.") +
+            "\nOnly HTTPS to public hosts is reachable: not this computer, not your local network, not plain HTTP.";
     }
 }
