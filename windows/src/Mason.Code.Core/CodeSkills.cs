@@ -40,7 +40,7 @@ public static partial class CodeSkills
             {
                 var parsed = CodeCustomization.Parse(name, text, path);
                 string? shadow = winners.TryGetValue(name, out var winner) ? winner : null;
-                if (shadow == null) winners[name] = path;
+                if (shadow == null) winners[name] = path[..^"/SKILL.md".Length];
                 found.Add(new(name, Describe(parsed), Clip(parsed.Body), Short(folder), path, shadow, !disabled.Contains(name)));
             }
         if (settingsRoot != null) foreach (var skill in BundleSkills(settingsRoot)) found.Add(skill with { Enabled = !disabled.Contains(skill.Name) });

@@ -11,7 +11,7 @@ try{
     bool help=args.Length>0&&args[0] is "--help" or "-h";
     if(args.Length>0&&args[0]=="theme"){Term.Start();Interactive.Theme(string.Join(' ',args[1..]));return 0;}
     if(!help&&(args.Length==0?!Console.IsInputRedirected:args[0]=="chat"||args[0].StartsWith("--",StringComparison.Ordinal))){
-        try{return await Interactive.Start(args.Length>0&&args[0]=="chat"?args[1..]:args);}
+        try{return args.Length>0&&args[0]=="chat"?await Interactive.StartChat(args[1..]):await Interactive.Start(args);}
         catch(Exception e) when(e is ArgumentException or DirectoryNotFoundException or UnauthorizedAccessException or InvalidDataException){Console.Error.WriteLine(e.Message);return 1;}
     }
     if(args.Length==0||help){
