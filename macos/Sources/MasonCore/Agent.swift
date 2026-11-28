@@ -278,6 +278,15 @@ public final class Agent {
         if steer { outcome.turn?.cancel() }
     }
 
+    /// Sends a session's reasoning level with its requests the way Chat sends it, in the client's extra body.
+    /// Each run gets its own client, so this never reaches another session's requests.
+    public static func applyReasoning(_ level: String?, to model: ChatModel) {
+        var inner: ChatModel = model
+        while let role = inner as? RoleModel { inner = role.base }
+        guard let client = inner as? OpenAIClient else { return }
+        for (name, value) in Chat.reasoningBody(level) { client.extraBody[name] = value }
+    }
+
     /// The follow-up handled next: a steering message first, else the oldest queued one.
     static func nextFollowUp(_ session: Session) -> FollowUp? {
         let pending = session.pendingInput ?? []
@@ -287,6 +296,7 @@ public final class Agent {
     /// Runs a request, then any follow-ups sent while it ran. "/queue" resumes follow-ups left from an earlier stop.
     /// A queued follow-up runs only after a request that completed; a steering one runs whatever happened.
     public func run(_ session: inout Session, request: String) async {
+        Agent.applyReasoning(session.reasoning, to: model)
         var input = request
         if request.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "/queue" {
             guard let next = Agent.nextFollowUp(session) else {

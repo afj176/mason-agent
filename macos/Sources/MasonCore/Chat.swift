@@ -171,11 +171,16 @@ public enum Chat {
     public static func extraBody(_ conversation: ChatConversation) -> [String: Any] {
         var body: [String: Any] = [:]
         if let limit = conversation.maxTokens, limit > 0 { body["max_tokens"] = limit }
-        if let level = conversation.reasoning, reasoningLevels.contains(level) {
-            body["chat_template_kwargs"] = ["enable_thinking": level != "off"]
-            if level == "off" { body["reasoning_effort"] = "none" }
-            body["thinking_budget_tokens"] = ["off": 0, "low": 512, "medium": 2048, "high": 8192][level] ?? 0
-        }
+        for (name, value) in reasoningBody(conversation.reasoning) { body[name] = value }
+        return body
+    }
+
+    /// The request fields for a reasoning level, shared by Chat and coding sessions. Empty for nil or "default".
+    public static func reasoningBody(_ level: String?) -> [String: Any] {
+        guard let level, reasoningLevels.contains(level) else { return [:] }
+        var body: [String: Any] = ["chat_template_kwargs": ["enable_thinking": level != "off"]]
+        if level == "off" { body["reasoning_effort"] = "none" }
+        body["thinking_budget_tokens"] = ["off": 0, "low": 512, "medium": 2048, "high": 8192][level] ?? 0
         return body
     }
 
