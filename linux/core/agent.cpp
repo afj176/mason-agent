@@ -6,6 +6,7 @@
 #include "planning.hpp"
 #include "roles.hpp"
 #include "bundles.hpp"
+#include "chat.hpp"
 #include "notes.hpp"
 
 #include <algorithm>
@@ -687,7 +688,14 @@ const FollowUp* next_follow_up(const std::vector<FollowUp>& pending) {
 }
 }  // namespace
 
+void Agent::apply_reasoning(const std::string& level, ChatModel& model) {
+    ChatModel* inner = &model;
+    while (auto* role = dynamic_cast<RoleModel*>(inner)) inner = &role->base();
+    if (auto* client = dynamic_cast<OpenAIClient*>(inner)) client->add_extra_body(chat::reasoning_body(level));
+}
+
 void Agent::run(Session& session, const std::string& request, const CancelToken& cancel) {
+    apply_reasoning(session.reasoning, model_);
     std::string input = request;
     if (to_lower(trim(request)) == "/queue") {
         const FollowUp* next = next_follow_up(session.pending_input);

@@ -69,6 +69,10 @@ Definition parse(const std::string& name, std::string text, const std::string& s
 std::optional<std::string> expand(const std::vector<Definition>& commands, const std::string& input);
 /// The request sent to the model: a custom command expanded, framed by the session agent's instructions.
 std::string prepare(const fs::path& home, const Session& session, const std::string& input);
+/// The text a new agent or command starts with: a description to fill in and a heading for the body.
+std::string template_text(const std::string& name, bool command);
+/// Makes .mason/agents/NAME.md or .mason/commands/NAME.md from the template and returns the file.
+fs::path create(const Workspace& workspace, const std::string& name, bool command);
 
 }  // namespace customization
 

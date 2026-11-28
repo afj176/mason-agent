@@ -118,6 +118,8 @@ std::string describe_tools(const ChatConversation& conversation, const ChatTools
 /// The request fields for a conversation's output limit and reasoning level. The reasoning fields are the ones
 /// llama.cpp reads; another server may ignore them.
 json extra_body(const ChatConversation& conversation);
+/// The request fields for a reasoning level, shared by Chat and coding sessions. Empty for "" or "default".
+json reasoning_body(const std::string& level);
 /// Sets a conversation's reasoning level ("default" clears it), output limit (0 clears it) and pinned reference.
 void configure(ChatConversation& conversation, const std::string& reasoning, int max_tokens, const std::string& reference);
 /// The text sent for one message: what was typed, followed by each attached file in a fenced block.

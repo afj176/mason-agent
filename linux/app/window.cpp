@@ -523,6 +523,11 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
             open_notes(!notes_open());
             return true;
         }
+        // Ctrl+Shift+M compacts the current session's conversation, as /compact does.
+        if ((key == GDK_KEY_m || key == GDK_KEY_M) && (state & chord) == chord && on_code) {
+            controller_.compact();
+            return true;
+        }
         if (key == GDK_KEY_Escape && notes_open() && notes_editing_.empty() && !notes_about_popover_.get_visible()) {
             open_notes(false);
             return true;
@@ -758,6 +763,10 @@ void MainWindow::refresh_sidebar() {
             row->set_name(item.id);
             // Right-click or the keyboard menu key deletes a session.
             auto menu = Gio::Menu::create();
+            // Compact works on the session it is chosen from, as /compact does on the current one.
+            auto compact_item = Gio::MenuItem::create("Compact Conversation", "row.compact");
+            compact_item->set_attribute_value("accel", Glib::Variant<Glib::ustring>::create("<Control><Shift>m"));
+            menu->append_item(compact_item);
             menu->append("Export Session…", "row.export");
             menu->append("Export a Sanitized Copy…", "row.sanitized");
             menu->append("Import a Session Into This Project…", "row.import");
@@ -765,6 +774,8 @@ void MainWindow::refresh_sidebar() {
             auto actions = Gio::SimpleActionGroup::create();
             const std::string id = item.id, named = item.title, folder = item.workspace;
             actions->add_action("delete", [this, id] { controller_.remove_session(id); });
+            // After the menu closes: selecting the session rebuilds this list, row and menu included.
+            actions->add_action("compact", [this, id] { Glib::signal_idle().connect_once([this, id] { controller_.select(id); controller_.compact(); }); });
             actions->add_action("export", [this, id, named] { choose_export(id, named, false); });
             actions->add_action("sanitized", [this, id, named] { choose_export(id, named, true); });
             actions->add_action("import", [this, folder] { choose_import(folder); });
@@ -1579,6 +1590,7 @@ void MainWindow::show_palette() {
     for (const std::string& folder : controller_.projects()) items.push_back({"project", fs::path(folder).filename().string(), "Project at " + folder, folder});
     for (const auto& [name, detail] : palette::commands()) items.push_back({"command", name, detail, name});
     if (const Session* current = controller_.session()) {
+        items.push_back({"action", "Compact Conversation", "Replace this session's conversation with a summary to free context (Ctrl+Shift+M)", "compact"});
         for (const Definition& command : customization::commands(controller_.home(), current->workspace)) {
             items.push_back({"command", "/" + command.name, command.description.empty() ? "Your command" : command.description, "/" + command.name});
         }
@@ -1614,7 +1626,7 @@ void MainWindow::show_palette() {
         while (Gtk::ListBoxRow* row = list->get_row_at_index(0)) list->remove(*row);
         *shown = palette::matches(items, entry->get_text());
         static const std::map<std::string, std::string> icons = {{"session", "utilities-terminal-symbolic"}, {"project", "folder-symbolic"}, {"file", "text-x-generic-symbolic"},
-                                                                 {"command", "system-run-symbolic"}, {"chat", "user-available-symbolic"}};
+                                                                 {"command", "system-run-symbolic"}, {"action", "system-run-symbolic"}, {"chat", "user-available-symbolic"}};
         for (const PaletteItem& item : *shown) {
             auto* line = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);
             line->set_margin(6);
@@ -1690,7 +1702,7 @@ void MainWindow::open_palette_item(const PaletteItem& item) {
     else if (item.kind == "command") {
         draft_.get_buffer()->set_text(item.value + " ");
         draft_.grab_focus();
-    }
+    } else if (item.kind == "action" && item.value == "compact") controller_.compact();
 }
 
 }  // namespace mason

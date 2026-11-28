@@ -621,6 +621,40 @@ static void test_undo_of_command_changes() {
     CHECK(second.read("calc.py") == "def add(a, b):\n    return a - b\n");
 }
 
+/// The core behind /agent new, /commands new, /reasoning and /theme light|dark|system.
+static void test_cli_parity() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    const fs::path agent = customization::create(workspace, "careful", false);
+    const fs::path command = customization::create(workspace, "ship", true);
+    CHECK(agent == box.project / ".mason/agents/careful.md" && command == box.project / ".mason/commands/ship.md");
+    CHECK(read_file(agent).rfind("---\ndescription: \n---\n\n# careful\n", 0) == 0);
+    CHECK(customization::agents(box.home, workspace.root()).size() == 1 && customization::commands(box.home, workspace.root())[0].name == "ship");
+    CHECK_THROWS(customization::create(workspace, "careful", false));
+    CHECK_THROWS(customization::create(workspace, "../out", true));
+    CHECK_THROWS(customization::create(workspace, "compact", true));
+
+    OpenAIClient client(ModelEndpoint{"http://127.0.0.1:9", "m", ""});
+    Agent::apply_reasoning("", client);
+    CHECK(!client.extra_body().contains("chat_template_kwargs"));
+    RoleModel role(client, "implementer");
+    Agent::apply_reasoning("off", role);
+    CHECK(client.extra_body()["reasoning_effort"] == "none" && client.extra_body()["thinking_budget_tokens"] == 0);
+    Agent::apply_reasoning("high", client);
+    CHECK(client.extra_body()["thinking_budget_tokens"] == 8192 && client.extra_body()["chat_template_kwargs"]["enable_thinking"] == true);
+
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root());
+    session.reasoning = "low";
+    store.save(session);
+    CHECK(SessionStore(box.home).sessions()[0].reasoning == "low");
+
+    CHECK(theme::saved_mode(box.home) == "system");
+    theme::save_mode(box.home, "dark");
+    CHECK(theme::saved_mode(box.home) == "dark" && read_file(box.home / "appearance") == "dark");
+    CHECK_THROWS(theme::save_mode(box.home, "kiln"));
+}
+
 static void test_custom_agents_and_commands() {
     Sandbox box;
     box.write(".claude/commands/review.md", "---\ndescription: Review one file\n---\nReview $1 for $2. All: $ARGUMENTS");
@@ -4167,7 +4201,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"repeat stop", test_repeat_stop}, {"run endings", test_run_endings}, {"scenes", test_scenes}, {"moments", test_moments},{"stuck models and the time limit", test_stuck_and_time_limit},{"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"skills", test_skills}, {"the web tools", test_web}, {"the tool catalogue", test_tool_catalogue}, {"chat tools", test_chat_tools}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"CLI parity", test_cli_parity}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"skills", test_skills}, {"the web tools", test_web}, {"the tool catalogue", test_tool_catalogue}, {"chat tools", test_chat_tools}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };
     for (const auto& [name, function] : tests) {

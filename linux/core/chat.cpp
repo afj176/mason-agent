@@ -197,7 +197,12 @@ namespace chat {
 json extra_body(const ChatConversation& conversation) {
     json body = json::object();
     if (conversation.max_tokens > 0) body["max_tokens"] = conversation.max_tokens;
-    const std::string& level = conversation.reasoning;
+    body.update(reasoning_body(conversation.reasoning));
+    return body;
+}
+
+json reasoning_body(const std::string& level) {
+    json body = json::object();
     if (level == "off" || level == "low" || level == "medium" || level == "high") {
         body["chat_template_kwargs"] = {{"enable_thinking", level != "off"}};
         if (level == "off") body["reasoning_effort"] = "none";

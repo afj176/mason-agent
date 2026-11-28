@@ -223,8 +223,6 @@ const theme::Family*& current_family() {
     return chosen;
 }
 
-fs::path choice_file() { return mason::data_home() / "appearance"; }
-
 void apply_palette() {
     AdwStyleManager* manager = adw_style_manager_get_default();
     if (adw_style_manager_get_high_contrast(manager)) palette()->load_from_data(kHighContrast);
@@ -315,14 +313,8 @@ std::string palette_css(const theme::Family& chosen, bool dark) {
 }
 
 Appearance appearance() {
-    try {
-        const std::string saved = mason::trim(mason::read_file(choice_file()));
-        if (saved == "light") return Appearance::Light;
-        if (saved == "dark") return Appearance::Dark;
-    } catch (const std::exception&) {
-        // Nothing chosen yet.
-    }
-    return Appearance::System;
+    const std::string saved = theme::saved_mode(mason::data_home());
+    return saved == "light" ? Appearance::Light : saved == "dark" ? Appearance::Dark : Appearance::System;
 }
 
 sigc::signal<void()>& appearance_changed() {
@@ -332,8 +324,7 @@ sigc::signal<void()>& appearance_changed() {
 
 void set_appearance(Appearance choice) {
     try {
-        fs::create_directories(mason::data_home());
-        mason::write_file_atomic(choice_file(), choice == Appearance::Light ? "light" : choice == Appearance::Dark ? "dark" : "system");
+        theme::save_mode(mason::data_home(), choice == Appearance::Light ? "light" : choice == Appearance::Dark ? "dark" : "system");
     } catch (const std::exception&) {
         // The choice still applies to this run.
     }

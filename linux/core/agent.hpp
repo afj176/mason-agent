@@ -115,6 +115,9 @@ public:
     /// Puts back every file the latest request changed, whether an edit tool or a command changed it. A file changed
     /// again since is left alone and reported. Returns nothing when there is no such request.
     static std::optional<UndoResult> undo_latest(Session& session, SessionStore& store, bool redo = false);
+    /// Sends a session's reasoning level with its requests the way Chat sends it, in the client's extra body.
+    /// Each run gets its own client, so this never reaches another session's requests.
+    static void apply_reasoning(const std::string& level, ChatModel& model);
     /// A tool call without a result would make the next request invalid for the model, so calls that were cut short are closed.
     static void close_open_calls(Session& session);
 

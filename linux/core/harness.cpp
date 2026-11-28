@@ -199,6 +199,25 @@ Definition parse(const std::string& name, std::string text, const std::string& s
     return definition;
 }
 
+std::string template_text(const std::string& name, bool command) {
+    return command ? "---\ndescription: \n---\n\n# " + name + "\n\nWhat Mason should do. $ARGUMENTS is what you type after /" + name + ".\n"
+                   : "---\ndescription: \n---\n\n# " + name + "\n\nStanding instructions Mason follows while this agent is in use.\n";
+}
+
+fs::path create(const Workspace& workspace, const std::string& name, bool command) {
+    const std::string kind = command ? "command" : "agent";
+    const std::string wanted = trim(name);
+    if (!valid_name(wanted)) throw Error(std::string(command ? "A " : "An ") + kind + " name starts with a letter or digit and has up to 48 letters, digits, '.', '_' or '-'.");
+    if (std::find(kReserved.begin(), kReserved.end(), to_lower(wanted)) != kReserved.end()) throw Error(wanted + " is a built-in command. Choose another name.");
+    const std::string relative = ".mason/" + kind + "s/" + wanted + ".md";
+    std::error_code failure;
+    for (const auto& entry : fs::directory_iterator(fs::path(workspace.root()) / (".mason/" + kind + "s"), failure)) {
+        if (to_lower(entry.path().filename().string()) == to_lower(wanted) + ".md") throw Error(relative + " already exists.");
+    }
+    workspace.write(relative, template_text(wanted, command));
+    return workspace.resolve(relative);
+}
+
 std::optional<std::string> expand(const std::vector<Definition>& commands, const std::string& input) {
     const size_t start = input.find_first_not_of(" \t\r\n");
     if (start == std::string::npos || input[start] != '/') return std::nullopt;

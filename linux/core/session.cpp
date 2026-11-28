@@ -151,6 +151,7 @@ json to_json(const Session& session) {
                    {"turns", turns}, {"promptTokens", session.prompt_tokens}, {"pendingNote", session.pending_note}};
     if (!session.suggested_note.empty()) result["suggestedNote"] = session.suggested_note;
     if (!session.agent.empty()) result["agent"] = session.agent;
+    if (!session.reasoning.empty()) result["reasoning"] = session.reasoning;
     if (!session.network.empty()) result["network"] = session.network;
     if (session.compactions > 0) result["compactions"] = session.compactions;
     if (!session.pending_input.empty()) {
@@ -196,6 +197,7 @@ Session session_from_json(const json& value) {
     session.pending_note = value.value("pendingNote", "");
     session.suggested_note = value.value("suggestedNote", "");
     session.agent = value.value("agent", "");
+    session.reasoning = value.value("reasoning", "");
     session.compactions = value.value("compactions", 0);
     for (const json& item : value.value("pendingInput", json::array())) {
         if (item.is_object()) session.pending_input.push_back({item.value("id", new_id()), item.value("text", ""), item.value("steer", false)});

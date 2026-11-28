@@ -42,4 +42,10 @@ const Family& saved(const fs::path& data_home);
 /// Saves the family into appearance.json, keeping every other value already in the file.
 void save(const fs::path& data_home, const Family& family);
 
+/// Light, dark or following the system: "light", "dark" or "system", kept in the file "appearance" in the data
+/// folder, which the app reads at start.
+std::string saved_mode(const fs::path& data_home);
+/// Saves "light", "dark" or "system"; anything else is refused.
+void save_mode(const fs::path& data_home, const std::string& mode);
+
 }  // namespace mason::theme

@@ -82,6 +82,9 @@ public:
     const ModelEndpoint& endpoint() const { return endpoint_; }
     /// Extra fields for the request body, set by a caller that wants an output limit or a reasoning level.
     void set_extra_body(json fields) { extra_body_ = std::move(fields); }
+    /// Adds fields to the extra body, keeping the ones already there (such as the generation settings).
+    void add_extra_body(const json& fields) { extra_body_.update(fields); }
+    const json& extra_body() const { return extra_body_; }
     ModelReply complete(const std::vector<ChatMessage>& messages, const std::vector<ToolSpec>& tools,
                         const std::function<void(const std::string&)>& on_text, const CancelToken& cancel) override;
     /// llama.cpp reports the loaded context size at /props. Other servers do not, and then compaction stays manual.
