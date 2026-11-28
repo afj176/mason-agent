@@ -60,6 +60,8 @@ public enum BrowserCheck {
           var q = new URLSearchParams(location.search), out = { steps: [], errors: [], title: '', text: '' }, f = document.getElementById('f');
           function done() { document.getElementById('mason-result').textContent = 'MASON:' + btoa(unescape(encodeURIComponent(JSON.stringify(out)))) + ':MASON'; }
           function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+          // Requests the page has in flight (fetch and XMLHttpRequest); a check after a click or fill waits for them.
+          function track() { var w = f.contentWindow; if (!w || w.__masonPending !== undefined) return; w.__masonPending = 0; var of = w.fetch; if (of) w.fetch = function () { w.__masonPending++; return of.apply(this, arguments).finally(function () { w.__masonPending--; }); }; var X = w.XMLHttpRequest; if (X) { var os = X.prototype.send; X.prototype.send = function () { w.__masonPending++; this.addEventListener('loadend', function () { w.__masonPending--; }); return os.apply(this, arguments); }; } } async function settle() { var t = Date.now(); await sleep(50); while (((f.contentWindow || {}).__masonPending || 0) > 0 && Date.now() - t < 15000) await sleep(50); }
           try {
             var steps = JSON.parse(decodeURIComponent(escape(atob(q.get('steps') || 'W10='))));
             var captured = null;
@@ -68,7 +70,7 @@ public enum BrowserCheck {
             function amount(v) { var t = unlabel(v).replace(/[ ]/g, ''); return /^-?[$]?-?[0-9][0-9,]*([.][0-9]+)?$/.test(t) ? cents(t) : null; }
             function hasId(v, prefix) { if (v.length === 0 || v.length > 200) return false; var id = prefix.length > 0 && v.indexOf(prefix) === 0 ? v : unlabel(v); return id.indexOf(prefix) === 0 && id.length > prefix.length; }
             if (steps.length && steps[0].action === 'viewport') { f.style.width = Number(steps[0].width) + 'px'; steps.shift(); }
-            await new Promise(function (r) { f.onload = r; f.src = q.get('page'); });
+            await new Promise(function (r) { f.onload = r; f.src = q.get('page'); }); track();
             await sleep(300);
             function doc() { return f.contentDocument; }
             function find(s) {
@@ -82,7 +84,7 @@ public enum BrowserCheck {
               var s = steps[i], r = { action: s.action, ok: false, detail: '' };
               try {
                 var body = function () { return String(doc().body.innerText || ''); };
-                if (s.action === 'click') { var e = find(s); if (!e) throw new Error('nothing on the page matches'); e.click(); await sleep(s.wait || 300); r.ok = true; }
+                if (s.action === 'click') { var e = find(s); if (!e) throw new Error('nothing on the page matches'); e.click(); await sleep(s.wait || 300); await settle(); r.ok = true; }
                 else if (s.action === 'fill') {
                   var t = find(s); if (!t) throw new Error('nothing on the page matches');
                   if (t.tagName === 'LABEL' && t.control) t = t.control;
@@ -104,7 +106,7 @@ public enum BrowserCheck {
                   } else
                   if (op === 'reload') {
                     out.errors = out.errors.concat((f.contentWindow.__masonErrors || []).slice(0, 20));
-                    await new Promise(function (done) { f.onload = done; f.contentWindow.location.reload(); });
+                    await new Promise(function (done) { f.onload = done; f.contentWindow.location.reload(); }); track();
                     await sleep(300); r.ok = true;
                   } else if (op === 'click' || op === 'double_click' || op === 'click_if_enabled' || op === 'fill') {
                     var n = nodes()[0]; if (!n) throw new Error('nothing visible matches');
@@ -112,7 +114,7 @@ public enum BrowserCheck {
                     else if (op === 'double_click') { n.click(); n.click(); n.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); }
                     else if (op === 'click_if_enabled') { if (!n.disabled) n.click(); }
                     else { n.focus(); n.value = expected; n.dispatchEvent(new Event('input', { bubbles: true })); n.dispatchEvent(new Event('change', { bubbles: true })); n.blur(); }
-                    await sleep(150); r.ok = true;
+                    await sleep(150); await settle(); r.ok = true;
                   } else {
                     var started = Date.now(), actual = '', count = 0;
                     while (true) {
