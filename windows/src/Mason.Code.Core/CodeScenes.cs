@@ -24,7 +24,7 @@ public static partial class CodeScenes
     public static CodeSceneKind KindOf(string tool) => tool switch
     {
         "read_file" or "open_file" or "read_lines" or "list_files" or "search_text" or "search_next" or "semantic_search" or "repository_map"
-            or "inspect_symbol" or "navigate_code" or "read_documentation" or "read_skill" or "git_status" or "mcp_read" or "mcp_resources" => CodeSceneKind.Read,
+            or "inspect_symbol" or "navigate_code" or "read_documentation" or "read_skill" or "git_status" or "mcp_read" or "mcp_resources" or "web_fetch" or "web_search" => CodeSceneKind.Read,
         "edit_file" or "apply_edits" or "replace_file" or "create_file" or "create_directory" => CodeSceneKind.Edit,
         "run_command" or "run_shell" or "start_job" or "poll_job" or "stop_job" or "start_terminal" or "terminal_input" or "terminal_status"
             or "terminal_stop" or "run_workflow" or "verify_acceptance" => CodeSceneKind.Command,

@@ -75,11 +75,15 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
     public CodeRepositorySearch Search {get;}=new(scope);
     public int WorkerCalls {get;set;}
     public HashSet<string> Enabled {get;}=new(StringComparer.Ordinal);
-    readonly Lazy<string[]> skills=new(()=>Directory.Exists(scope.Resolve(".mason/skills"))?
-        scope.Files(".mason/skills",200).Files.Where(p=>Regex.IsMatch(p,@"^\.mason/skills/[\w-]+/SKILL\.md$")).Select(p=>p.Split('/')[2]).ToArray():[]);
-    Dictionary<string,string> BundleSkills()=>settingsRoot==null?[]:CodeBundles.Enabled(settingsRoot).SelectMany(b=>b.Skills.Select(s=>(key:b.Name+"/"+s.Key,body:s.Value))).ToDictionary(s=>s.key,s=>s.body);
-    public string[] Skills=>skills.Value.Concat(BundleSkills().Keys).ToArray();
-    public string Skill(string name)=>BundleSkills().TryGetValue(name,out var body)?body:skills.Value.Contains(name)?scope.Read($".mason/skills/{name}/SKILL.md").Content:throw new ArgumentException("Unknown enabled skill.");
+    readonly Lazy<IReadOnlyList<CodeSkill>> skills=new(()=>CodeSkills.List(settingsRoot,scope.Root));
+    /// <summary>Every skill for this project, hidden and switched-off ones included.</summary>
+    public IReadOnlyList<CodeSkill> SkillList=>skills.Value;
+    /// <summary>The skills the agent may read: not hidden, not switched off.</summary>
+    public string[] Skills=>skills.Value.Where(s=>!s.Hidden&&s.Enabled).Select(s=>s.Name).ToArray();
+    public string Skill(string name)=>CodeSkills.Read(skills.Value,name);
+    /// <summary>Hosts answered in this request: allowed ones are not asked again, denied ones stay denied.</summary>
+    public HashSet<string> WebAllowed {get;}=new(StringComparer.Ordinal);
+    public HashSet<string> WebDenied {get;}=new(StringComparer.Ordinal);
     public void Enable(string group,CodeSession session)
     {
         bool auto=session.Mode=="build" && session.Permission==CodePermission.Auto;
@@ -90,6 +94,9 @@ internal sealed class CodeRunServices(CodeWorkspace scope,CancellationToken life
             "jobs" when auto=>["start_job","poll_job","stop_job","start_terminal","terminal_input","terminal_status","terminal_stop"],
             "browser" when auto=>["computer_use"],
             "mcp" when auto=>["mcp_tools","mcp_call","mcp_resources","mcp_read"],
+            // Reading the web changes nothing here, so it is offered in every mode; every new host still asks.
+            "web" when session.Network==CodeNetworkMode.Ask=>["web_fetch","web_search"],
+            "web"=>throw new UnauthorizedAccessException("This session has no internet. The user can turn it on with /network ask."),
             _=>throw new UnauthorizedAccessException("Capability is unavailable in this session mode.")
         };
         Enabled.UnionWith(tools);
