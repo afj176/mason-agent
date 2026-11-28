@@ -23,6 +23,26 @@ public enum Customization {
     public static func agents(home: URL, workspace: String) -> [Definition] { load(home, workspace, agentFolders, "agents") }
     public static func commands(home: URL, workspace: String) -> [Definition] { load(home, workspace, commandFolders, "commands") }
 
+    /// The text a new agent or command starts with: a description to fill in and a heading for the body.
+    public static func template(name: String, command: Bool) -> String {
+        command
+            ? "---\ndescription: \n---\n\n# \(name)\n\nWhat Mason should do. $ARGUMENTS is what you type after /\(name).\n"
+            : "---\ndescription: \n---\n\n# \(name)\n\nStanding instructions Mason follows while this agent is in use.\n"
+    }
+
+    /// Makes `.mason/agents/NAME.md` or `.mason/commands/NAME.md` from the template and returns the file.
+    @discardableResult
+    public static func create(_ name: String, command: Bool, workspace: Workspace) throws -> URL {
+        let kind = command ? "command" : "agent"
+        guard validName(name) else { throw MasonError("A\(command ? "" : "n") \(kind) name starts with a letter or digit and has up to 48 letters, digits, '.', '_' or '-'.") }
+        guard !reserved.contains(name.lowercased()) else { throw MasonError("\(name) is a built-in command. Choose another name.") }
+        let relative = ".mason/\(kind)s/\(name).md"
+        let existing = ((try? FileManager.default.contentsOfDirectory(atPath: workspace.root.appendingPathComponent(".mason/\(kind)s").path)) ?? [])
+        guard !existing.contains(where: { $0.lowercased() == name.lowercased() + ".md" }) else { throw MasonError("\(relative) already exists.") }
+        try workspace.write(relative, template(name: name, command: command))
+        return try workspace.resolve(relative)
+    }
+
     static func validName(_ name: String) -> Bool {
         guard let first = name.unicodeScalars.first, name.count <= 48 else { return false }
         let letters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")

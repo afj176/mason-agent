@@ -45,26 +45,183 @@ public struct ProjectWorkflows {
     }
 }
 
-/// Instructions a project keeps for particular kinds of work, each in `.mason/skills/<name>/SKILL.md`
-/// (also `.claude/skills` and `.agents/skills`). The agent sees their names and reads one when it needs it.
+/// One skill as the lists show it: where it came from, whether it is switched on, and whether another skill of the
+/// same name hides it.
+public struct SkillEntry: Equatable {
+    public let name: String
+    /// The front matter's description, or "No description".
+    public let description: String
+    public let body: String
+    /// The short source: project, .claude, .agents or "bundle NAME".
+    public let origin: String
+    /// Where its SKILL.md is, relative to the project for a project skill (.mason/skills/NAME/SKILL.md).
+    public let source: String
+    /// The SKILL.md file itself.
+    public let file: URL
+    /// The skill that hides this one, as "Hidden by .mason/skills/NAME", or nil when this one is used.
+    public let hiddenBy: String?
+    /// False when the project's policy switches it off.
+    public let enabled: Bool
+    public var shadowed: Bool { hiddenBy != nil }
+    /// The word the CLI shows: on, off or hidden.
+    public var state: String { shadowed ? "hidden" : enabled ? "on" : "off" }
+    var definition: Definition { Definition(name: name, description: description, body: body, source: source, fields: [:]) }
+}
+
+/// Instructions for particular kinds of work, each in `NAME/SKILL.md`: the project's `.mason/skills`, then
+/// `.claude/skills` and `.agents/skills`, then the skills of installed bundles. The first of a name wins; the others are
+/// kept in the list as hidden. The agent sees the enabled ones' names and descriptions and reads one when it needs it.
 public enum Skills {
     static let folders = [".mason/skills", ".claude/skills", ".agents/skills"]
+    static let origins = ["project", ".claude", ".agents"]
+    public static let maxPerFolder = 64, maxFileBytes = 256 * 1024
+    public static let noDescription = "No description"
 
-    /// The project's skills, then those of installed bundles. A project skill wins over a bundle's of the same name.
-    public static func list(_ workspace: Workspace, home: URL = DataHome.url) -> [Definition] {
-        var found: [String: Definition] = [:]
-        for folder in folders {
+    /// A skill's name: a letter or digit, then up to 47 letters, digits, '.', '_' or '-'.
+    public static func validName(_ name: String) -> Bool { name.range(of: #"^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$"#, options: .regularExpression) != nil }
+
+    /// A parsed SKILL.md. The name is the folder's; the description comes from the front matter only.
+    static func parse(name: String, text: String) -> (description: String, body: String) {
+        let parsed = Customization.parse(name: name, text: text, source: "")
+        let described = (parsed.fields["description"] ?? "").trimmingCharacters(in: .whitespaces)
+        return (described.isEmpty ? noDescription : String(described.prefix(300)), parsed.body)
+    }
+
+    /// Every skill, hidden ones included, in precedence order.
+    public static func all(_ workspace: Workspace, home: URL = DataHome.url) -> [SkillEntry] {
+        let disabled = Set((Policies.load(home: home, workspace: workspace.root.path)?.disabledSkills ?? []).map { $0.lowercased() })
+        var found: [SkillEntry] = []
+        var winners: [String: String] = [:]
+        func add(name: String, text: String, origin: String, source: String, file: URL) {
+            let key = name.lowercased()
+            let parsed = parse(name: name, text: text)
+            found.append(SkillEntry(name: name, description: parsed.description, body: parsed.body, origin: origin, source: source, file: file,
+                                    hiddenBy: winners[key].map { "Hidden by " + $0 }, enabled: !disabled.contains(key)))
+            if winners[key] == nil { winners[key] = origin.hasPrefix("bundle ") ? origin + "/" + name : (source as NSString).deletingLastPathComponent }
+        }
+        for (index, folder) in folders.enumerated() {
             let root = workspace.root.appendingPathComponent(folder)
-            let names = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).sorted().prefix(64)
-            for name in names where Customization.validName(name) && found[name.lowercased()] == nil {
+            let names = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).filter(validName).sorted { $0.lowercased() < $1.lowercased() }.prefix(maxPerFolder)
+            for name in names {
                 let relative = "\(folder)/\(name)/SKILL.md"
-                // Read through the workspace, so a link out of the project or an oversized file is refused.
-                guard let text = try? workspace.read(relative) else { continue }
-                found[name.lowercased()] = Customization.parse(name: name, text: text, source: relative)
+                // Read through the workspace, so a link out of the project is refused.
+                guard let data = try? workspace.data(relative), data.count <= maxFileBytes, let text = try? workspace.read(relative) else { continue }
+                add(name: name, text: text, origin: origins[index], source: relative, file: root.appendingPathComponent(name).appendingPathComponent("SKILL.md"))
             }
         }
-        for skill in Bundles.skills(home: home) where found[skill.name.lowercased()] == nil { found[skill.name.lowercased()] = skill }
-        return found.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        for bundle in Bundles.list(home: home) {
+            let root = bundle.folder.appendingPathComponent("skills")
+            let names = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).filter(validName).sorted { $0.lowercased() < $1.lowercased() }.prefix(maxPerFolder)
+            for name in names {
+                let file = root.appendingPathComponent(name).appendingPathComponent("SKILL.md")
+                guard let data = try? Data(contentsOf: file), data.count <= maxFileBytes else { continue }
+                add(name: name, text: String(decoding: data, as: UTF8.self), origin: "bundle " + bundle.name, source: "bundle \(bundle.name) \(bundle.version)", file: file)
+            }
+        }
+        return found
+    }
+
+    /// The skills the agent may use: each name once, the winner of its name, and not switched off.
+    public static func list(_ workspace: Workspace, home: URL = DataHome.url) -> [Definition] {
+        all(workspace, home: home).filter { !$0.shadowed && $0.enabled }.sorted { $0.name.lowercased() < $1.name.lowercased() }.map(\.definition)
+    }
+
+    /// The skill a name means: the one that wins that name.
+    public static func named(_ name: String, in workspace: Workspace, home: URL = DataHome.url) -> SkillEntry? {
+        all(workspace, home: home).first { !$0.shadowed && $0.name.lowercased() == name.lowercased() }
+    }
+
+    /// The lines the system prompt lists the enabled skills with.
+    public static func promptLines(_ skills: [Definition]) -> String {
+        skills.map { "- \($0.name): \($0.description)" }.joined(separator: "\n") + "\nCall read_skill with the name before doing work a skill covers."
+    }
+
+    /// What read_skill returns, or the reason it refuses.
+    public static func read(_ name: String, workspace: Workspace, home: URL = DataHome.url) throws -> String {
+        let everything = all(workspace, home: home)
+        guard let skill = everything.first(where: { !$0.shadowed && $0.name.lowercased() == name.lowercased() }) else {
+            throw MasonError("No skill named \(name). Skills: " + everything.filter { !$0.shadowed && $0.enabled }.map(\.name).joined(separator: ", "))
+        }
+        guard skill.enabled else { throw MasonError("The skill \(skill.name) is switched off for this project.") }
+        return "Skill \(skill.name) (\(skill.source)):\n" + skill.body
+    }
+
+    /// The text a new skill starts with.
+    public static func template(name: String, description: String) -> String {
+        "---\nname: \(name)\ndescription: \(description)\n---\n\n# \(name)\n\n## When to use\n\n## Steps\n\n"
+    }
+
+    /// Makes `.mason/skills/NAME/SKILL.md` from the template and returns the file.
+    @discardableResult
+    public static func create(_ name: String, description: String = "", workspace: Workspace) throws -> URL {
+        guard validName(name) else { throw MasonError("A skill name starts with a letter or digit and has up to 48 letters, digits, '.', '_' or '-'.") }
+        let existing = ((try? FileManager.default.contentsOfDirectory(atPath: workspace.root.appendingPathComponent(".mason/skills").path)) ?? [])
+        guard !existing.contains(where: { $0.lowercased() == name.lowercased() }) else { throw MasonError("A skill named \(name) already exists in .mason/skills.") }
+        let described = description.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        let relative = ".mason/skills/\(name)/SKILL.md"
+        try workspace.write(relative, template(name: name, description: described))
+        return try workspace.resolve(relative)
+    }
+
+    /// Switches a skill on or off for this project through its policy's disabledSkills.
+    public static func set(_ name: String, on: Bool, workspace: Workspace, home: URL = DataHome.url) throws -> String {
+        let everything = all(workspace, home: home)
+        guard let skill = everything.first(where: { $0.name.lowercased() == name.lowercased() }) else { throw MasonError("No skill named \(name). /skills lists them.") }
+        try Policies.update(home: home, workspace: workspace) { policy in
+            var names = (policy.disabledSkills ?? []).filter { $0.lowercased() != skill.name.lowercased() }
+            if !on { names.append(skill.name) }
+            policy.disabledSkills = names.isEmpty ? nil : names.sorted()
+        }
+        return "\(skill.name) is \(on ? "on" : "off") for this project."
+    }
+
+    /// The rows /skills prints.
+    public static func listing(_ workspace: Workspace, home: URL = DataHome.url) -> String {
+        let everything = all(workspace, home: home)
+        guard !everything.isEmpty else { return "No skills yet. /skills new NAME makes one in .mason/skills." }
+        let width = min(28, max(12, everything.map(\.name.count).max() ?? 12))
+        return everything.map { skill in
+            skill.name.padding(toLength: width, withPad: " ", startingAt: 0) + "  " + skill.state.padding(toLength: 6, withPad: " ", startingAt: 0) + "  "
+                + skill.origin.padding(toLength: 14, withPad: " ", startingAt: 0) + "  " + (skill.hiddenBy ?? skill.description)
+        }.joined(separator: "\n")
+    }
+
+    public static let usage = """
+        /skills                     Every skill: on, off or hidden, where it comes from and what it is for
+        /skills show NAME           The path and the whole SKILL.md
+        /skills new NAME [about]    Make .mason/skills/NAME/SKILL.md and open it
+        /skills on NAME · off NAME  Switch a skill on or off for this project
+        /skill NAME [request]       Run a request with the skill
+        """
+
+    /// The /skills command, shared by the command line and the app. `new` returns the new file's path as its last line.
+    public static func command(_ rest: String, workspace: Workspace, home: URL = DataHome.url) throws -> String {
+        let words = rest.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true).map(String.init)
+        guard let verb = words.first?.lowercased() else { return listing(workspace, home: home) }
+        let name = words.count > 1 ? words[1] : ""
+        switch verb {
+        case "show":
+            guard !name.isEmpty else { throw MasonError("Use /skills show NAME.") }
+            guard let skill = all(workspace, home: home).first(where: { $0.name.lowercased() == name.lowercased() }) else { throw MasonError("No skill named \(name). /skills lists them.") }
+            let text = (try? String(contentsOf: skill.file, encoding: .utf8)) ?? skill.body
+            return skill.file.path + "\n\n" + text
+        case "new":
+            guard !name.isEmpty else { throw MasonError("Use /skills new NAME [description].") }
+            let file = try create(name, description: words.count > 2 ? words[2] : "", workspace: workspace)
+            return "Made " + file.path
+        case "on", "off":
+            guard !name.isEmpty else { throw MasonError("Use /skills \(verb) NAME.") }
+            return try set(name, on: verb == "on", workspace: workspace, home: home)
+        default:
+            return usage
+        }
+    }
+
+    /// The request /skill NAME REQUEST sends: the skill's body in front of the request.
+    public static func request(_ name: String, request: String, workspace: Workspace, home: URL = DataHome.url) throws -> String {
+        guard let skill = named(name, in: workspace, home: home) else { throw MasonError("No skill named \(name). /skills lists them.") }
+        guard skill.enabled else { throw MasonError("The skill \(skill.name) is switched off for this project.") }
+        return "Follow the skill \(skill.name):\n\n\(skill.body)\n\nRequest: \(request)"
     }
 }
 
@@ -297,7 +454,7 @@ extension Agent {
         if Bundles.hasDocuments(home: home, workspace: workspace) {
             tools.append(ToolSpec(name: "read_documentation", description: "Look something up in the documentation that comes with this project (.mason/docs) and with the bundles the user installed. Give a few words; it returns the sections that mention them, each with where it came from, so you can cite it.", parameters: schema(["query": text], required: ["query"])))
         }
-        if !Skills.list(workspace, home: home).isEmpty {
+        if !Skills.all(workspace, home: home).isEmpty {
             tools.append(ToolSpec(name: "read_skill", description: "Read the project's instructions for one kind of work, by skill name.", parameters: schema(["name": text], required: ["name"])))
         }
         return tools
@@ -512,11 +669,7 @@ extension Agent {
             return (.completed, Bundles.read(text("query") ?? "", home: home, workspace: workspace))
 
         case "read_skill":
-            let skills = Skills.list(workspace, home: home)
-            guard let name = text("name"), let skill = skills.first(where: { $0.name.lowercased() == name.lowercased() }) else {
-                throw MasonError("No skill named \(text("name") ?? ""). Skills: " + skills.map(\.name).joined(separator: ", "))
-            }
-            return (.completed, "Skill \(skill.name) (\(skill.source)):\n" + skill.body)
+            return (.completed, try Skills.read(text("name") ?? "", workspace: workspace, home: home))
 
         default:
             return nil
@@ -534,6 +687,7 @@ extension Agent {
         ("workflows", "the project's named workflows and skills", ["read_skill", "run_workflow"]),
         ("jobs", "background programs and terminals", ["start_job", "poll_job", "stop_job", "start_terminal", "terminal_input", "terminal_status", "terminal_stop"]),
         ("mcp", "the user's MCP servers", ["mcp_tools", "mcp_call", "mcp_resources", "mcp_read"]),
+        ("web", "reading a web page and searching the web over HTTPS; each new host asks the user first", ["web_fetch", "web_search"]),
     ]
 
     static func group(of tool: String) -> String? { toolGroups.first { $0.tools.contains(tool) }?.name }

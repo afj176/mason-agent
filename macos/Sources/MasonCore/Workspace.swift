@@ -19,6 +19,9 @@ public struct MasonError: Error, CustomStringConvertible, LocalizedError {
     public var modelUnavailable = false
     public init(_ description: String) { self.description = description }
     public static func unavailable(_ description: String) -> MasonError { var error = MasonError(description); error.modelUnavailable = true; return error }
+    /// The HTTP status the model server answered with, when it answered with an error.
+    public var httpStatus: Int?
+    public static func http(_ status: Int, _ description: String) -> MasonError { var error = unavailable(description); error.httpStatus = status; return error }
     /// True when a path was rejected: outside the project, absolute, or naming excluded content.
     public var invalidPath = false
     static func rejected(_ description: String) -> MasonError { var error = MasonError(description); error.invalidPath = true; return error }

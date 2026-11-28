@@ -313,6 +313,8 @@ extension AppModel {
                 case "/roles", "/role": notice = try Roles.command(rest, home: home)
                 case "/policy": notice = try Policies.command(rest, workspace: workspace, home: home)
                 case "/bundle", "/bundles": notice = try Bundles.command(rest, home: home)
+                case "/skills": notice = try Skills.command(rest, workspace: workspace, home: home)
+                case "/tools": notice = try ToolCatalogue.command(rest, workspace: workspace, home: home)
                 case "/notes", "/note":
                     notice = try ProjectNotes.command(ProjectNotes.arguments(name, rest), workspace: workspace, home: home)
                     reloadNotes()

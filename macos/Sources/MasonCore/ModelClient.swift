@@ -237,7 +237,7 @@ final class EventStream: NSObject, URLSessionDataDelegate, @unchecked Sendable {
         }
         guard status == 200 else {
             let detail = String(decoding: errorBody, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            pending.resume(throwing: MasonError.unavailable("The model server returned HTTP \(status)." + (detail.isEmpty ? "" : " " + String(detail.prefix(600)))))
+            pending.resume(throwing: MasonError.http(status, "The model server returned HTTP \(status)." + (detail.isEmpty ? "" : " " + String(detail.prefix(600)))))
             return
         }
         if !buffer.isEmpty, let text = try? assembler.feed(line: String(decoding: buffer, as: UTF8.self)) { onText(text) }

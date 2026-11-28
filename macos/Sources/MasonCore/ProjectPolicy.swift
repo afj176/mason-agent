@@ -11,6 +11,8 @@ public struct ProjectPolicy: Codable, Equatable {
     public var expires: Date?
     /// Whether workflows marked with events (afterEdit, beforeVerify) run by themselves. They only ever run in Auto, sandboxed.
     public var hooks: Bool
+    /// Skills switched off for this project, by name. They are left out of the prompt and read_skill refuses them.
+    public var disabledSkills: [String]? = nil
 
     /// Refuses a tool the policy switches off, and a workflow it does not list.
     public func check(_ tool: String, workflow: String? = nil) throws {
@@ -38,11 +40,20 @@ public enum Policies {
         let target = file(home, workspace)
         guard !(realPath(home.path) + "/").hasPrefix(realPath(workspace) + "/") else { throw MasonError("Policies are kept outside the project.") }
         guard let policy else { try? FileManager.default.removeItem(at: target); return }
-        guard (1...80).contains(policy.name.count), policy.disabledTools.count <= 128, (policy.workflows ?? []).count <= 32, !(policy.disabledTools + (policy.workflows ?? [])).contains(where: { $0.isEmpty || $0.count > 80 }) else {
-            throw MasonError("A policy has a name of up to 80 characters, up to 128 tools and up to 32 workflows.")
+        guard (1...80).contains(policy.name.count), policy.disabledTools.count <= 128, (policy.workflows ?? []).count <= 32, (policy.disabledSkills ?? []).count <= 256,
+              !(policy.disabledTools + (policy.workflows ?? []) + (policy.disabledSkills ?? [])).contains(where: { $0.isEmpty || $0.count > 80 }) else {
+            throw MasonError("A policy has a name of up to 80 characters, up to 128 tools, up to 256 skills and up to 32 workflows.")
         }
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try encoder.encode(policy).write(to: target, options: .atomic)
+    }
+
+    /// The project's policy, or a new one, changed by `edit` and saved.
+    public static func update(home: URL = DataHome.url, workspace: Workspace, _ edit: (inout ProjectPolicy) throws -> Void) throws {
+        let root = workspace.root.path
+        var policy = load(home: home, workspace: root, includeExpired: true) ?? ProjectPolicy(name: "for " + workspace.root.lastPathComponent, workspace: realPath(root), disabledTools: [], workflows: nil, expires: nil, hooks: false)
+        try edit(&policy)
+        try set(policy, home: home, workspace: root)
     }
 
     public static let usage = """
@@ -63,7 +74,8 @@ public enum Policies {
         let hooks: String = policy.hooks ? "on: workflows marked afterEdit or beforeVerify run by themselves in Auto" : "off"
         var expires = "never"
         if let date = policy.expires { expires = formatter.string(from: date) + (date <= Date() ? " (lapsed)" : "") }
-        let lines: [String] = ["Policy \(policy.name)", "tools off   " + tools, "workflows   " + workflows, "hooks       " + hooks, "expires     " + expires]
+        let skills: String = (policy.disabledSkills ?? []).isEmpty ? "none" : (policy.disabledSkills ?? []).sorted().joined(separator: ", ")
+        let lines: [String] = ["Policy \(policy.name)", "tools off   " + tools, "skills off  " + skills, "workflows   " + workflows, "hooks       " + hooks, "expires     " + expires]
         return lines.joined(separator: "\n")
     }
 

@@ -1278,7 +1278,7 @@ final class MasonCoreTests: XCTestCase {
         var asked: [String] = []
         let model = ScriptedModel([call("read_skill", ["name": "release"]), call("run_workflow", ["name": "stamp"]), call("run_workflow", ["name": "missing"]), ModelReply(text: "Done.")])
         await Agent(store: store, model: model, approve: { asked.append($0.subject); return true }, emit: { _ in }).run(&session, request: "Release it")
-        XCTAssertTrue(model.seen[0][0].content.contains("release (How we cut a release)"), "the model is told which skills exist")
+        XCTAssertTrue(model.seen[0][0].content.contains("- release: How we cut a release\nCall read_skill with the name before doing work a skill covers."), "the model is told which skills exist")
         XCTAssertTrue(session.activities[0].result.contains("Tag, then publish."))
         XCTAssertEqual(asked, ["workflow stamp"])
         XCTAssertTrue(session.activities[1].result.contains("it's stamped") && session.activities[1].result.contains("stamp.txt"), session.activities[1].result)

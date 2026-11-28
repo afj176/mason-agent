@@ -30,6 +30,8 @@ struct MasonAgentApp: App {
                 Button("Undo Last Request's Edits") { model.undo() }.keyboardShortcut("z", modifiers: [.command, .option]).disabled(model.running)
                 Button("Redo Last Request's Edits") { model.undo(redo: true) }.keyboardShortcut("z", modifiers: [.command, .option, .shift]).disabled(model.running)
                 Button("Compact Conversation") { model.compact() }.disabled(model.running)
+                Toggle("Compact Automatically", isOn: Binding(get: { model.session?.compactsAutomatically ?? true }, set: { model.setAutomaticCompaction($0) }))
+                    .disabled(model.session == nil || model.running)
             }
             CommandGroup(after: .sidebar) {
                 Button("Code") { model.pane = .code }.keyboardShortcut("1")
@@ -199,10 +201,10 @@ struct SettingsView: View {
             GeneralPane().tabItem { Label("General", systemImage: "gearshape") }
             ApprovalsPane().tabItem { Label("Approvals", systemImage: "hand.raised") }
             AgentsPane().tabItem { Label("Agents", systemImage: "person.crop.rectangle") }
-            McpPane().tabItem { Label("MCP Servers", systemImage: "server.rack") }
+            ToolsPane().tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
             SchedulesPane().tabItem { Label("Schedules", systemImage: "clock") }
             ProjectPane().tabItem { Label("Project", systemImage: "folder.badge.gearshape") }
-            RolesPane().tabItem { Label("Roles & Network", systemImage: "person.2") }
+            RolesPane().tabItem { Label("Roles", systemImage: "person.2") }
             BundlesPane().tabItem { Label("Bundles", systemImage: "shippingbox") }
             LanguagesPane().tabItem { Label("Languages", systemImage: "chevron.left.forwardslash.chevron.right") }
         }

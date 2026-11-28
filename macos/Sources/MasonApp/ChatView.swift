@@ -47,6 +47,14 @@ struct ChatView: View {
                                 if message.role == "user" {
                                     Speaker(mason: false)
                                     Text(ChatView.shown(message.content)).textSelection(.enabled).messageBody()
+                                } else if message.role == "assistant", let calls = message.toolCalls, !calls.isEmpty {
+                                    // A round of tools shows as compact steps: the host, query or tool, and how it ended.
+                                    if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        MarkdownText(text: message.content).textSelection(.enabled).messageBody()
+                                    }
+                                    ForEach(calls, id: \.id) { call in
+                                        if let step = chat.steps?.first(where: { $0.id == call.id }) { ChatStepRow(step: step).messageBody() }
+                                    }
                                 } else if message.role == "assistant" {
                                     Speaker(mason: true)
                                     MarkdownText(text: Tables.prose(message.content)).textSelection(.enabled).messageBody()
@@ -57,6 +65,9 @@ struct ChatView: View {
                                 }
                             }
                             if model.chatRunning {
+                                ForEach(Array(model.chatSteps.enumerated()), id: \.offset) { _, step in
+                                    ChatStepRow(step: step).messageBody()
+                                }
                                 HStack(spacing: 8) {
                                     PoseImage(pose: .planning, height: 34, meaning: "working on the answer")
                                     if model.chatLive.isEmpty { ProgressView().controlSize(.small); Text("Thinking").foregroundStyle(.secondary) }
@@ -72,12 +83,14 @@ struct ChatView: View {
                     }
                     .onChange(of: chat.messages.count) { _, _ in proxy.scrollTo("end") }
                     .onChange(of: model.chatLive) { _, _ in proxy.scrollTo("end") }
+                    .onChange(of: model.chatSteps.count) { _, _ in proxy.scrollTo("end") }
                 }
                 if chat.messages.count <= 1, !model.chatRunning {
                     PoseImage(pose: .listening, height: 104)
-                    Text("Ask anything. Chat answers from the conversation alone: it cannot read your project, edit files or run commands. Use Code for that.")
+                    Text("Ask anything. With Tools on, Chat can search and read the web, read your skills and use your MCP servers, asking before each new host or call. It cannot read your project, edit files or run commands. Use Code for that.")
                         .foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 60).padding(.bottom, 12)
                 }
+                if let pending = model.chatApproval { ChatApprovalCard(pending: pending) }
             } else {
                 ContentUnavailableView {
                     Label("No chat selected", systemImage: "bubble.left.and.bubble.right")
@@ -133,7 +146,11 @@ struct ChatView: View {
                 Button { model.attachToChat() } label: { Label("Attach", systemImage: "paperclip") }
                     .disabled(model.chatRunning || model.chatAttachments.count >= ChatAttachment.maxPerMessage)
                     .help("Attach text files, pictures, PDFs or Word documents to this message (up to 5)")
-                if let chat = model.chat { ChatOptionsButton(chat: chat).disabled(model.chatRunning) }
+                if let chat = model.chat {
+                    ChatOptionsButton(chat: chat).disabled(model.chatRunning)
+                    ChatToolsMenu(chat: chat).disabled(model.chatRunning || !model.chatCanCallTools)
+                    if !model.chatCanCallTools { Text("This model can't call tools.").font(.caption).foregroundStyle(.secondary) }
+                }
                 Text(model.endpoint == nil ? "No model is running" : model.endpointName).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if model.chatRunning {
@@ -210,6 +227,84 @@ struct TableCard: View {
     }
 }
 
+/// One tool call in a chat, as a compact step: what it did, what it was about, and how it ended.
+struct ChatStepRow: View {
+    let step: ChatStep
+
+    var symbol: String {
+        switch step.tool {
+        case "web_search": return "magnifyingglass"
+        case "web_fetch": return "globe"
+        case "read_skill": return "book"
+        default: return "server.rack"
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 16)
+            Text(Activity.label(step.tool)).font(.callout.weight(.medium))
+            Text(step.subject).font(.callout).lineLimit(1).truncationMode(.middle)
+            Text(step.outcome).font(.caption)
+                .foregroundStyle(step.state == .completed ? Color.secondary : step.state == .denied ? Brand.caution : Brand.critical)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A question from a chat's tools: read a host, or call an MCP tool. Once, Always or No.
+struct ChatApprovalCard: View {
+    @EnvironmentObject var model: AppModel
+    let pending: ChatPendingApproval
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(pending.request.title, systemImage: "hand.raised.fill").font(.headline)
+            if !pending.request.detail.isEmpty {
+                ScrollView {
+                    Text(pending.request.detail).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 120)
+            }
+            HStack {
+                Button("Once") { model.answerChat(pending, .once) }.keyboardShortcut(.defaultAction)
+                Button(pending.request.tool == "network" ? "Always, in every chat" : "Always") { model.answerChat(pending, .always) }
+                Spacer()
+                Button("No", role: .cancel) { model.answerChat(pending, .no) }.keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(14)
+        .background(Brand.caution.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Brand.caution.opacity(0.5)))
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 16).padding(.top, 8)
+    }
+}
+
+/// Which tools this chat may use: the web, skills and MCP servers. The choice is saved with the chat.
+struct ChatToolsMenu: View {
+    @EnvironmentObject var model: AppModel
+    let chat: ChatConversation
+
+    var body: some View {
+        Menu {
+            Toggle("Web", isOn: Binding(get: { chat.switches.web }, set: { model.setChatTools("web", $0) }))
+            Toggle("Skills", isOn: Binding(get: { chat.switches.skills }, set: { model.setChatTools("skills", $0) }))
+            Toggle("MCP Servers", isOn: Binding(get: { chat.switches.mcp }, set: { model.setChatTools("mcp", $0) }))
+        } label: {
+            Label("Tools", systemImage: "wrench.and.screwdriver")
+        }
+        .fixedSize()
+        .help(model.chatCanCallTools ? "What this chat may use: the web, your skills and your MCP servers. Each new host and every MCP call asks first." : "This model can't call tools.")
+    }
+}
+
 /// This chat's reasoning level, answer length and pinned reference, in a popover.
 struct ChatOptionsButton: View {
     @EnvironmentObject var model: AppModel
@@ -234,6 +329,7 @@ struct ChatOptionsButton: View {
                         Text("High").tag("high")
                     }
                     TextField("Most tokens in one answer (left to the server)", text: $limit).textFieldStyle(.roundedBorder)
+                    Toggle("Automatic conversation compaction", isOn: Binding(get: { chat.compactsAutomatically }, set: { model.setChatAutomaticCompaction($0) }))
                     Text("Reference: text the model is given with every message").font(.caption).foregroundStyle(.secondary)
                     TextEditor(text: $reference).font(.callout).frame(height: 150)
                         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))

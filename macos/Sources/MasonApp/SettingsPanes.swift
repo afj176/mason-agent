@@ -88,13 +88,235 @@ struct AgentsPane: View {
             } footer: {
                 Text("Requests you run by name, as Markdown files in .mason/commands (also .claude/commands and .opencode/command). Type the name in the request box.")
             }
+            SkillsSection()
         }
         .formStyle(.grouped)
     }
 }
 
+/// Every built-in tool by group, each with a switch for the current project; then the MCP servers and the internet.
+struct ToolsPane: View {
+    @EnvironmentObject var model: AppModel
+    @State private var off: Set<String> = []
+    @State private var internet = "default"
+    @State private var projectHosts: [String] = []
+    @State private var chatHosts: [String] = []
+
+    var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
+    var workspace: Workspace? { model.session.flatMap { try? Workspace(path: $0.workspace) } }
+
+    var body: some View {
+        Form {
+            if workspace == nil {
+                Text("Open a project to switch its tools on or off.").foregroundStyle(.secondary)
+            }
+            ForEach(ToolCatalogue.groups, id: \.self) { group in
+                Section {
+                    ForEach(ToolCatalogue.entries.filter { $0.group == group }, id: \.name) { tool in
+                        Toggle(isOn: Binding(get: { tool.alwaysOn || !off.contains(tool.name) }, set: { on in change(tool, on) })) {
+                            Text(tool.name)
+                            Text(detail(tool))
+                        }
+                        .disabled(tool.alwaysOn || workspace == nil)
+                    }
+                } header: {
+                    Text(title(group))
+                }
+            }
+            McpSection()
+            Section {
+                Picker("Internet", selection: Binding(get: { internet }, set: { setInternet($0) })) {
+                    Text("Web tools ask; commands have no network").tag("default")
+                    Text("Web tools and commands ask").tag("ask")
+                    Text("Off").tag("off")
+                }
+                Text(NetworkSettings.describe(internet)).font(.caption).foregroundStyle(.secondary)
+                if projectHosts.isEmpty && chatHosts.isEmpty {
+                    Text("No host is always allowed.").foregroundStyle(.secondary)
+                }
+                ForEach(projectHosts, id: \.self) { host in
+                    LabeledContent {
+                        Button("Remove") { forget(host, chat: false) }
+                    } label: {
+                        Text(host)
+                        Text("Always allowed in this project")
+                    }
+                }
+                ForEach(chatHosts, id: \.self) { host in
+                    LabeledContent {
+                        Button("Remove") { forget(host, chat: true) }
+                    } label: {
+                        Text(host)
+                        Text("Always allowed in Chat")
+                    }
+                }
+            } header: {
+                Text("Internet")
+            } footer: {
+                Text(NetworkSettings.note + " The setting for this computer; a session can choose its own with /network.")
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear(perform: load)
+        .onChange(of: model.selection) { _, _ in load() }
+    }
+
+    func title(_ group: String) -> String {
+        switch group {
+        case "core": return "Core"
+        case "code": return "Code"
+        case "docs": return "Documentation"
+        case "workflows": return "Workflows and skills"
+        case "jobs": return "Background programs"
+        case "browser": return "Browser"
+        case "desktop": return "Other apps' windows"
+        case "mcp": return "MCP"
+        case "web": return "Web"
+        default: return group
+        }
+    }
+
+    func detail(_ tool: ToolCatalogue.Entry) -> String {
+        var parts = [tool.summary]
+        if tool.alwaysOn { parts.append("always on") }
+        if tool.changes { parts.append("changes files or runs commands") }
+        if tool.internet { parts.append("uses the internet") }
+        return parts.joined(separator: "  ·  ")
+    }
+
+    func load() {
+        off = workspace.map { ToolCatalogue.disabled($0, home: home) } ?? []
+        internet = NetworkSettings.mode(home: home)
+        projectHosts = model.session.map { NetworkSettings.alwaysAllowed(home: home, workspace: $0.workspace).sorted() } ?? []
+        chatHosts = NetworkSettings.chatHosts(home: home)
+    }
+
+    func change(_ tool: ToolCatalogue.Entry, _ on: Bool) {
+        guard let workspace else { return }
+        do { _ = try ToolCatalogue.set(tool.name, on: on, workspace: workspace, home: home) } catch { model.notice = model.describe(error) }
+        load()
+    }
+
+    func setInternet(_ mode: String) {
+        do { _ = try NetworkSettings.command(mode, home: home) } catch { model.notice = model.describe(error) }
+        load()
+    }
+
+    func forget(_ host: String, chat: Bool) {
+        do {
+            if chat { try NetworkSettings.removeChatHost(host, home: home) }
+            else if let session = model.session { try NetworkSettings.forget(host, home: home, workspace: session.workspace) }
+        } catch { model.notice = model.describe(error) }
+        load()
+    }
+}
+
+/// The project's skills and those of installed bundles: switch each on or off, open it, or make a new one.
+struct SkillsSection: View {
+    @EnvironmentObject var model: AppModel
+    @State private var skills: [SkillEntry] = []
+    @State private var viewing = false
+    @State private var viewTitle = ""
+    @State private var viewText = ""
+    @State private var creating = false
+    @State private var newName = ""
+    @State private var newDescription = ""
+
+    var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
+    var workspace: Workspace? { model.session.flatMap { try? Workspace(path: $0.workspace) } }
+
+    var body: some View {
+        Section {
+            if workspace == nil {
+                Text("Open a project first.").foregroundStyle(.secondary)
+            } else if skills.isEmpty {
+                Text("No skills yet. A skill is .mason/skills/NAME/SKILL.md in the project.").foregroundStyle(.secondary)
+            }
+            ForEach(Array(skills.enumerated()), id: \.offset) { _, skill in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(skill.name)
+                        Text("\(skill.origin)  ·  \(skill.description)").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Spacer()
+                    Button("Open") { NSWorkspace.shared.open(skill.file) }
+                    Button("Show in Folder") { NSWorkspace.shared.activateFileViewerSelecting([skill.file]) }
+                    Button("View") { show(skill) }
+                    if let note = skill.hiddenBy {
+                        Text(note).font(.caption).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth: 150, alignment: .trailing)
+                    } else {
+                        Toggle("Use \(skill.name)", isOn: Binding(get: { skill.enabled }, set: { on in change(skill, on) })).labelsHidden()
+                    }
+                }
+            }
+            if workspace != nil {
+                Button("New Skill…") { newName = ""; newDescription = ""; creating = true }
+                    .sheet(isPresented: $creating) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("New skill").font(.headline)
+                            TextField("Name, such as release", text: $newName).textFieldStyle(.roundedBorder)
+                            TextField("What it is for", text: $newDescription).textFieldStyle(.roundedBorder)
+                            Text("Mason makes .mason/skills/NAME/SKILL.md in this project and opens it.").font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Spacer()
+                                Button("Cancel", role: .cancel) { creating = false }.keyboardShortcut(.cancelAction)
+                                Button("Create") { create() }.keyboardShortcut(.defaultAction).disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                            }
+                        }
+                        .padding(16)
+                        .frame(width: 380)
+                    }
+            }
+        } header: {
+            Text("Skills")
+        } footer: {
+            Text("Instructions for particular kinds of work, as .mason/skills/NAME/SKILL.md (also .claude/skills and .agents/skills) and from bundles. Mason reads the one that fits before doing that work. A switch applies to this project.")
+        }
+        .onAppear(perform: load)
+        .onChange(of: model.selection) { _, _ in load() }
+        .sheet(isPresented: $viewing) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(viewTitle).font(.headline).lineLimit(1).truncationMode(.middle)
+                ScrollView {
+                    Text(viewText).font(.system(.body, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Spacer()
+                    Button("Done") { viewing = false }.keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(16)
+            .frame(width: 560, height: 460)
+        }
+    }
+
+    func load() { skills = workspace.map { Skills.all($0, home: home) } ?? [] }
+
+    func show(_ skill: SkillEntry) {
+        viewTitle = skill.file.path
+        viewText = (try? String(contentsOf: skill.file, encoding: .utf8)) ?? skill.body
+        viewing = true
+    }
+
+    func change(_ skill: SkillEntry, _ on: Bool) {
+        guard let workspace else { return }
+        do { _ = try Skills.set(skill.name, on: on, workspace: workspace, home: home) } catch { model.notice = model.describe(error) }
+        load()
+    }
+
+    func create() {
+        guard let workspace else { return }
+        do {
+            let file = try Skills.create(newName.trimmingCharacters(in: .whitespaces), description: newDescription, workspace: workspace)
+            creating = false
+            load()
+            NSWorkspace.shared.open(file)
+        } catch { model.notice = model.describe(error) }
+    }
+}
+
 /// MCP servers registered for every project, and which of their tools Mason may call.
-struct McpPane: View {
+struct McpSection: View {
     @EnvironmentObject var model: AppModel
     @State private var servers: [McpServer] = []
     @State private var offered: [String: [McpTool]] = [:]
@@ -103,7 +325,6 @@ struct McpPane: View {
     @State private var newAddress = ""
 
     var body: some View {
-        Form {
             Section {
                 if servers.isEmpty { Text("No MCP servers.").foregroundStyle(.secondary) }
                 ForEach(servers, id: \.name) { server in
@@ -146,9 +367,7 @@ struct McpPane: View {
             } footer: {
                 Text("Servers on this Mac whose tools Mason may call. Every call shows its arguments and asks first. Registered for all projects, in Mason's data folder.")
             }
-        }
-        .formStyle(.grouped)
-        .onAppear(perform: load)
+            .onAppear(perform: load)
     }
 
     func load() {

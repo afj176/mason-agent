@@ -10,6 +10,13 @@ struct PendingApproval: Identifiable {
     let answer: CheckedContinuation<Bool, Never>
 }
 
+/// A question a chat is waiting on, shown as a card in the chat: Once, Always or No.
+struct ChatPendingApproval: Identifiable {
+    let id = UUID()
+    let request: ApprovalRequest
+    let answer: CheckedContinuation<ChatApproval, Never>
+}
+
 struct DownloadState: Equatable {
     var title: String
     var fraction: Double
@@ -51,7 +58,12 @@ final class AppModel: ObservableObject {
     var paletteItems: [PaletteItem] = []
 
     /// Which part of the window is showing.
-    @Published var pane: Pane = .code
+    @Published var pane: Pane = .code {
+        // Chats mason chat saved since are picked up when the Chat page is shown.
+        didSet { if pane == .chat, oldValue != .chat { reloadChats() } }
+    }
+    /// The observer that reloads chats when Mason becomes the active app.
+    private var activeObserver: NSObjectProtocol?
     /// Whether the files the session changed are shown beside the conversation.
     @Published var showChanges = false
     @Published var chats: [ChatConversation] = []
@@ -60,6 +72,9 @@ final class AppModel: ObservableObject {
     @Published var chatRunning = false
     @Published var chatLive = ""
     @Published var chatAttachments: [ChatAttachment] = []
+    /// The tool steps of the answer being written, and the question it is waiting on.
+    @Published var chatSteps: [ChatStep] = []
+    @Published var chatApproval: ChatPendingApproval?
     /// The engine working on the current request, so a follow-up can be handed to it.
     private var activeAgent: Agent?
     /// Follow-ups sent during the current request that have not started yet.
@@ -117,6 +132,9 @@ final class AppModel: ObservableObject {
             chatStore = opened
             chats = opened.conversations
             chatSelection = chats.first?.id
+        }
+        activeObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.reloadChats() }
         }
         Task { await refreshModels(startLastIfNeeded: true) }
         // Scheduled requests are checked shortly after launch and then every minute while the app is open.
@@ -181,6 +199,15 @@ final class AppModel: ObservableObject {
 
     var chat: ChatConversation? { chats.first { $0.id == chatSelection } }
 
+    /// Reads the chats folder again, so a chat mason chat started or continued shows here. The selected chat shows its
+    /// version on disk. Nothing is reloaded while a reply is being written, so a running reply is never replaced.
+    func reloadChats() {
+        guard let chatStore, !chatRunning else { return }
+        do { try chatStore.reload() } catch { return }
+        chats = chatStore.conversations
+        if let selected = chatSelection, !chats.contains(where: { $0.id == selected }) { chatSelection = chats.first?.id }
+    }
+
     func newChat() {
         guard let chatStore else { return }
         pane = .chat
@@ -201,6 +228,16 @@ final class AppModel: ObservableObject {
         guard var current = chat, let chatStore, !chatRunning else { return }
         do {
             try Chat.configure(&current, reasoning: reasoning, maxTokens: maxTokens, reference: reference)
+            try chatStore.save(current)
+            chats = chatStore.conversations
+        } catch { notice = describe(error) }
+    }
+
+    /// Whether the selected chat summarizes a long conversation by itself when the context fills up.
+    func setChatAutomaticCompaction(_ on: Bool) {
+        guard var current = chat, let chatStore, !chatRunning else { return }
+        current.automaticCompaction = on
+        do {
             try chatStore.save(current)
             chats = chatStore.conversations
         } catch { notice = describe(error) }
@@ -228,24 +265,63 @@ final class AppModel: ObservableObject {
             return
         }
         let files = chatAttachments
-        chatDraft = ""; chatAttachments = []; chatRunning = true; chatLive = ""
+        chatDraft = ""; chatAttachments = []; chatRunning = true; chatLive = ""; chatSteps = []
+        // Tools ask here: each question shows as a card in the chat, and each step joins the answer as it happens.
+        let tools = ChatTools(home: chatStore.folder.deletingLastPathComponent(), approve: { [weak self] request in
+            await withCheckedContinuation { continuation in
+                Task { @MainActor in
+                    guard let self else { continuation.resume(returning: .no); return }
+                    self.chatApproval = ChatPendingApproval(request: request, answer: continuation)
+                    NSApp.requestUserAttention(.informationalRequest)
+                }
+            }
+        }, onStep: { [weak self] step in
+            Task { @MainActor in self?.chatSteps.append(step); self?.chatLive = "" }
+        })
         chatTask = Task {
             var working = current
             do {
-                try await Chat.send(&working, text: text, attachments: files, model: client, store: chatStore) { [weak self] piece in
+                try await Chat.send(&working, text: text, attachments: files, model: client, store: chatStore, tools: tools) { [weak self] piece in
                     Task { @MainActor in self?.chatLive += piece }
                 }
             } catch is CancellationError {
             } catch {
                 if !Task.isCancelled { notice = describe(error) }
             }
+            if let pending = chatApproval { chatApproval = nil; pending.answer.resume(returning: .no) }
             // The store has the conversation as far as it got: with the answer, or with the question alone.
             chats = chatStore.conversations
-            chatRunning = false; chatLive = ""
+            chatRunning = false; chatLive = ""; chatSteps = []
         }
     }
 
-    func stopChat() { chatTask?.cancel() }
+    func stopChat() {
+        chatTask?.cancel()
+        if let pending = chatApproval { chatApproval = nil; pending.answer.resume(returning: .no) }
+    }
+
+    /// Answers the question a chat is waiting on.
+    func answerChat(_ pending: ChatPendingApproval, _ answer: ChatApproval) {
+        guard chatApproval?.id == pending.id else { return }
+        chatApproval = nil
+        pending.answer.resume(returning: answer)
+    }
+
+    /// Whether the running model can be offered tools in Chat.
+    var chatCanCallTools: Bool {
+        guard let endpoint, let client = try? OpenAIClient(endpoint) else { return true }
+        return Chat.canCallTools(client)
+    }
+
+    /// Turns the web, skills or MCP servers on or off for the selected chat; the choice is saved with it.
+    func setChatTools(_ kind: String, _ on: Bool) {
+        guard var current = chat, let chatStore, !chatRunning else { return }
+        do {
+            try Chat.setTools(&current, kind: kind, on: on)
+            try chatStore.save(current)
+            chats = chatStore.conversations
+        } catch { notice = describe(error) }
+    }
 
     /// ⌘Return and ⌘. act on whichever pane is showing.
     func sendCurrent() { if pane == .chat { sendChat() } else { send() } }
@@ -333,12 +409,24 @@ final class AppModel: ObservableObject {
                 return
             }
         }
-        if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language", "/generation", "/notes", "/note"].contains(word) {
+        if ["/experiment", "/experiments", "/deliver", "/task", "/tasks", "/roles", "/role", "/policy", "/network", "/bundle", "/bundles", "/languages", "/language", "/generation", "/notes", "/note", "/skills", "/tools"].contains(word) {
             draft = ""
             hostCommand(word, String(text.dropFirst(word.count)).trimmingCharacters(in: .whitespaces), in: current)
             return
         }
         if text.lowercased() == "/agent" || text.lowercased().hasPrefix("/agent ") { draft = ""; chooseAgent(String(text.dropFirst(6)).trimmingCharacters(in: .whitespaces)); return }
+        // "/skill NAME REQUEST" runs the request with the skill's instructions in front of it.
+        if word == "/skill" {
+            let words = text.split(separator: " ", maxSplits: 2).map(String.init)
+            guard words.count == 3, let workspace = try? Workspace(path: current.workspace) else {
+                notice = "Use /skill NAME REQUEST. Settings, Agents lists the skills."
+                return
+            }
+            do { draft = try Skills.request(words[1], request: words[2], workspace: workspace, home: store.folder.deletingLastPathComponent()) }
+            catch { notice = describe(error); return }
+            send()
+            return
+        }
         guard let endpoint, let model = try? OpenAIClient(endpoint) else {
             notice = "No model is running. Open Models to start one, or start your own local server."
             return
@@ -460,6 +548,15 @@ final class AppModel: ObservableObject {
             } catch { notice = describe(error) }
             running = false; liveStatus = ""
         }
+    }
+
+    /// Whether the selected session summarizes a long conversation by itself when the context fills up.
+    func setAutomaticCompaction(_ on: Bool) {
+        guard var current = session, store != nil, !running else { return }
+        current.automaticCompaction = on
+        save(current)
+        notice = on ? "Automatic compaction on: a long conversation is summarized when the context fills up."
+            : "Automatic compaction off: the full history is sent until you compact it."
     }
 
     /// "/agent" lists the project's custom agents, "/agent NAME" uses one, "/agent none" goes back to the default.
