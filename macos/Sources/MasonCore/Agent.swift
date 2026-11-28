@@ -278,6 +278,15 @@ public final class Agent {
         if steer { outcome.turn?.cancel() }
     }
 
+    /// Sends a session's reasoning level with its requests the way Chat sends it, in the client's extra body.
+    /// Each run gets its own client, so this never reaches another session's requests.
+    public static func applyReasoning(_ level: String?, to model: ChatModel) {
+        var inner: ChatModel = model
+        while let role = inner as? RoleModel { inner = role.base }
+        guard let client = inner as? OpenAIClient else { return }
+        for (name, value) in Chat.reasoningBody(level) { client.extraBody[name] = value }
+    }
+
     /// The follow-up handled next: a steering message first, else the oldest queued one.
     static func nextFollowUp(_ session: Session) -> FollowUp? {
         let pending = session.pendingInput ?? []
@@ -287,6 +296,7 @@ public final class Agent {
     /// Runs a request, then any follow-ups sent while it ran. "/queue" resumes follow-ups left from an earlier stop.
     /// A queued follow-up runs only after a request that completed; a steering one runs whatever happened.
     public func run(_ session: inout Session, request: String) async {
+        Agent.applyReasoning(session.reasoning, to: model)
         var input = request
         if request.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "/queue" {
             guard let next = Agent.nextFollowUp(session) else {
@@ -443,7 +453,10 @@ public final class Agent {
             let window = await model.contextWindow()
             for _ in 0..<stepLimit {
                 try Task.checkCancellation()
-                if Compaction.needed(session, window: window) {
+                if !session.compactsAutomatically {
+                    // Off: never summarized by itself; a full context stops the run, with the originals kept.
+                    if Compaction.full(promptTokens: session.promptTokens, window: window) { throw MasonError(Compaction.fullMessage) }
+                } else if Compaction.needed(session, window: window) {
                     emit(.status("Compacting the conversation"))
                     if try await Compaction.compact(&session, model: model, keep: 6) { try? store.save(session) }
                     else { session.promptTokens = nil }

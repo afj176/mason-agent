@@ -233,6 +233,16 @@ final class AppModel: ObservableObject {
         } catch { notice = describe(error) }
     }
 
+    /// Whether the selected chat summarizes a long conversation by itself when the context fills up.
+    func setChatAutomaticCompaction(_ on: Bool) {
+        guard var current = chat, let chatStore, !chatRunning else { return }
+        current.automaticCompaction = on
+        do {
+            try chatStore.save(current)
+            chats = chatStore.conversations
+        } catch { notice = describe(error) }
+    }
+
     func attachToChat() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
@@ -538,6 +548,15 @@ final class AppModel: ObservableObject {
             } catch { notice = describe(error) }
             running = false; liveStatus = ""
         }
+    }
+
+    /// Whether the selected session summarizes a long conversation by itself when the context fills up.
+    func setAutomaticCompaction(_ on: Bool) {
+        guard var current = session, store != nil, !running else { return }
+        current.automaticCompaction = on
+        save(current)
+        notice = on ? "Automatic compaction on: a long conversation is summarized when the context fills up."
+            : "Automatic compaction off: the full history is sent until you compact it."
     }
 
     /// "/agent" lists the project's custom agents, "/agent NAME" uses one, "/agent none" goes back to the default.

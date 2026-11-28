@@ -80,8 +80,8 @@ final class CLI {
         mason chat [--resume]
           A conversation with the running model, shared with the app's Chat. It can read the web, your skills and your
           MCP servers, asking first; it cannot read your files or run commands. --resume continues the latest chat.
-        mason theme [blueprint|evergreen|graphite|kiln|retro-neon]
-          Lists the theme families, or chooses one for the CLI and Mason Agent.
+        mason theme [blueprint|evergreen|graphite|kiln|retro-neon|light|dark|system]
+          Lists the theme families, or chooses one or the light/dark mode for the CLI and Mason Agent.
         """
 
     static func main() async -> Int32 {
@@ -197,6 +197,15 @@ final class CLI {
 
     static func theme(_ name: String) {
         let name = name.trimmingCharacters(in: .whitespaces)
+        if let mode = AppearanceMode.named(name) {
+            do { try AppearanceMode.save(mode) } catch {
+                Term.line(Term.paint(Term.red, "  The mode could not be saved: ") + ((error as? MasonError)?.description ?? error.localizedDescription))
+                return
+            }
+            Term.line("  " + Term.paint(Term.accent + Term.bold, "✓") + " Mode set to " + Term.paint(Term.accent, mode.word)
+                      + Term.paint(Term.dim, ". Mason Agent uses it the next time it starts."))
+            return
+        }
         if !name.isEmpty {
             guard let family = ThemeFamilies.named(name) else {
                 Term.line(Term.paint(Term.red, "  No theme called \(name). ") + "Choose one of: " + ThemeFamilies.all.map(\.slug).joined(separator: ", ") + ".")
@@ -218,7 +227,8 @@ final class CLI {
             let marker = current ? Term.paint(Term.accent + Term.bold, "›") : " "
             Term.line("  \(marker) \(swatch) \(family.slug.padding(toLength: 12, withPad: " ", startingAt: 0))" + (current ? Term.paint(Term.dim, "current") : ""))
         }
-        Term.line(Term.paint(Term.dim, "  /theme NAME chooses one. It is shared with the Theme setting in Mason Agent."))
+        Term.line(Term.paint(Term.dim, "  Mode: \(AppearanceMode.saved().word)"))
+        Term.line(Term.paint(Term.dim, "  /theme NAME chooses one; /theme light|dark|system sets the mode. Both are shared with Mason Agent."))
     }
 
     /// Ctrl+C stops a run; at the prompt, a second Ctrl+C within five seconds leaves.
@@ -547,7 +557,11 @@ final class CLI {
     func command(_ input: String) async throws -> Bool {
         let parts = input.split(separator: " ", maxSplits: 1).map(String.init)
         var name = parts[0].lowercased(), rest = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
-        if ["/read", "/review", "/edits", "/auto"].contains(name) { rest = String(name.dropFirst()); name = "/permission" }
+        // "/review changes" asks the model to review; a bare "/review" is the permission shortcut.
+        let reviewChanges = name == "/review" && rest.lowercased().hasPrefix("changes")
+        if reviewChanges { rest = String(rest.dropFirst(7)).trimmingCharacters(in: .whitespaces) }
+        if !reviewChanges, ["/read", "/review", "/edits", "/auto"].contains(name) { rest = String(name.dropFirst()); name = "/permission" }
+        let makesNew = rest.split(separator: " ").first?.lowercased() == "new"
         switch name {
         case "/exit", "/quit": return false
         case "/help", "/?": help()
@@ -562,7 +576,24 @@ final class CLI {
             if !rest.isEmpty { await send(rest) }
         case "/resume", "/sessions":
             let mine = store.sessions(in: workspace.root.path).filter { !$0.turns.isEmpty || $0.id == session.id }.prefix(20).map { $0 }
-            if let number = Int(rest), number >= 1, number <= mine.count {
+            let words = rest.split(separator: " ").map(String.init)
+            if words.first?.lowercased() == "delete" {
+                guard words.count == 2, let number = Int(words[1]), number >= 1, number <= mine.count else { throw MasonError("Use /sessions delete NUMBER. /sessions lists them.") }
+                let doomed = mine[number - 1]
+                guard Term.interactive else { Term.line("  Delete session \(number), \(doomed.title)? Not confirmed: there is no terminal to ask."); break }
+                Term.write("  Delete session \(number), \(doomed.title)? y/n ")
+                let answer = readLine()?.trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+                guard answer == "y" || answer == "yes" else { Term.line(Term.paint(Term.dim, "  Kept.")); break }
+                try store.delete(doomed.id)
+                Term.line(Term.paint(Term.dim, "  Deleted \(doomed.title)."))
+                if doomed.id == session.id {
+                    // The session in use is gone: carry on in a fresh one with the same permission.
+                    let previous = session
+                    session = try store.create(workspace: workspace.root.path, permission: previous.permission)
+                    session.askOnly = previous.askOnly; try store.save(session)
+                    Term.line(Term.paint(Term.dim, "  New session · \(modeName)"))
+                }
+            } else if let number = Int(rest), number >= 1, number <= mine.count {
                 session = mine[number - 1]
                 Term.line("  Resumed " + Term.paint(Term.bold, session.title) + Term.paint(Term.dim, "  ·  \(modeName)"))
             } else {
@@ -570,7 +601,7 @@ final class CLI {
                 for (index, item) in mine.enumerated() {
                     Term.line("  \(Term.paint(Term.dim, String(index + 1).leftPad(2)))  \(item.id == session.id ? Term.paint(Term.bold, Term.clip(item.title, 60)) : Term.clip(item.title, 60))" + Term.paint(Term.dim, "  ·  \(item.state)" + (item.id == session.id ? "  ← current" : "")))
                 }
-                Term.line(Term.paint(Term.dim, "  Continue one with /resume NUMBER."))
+                Term.line(Term.paint(Term.dim, "  Continue one with /resume NUMBER; delete one with /sessions delete NUMBER."))
             }
         case "/ask": session.askOnly = true; try store.save(session); Term.line(Term.paint(Term.dim, "  Ask mode: Mason reads and answers; it does not edit or run commands."))
         case "/build":
@@ -605,6 +636,10 @@ final class CLI {
                 for (index, rule) in rules.rules.enumerated() { Term.line("  \(Term.paint(Term.dim, String(index + 1).leftPad(2)))  \(Term.paint(Term.green, "allow"))  \(rule.tool.replacingOccurrences(of: "_", with: " "))  \(Term.paint(Term.cyan, rule.prefix))") }
                 Term.line(Term.paint(Term.dim, "  Remove one with /rules revoke NUMBER. Rules never widen the sandbox."))
             }
+        case "/compact" where rest.lowercased() == "auto" || rest.lowercased().hasPrefix("auto "):
+            let said = try Compaction.autoText(String(rest.dropFirst(4)).trimmingCharacters(in: .whitespaces), current: session.compactsAutomatically)
+            if said.on != session.compactsAutomatically { session.automaticCompaction = said.on; try store.save(session) }
+            Term.line("  " + said.text)
         case "/compact":
             guard session.messages.count > 2 else { Term.line(Term.paint(Term.dim, "  There is nothing to compact yet.")); break }
             guard let endpoint, let model = try? OpenAIClient(endpoint) else { throw MasonError("Compaction needs a running model. /models lists the ones on this computer.") }
@@ -614,6 +649,19 @@ final class CLI {
             guard try await Compaction.compact(&working, model: model, keep: 0) else { Term.line(Term.paint(Term.dim, "  There is nothing to compact yet.")); break }
             session = working; try store.save(session)
             Term.line(Term.paint(Term.green, "  ✓ \(before - 1) messages replaced by a summary") + Term.paint(Term.dim, "  ·  it travels with your next request"))
+        case "/reasoning":
+            let level = rest.lowercased()
+            guard !level.isEmpty else { Term.line("  Reasoning: " + (session.reasoning ?? "the server's default") + Term.paint(Term.dim, "  ·  /reasoning off|low|medium|high|default")); break }
+            guard level == "default" || Chat.reasoningLevels.contains(level) else { throw MasonError("Use /reasoning off, low, medium, high or default.") }
+            session.reasoning = level == "default" ? nil : level
+            try store.save(session)
+            Term.line(Term.paint(Term.dim, "  Reasoning: " + (level == "default" ? "the server's default" : level)))
+        case "/agent" where makesNew, "/agents" where makesNew, "/commands" where makesNew:
+            let words = rest.split(separator: " ").map(String.init)
+            guard words.count == 2 else { throw MasonError("Use \(name == "/commands" ? "/commands" : "/agent") new NAME.") }
+            let file = try Customization.create(words[1], command: name == "/commands", workspace: workspace)
+            Term.line("  Made " + file.path)
+            openInEditor(file.path)
         case "/agent", "/agents":
             let agents = Customization.agents(home: home, workspace: session.workspace)
             if rest.isEmpty {
@@ -784,14 +832,19 @@ final class CLI {
         let rows = [
             ("/new [request]", "Start a separate session, optionally with its first request"),
             ("/resume [number]", "List this folder's sessions, or continue one"),
+            ("/sessions delete NUMBER", "Delete a session from this folder, after you confirm"),
             ("/ask · /build", "Answer questions only, or make changes"),
             ("/permission read|review|edits|auto", "What Mason may do without asking (also /review, /edits, /auto)"),
             ("/diff [path]", "Show what this session changed"),
             ("/undo · /redo", "Put back, or reapply, everything the latest request changed"),
             ("/compact", "Replace the conversation so far with a summary to free context"),
+            ("/compact auto on|off", "Compact automatically when the context fills up, or never"),
             ("/queue", "Run the messages you queued, after a stop or a failure"),
+            ("/reasoning off|low|medium|high|default", "How much the model thinks before answering, for this session"),
             ("/agent [name|none]", "List your custom agents, or use one for this session"),
+            ("/agent new NAME", "Make .mason/agents/NAME.md and open it"),
             ("/commands", "List your custom slash commands"),
+            ("/commands new NAME", "Make .mason/commands/NAME.md and open it"),
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
             ("/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"),
@@ -812,7 +865,7 @@ final class CLI {
             ("/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"),
             ("/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"),
             ("/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"),
-            ("/review", "Have the model read what this session changed and pin what it finds as comments"),
+            ("/review changes", "Have the model read what this session changed and pin what it finds as comments"),
             ("/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"),
             ("/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"),
             ("/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"),
@@ -836,10 +889,11 @@ final class CLI {
             ("/models runtime", "Install or update llama.cpp"),
             ("/status", "Session, model, permission and storage"),
             ("/theme [name]", "List the theme families, or choose one (shared with Mason Agent)"),
+            ("/theme light|dark|system", "Choose the light or dark mode, or follow the system (shared with Mason Agent)"),
             ("/exit", "Leave (Ctrl+C twice also works)"),
         ]
         Term.line()
-        for (command, text) in rows { Term.line("  \(Term.paint(Term.accent, command.padding(toLength: 36, withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, text))") }
+        for (command, text) in rows { Term.line("  \(Term.paint(Term.accent, command.padding(toLength: max(36, command.count), withPad: " ", startingAt: 0))) \(Term.paint(Term.dim, text))") }
         Term.line()
         Term.line(Term.paint(Term.dim, "  While Mason works: Esc or Ctrl+C stops the run. Type a message and press Enter to queue it for afterwards,"))
         Term.line(Term.paint(Term.dim, "  or start it with ! to interrupt and steer. End a line with \\ to continue on the next line."))
@@ -922,6 +976,7 @@ final class CLI {
         row("Mode", modeName)
         row("Shell", Shell.path + (Shell.sandboxAvailable ? Term.paint(Term.dim, "  ·  sandbox available for Auto") : Term.paint(Term.yellow, "  ·  no sandbox: Auto refuses commands")))
         if let agent = session.agent { row("Agent", agent) }
+        if let reasoning = session.reasoning { row("Reasoning", reasoning) }
         if let tokens = session.promptTokens { row("Context", "\(tokens) tokens in the last request") }
         if let compactions = session.compactions { row("Compacted", "\(compactions) time\(compactions == 1 ? "" : "s"); \(session.archived?.count ?? 0) messages archived") }
         row("Stored in", store.folder.path)

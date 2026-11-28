@@ -83,3 +83,23 @@ public enum ThemeFamilies {
         try data.write(to: url, options: .atomic)
     }
 }
+
+/// Light, dark or following the system: the Mode setting Mason Agent keeps in its own preferences
+/// ("appearance" in site.masonagent.MasonAgent), which the CLI reads and writes too.
+public enum AppearanceMode: String, CaseIterable, Sendable {
+    case system = "Follow System", light = "Light", dark = "Dark"
+    public static let domain = "site.masonagent.MasonAgent", key = "appearance"
+    /// The word the CLI uses: system, light or dark.
+    public var word: String { self == .system ? "system" : rawValue.lowercased() }
+    public static func named(_ word: String) -> AppearanceMode? { allCases.first { $0.word == word.lowercased() } }
+
+    public static func saved(domain: String = domain) -> AppearanceMode {
+        UserDefaults(suiteName: domain)?.string(forKey: key).flatMap(AppearanceMode.init(rawValue:)) ?? .system
+    }
+
+    public static func save(_ mode: AppearanceMode, domain: String = domain) throws {
+        guard let defaults = UserDefaults(suiteName: domain) else { throw MasonError("Mason Agent's preferences could not be opened.") }
+        defaults.set(mode.rawValue, forKey: key)
+        defaults.synchronize()
+    }
+}

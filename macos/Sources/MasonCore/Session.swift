@@ -254,6 +254,12 @@ public struct Session: Codable, Identifiable {
     public var repeatStop: RepeatStop?
     /// How the latest request ended; nil while one runs and in sessions saved before endings existed.
     public var ending: RunEnding?
+    /// The reasoning level sent with this session's requests (off, low, medium, high); nil leaves it to the server.
+    public var reasoning: String?
+    /// Whether a long conversation is summarized when the context fills up. Nil, as in sessions saved before the
+    /// setting existed, is on.
+    public var automaticCompaction: Bool?
+    public var compactsAutomatically: Bool { automaticCompaction ?? true }
     public init(workspace: String) { self.workspace = workspace }
 }
 
