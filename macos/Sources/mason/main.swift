@@ -557,7 +557,10 @@ final class CLI {
     func command(_ input: String) async throws -> Bool {
         let parts = input.split(separator: " ", maxSplits: 1).map(String.init)
         var name = parts[0].lowercased(), rest = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
-        if ["/read", "/review", "/edits", "/auto"].contains(name) { rest = String(name.dropFirst()); name = "/permission" }
+        // "/review changes" asks the model to review; a bare "/review" is the permission shortcut.
+        let reviewChanges = name == "/review" && rest.lowercased().hasPrefix("changes")
+        if reviewChanges { rest = String(rest.dropFirst(7)).trimmingCharacters(in: .whitespaces) }
+        if !reviewChanges, ["/read", "/review", "/edits", "/auto"].contains(name) { rest = String(name.dropFirst()); name = "/permission" }
         let makesNew = rest.split(separator: " ").first?.lowercased() == "new"
         switch name {
         case "/exit", "/quit": return false
@@ -857,7 +860,7 @@ final class CLI {
             ("/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"),
             ("/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"),
             ("/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"),
-            ("/review", "Have the model read what this session changed and pin what it finds as comments"),
+            ("/review changes", "Have the model read what this session changed and pin what it finds as comments"),
             ("/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"),
             ("/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"),
             ("/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"),
