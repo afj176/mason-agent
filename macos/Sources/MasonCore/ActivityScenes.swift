@@ -69,7 +69,7 @@ public enum ActivityScenes {
     public static let planKey = "plan", endKey = "end"
 
     static let reads: Set<String> = ["read_file", "read_lines", "list_files", "search_files", "search_next", "semantic_search", "repository_map", "inspect_symbol",
-                                     "navigate_code", "read_documentation", "read_skill", "git_status", "delegate_readonly", "open_file", "mcp_read", "mcp_resources", "mcp_tools"]
+                                     "navigate_code", "read_documentation", "read_skill", "git_status", "delegate_readonly", "open_file", "mcp_read", "mcp_resources", "mcp_tools", "web_fetch", "web_search"]
     static let edits: Set<String> = ["edit_file", "write_file", "apply_edits"]
     static let commands: Set<String> = ["run_shell", "run_command", "run_workflow", "start_job", "poll_job", "stop_job", "start_terminal", "terminal_input",
                                         "terminal_status", "terminal_stop", "verify_acceptance"]

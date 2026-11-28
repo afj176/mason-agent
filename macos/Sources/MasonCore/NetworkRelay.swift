@@ -36,11 +36,12 @@ public enum NetworkPolicy {
     }
 }
 
-/// Whether Auto asks before a command reaches the network, or commands simply have none. Saved for this computer.
+/// Whether Mason asks before reaching a host on the internet, or has no internet at all: for sandboxed commands in
+/// Auto (through the relay) and for web_fetch and web_search. Saved for this computer; "ask" is the default.
 public enum NetworkSettings {
     public static func asks(home: URL = DataHome.url) -> Bool {
-        guard let data = try? Data(contentsOf: home.appendingPathComponent("network.json")), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-        return object["mode"] as? String == "ask"
+        guard let data = try? Data(contentsOf: home.appendingPathComponent("network.json")), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return true }
+        return object["mode"] as? String != "offline" && object["mode"] as? String != "off"
     }
 
     /// Whether this session asks: its own choice when it has made one, otherwise the computer's.
@@ -51,6 +52,39 @@ public enum NetworkSettings {
         Set(ApprovalRules(home: home, workspace: workspace).rules.filter { $0.tool == "network" }.map { $0.prefix.lowercased() })
     }
 
+    /// Removes a host from a project's always-allowed list.
+    public static func forget(_ host: String, home: URL = DataHome.url, workspace: String) throws {
+        var rules = ApprovalRules(home: home, workspace: workspace)
+        while let index = rules.rules.firstIndex(where: { $0.tool == "network" && $0.prefix.lowercased() == host.lowercased() }) { try rules.remove(at: index) }
+    }
+
+    // MARK: the hosts Chat may read without asking, for the whole computer
+
+    static func chatFile(_ home: URL) -> URL { home.appendingPathComponent("chat-hosts.json") }
+
+    /// The hosts the user chose to always allow in Chat. They are kept apart from every project's list.
+    public static func chatHosts(home: URL = DataHome.url) -> [String] {
+        guard let data = try? Data(contentsOf: chatFile(home)), let hosts = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return hosts
+    }
+
+    public static func addChatHost(_ host: String, home: URL = DataHome.url) throws {
+        var hosts = chatHosts(home: home).filter { $0 != host.lowercased() }
+        hosts.append(host.lowercased())
+        try saveChatHosts(hosts.sorted(), home: home)
+    }
+
+    public static func removeChatHost(_ host: String, home: URL = DataHome.url) throws {
+        try saveChatHosts(chatHosts(home: home).filter { $0 != host.lowercased() }, home: home)
+    }
+
+    static func saveChatHosts(_ hosts: [String], home: URL) throws {
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try JSONEncoder().encode(Array(hosts.prefix(512))).write(to: chatFile(home), options: .atomic)
+    }
+
+    public static let note = "Web pages are read over HTTPS from public hosts only. Every new host asks first."
+
     /// /network in a session: ask and off choose for this session, default goes back to the computer's setting, and
     /// "computer ask" or "computer off" changes that setting.
     public static func sessionCommand(_ rest: String, session: inout Session, home: URL = DataHome.url) throws -> String {
@@ -60,13 +94,13 @@ public enum NetworkSettings {
         case "default": session.network = nil
         case "computer": return try command(words.dropFirst().joined(separator: " "), home: home)
         case nil: break
-        default: return "/network                 What Auto does about the network in this session\n/network ask             Ask before a sandboxed command reaches a host over HTTPS\n/network off             Commands in Auto have no network\n/network default         Follow the computer's setting\n/network computer ask    Change the computer's setting (or: computer off)"
+        default: return "/network                 Internet for commands in Auto and for web_fetch/web_search in this session\n/network ask             Ask before each host, over HTTPS only\n/network off             No internet: commands have no network and the web tools are not offered\n/network default         Follow the computer's setting\n/network computer ask    Change the computer's setting (or: computer off)"
         }
         let here = asks(session, home: home)
         let source = session.network == nil ? "the computer's setting" : "this session's own choice"
         let allowed = alwaysAllowed(home: home, workspace: session.workspace).sorted()
-        var said = "In Auto, sandboxed commands in this session have no network (\(source))."
-        if here { said = "In Auto, a sandboxed command in this session that needs a host over HTTPS asks first (\(source)). An answer lasts for that request; Always Allow keeps a host for this project." }
+        var said = "This session has no internet (\(source)): sandboxed commands in Auto have no network, and web_fetch and web_search are not offered."
+        if here { said = "This session asks before each host (\(source)): a sandboxed command in Auto, web_fetch and web_search each ask before reaching a new host over HTTPS. Always keeps a host for this project." }
         if !allowed.isEmpty { said += "\nAlways allowed in this project: " + allowed.joined(separator: ", ") }
         return said
     }
@@ -78,10 +112,10 @@ public enum NetworkSettings {
             try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
             try JSONSerialization.data(withJSONObject: ["mode": word == "ask" ? "ask" : "offline"]).write(to: home.appendingPathComponent("network.json"), options: .atomic)
         } else if !word.isEmpty {
-            return "/network          What Auto does about the network\n/network ask      Ask before a sandboxed command reaches a host over HTTPS; allowed for that request only\n/network off      Commands in Auto have no network"
+            return "/network          Internet for commands in Auto and for web_fetch/web_search: ask before each host, or off\n/network ask      Ask before each host, over HTTPS only\n/network off      No internet: commands have no network and the web tools are not offered"
         }
-        return asks(home: home) ? "In Auto, a sandboxed command that needs a host over HTTPS asks first. An answer lasts for that request. Nothing else is reachable: not this computer, not your local network, not plain HTTP."
-                                : "In Auto, sandboxed commands have no network. /network ask lets them ask for a host over HTTPS."
+        return asks(home: home) ? "Mason asks before each host: a sandboxed command in Auto, web_fetch and web_search each ask before reaching a new host over HTTPS. Nothing else is reachable: not this computer, not your local network, not plain HTTP."
+                                : "Mason has no internet: sandboxed commands have no network and the web tools are not offered. /network ask lets them ask for a host over HTTPS."
     }
 }
 

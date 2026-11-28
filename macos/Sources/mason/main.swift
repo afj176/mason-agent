@@ -77,14 +77,17 @@ final class CLI {
           New sessions ask before each edit and command (--review).
         mason --run-due
           Runs the scheduled requests that are due, unattended, and exits. For launchd or cron; the app does this itself while open.
+        mason chat [--resume]
+          A conversation with the running model, shared with the app's Chat. It can read the web, your skills and your
+          MCP servers, asking first; it cannot read your files or run commands. --resume continues the latest chat.
         mason theme [blueprint|evergreen|graphite|kiln|retro-neon]
           Lists the theme families, or chooses one for the CLI and Mason Agent.
         """
 
     static func main() async -> Int32 {
         var values: [String: String] = [:]; var flags = Set<String>()
-        var arguments = Array(CommandLine.arguments.dropFirst())
-        if arguments.first == "chat" { arguments.removeFirst() }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "chat" { return await ChatCLI.run(Array(arguments.dropFirst())) }
         if arguments.contains("--version") { print("mason \(MasonVersion.current)"); return 0 }
         if arguments.contains("--help") || arguments.contains("-h") { print(usage); print(ScriptOperations.usage); return 0 }
         if arguments.first == "theme" { theme(arguments.dropFirst().joined(separator: " ")); return 0 }
@@ -502,6 +505,18 @@ final class CLI {
         }
     }
 
+    /// Opens a file in $VISUAL or $EDITOR, when one is set, and waits for it to close.
+    func openInEditor(_ path: String) {
+        let environment = ProcessInfo.processInfo.environment
+        guard Term.interactive, let editor = [environment["VISUAL"], environment["EDITOR"]].compactMap({ $0?.trimmingCharacters(in: .whitespaces) }).first(where: { !$0.isEmpty }) else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // The editor setting may carry its own arguments ("code -w"); the path goes in as one argument.
+        process.arguments = ["-c", editor + " \"$1\"", "mason-editor", path]
+        do { try process.run(); process.waitUntilExit() }
+        catch { Term.line(Term.paint(Term.yellow, "  \(editor) could not be started: ") + error.localizedDescription) }
+    }
+
     func confirm(_ question: String) -> Bool {
         guard Term.interactive else { Term.line("  \(question) Not confirmed: there is no terminal to ask."); return false }
         Term.write("  \(question)  \(Term.paint(Term.accent, "y")) yes   \(Term.paint(Term.accent, "n")) no  › ")
@@ -640,6 +655,24 @@ final class CLI {
             for line in try await Experiments.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/bundle", "/bundles":
             for line in try Bundles.command(rest).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+        case "/skills":
+            let said = try Skills.command(rest, workspace: workspace, home: home)
+            for line in said.split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
+            if rest.lowercased().hasPrefix("new "), said.hasPrefix("Made ") { openInEditor(String(said.dropFirst(5))) }
+        case "/skill":
+            let words = rest.split(separator: " ", maxSplits: 1).map(String.init)
+            guard let name = words.first else { throw MasonError("Use /skill NAME [request]. /skills lists them.") }
+            var request = words.count > 1 ? words[1].trimmingCharacters(in: .whitespaces) : ""
+            _ = try Skills.request(name, request: "", workspace: workspace, home: home)
+            if request.isEmpty {
+                guard Term.interactive else { throw MasonError("Use /skill NAME REQUEST.") }
+                Term.write("  What should Mason do with the skill \(name)? › ")
+                request = readLine()?.trimmingCharacters(in: .whitespaces) ?? ""
+                guard !request.isEmpty else { break }
+            }
+            await send(try Skills.request(name, request: request, workspace: workspace, home: home))
+        case "/tools":
+            for line in try ToolCatalogue.command(rest, workspace: workspace, home: home).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
         case "/languages", "/language":
             if rest.hasPrefix("install") { Term.line("  Installing. This can take a few minutes.") }
             for line in try await LanguageServers.command(rest, workspace: workspace).split(separator: "\n", omittingEmptySubsequences: false) { Term.line("  " + line) }
@@ -762,12 +795,18 @@ final class CLI {
             ("/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"),
             ("/milestone", "A saved plan: milestones, the files each covers and how each is checked"),
             ("/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"),
+            ("/skills", "Every skill: on, off or hidden, its source and what it is for"),
+            ("/skills show NAME · new NAME [about]", "Show a skill's SKILL.md, or make a new one in .mason/skills"),
+            ("/skills on NAME · off NAME", "Switch a skill on or off for this project"),
+            ("/skill NAME [request]", "Run a request with a skill"),
+            ("/tools", "Every tool by group, on or off for this project"),
+            ("/tools on NAME · off NAME", "Switch a tool on or off for this project"),
             ("/languages", "The languages in this project and the language server that checks each; install one (see /languages help)"),
             ("/notes", "Notes for this project. Mason reads every note, up to 12, with each request (see /notes help)"),
             ("/note TEXT", "Keep a note for this project, the same as /notes add TEXT"),
             ("/generation", "Temperature, top P and the like, kept for the model in use (see /generation help)"),
             ("/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"),
-            ("/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"),
+            ("/network", "Internet for commands in Auto and for web_fetch/web_search: ask before each host, or off"),
             ("/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"),
             ("/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"),
             ("/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"),
