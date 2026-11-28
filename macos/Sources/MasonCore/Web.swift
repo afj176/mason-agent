@@ -330,7 +330,7 @@ extension Agent {
     /// The web tools a session is offered: none when its network setting is off, otherwise in every permission mode,
     /// because reading the web changes nothing here.
     public static func webTools(for session: Session, home: URL = DataHome.url) -> [ToolSpec] {
-        NetworkSettings.asks(session, home: home) ? webTools : []
+        NetworkSettings.webAllowed(session, home: home) ? webTools : []
     }
 
     /// The reader for this request, asking the user about each new host unless the project always allows it.
@@ -349,7 +349,7 @@ extension Agent {
 
     func performWeb(_ call: ToolCall, arguments: [String: Any], session: inout Session) async throws -> (Activity.State, String)? {
         guard call.name == "web_fetch" || call.name == "web_search" else { return nil }
-        guard NetworkSettings.asks(session, home: home) else { throw MasonError("The internet is off for this session (/network). Tell the user what you would look up instead.") }
+        guard NetworkSettings.webAllowed(session, home: home) else { throw MasonError("The internet is off for this session (/network). Tell the user what you would look up instead.") }
         let reader = webReader(session)
         do {
             if call.name == "web_search" {

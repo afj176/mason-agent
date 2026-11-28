@@ -58,6 +58,7 @@ final class SkillsToolsWebTests: XCTestCase {
         XCTAssertEqual(all.map(\.origin), ["project", ".claude", ".agents", "bundle kit", "bundle kit"])
         XCTAssertEqual(all.map(\.state), ["on", "hidden", "on", "on", "hidden"])
         XCTAssertEqual(all[1].hiddenBy, "Hidden by .mason/skills/release")
+        XCTAssertEqual(all[4].hiddenBy, "Hidden by .mason/skills/release", "a hidden bundle skill says what hides it, like the others")
         XCTAssertEqual(all[2].description, "No description", "only front matter gives a description")
         XCTAssertEqual(all[0].description, "How we cut a release")
         XCTAssertEqual(Skills.list(workspace, home: home).map(\.name), ["deploy", "lint", "release"])
@@ -163,6 +164,29 @@ final class SkillsToolsWebTests: XCTestCase {
         _ = try NetworkSettings.command("off", home: home)
         session.network = nil
         XCTAssertTrue(Agent.webTools(for: session, home: home).isEmpty, "the computer's setting covers the web tools too")
+        XCTAssertTrue(try String(contentsOf: home.appendingPathComponent("network.json"), encoding: .utf8).contains("offline"), "off is stored explicitly")
+    }
+
+    func testTheDefaultKeepsCommandsOfflineButOffersTheWebGroup() async throws {
+        var (store, session) = try session(.auto)
+        XCTAssertEqual(NetworkSettings.mode(session, home: home), "default")
+        XCTAssertFalse(NetworkSettings.asks(session, home: home), "commands in Auto have no network by default")
+        XCTAssertTrue(NetworkSettings.webAllowed(session, home: home))
+        XCTAssertEqual(Agent.webTools(for: session, home: home).map(\.name), ["web_fetch", "web_search"])
+        let model = ScriptedModel([ModelReply(text: "Hello.")])
+        let agent = Agent(store: store, model: model, approve: { _ in true }, emit: { _ in })
+        agent.derivesChecks = false
+        await agent.run(&session, request: "Hi")
+        XCTAssertTrue(model.seen[0][0].content.contains("web for reading a web page"), "the web group is offered")
+        XCTAssertNil(agent.relay(session), "no relay for commands while the setting is unset")
+
+        _ = try NetworkSettings.command("ask", home: home)
+        XCTAssertTrue(NetworkSettings.asks(session, home: home) && NetworkSettings.webAllowed(session, home: home), "ask covers both")
+        _ = try NetworkSettings.command("off", home: home)
+        XCTAssertFalse(NetworkSettings.asks(session, home: home) || NetworkSettings.webAllowed(session, home: home), "off covers both")
+        _ = try NetworkSettings.command("default", home: home)
+        XCTAssertEqual(NetworkSettings.mode(home: home), "default")
+        XCTAssertTrue(try NetworkSettings.command("", home: home).contains("Commands in Auto have no network. web_fetch and web_search ask"))
     }
 
     // MARK: web hosts and redirects

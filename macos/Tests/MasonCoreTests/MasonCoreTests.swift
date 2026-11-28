@@ -846,10 +846,8 @@ final class MasonCoreTests: XCTestCase {
                                  [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]] {
             XCTAssertFalse(NetworkPolicy.isPublic(address), "\(address) is not on the public internet")
         }
-        XCTAssertTrue(NetworkSettings.asks(home: home), "asking is the default")
-        XCTAssertTrue(try NetworkSettings.command("off", home: home).contains("no network"))
-        XCTAssertFalse(NetworkSettings.asks(home: home))
-        XCTAssertTrue(try NetworkSettings.command("ask", home: home).contains("asks before each host"))
+        XCTAssertTrue(try NetworkSettings.command("", home: home).contains("no network"))
+        XCTAssertTrue(try NetworkSettings.command("ask", home: home).contains("asks first"))
         XCTAssertTrue(NetworkSettings.asks(home: home))
         XCTAssertTrue(SandboxProfile.profile(workspace: "/w", scratch: "/s", relay: 4321).hasSuffix("(deny network*)\n(allow network-outbound (remote tcp \"localhost:4321\"))"))
         XCTAssertTrue(SandboxProfile.profile(workspace: "/w", scratch: "/s").hasSuffix("(deny network*)"), "without the relay the sandbox has no network at all")
@@ -1180,8 +1178,6 @@ final class MasonCoreTests: XCTestCase {
 
     func testNetworkIsChosenPerSessionAndAHostCanBeAlwaysAllowed() async throws {
         var (store, session) = try session(.auto)
-        XCTAssertTrue(NetworkSettings.asks(session, home: home), "asking is the default")
-        _ = try NetworkSettings.command("off", home: home)
         XCTAssertFalse(NetworkSettings.asks(session, home: home))
         XCTAssertTrue(try NetworkSettings.sessionCommand("ask", session: &session, home: home).contains("this session's own choice"))
         XCTAssertTrue(NetworkSettings.asks(session, home: home) && !NetworkSettings.asks(home: home), "one session asking does not change the computer's setting")

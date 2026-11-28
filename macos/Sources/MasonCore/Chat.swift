@@ -236,7 +236,7 @@ public enum Chat {
         guard canCallTools(model) else { return [] }
         let switches = conversation.switches
         var tools: [ToolSpec] = []
-        if switches.web, NetworkSettings.asks(home: home) { tools += Agent.webTools }
+        if switches.web, NetworkSettings.webAllowed(home: home) { tools += Agent.webTools }
         if switches.skills, !skills(home: home).isEmpty {
             tools.append(ToolSpec(name: "read_skill", description: "Read the instructions of one skill, by name.", parameters: ["type": "object", "properties": ["name": ["type": "string"]], "required": ["name"], "additionalProperties": false]))
         }
@@ -290,7 +290,7 @@ public enum Chat {
         do {
             switch call.name {
             case "web_fetch", "web_search":
-                guard NetworkSettings.asks(home: home) else { throw MasonError("The internet is off on this computer (/network).") }
+                guard NetworkSettings.webAllowed(home: home) else { throw MasonError("The internet is off on this computer (/network).") }
                 if reader == nil {
                     let approve = tools.approve
                     reader = WebReader(ask: { host in

@@ -205,7 +205,7 @@ final class ChatCLI {
         let model = endpoint.flatMap { try? OpenAIClient($0) }
         Term.line()
         if let model, !Chat.canCallTools(model) { Term.line(Term.paint(Term.yellow, "  This model can't call tools.")) }
-        let internet = NetworkSettings.asks(home: home)
+        let internet = NetworkSettings.webAllowed(home: home)
         let skills = Chat.skills(home: home).count, servers = Mcp.enabled(home: home)
         func row(_ name: String, _ on: Bool, _ note: String) {
             Term.line("  " + name.padding(toLength: 8, withPad: " ", startingAt: 0) + (on ? Term.paint(Term.green, "on ") : Term.paint(Term.dim, "off")) + "  " + Term.paint(Term.dim, note))

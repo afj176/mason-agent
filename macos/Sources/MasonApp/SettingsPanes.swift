@@ -98,7 +98,7 @@ struct AgentsPane: View {
 struct ToolsPane: View {
     @EnvironmentObject var model: AppModel
     @State private var off: Set<String> = []
-    @State private var asks = true
+    @State private var internet = "default"
     @State private var projectHosts: [String] = []
     @State private var chatHosts: [String] = []
 
@@ -125,7 +125,12 @@ struct ToolsPane: View {
             }
             McpSection()
             Section {
-                Toggle("Ask before each host", isOn: Binding(get: { asks }, set: { setInternet($0) }))
+                Picker("Internet", selection: Binding(get: { internet }, set: { setInternet($0) })) {
+                    Text("Web tools ask; commands have no network").tag("default")
+                    Text("Web tools and commands ask").tag("ask")
+                    Text("Off").tag("off")
+                }
+                Text(NetworkSettings.describe(internet)).font(.caption).foregroundStyle(.secondary)
                 if projectHosts.isEmpty && chatHosts.isEmpty {
                     Text("No host is always allowed.").foregroundStyle(.secondary)
                 }
@@ -148,7 +153,7 @@ struct ToolsPane: View {
             } header: {
                 Text("Internet")
             } footer: {
-                Text(NetworkSettings.note + " Off: commands in Auto have no network and the web tools are not offered. A session can choose its own with /network.")
+                Text(NetworkSettings.note + " The setting for this computer; a session can choose its own with /network.")
             }
         }
         .formStyle(.grouped)
@@ -181,7 +186,7 @@ struct ToolsPane: View {
 
     func load() {
         off = workspace.map { ToolCatalogue.disabled($0, home: home) } ?? []
-        asks = NetworkSettings.asks(home: home)
+        internet = NetworkSettings.mode(home: home)
         projectHosts = model.session.map { NetworkSettings.alwaysAllowed(home: home, workspace: $0.workspace).sorted() } ?? []
         chatHosts = NetworkSettings.chatHosts(home: home)
     }
@@ -192,8 +197,8 @@ struct ToolsPane: View {
         load()
     }
 
-    func setInternet(_ on: Bool) {
-        do { _ = try NetworkSettings.command(on ? "ask" : "off", home: home) } catch { model.notice = model.describe(error) }
+    func setInternet(_ mode: String) {
+        do { _ = try NetworkSettings.command(mode, home: home) } catch { model.notice = model.describe(error) }
         load()
     }
 
