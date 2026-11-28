@@ -117,7 +117,12 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        # A request that offers no tools is a plain question, such as a compaction summary: answer in text.
+        # A request that offers no coding tools is a plain question, such as a compaction summary or a Chat
+        # message (Chat offers only web, skills and MCP tools): answer in text.
+        offered = {tool.get("function", {}).get("name") for tool in request.get("tools") or []}
+        coding = bool(offered - {"web_fetch", "web_search", "read_skill", "mcp_tools", "mcp_call", "mcp_resources", "mcp_read", "enable_tools"})
+        if not coding:
+            request.pop("tools", None)
         call = decide(request.get("messages", [])) if request.get("tools") else None
         if isinstance(call, str):
             delta, finish, call = {"content": call}, "stop", None
