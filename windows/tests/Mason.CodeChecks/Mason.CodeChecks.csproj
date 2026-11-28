@@ -21,6 +21,10 @@
     <Compile Include="../../src/MasonAgent/ModelAdapters.cs" Link="ModelAdapters.cs" />
     <Compile Include="../../src/MasonAgent/LlamaRuntime.cs" Link="LlamaRuntime.cs" />
     <Compile Include="../../src/MasonAgent/ModelMemory.cs" Link="ModelMemory.cs" />
+    <Compile Include="../../src/MasonAgent/ChatLibrary.cs" Link="ChatLibrary.cs" />
+    <Compile Include="../../src/MasonAgent/ChatCompaction.cs" Link="ChatCompaction.cs" />
+    <Compile Include="../../src/MasonAgent/ChatRetention.cs" Link="ChatRetention.cs" />
+    <Compile Include="../../src/MasonAgent/ChatTools.cs" Link="ChatTools.cs" />
     <EmbeddedResource Include="../../scripts/ModelAdapters.json" LogicalName="Mason.ModelAdapters.json" />
   </ItemGroup>
 </Project>
