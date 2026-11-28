@@ -7,6 +7,14 @@ using Mason.Code;
 /// Each check writes only inside its own folder under the checks root.</summary>
 internal static class CliCommandChecks
 {
+    sealed class FakeSearch : ICodeSemanticModels
+    {
+        public string EmbeddingIdentity => "fake";
+        public bool CanRerank => false;
+        public Task<float[][]> Embed(IReadOnlyList<string> texts, CancellationToken ct) => Task.FromResult(texts.Select(_ => new[] { 1f }).ToArray());
+        public Task<double[]> Rerank(string query, IReadOnlyList<string> documents, CancellationToken ct) => throw new NotSupportedException();
+    }
+
     static bool Throws<T>(Action action) where T : Exception { try { action(); return false; } catch (T) { return true; } }
 
     internal static async Task Run(string root, Action<bool, string> check)
@@ -128,6 +136,20 @@ internal static class CliCommandChecks
             CodeRoles.Command("reviewer off", session, connections);
             check(session.ReviewerModel == null, "/roles reviewer off goes back to the coding model");
         }
+
+        // ── /embeddings off ──────────────────────────────────────────────────────────────────────────────────────
+        var priorProvider = CodeSemanticIndex.Provider;
+        try
+        {
+            var searchSession = new CodeSession { Workspace = project, Mode = "build", Permission = CodePermission.ReviewEdits };
+            File.WriteAllText(Path.Combine(profile, CodeSemanticIndex.SettingsFile), "{\"Embeddings\":\"" + Guid.NewGuid() + "\",\"Reranker\":null,\"Off\":false}");
+            CodeSemanticIndex.Use(profile, () => new FakeSearch());
+            check(!CodeSemanticIndex.IsOff(profile) && CodeSchema.Available(searchSession).Contains("semantic_search"), "With an embeddings connection, semantic_search is offered");
+            File.WriteAllText(Path.Combine(profile, CodeSemanticIndex.SettingsFile), "{\"Embeddings\":\"" + Guid.NewGuid() + "\",\"Reranker\":null,\"Off\":true}");
+            check(CodeSemanticIndex.IsOff(profile) && !CodeSemanticIndex.Available && !CodeSchema.Available(searchSession).Contains("semantic_search"),
+                "Code search switched off (\"Off\": true in code-search.json) removes semantic_search");
+        }
+        finally { CodeSemanticIndex.Provider = priorProvider; }
 
         // ── /generation ──────────────────────────────────────────────────────────────────────────────────────────
         var endpoint = new AiEndpointProfile { Name = "Qwen", Endpoint = "http://127.0.0.1:8099/", Model = "qwen" };

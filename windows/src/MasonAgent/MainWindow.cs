@@ -73,7 +73,7 @@ public sealed partial class MainWindow : Window
         // "Open in chat" goes through openNativeChat, which the Chat page owns.
         openCodeWithModel = id => { Navigate("Code"); selectCodingModel?.Invoke(id); };
         // The agent's semantic_search tool is offered only while an embeddings connection is assigned and checked.
-        Mason.Code.CodeSemanticIndex.Provider = () =>
+        Mason.Code.CodeSemanticIndex.Use(Store.Root, () =>
         {
             List<AiEndpointProfile> profiles; try { profiles = Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []; } catch { return null; }
             var settings = CodeSearchSettings.Read();
@@ -81,7 +81,7 @@ public sealed partial class MainWindow : Window
             var reranker = CodeSearchModels.Pick(profiles, settings.Reranker, AiCapability.Reranking);
             string Key(AiEndpointProfile p) { try { return aiSessionKeys.GetValueOrDefault(p.Id) ?? Store.Unprotect(p.Secret); } catch { return ""; } }
             return new CodeSearchModels(embeddings, Key(embeddings), reranker, reranker == null ? "" : Key(reranker));
-        };
+        });
 
         var content = new Grid { Padding = new Thickness(24, 16, 24, 12) };
         // Lifted cards and the floating composers cast their shadow onto this empty layer behind the pages

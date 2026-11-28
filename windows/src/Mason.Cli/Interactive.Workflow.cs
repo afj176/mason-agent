@@ -594,7 +594,8 @@ internal sealed partial class Interactive
         "/embeddings URL MODEL [KEY]       Choose one (any server with /v1/embeddings, such as llama-server --embedding)\n" +
         "/embeddings rerank URL MODEL      Also reorder the best matches with a /v1/rerank server   ·   rerank auto\n" +
         "/embeddings NUMBER                Choose a saved embeddings connection   ·   /embeddings auto: the one checked connection\n" +
-        "/embeddings test                  Embed a line of code to check the server answers";
+        "/embeddings test                  Embed a line of code to check the server answers\n" +
+        "/embeddings off                   Stop offering search by meaning";
 
     async Task Embeddings(string rest)
     {
@@ -605,6 +606,12 @@ internal sealed partial class Interactive
         var saved = CodeSearchSettings.Read();
         var words = rest.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (words.Length == 1 && words[0].Equals("help", StringComparison.OrdinalIgnoreCase)) { Lines(EmbeddingsHelp); return; }
+        if (words.Length == 1 && words[0].Equals("off", StringComparison.OrdinalIgnoreCase))
+        {
+            Store.Write(CodeSearchSettings.File, saved with { Off = true });
+            Lines("Code search by meaning is off.");
+            return;
+        }
         if (words.Length == 1 && words[0].Equals("test", StringComparison.OrdinalIgnoreCase))
         {
             var current = (saved.Embeddings is { } chosen ? all.FirstOrDefault(p => p.Id == chosen) : CodeSearchModels.Pick(all, null, AiCapability.Embeddings)) ?? throw new ArgumentException("Choose a server first: /embeddings URL MODEL");
@@ -629,7 +636,7 @@ internal sealed partial class Interactive
             all = [.. all.Where(p => p.Id != made.Id), made];
             Store.Write("ai-connections.json", all);
             var result = await CheckConnection(made, capability);
-            Store.Write(CodeSearchSettings.File, rerank ? saved with { Reranker = made.Id } : saved with { Embeddings = made.Id });
+            Store.Write(CodeSearchSettings.File, rerank ? saved with { Reranker = made.Id } : saved with { Embeddings = made.Id, Off = false });
             Lines(result.State == "Passed"
                 ? (rerank ? "The best matches are reranked by " + made.Model + "." : "Mason will search code by meaning with " + made.Model + " at " + endpoint + ". /embeddings test checks it answers.")
                 : "Saved " + made.Model + " at " + endpoint + " and chose it, but its " + (rerank ? "reranking" : "embeddings") + " check did not pass: " + result.Detail +
@@ -642,6 +649,7 @@ internal sealed partial class Interactive
         {
             var lines = new List<string>();
             string Name(Guid? id, AiEndpointProfile[] options, string automatic) => id is { } value ? all.Where(p => p.Id == value).Select(p => p.Model + " at " + p.Endpoint + (options.Any(o => o.Id == value) ? "" : " (its check has not passed; /embeddings test tries again)")).FirstOrDefault() ?? "a removed connection" : automatic;
+            if (saved.Off && !rerank) lines.Add("Code search by meaning is off. /embeddings URL MODEL, a number or auto turns it back on.");
             lines.Add("Embeddings: " + Name(saved.Embeddings, embedders, "automatic (the one checked embeddings connection)") + "\nReranker: " + Name(saved.Reranker, rerankers, "automatic (the one checked reranker, if any)"));
             for (int i = 0; i < choices.Length; i++) lines.Add($"{i + 1}. {choices[i].DisplayName}  ·  {choices[i].Endpoint}{(Passed(choices[i], capability) ? "" : "  ·  not checked yet")}");
             if (choices.Length == 0) lines.Add(rerank ? "No reranking connection has passed its check." : "No embeddings connection has passed its check. /embeddings URL MODEL chooses one, or start one in Mason Agent's Models (My models → Code search).");
@@ -653,7 +661,7 @@ internal sealed partial class Interactive
         Guid? picked = given.Equals("auto", StringComparison.OrdinalIgnoreCase) ? null
             : int.TryParse(given, out var number) && number >= 1 && number <= choices.Length ? choices[number - 1].Id
             : throw new ArgumentException("Use /embeddings URL MODEL, a number from /embeddings" + (rerank ? " rerank" : "") + ", or auto.");
-        var next = rerank ? saved with { Reranker = picked } : saved with { Embeddings = picked };
+        var next = rerank ? saved with { Reranker = picked } : saved with { Embeddings = picked, Off = false };
         Store.Write(CodeSearchSettings.File, next);
         Lines((rerank ? "Reranker: " : "Embeddings: ") + (picked is { } id ? choices.First(p => p.Id == id).DisplayName : "automatic") + ". This applies to every session, in the app too.");
     }
@@ -672,7 +680,7 @@ internal sealed partial class Interactive
     /// <summary>The semantic_search tool, routed to the assigned embeddings and reranking connections, as in the app.</summary>
     static void UseCodeSearch()
     {
-        CodeSemanticIndex.Provider = () =>
+        CodeSemanticIndex.Use(Path.GetFullPath(DataHome()), () =>
         {
             List<AiEndpointProfile> profiles; try { profiles = Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []; } catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return null; }
             var settings = CodeSearchSettings.Read();
@@ -680,6 +688,6 @@ internal sealed partial class Interactive
             var reranker = CodeSearchModels.Pick(profiles, settings.Reranker, AiCapability.Reranking);
             static string Key(AiEndpointProfile p) { try { return Store.Unprotect(p.Secret); } catch (Exception e) when (e is System.Security.Cryptography.CryptographicException or FormatException) { return ""; } }
             return new CodeSearchModels(embeddings, Key(embeddings), reranker, reranker == null ? "" : Key(reranker));
-        };
+        });
     }
 }
