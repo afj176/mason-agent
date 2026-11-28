@@ -19,10 +19,10 @@ public enum Compaction {
     /// What a chat stops with in the same case. Chat has no manual compaction.
     public static let chatFullMessage = "Chat context is full and automatic compaction is off. Originals are retained; start a new chat or load a larger context."
 
-    /// True when the last request left no room to work: under 5% of the context (and at least 128 tokens) is free.
+    /// True when the last request left no room to work: fewer than 128 tokens of the context are free (the Windows rule).
     public static func full(promptTokens: Int?, window: Int?) -> Bool {
         guard let window, window > 0, let used = promptTokens else { return false }
-        return window - used < max(128, window / 20)
+        return window - used < 128
     }
 
     /// The words /compact auto prints, shared by mason and its tests. `on` is the setting after the command.

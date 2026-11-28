@@ -229,10 +229,13 @@ public enum Chat {
         refusedLock.lock(); refused.insert(connection(model)); refusedLock.unlock()
     }
 
-    /// A server refuses tools when it answers HTTP 400 or 501, or its error mentions tools.
+    /// A server refuses tools when it answers HTTP 501, or HTTP 400 or 422 with an error about tools or functions.
+    /// Any other error, such as a prompt that is too long, is not a refusal and leaves tools on.
     public static func refusesTools(_ error: Error) -> Bool {
         guard let error = error as? MasonError, let status = error.httpStatus else { return false }
-        return status == 400 || status == 501 || error.description.lowercased().contains("tool")
+        if status == 501 { return true }
+        let text = error.description.lowercased()
+        return (status == 400 || status == 422) && (text.contains("tool") || text.contains("function"))
     }
 
     nonisolated(unsafe) static var refused = Set<String>()

@@ -101,6 +101,20 @@ final class CliParityTests: XCTestCase {
         XCTAssertTrue(model.seen.isEmpty)
     }
 
+    func testAPlainBadRequestIsAnErrorAndLeavesToolsOn() async throws {
+        let home = folder.appendingPathComponent("home")
+        let chats = try ChatStore(home: home)
+        var conversation = try chats.create()
+        let model = ThrowingModel(MasonError.http(400, "The model server returned HTTP 400. {\"error\":\"context length exceeded\"}"))
+        XCTAssertFalse(Chat.offeredTools(conversation, model: model, home: home).isEmpty)
+        do {
+            try await Chat.send(&conversation, text: "Hello", model: model, store: chats, tools: ChatTools(home: home, approve: { _ in .no })) { _ in }
+            XCTFail("the error reaches the user")
+        } catch { XCTAssertTrue(((error as? MasonError)?.description ?? "").contains("context length exceeded")) }
+        XCTAssertTrue(Chat.canCallTools(model), "tools stay on")
+        XCTAssertFalse(Chat.offeredTools(conversation, model: model, home: home).isEmpty)
+    }
+
     func testAServerThatRefusesToolsGetsTheMessageAgainWithoutThem() async throws {
         let home = folder.appendingPathComponent("home")
         let skill = home.appendingPathComponent("skills/notes/SKILL.md")
@@ -120,8 +134,9 @@ final class CliParityTests: XCTestCase {
         try await Chat.send(&conversation, text: "Again", model: model, store: chats, tools: ChatTools(home: home, approve: { _ in .no })) { _ in }
         XCTAssertEqual(model.seenTools.last, [], "later messages go without tools")
         XCTAssertTrue(Chat.refusesTools(MasonError.http(501, "The model server returned HTTP 501.")))
-        XCTAssertTrue(Chat.refusesTools(MasonError.http(500, "The model server returned HTTP 500. tools are not supported")))
-        XCTAssertFalse(Chat.refusesTools(MasonError.http(500, "The model server returned HTTP 500.")))
+        XCTAssertTrue(Chat.refusesTools(MasonError.http(422, "The model server returned HTTP 422. Unsupported parameter: functions")))
+        XCTAssertFalse(Chat.refusesTools(MasonError.http(500, "The model server returned HTTP 500. tools are not supported")))
+        XCTAssertFalse(Chat.refusesTools(MasonError.http(400, "The model server returned HTTP 400. context length exceeded")))
         XCTAssertFalse(Chat.refusesTools(MasonError("tool")), "not an answer from the server")
     }
 
