@@ -3,6 +3,8 @@
 
 #include "background.hpp"
 #include "delivery.hpp"
+#include "network.hpp"
+#include "shell.hpp"
 
 #include <array>
 
@@ -267,6 +269,50 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
     composer_hint_.add_css_class("composer-hint");
     composer_hint_.set_text("Ctrl+Enter to send");
     controls->append(permission_);
+    {
+        // The project environment, as on Windows and macOS: the shell commands run in and this session's network.
+        const std::string shell_path = shell::path();
+        environment_button_.set_label(fs::path(shell_path).filename().string());
+        environment_button_.set_always_show_arrow(true);
+        environment_button_.add_css_class("chip-menu");
+        environment_button_.set_tooltip_text("Project environment: the command shell and network access for this session");
+        gtk_accessible_update_property(GTK_ACCESSIBLE(environment_button_.gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Project coding environment", -1);
+        auto* body = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+        body->set_margin(12);
+        body->set_size_request(340, -1);
+        auto label = [body](const std::string& text, const char* css) {
+            auto* made = Gtk::make_managed<Gtk::Label>(text);
+            made->set_xalign(0);
+            made->set_wrap(true);
+            made->set_max_width_chars(44);
+            if (css) made->add_css_class(css);
+            body->append(*made);
+            return made;
+        };
+        label("Project environment", "title-4");
+        label("Command shell", "heading");
+        label(shell_path, "monospace");
+        label(shell::sandbox_available() ? "Auto runs commands in a sandbox limited to this project."
+                                         : "The sandbox (bubblewrap) is unavailable, so Auto refuses commands.", "dim-label");
+        label("Network", "heading")->set_margin_top(4);
+        network_.set_model(Gtk::StringList::create({"Default: this computer's setting", "Ask for commands and web", "Off: no internet"}));
+        gtk_accessible_update_property(GTK_ACCESSIBLE(network_.gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Command network policy", -1);
+        network_.property_selected().signal_changed().connect([this] {
+            if (updating_) return;
+            const char* words[] = {"default", "ask", "off"};
+            controller_.host_command("/network", words[std::min<guint>(network_.get_selected(), 2)]);
+        });
+        body->append(network_);
+        network_hint_.set_xalign(0);
+        network_hint_.set_wrap(true);
+        network_hint_.set_max_width_chars(44);
+        network_hint_.add_css_class("dim-label");
+        body->append(network_hint_);
+        label("Any source language · execution depends on the toolchains installed on this computer.", "dim-label");
+        environment_popover_.set_child(*body);
+        environment_button_.set_popover(environment_popover_);
+    }
+    controls->append(environment_button_);
     controls->append(model_button_);
     window_button_.set_label("Window");
     window_button_.add_css_class("chip-menu");
@@ -1196,8 +1242,16 @@ void MainWindow::refresh_composer() {
     composer_hint_.set_visible(!controller_.running);
     window_button_.set_visible(!controller_.running);
     if (session) permission_.set_selected(session->ask_only ? 0 : static_cast<guint>(session->permission));
+    if (session) {
+        network_.set_selected(session->network == "ask" ? 1 : session->network == "off" ? 2 : 0);
+        const std::string mode = session->network.empty() ? network_settings::mode(controller_.home()) : session->network;
+        network_hint_.set_text(mode == "ask" ? "A command in Auto, web_fetch and web_search each asks first before reaching a new host, over HTTPS only. Nothing else is reachable: not this computer, not your local network, not plain HTTP."
+                               : mode == "off" ? "No internet: commands in Auto have no network and web_fetch/web_search are not offered."
+                                               : "Commands in Auto have no network. web_fetch and web_search ask before each host, over HTTPS only.");
+    }
     updating_ = was_updating;
     permission_.set_sensitive(!controller_.running);
+    environment_button_.set_sensitive(!controller_.running && session != nullptr);
     const bool has_text = !trim(draft_.get_buffer()->get_text()).empty();
     const bool can_follow_up = has_text && !controller_.approval;
     // Comments pinned to diff lines, each with a way to drop it.

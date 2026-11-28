@@ -413,6 +413,7 @@ struct Composer: View {
                 }
                 .labelsHidden().fixedSize().disabled(model.running)
                 .help("What Mason may do without asking. Auto runs commands in the macOS sandbox, limited to this project, with network access off.")
+                EnvironmentButton(session: session)
                 Button { model.pane = .models } label: { Label(model.endpoint == nil ? "No model running" : model.endpointName, systemImage: "cpu").lineLimit(1) }
                     .buttonStyle(.plain).chip().fixedSize()
                     .help(model.endpoint == nil ? "No model is running. Open Models to start one." : "Running at \(model.endpoint?.url ?? "")")
