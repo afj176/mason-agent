@@ -28,9 +28,42 @@ std::string command_line(const ProjectWorkflow& workflow);
 
 /// Instructions a project keeps for particular kinds of work, each in `.mason/skills/<name>/SKILL.md`
 /// (also `.claude/skills` and `.agents/skills`). The agent sees their names and reads one when it needs it.
+struct Skill {
+    std::string name, description, body;
+    std::string source;       ///< Short: project, .claude, .agents or "bundle NAME" (or "computer" for Mason's own folder).
+    std::string where;        ///< Where it lives as the user reads it: ".mason/skills/NAME" or "bundle NAME".
+    fs::path file;            ///< The SKILL.md itself.
+    bool enabled = true;      ///< False when the project's policy switches it off.
+    std::string shadowed_by;  ///< For a skill hidden by an earlier one of the same name: that one's `where`.
+    bool shadowed() const { return !shadowed_by.empty(); }
+    /// "on", "off" or "hidden".
+    std::string state() const { return shadowed() ? "hidden" : enabled ? "on" : "off"; }
+};
+
 namespace skills {
-/// The project's skills, then those of installed bundles. A project skill wins over a bundle's of the same name.
+extern const char* const kUsage;
+/// The skill folders of a project, in precedence order.
+const std::vector<std::string>& folders();
+bool valid_name(const std::string& name);
+/// Every skill the project can see, in precedence order: .mason/skills, .claude/skills, .agents/skills, then
+/// installed bundles. Shadowed skills are kept and marked, and skills the policy switches off are marked off.
+std::vector<Skill> all(const Workspace& workspace, const fs::path& home = data_home());
+/// Skills for every chat on this computer: Mason's own `skills` folder, then installed bundles.
+std::vector<Skill> computer(const fs::path& home = data_home());
+/// The skills the agent may use: not shadowed and not switched off.
 std::vector<Definition> list(const Workspace& workspace, const fs::path& home = data_home());
+/// What read_skill returns for a skill name from `known`. Refuses one that is off.
+std::string read(const std::vector<Skill>& known, const std::string& name);
+/// The system prompt's list of enabled skills, or nothing when there are none.
+std::string prompt(const std::vector<Skill>& known);
+/// The text a new skill starts with.
+std::string template_text(const std::string& name, const std::string& description);
+/// Makes .mason/skills/NAME/SKILL.md and returns its full path. Refuses an invalid name or one already there.
+fs::path create(const Workspace& workspace, const std::string& name, const std::string& description);
+/// The request /skill NAME REQUEST sends: the skill's body in front of the request.
+std::string request(const std::vector<Skill>& known, const std::string& name, const std::string& request);
+/// /skills, /skills show NAME, /skills on NAME and /skills off NAME. /skills new is the caller's, as it may open an editor.
+std::string command(const std::string& rest, const Workspace& workspace, const fs::path& home);
 }
 
 /// An outline of a project for the model: each source file with its size and the top-level things it defines.

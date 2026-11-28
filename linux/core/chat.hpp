@@ -1,8 +1,13 @@
-// Chat: a conversation with a model that has no tools. It cannot read the project, edit files or run anything.
+// Chat: a conversation with a model that is not tied to a project. It never reads the project, edits files or runs
+// commands. It may read the web, read skills from bundles and Mason's own skills folder, and call the user's MCP
+// servers, each switched on or off per conversation, and every new host and every MCP call asks first.
 #pragma once
 #include <mutex>
 
+#include "agent.hpp"
 #include "harness.hpp"
+#include "network.hpp"
+#include "web.hpp"
 
 namespace mason {
 
@@ -19,6 +24,10 @@ struct ChatConversation {
     int prompt_tokens = 0;
     std::vector<ChatMessage> archived;  ///< Messages a compaction replaced with a summary, oldest first.
     int compactions = 0;
+    /// Which tools this conversation offers: the web and skills by default, MCP servers only when switched on.
+    bool web = true, skills = true, mcp = false;
+    /// What each tool call did, by call id, shown as a compact step where the call was made.
+    std::vector<Activity> steps;
 };
 
 /// A text file added to a chat message. Its content travels inside the message.
@@ -71,9 +80,39 @@ std::vector<TableData> find(const std::string& text);
 std::string prose(const std::string& text);
 }  // namespace tables
 
+/// An answer to a question Chat asks: a host to read, or an MCP call to make.
+enum class ChatAnswer { No, Once, Always };
+
+/// What Chat needs to offer tools. Without it a chat has none.
+struct ChatTools {
+    fs::path home = data_home();
+    /// Asked on the thread that sends. "network" requests name a host; "mcp_call" and "mcp_tools" name SERVER/TOOL.
+    std::function<ChatAnswer(const ApprovalRequest&)> approve;
+    /// Each step as it starts (state "running") and as it ends.
+    std::function<void(const Activity&)> step;
+    /// Whether the connection can make native tool calls. Without it no tools are offered.
+    bool calls_tools = true;
+    /// For tests: how the web is reached instead of the network.
+    web::Resolve resolve;
+    web::Fetch fetch;
+};
+
 namespace chat {
 
 constexpr size_t kMaxReference = 100000;
+constexpr int kMaxToolRounds = 8;
+/// Shown when the model cannot call tools.
+constexpr const char* kNoTools = "This model can't call tools.";
+/// Whether a connection makes native tool calls, the way the coding agent decides it. Every connection Mason makes on
+/// Linux is an OpenAI-compatible server with native tool calls.
+bool calls_tools(const ChatModel& model);
+/// The tools a conversation offers now: what its switches allow, less the web when the computer's network setting is
+/// off, skills when there are none and MCP when no server is in use.
+std::vector<ToolSpec> offered(const ChatConversation& conversation, const ChatTools& tools);
+/// Switches web, skills or mcp on or off for a conversation.
+void set_tool(ChatConversation& conversation, const std::string& group, bool on);
+/// One line per switch, for /tools in mason chat.
+std::string describe_tools(const ChatConversation& conversation, const ChatTools& tools);
 /// The request fields for a conversation's output limit and reasoning level. The reasoning fields are the ones
 /// llama.cpp reads; another server may ignore them.
 json extra_body(const ChatConversation& conversation);
@@ -84,8 +123,9 @@ std::string compose(const std::string& text, const std::vector<ChatAttachment>& 
 /// Sends one message and appends the answer. The conversation is saved before the model is asked and again after,
 /// so a stopped or failed request keeps the question. A long conversation is compacted first when the model's
 /// context is nearly full.
+/// With `tools`, the model may call the conversation's tools, at most 8 rounds per message, and then must answer.
 void send(ChatConversation& conversation, const std::string& text, const std::vector<ChatAttachment>& attachments, ChatModel& model, ChatStore& store,
-          const std::function<void(const std::string&)>& on_text, const CancelToken& cancel = nullptr);
+          const std::function<void(const std::string&)>& on_text, const CancelToken& cancel = nullptr, const ChatTools* tools = nullptr);
 
 }  // namespace chat
 
