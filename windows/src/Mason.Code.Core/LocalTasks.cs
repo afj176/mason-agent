@@ -23,9 +23,19 @@ public sealed class LocalTasks
     public string Journal(Guid id) => Path.Combine(Folder(id), "run");
     static T Read<T>(string path)
     {
-        using var stream = new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+        using var stream = OpenRead(path);
         if (stream.Length > 2 * 1024 * 1024) throw new InvalidDataException("Invalid task record.");
         return JsonSerializer.Deserialize<T>(stream) ?? throw new InvalidDataException("Missing task record.");
+    }
+    /// <summary>Opens a task record to read, retrying briefly while a writer is replacing it.</summary>
+    static FileStream OpenRead(string path)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try { return new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete); }
+            catch (Exception e) when (attempt < 40 && e is UnauthorizedAccessException or IOException && e is not FileNotFoundException && e is not DirectoryNotFoundException)
+            { Thread.Sleep(50); }
+        }
     }
     static void Write<T>(string target, T data, bool replace)
     {
@@ -33,7 +43,15 @@ public sealed class LocalTasks
         try {
             using (var stream = new FileStream(temp,FileMode.CreateNew,FileAccess.Write,FileShare.None))
             { JsonSerializer.Serialize(stream, data); stream.Flush(true); }
-            File.Move(temp,target,replace);
+            // Windows refuses to replace a file for a moment while another process has it open (a client reading
+            // status.json, or a virus scanner opening the new file). That is transient, so retry for up to two
+            // seconds instead of failing the task.
+            for (int attempt = 0; ; attempt++)
+            {
+                try { File.Move(temp,target,replace); break; }
+                catch (Exception e) when (replace && attempt < 40 && e is UnauthorizedAccessException or IOException && e is not FileNotFoundException && e is not DirectoryNotFoundException)
+                { Thread.Sleep(50); }
+            }
         } finally { if (File.Exists(temp)) File.Delete(temp); }
     }
     public LocalTaskSpec Spec(Guid id) => Read<LocalTaskSpec>(Path.Combine(Folder(id),"request.json"));
