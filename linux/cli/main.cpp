@@ -665,6 +665,15 @@ private:
             return true;
         }
         if (name == "/rules") { rules(rest); return true; }
+        if (name == "/compact" && (to_lower(rest) == "auto" || to_lower(rest).rfind("auto ", 0) == 0)) {
+            const auto [on, said] = compaction::auto_text(to_lower(rest).substr(4), session_.automatic_compaction);
+            if (on != session_.automatic_compaction) {
+                session_.automatic_compaction = on;
+                store_.save(session_);
+            }
+            term::line("  " + said);
+            return true;
+        }
         if (name == "/compact") { compact(); return true; }
         if (name == "/reasoning") {
             const std::string level = to_lower(rest);
@@ -896,6 +905,7 @@ private:
             {"/diff [path]", "Show what this session changed"},
             {"/undo · /redo", "Put back, or reapply, everything the latest request changed"},
             {"/compact", "Replace the conversation so far with a summary to free context"},
+            {"/compact auto on|off", "Compact automatically when the context fills up, or never"},
             {"/queue", "Run the messages you queued, after a stop or a failure"},
             {"/reasoning off|low|medium|high|default", "How much the model thinks before answering, for this session"},
             {"/agent [name|none]", "List your custom agents, or use one for this session"},
@@ -1944,6 +1954,8 @@ private:
     ChatTools tools() const {
         ChatTools made;
         made.home = home_;
+        // A server that refused tools earlier in this run is sent none.
+        if (endpoint) made.calls_tools = chat::calls_tools(OpenAIClient(*endpoint));
         return made;
     }
 
@@ -1998,6 +2010,7 @@ private:
         OpenAIClient model(*endpoint);
         ChatFeed feed;
         ChatTools with = tools();
+        const bool could_call_tools = with.calls_tools;
         with.approve = [&](const ApprovalRequest& request) { return feed.ask(request); };
         with.step = [&](const Activity& step) {
             std::lock_guard<std::mutex> guard(feed.lock);
@@ -2062,6 +2075,9 @@ private:
         term::raw(false);
         // Whatever happened, the store has the conversation as far as it got.
         conversation_ = working;
+        if (could_call_tools && !chat::calls_tools(model)) {
+            term::line(paint(term::yellow, std::string("  ") + chat::kNoTools) + paint(term::dim, " The message was sent without them; this chat's tools stay off until mason restarts."));
+        }
         if (!problem.empty()) {
             term::line(paint(problem == "Stopped." ? term::yellow : term::red, "  " + problem));
             return;
@@ -2080,6 +2096,7 @@ private:
                 {"/resume [number]", "List recent chats, or continue one"},
                 {"/attach FILE", "Attach a text file, picture, PDF or Word document to the next message (up to 5)"},
                 {"/reasoning off|low|medium|high|default", "How much the model thinks before it answers"},
+                {"/compact auto on|off", "Compact automatically when the context fills up, or never"},
                 {"/tools", "This chat's tools: web, skills and MCP, each on or off"},
                 {"/tools on|off web|skills|mcp", "Switch one on or off for this chat"},
                 {"/model [number]", "List running model servers, or switch to one"},
@@ -2140,6 +2157,17 @@ private:
             chat::configure(conversation_, to_lower(rest), conversation_.max_tokens, conversation_.reference);
             store_.save(conversation_);
             term::line(paint(term::dim, "  Reasoning: " + to_lower(rest) + "."));
+            return true;
+        }
+        if (name == "/compact") {
+            const std::string asked = to_lower(rest);
+            if (asked != "auto" && asked.rfind("auto ", 0) != 0) throw Error("Use /compact auto on or /compact auto off.");
+            const auto [on, said] = compaction::auto_text(asked.substr(4), conversation_.automatic_compaction, true);
+            if (on != conversation_.automatic_compaction) {
+                conversation_.automatic_compaction = on;
+                store_.save(conversation_);
+            }
+            term::line("  " + said);
             return true;
         }
         if (name == "/tools") {

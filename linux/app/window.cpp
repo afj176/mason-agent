@@ -705,7 +705,7 @@ void MainWindow::refresh_state() {
 
 void MainWindow::refresh_sidebar() {
     std::string fingerprint = controller_.selection + "|";
-    for (const Session& item : controller_.sessions()) fingerprint += item.id + item.title + item.state + (item.ending ? item.ending->code : "") + "|";
+    for (const Session& item : controller_.sessions()) fingerprint += item.id + item.title + item.state + (item.ending ? item.ending->code : "") + (item.automatic_compaction ? "a" : "-") + "|";
     if (fingerprint == sidebar_shown_) return;
     sidebar_shown_ = fingerprint;
     while (Gtk::Widget* child = sidebar_.get_first_child()) sidebar_.remove(*child);
@@ -767,6 +767,7 @@ void MainWindow::refresh_sidebar() {
             auto compact_item = Gio::MenuItem::create("Compact Conversation", "row.compact");
             compact_item->set_attribute_value("accel", Glib::Variant<Glib::ustring>::create("<Control><Shift>m"));
             menu->append_item(compact_item);
+            menu->append("Compact Automatically", "row.autocompact");
             menu->append("Export Session…", "row.export");
             menu->append("Export a Sanitized Copy…", "row.sanitized");
             menu->append("Import a Session Into This Project…", "row.import");
@@ -774,6 +775,11 @@ void MainWindow::refresh_sidebar() {
             auto actions = Gio::SimpleActionGroup::create();
             const std::string id = item.id, named = item.title, folder = item.workspace;
             actions->add_action("delete", [this, id] { controller_.remove_session(id); });
+            // A check item: the list is rebuilt when the session changes, so it always shows the saved setting.
+            const bool automatic = item.automatic_compaction;
+            actions->add_action_bool("autocompact", [this, id, automatic] {
+                Glib::signal_idle().connect_once([this, id, automatic] { controller_.set_automatic_compaction(id, !automatic); });
+            }, automatic);
             // After the menu closes: selecting the session rebuilds this list, row and menu included.
             actions->add_action("compact", [this, id] { Glib::signal_idle().connect_once([this, id] { controller_.select(id); controller_.compact(); }); });
             actions->add_action("export", [this, id, named] { choose_export(id, named, false); });

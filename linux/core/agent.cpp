@@ -1017,7 +1017,10 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         const int window = model_.context_window();
         for (int step = 0; step < action_limit; step++) {
             check_cancel(cancel);
-            if (compaction::needed(session, window)) {
+            if (!session.automatic_compaction) {
+                // Off: never summarized by itself; a full context stops the run, with the originals kept.
+                if (compaction::full(session.prompt_tokens, window)) throw Error(compaction::kFullMessage);
+            } else if (compaction::needed(session, window)) {
                 emit_({AgentEvent::Kind::Status, "Compacting the conversation", {}});
                 if (compaction::compact(session, model_, 6, cancel)) store_.save(session);
                 else session.prompt_tokens = 0;

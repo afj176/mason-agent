@@ -280,6 +280,16 @@ std::string transcript(const std::vector<ChatMessage>& messages, size_t from, si
 bool needed(int prompt_tokens, int window) { return window > 0 && prompt_tokens > 0 && prompt_tokens >= window * kThreshold; }
 bool needed(const Session& session, int window) { return needed(session.prompt_tokens, window); }
 
+bool full(int prompt_tokens, int window) { return window > 0 && prompt_tokens > 0 && window - prompt_tokens < std::max(128, window / 20); }
+
+std::pair<bool, std::string> auto_text(const std::string& argument, bool current, bool chat) {
+    const std::string choice = to_lower(trim(argument));
+    if (choice.empty()) return {current, std::string("Automatic compaction is ") + (current ? "on" : "off") + " · /compact auto on | off"};
+    if (choice == "on") return {true, "Automatic compaction on: a long conversation is summarized when the context fills up."};
+    if (choice == "off") return {false, chat ? "Automatic compaction off: the full history is sent until you start a new chat." : "Automatic compaction off: the full history is sent until you /compact."};
+    throw Error("Use /compact auto on or /compact auto off.");
+}
+
 size_t cut(const std::vector<ChatMessage>& messages, size_t keep) {
     size_t start = messages.size() > keep + 1 ? messages.size() - keep : 1;
     while (start > 1 && start < messages.size() && messages[start].role == "tool") start--;

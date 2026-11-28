@@ -69,6 +69,10 @@ public:
     std::chrono::steady_clock::time_point restored_at{};
     /// Replaces the conversation so far with a summary from the model. The original messages stay in the session.
     void compact();
+    /// Whether a session summarizes a long conversation by itself when the context fills up.
+    void set_automatic_compaction(const std::string& id, bool on);
+    /// The same for the selected chat.
+    void set_chat_automatic_compaction(bool on);
     /// "" lists the project's custom agents, a name uses one, "none" goes back to the default.
     void choose_agent(const std::string& name);
     /// Runs one of the commands the app shares with the command line (/experiment, /deliver, /task, /roles, /policy,

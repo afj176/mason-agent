@@ -621,6 +621,86 @@ static void test_undo_of_command_changes() {
     CHECK(second.read("calc.py") == "def add(a, b):\n    return a - b\n");
 }
 
+/// A server that answers HTTP 400 to any request that offers tools, as servers without tool support do.
+struct ToolRefusingModel : ChatModel {
+    std::string id = "refuses-tools-" + new_id();
+    std::vector<std::vector<std::string>> seen_tools;
+    std::string name() const override { return id; }
+    ModelReply complete(const std::vector<ChatMessage>&, const std::vector<ToolSpec>& tools, const std::function<void(const std::string&)>&, const CancelToken&) override {
+        seen_tools.emplace_back();
+        for (const ToolSpec& tool : tools) seen_tools.back().push_back(tool.name);
+        if (!tools.empty()) throw ModelUnavailable("The model server returned HTTP 400. {\"error\":\"tools param requires --jinja flag\"}", 400);
+        ModelReply reply;
+        reply.text = seen_tools.size() == 2 ? "Hi without tools." : "Again without tools.";
+        return reply;
+    }
+};
+
+/// Automatic compaction off: nothing is summarized, and a full context stops the run with the Windows message.
+static void test_automatic_compaction_toggle() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root());
+    CHECK(session.automatic_compaction);  // on by default
+    session.messages = {{"system", "s", {}, ""}, {"user", "one", {}, ""}, {"assistant", "two", {}, ""}, {"user", "three", {}, ""}, {"assistant", "four", {}, ""}};
+    session.prompt_tokens = 990;
+    session.automatic_compaction = false;
+    ScriptedModel model;
+    model.window = 1000;
+    model.replies = {say("A summary."), say("Done.")};
+    Agent(store, model, nullptr, [](const AgentEvent&) {}).run(session, "Go on");
+    CHECK(session.state == "Failed" && session.detail == compaction::kFullMessage);
+    CHECK(session.compactions == 0 && model.seen.empty());
+    CHECK(!SessionStore(box.home).sessions()[0].automatic_compaction);  // the setting is saved
+    CHECK(compaction::auto_text("", false).second == "Automatic compaction is off · /compact auto on | off");
+    CHECK(compaction::auto_text("on", false).first);
+    CHECK_THROWS(compaction::auto_text("sometimes", true));
+
+    // Files saved before the setting existed are on.
+    json old = json::parse(read_file(store.folder() / (session.id + ".json")));
+    old.erase("automaticCompaction");
+    write_file_atomic(store.folder() / (session.id + ".json"), old.dump());
+    CHECK(SessionStore(box.home).sessions()[0].automatic_compaction);
+
+    ChatStore chats(box.home);
+    ChatConversation conversation = chats.create();
+    CHECK(conversation.automatic_compaction);
+    conversation.automatic_compaction = false;
+    conversation.prompt_tokens = 995;
+    ScriptedModel chat_model;
+    chat_model.window = 1000;
+    chat_model.replies = {say("A summary."), say("Hi.")};
+    std::string stopped;
+    try {
+        chat::send(conversation, "Hello", {}, chat_model, chats, nullptr, nullptr, nullptr);
+    } catch (const Error& error) {
+        stopped = error.what();
+    }
+    CHECK(stopped == compaction::kChatFullMessage && chat_model.seen.empty());
+}
+
+/// A server that refuses tools gets the message again without them, and is sent none for the rest of the run.
+static void test_tool_refusal() {
+    Sandbox box;
+    ChatStore store(box.home);
+    ChatTools tools;
+    tools.home = box.home;
+    tools.approve = [](const ApprovalRequest&) { return ChatAnswer::No; };
+    ChatConversation conversation = store.create();
+    ToolRefusingModel model;
+    CHECK(chat::calls_tools(model) && !chat::offered(conversation, tools).empty());
+    chat::send(conversation, "Hello", {}, model, store, nullptr, nullptr, &tools);
+    CHECK(model.seen_tools.size() == 2 && !model.seen_tools[0].empty() && model.seen_tools[1].empty());
+    CHECK(conversation.messages.back().content == "Hi without tools.");
+    CHECK(!chat::calls_tools(model));
+    chat::send(conversation, "Again", {}, model, store, nullptr, nullptr, &tools);
+    CHECK(model.seen_tools.size() == 3 && model.seen_tools[2].empty());
+    CHECK(chat::refuses_tools(ModelUnavailable("The model server returned HTTP 501.", 501)));
+    CHECK(chat::refuses_tools(ModelUnavailable("The model server returned HTTP 500. tools are not supported", 500)));
+    CHECK(!chat::refuses_tools(ModelUnavailable("The model server returned HTTP 500.", 500)));
+    CHECK(!chat::refuses_tools(Error("tool")));  // not an answer from the server
+}
+
 /// The core behind /agent new, /commands new, /reasoning and /theme light|dark|system.
 static void test_cli_parity() {
     Sandbox box;
@@ -4201,7 +4281,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"repeat stop", test_repeat_stop}, {"run endings", test_run_endings}, {"scenes", test_scenes}, {"moments", test_moments},{"stuck models and the time limit", test_stuck_and_time_limit},{"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"CLI parity", test_cli_parity}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"skills", test_skills}, {"the web tools", test_web}, {"the tool catalogue", test_tool_catalogue}, {"chat tools", test_chat_tools}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"CLI parity", test_cli_parity}, {"automatic compaction toggle", test_automatic_compaction_toggle}, {"a server that refuses tools", test_tool_refusal}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"skills", test_skills}, {"the web tools", test_web}, {"the tool catalogue", test_tool_catalogue}, {"chat tools", test_chat_tools}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };
     for (const auto& [name, function] : tests) {

@@ -160,6 +160,8 @@ private:
     Gtk::DropDown options_reasoning_;
     Gtk::Entry options_limit_;
     Gtk::TextView options_reference_;
+    Gtk::CheckButton options_auto_compact_;
+    bool options_updating_ = false;
     std::string options_shown_;
     /// Web, Skills and MCP for the selected chat.
     Gtk::MenuButton tools_;

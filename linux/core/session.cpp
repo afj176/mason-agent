@@ -154,6 +154,7 @@ json to_json(const Session& session) {
     if (!session.reasoning.empty()) result["reasoning"] = session.reasoning;
     if (!session.network.empty()) result["network"] = session.network;
     if (session.compactions > 0) result["compactions"] = session.compactions;
+    if (!session.automatic_compaction) result["automaticCompaction"] = false;
     if (!session.pending_input.empty()) {
         result["pendingInput"] = json::array();
         for (const FollowUp& item : session.pending_input) result["pendingInput"].push_back({{"id", item.id}, {"text", item.text}, {"steer", item.steer}});
@@ -199,6 +200,7 @@ Session session_from_json(const json& value) {
     session.agent = value.value("agent", "");
     session.reasoning = value.value("reasoning", "");
     session.compactions = value.value("compactions", 0);
+    session.automatic_compaction = value.value("automaticCompaction", true);
     for (const json& item : value.value("pendingInput", json::array())) {
         if (item.is_object()) session.pending_input.push_back({item.value("id", new_id()), item.value("text", ""), item.value("steer", false)});
     }

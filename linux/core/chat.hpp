@@ -28,6 +28,8 @@ struct ChatConversation {
     bool web = true, skills = true, mcp = false;
     /// What each tool call did, by call id, shown as a compact step where the call was made.
     std::vector<Activity> steps;
+    /// Whether a long conversation is summarized when the context fills up. Chats saved before the setting existed are on.
+    bool automatic_compaction = true;
 };
 
 /// A text file added to a chat message. Its content travels inside the message.
@@ -105,9 +107,13 @@ constexpr size_t kMaxReference = 100000;
 constexpr int kMaxToolRounds = 8;
 /// Shown when the model cannot call tools.
 constexpr const char* kNoTools = "This model can't call tools.";
-/// Whether a connection makes native tool calls, the way the coding agent decides it. Every connection Mason makes on
-/// Linux is an OpenAI-compatible server with native tool calls.
+/// Whether a connection can take tools. Every connection is offered them (a call a model writes as text is recovered)
+/// until its server refuses a request that has them; it is then sent none for the rest of this run.
 bool calls_tools(const ChatModel& model);
+/// Remembers, for this run of the app or the CLI, that a connection refuses tools.
+void mark_cannot_call_tools(const ChatModel& model);
+/// A server refuses tools when it answers HTTP 400 or 501, or its error mentions tools.
+bool refuses_tools(const std::exception& error);
 /// The tools a conversation offers now: what its switches allow, less the web when the computer's network setting is
 /// off, skills when there are none and MCP when no server is in use.
 std::vector<ToolSpec> offered(const ChatConversation& conversation, const ChatTools& tools);

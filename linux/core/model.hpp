@@ -9,6 +9,9 @@ namespace mason {
 /// The model server could not be reached, or answered with an HTTP failure. A request ends as "model unavailable".
 struct ModelUnavailable : Error {
     using Error::Error;
+    ModelUnavailable(const std::string& message, int http_status) : Error(message), status(http_status) {}
+    /// The HTTP status the model server answered with, when it answered with an error; 0 otherwise.
+    int status = 0;
 };
 
 // ---- HTTP ------------------------------------------------------------------------------------------------------
