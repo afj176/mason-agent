@@ -1,6 +1,9 @@
 // The Chat page: saved conversations on the left, the selected one and a message box on the right.
 #include "window.hpp"
 
+#include <algorithm>
+#include <tuple>
+
 namespace mason::app {
 
 namespace {
@@ -150,10 +153,65 @@ ChatPage::ChatPage(Controller& controller) : Gtk::Box(Gtk::Orientation::HORIZONT
         options_shown_.clear();
         controller_.configure_chat(levels[std::min<guint>(4, options_reasoning_.get_selected())], digits.empty() ? 0 : std::stoi(digits), options_reference_.get_buffer()->get_text());
     });
-    for (Gtk::Widget* widget : std::vector<Gtk::Widget*>{reasoning_label, &options_reasoning_, limit_label, &options_limit_, reference_label, reference_scroll, apply}) panel->append(*widget);
+    // Applies at once, like the Tools switches.
+    options_auto_compact_.set_label("Automatic conversation compaction");
+    options_auto_compact_.set_tooltip_text("Summarize a long conversation when the context fills up. Off, the full history is sent until the context is full.");
+    options_auto_compact_.signal_toggled().connect([this] {
+        if (!options_updating_) controller_.set_chat_automatic_compaction(options_auto_compact_.get_active());
+    });
+    for (Gtk::Widget* widget : std::vector<Gtk::Widget*>{reasoning_label, &options_reasoning_, limit_label, &options_limit_, &options_auto_compact_, reference_label, reference_scroll, apply}) panel->append(*widget);
     options_popover_.set_child(*panel);
     options_.set_popover(options_popover_);
     buttons->append(options_);
+    // Tools for this chat: the web, skills and MCP servers, each on or off, saved with the conversation.
+    tools_.set_label("Tools");
+    tools_.add_css_class("chip");
+    tools_.set_tooltip_text("What this chat may use: the web, skills and your MCP servers");
+    auto* tools_panel = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
+    tools_panel->set_margin(12);
+    tools_panel->set_size_request(340, -1);
+    auto* tools_title = Gtk::make_managed<Gtk::Label>("Tools for this chat");
+    tools_title->set_xalign(0);
+    tools_title->add_css_class("heading");
+    tools_panel->append(*tools_title);
+    const std::tuple<Gtk::Switch*, const char*, const char*, const char*> switches[] = {
+        {&tools_web_, "web", "Web", "Read web pages and search. Every new host asks first."},
+        {&tools_skills_, "skills", "Skills", "Instructions from your bundles and Mason's skills folder."},
+        {&tools_mcp_, "mcp", "MCP", "Your MCP servers' allowed tools. Every call asks first."},
+    };
+    for (const auto& [toggle, key, title, detail] : switches) {
+        auto* line = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 12);
+        auto* words = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 2);
+        auto* name = Gtk::make_managed<Gtk::Label>(title);
+        name->set_xalign(0);
+        auto* about = dim_label(detail);
+        about->add_css_class("caption");
+        about->set_wrap(true);
+        about->set_max_width_chars(36);
+        words->append(*name);
+        words->append(*about);
+        words->set_hexpand(true);
+        toggle->set_valign(Gtk::Align::CENTER);
+        gtk_accessible_update_property(GTK_ACCESSIBLE(toggle->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, (std::string(title) + " in this chat").c_str(), -1);
+        const std::string group = key;
+        Gtk::Switch* control = toggle;
+        toggle->property_active().signal_changed().connect([this, control, group] {
+            if (tools_updating_) return;
+            controller_.set_chat_tool(group, control->get_active());
+        });
+        line->append(*words);
+        line->append(*toggle);
+        tools_panel->append(*line);
+    }
+    tools_note_.set_xalign(0);
+    tools_note_.set_wrap(true);
+    tools_note_.set_max_width_chars(40);
+    tools_note_.add_css_class("dim-label");
+    tools_note_.add_css_class("caption");
+    tools_panel->append(tools_note_);
+    tools_popover_.set_child(*tools_panel);
+    tools_.set_popover(tools_popover_);
+    buttons->append(tools_);
     buttons->append(model_label_);
     buttons->append(stop_);
     buttons->append(send_);
@@ -200,19 +258,112 @@ void ChatPage::refresh_buttons() {
     options_.set_sensitive(has_chat && !running);
     if (const ChatConversation* current = controller_.chat()) {
         // The popover shows the selected chat's own settings; it is filled when the chat or its settings change, not while typing.
-        const std::string print = current->id + "|" + current->reasoning + "|" + std::to_string(current->max_tokens) + "|" + std::to_string(current->reference.size());
+        const std::string print = current->id + "|" + current->reasoning + "|" + std::to_string(current->max_tokens) + "|" + std::to_string(current->reference.size()) + (current->automatic_compaction ? "|a" : "|-");
         if (print != options_shown_) {
             options_shown_ = print;
             const std::string& level = current->reasoning;
             options_reasoning_.set_selected(level == "off" ? 1 : level == "low" ? 2 : level == "medium" ? 3 : level == "high" ? 4 : 0);
             options_limit_.set_text(current->max_tokens > 0 ? std::to_string(current->max_tokens) : "");
             options_reference_.get_buffer()->set_text(current->reference);
+            options_updating_ = true;
+            options_auto_compact_.set_active(current->automatic_compaction);
+            options_updating_ = false;
             const bool set = !level.empty() || current->max_tokens > 0 || !current->reference.empty();
             options_.set_label(set ? "Options •" : "Options");
         }
     }
     draft_.set_sensitive(has_chat);
     model_label_.set_text(controller_.endpoint ? controller_.endpoint_name : "No model is running");
+
+    // The Tools control shows the selected chat's switches; a model that cannot call tools gets none.
+    const bool can_call = controller_.chat_calls_tools();
+    const ChatConversation* current = controller_.chat();
+    const bool online = !controller_.home().empty() && network_settings::web(controller_.home());
+    const std::string tools_print = (current ? current->id + (current->web ? "w" : "-") + (current->skills ? "s" : "-") + (current->mcp ? "m" : "-") : std::string("none")) + (can_call ? "c" : "-") + (online ? "o" : "-");
+    if (tools_print != tools_shown_) {
+        tools_shown_ = tools_print;
+        tools_updating_ = true;
+        tools_web_.set_active(current && current->web);
+        tools_skills_.set_active(current && current->skills);
+        tools_mcp_.set_active(current && current->mcp);
+        tools_updating_ = false;
+        int on = current ? (current->web && online ? 1 : 0) + (current->skills ? 1 : 0) + (current->mcp ? 1 : 0) : 0;
+        tools_.set_label(can_call && current ? "Tools · " + std::to_string(on) : "Tools");
+        tools_note_.set_text(!can_call ? chat::kNoTools : online ? "Chat never reads your files or runs commands." : "The internet is off on this computer, so the web tools are not offered. Change it in Settings, under Internet.");
+        tools_.set_tooltip_text(can_call ? "What this chat may use: the web, skills and your MCP servers" : chat::kNoTools);
+    }
+    tools_web_.set_sensitive(can_call && online && !running);
+    tools_skills_.set_sensitive(can_call && !running);
+    tools_mcp_.set_sensitive(can_call && !running);
+    tools_.set_sensitive(has_chat && !running && can_call);
+}
+
+Gtk::Widget* ChatPage::step_row(const Activity& step) {
+    auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 6);
+    if (step.state == "running") {
+        auto* spinner = Gtk::make_managed<Gtk::Spinner>();
+        spinner->start();
+        row->append(*spinner);
+    } else {
+        auto* icon = Gtk::make_managed<Gtk::Image>();
+        icon->set_from_icon_name(step.state == "completed" ? "emblem-ok-symbolic" : step.state == "denied" ? "action-unavailable-symbolic" : "dialog-error-symbolic");
+        icon->add_css_class(step.state == "completed" ? "success" : step.state == "denied" ? "warning" : "error");
+        row->append(*icon);
+    }
+    auto* name = Gtk::make_managed<Gtk::Label>();
+    name->set_markup("<b>" + escape(label_of(step.tool)) + "</b>");
+    auto* subject = dim_label(replace_all(step.subject, "\n", " "));
+    subject->set_wrap(false);
+    subject->set_ellipsize(Pango::EllipsizeMode::MIDDLE);
+    subject->set_hexpand(true);
+    row->append(*name);
+    row->append(*subject);
+    if (step.state == "running" || step.result.empty()) return row;
+    auto* expander = Gtk::make_managed<Gtk::Expander>();
+    expander->set_label_widget(*row);
+    auto* result = text_label(utf8_prefix(step.result, 2000));
+    result->add_css_class("monospace");
+    result->add_css_class("code-block");
+    result->add_css_class("caption");
+    expander->set_child(*result);
+    return expander;
+}
+
+Gtk::Widget* ChatPage::approval_card(const ApprovalRequest& request) {
+    auto* card = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 10);
+    card->add_css_class("approval-card");
+    auto* top = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 14);
+    top->append(*pose_picture(pose::approval, 56, "waiting for your decision"));
+    auto* heading = Gtk::make_managed<Gtk::Label>(request.title);
+    heading->set_xalign(0);
+    heading->set_wrap(true);
+    heading->set_hexpand(true);
+    heading->add_css_class("heading");
+    top->append(*heading);
+    card->append(*top);
+    if (!request.detail.empty()) {
+        auto* detail = text_label(utf8_prefix(request.detail, 1200));
+        detail->add_css_class("dim-label");
+        if (request.tool != "network") detail->add_css_class("monospace");
+        card->append(*detail);
+    }
+    auto* buttons = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 8);
+    auto* once = Gtk::make_managed<Gtk::Button>("Once");
+    once->add_css_class("suggested-action");
+    once->signal_clicked().connect([this] { controller_.answer_chat(ChatAnswer::Once); });
+    auto* always = Gtk::make_managed<Gtk::Button>("Always");
+    always->set_tooltip_text(request.tool == "network" ? "Keep this host for every chat on this computer" : "Keep this call allowed in Chat");
+    always->signal_clicked().connect([this] { controller_.answer_chat(ChatAnswer::Always); });
+    auto* spacer = Gtk::make_managed<Gtk::Box>();
+    spacer->set_hexpand(true);
+    auto* no = Gtk::make_managed<Gtk::Button>("No");
+    no->signal_clicked().connect([this] { controller_.answer_chat(ChatAnswer::No); });
+    buttons->append(*once);
+    buttons->append(*always);
+    buttons->append(*spacer);
+    buttons->append(*no);
+    card->append(*buttons);
+    return card;
 }
 
 void ChatPage::refresh() {
@@ -268,12 +419,14 @@ void ChatPage::refresh() {
     // ---- conversation ----
     const ChatConversation* chat = controller_.chat();
     std::string print = chat ? chat->id + std::to_string(chat->messages.size()) + (controller_.chat_running ? "r" : "-") : "none";
+    for (const Activity& step : controller_.chat_steps) print += "|" + step.id + step.state;
+    if (controller_.chat_approval) print += "|ask:" + controller_.chat_approval->title;
     if (print != transcript_shown_) {
         transcript_shown_ = print;
         live_label_ = nullptr;
         clear(transcript_);
-        if (!chat || chat->messages.size() <= 1) {
-            auto* hint = dim_label(chat ? "Ask anything. Chat answers from the conversation alone: it cannot read your project, edit files or run commands. Use Code for that."
+        if ((!chat || chat->messages.size() <= 1) && !controller_.chat_running) {
+            auto* hint = dim_label(chat ? "Ask anything. Chat cannot read your project, edit files or run commands; use Code for that. With Tools it can read the web, use skills and call your MCP servers, asking first."
                                         : "Talk a problem through with the running model. Chats are saved on this computer. Choose New Chat to begin.");
             hint->set_wrap(true);
             hint->set_justify(Gtk::Justification::CENTER);
@@ -289,6 +442,20 @@ void ChatPage::refresh() {
                     transcript_.append(*speaker(false));
                     transcript_.append(*message_body(*wrapped(shown(message.content))));
                 } else if (message.role == "assistant") {
+                    if (!message.tool_calls.empty()) {
+                        // Tool calls show as compact steps: the tool, the host or query, and how it went.
+                        auto* steps = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+                        if (!trim(message.content).empty()) steps->append(*dim_label(utf8_prefix(trim(message.content), 600)));
+                        for (const ToolCall& call : message.tool_calls) {
+                            const auto found = std::find_if(chat->steps.begin(), chat->steps.end(), [&](const Activity& step) { return step.id == call.id; });
+                            Activity shown_step;
+                            if (found != chat->steps.end()) shown_step = *found;
+                            else { shown_step.tool = call.name; shown_step.state = "failed"; shown_step.subject = "not run"; }
+                            steps->append(*step_row(shown_step));
+                        }
+                        transcript_.append(*message_body(*steps));
+                        continue;
+                    }
                     transcript_.append(*speaker(true));
                     transcript_.append(*message_body(*answer_view(tables::prose(message.content))));
                     // A table in the answer is laid out as a grid, with a chart of each numeric column.
@@ -296,6 +463,21 @@ void ChatPage::refresh() {
                 }
             }
         }
+        if (controller_.chat_running && !trim(controller_.chat_sending).empty()) {
+            // The message being answered, until the saved conversation holds it.
+            transcript_.append(*speaker(false));
+            transcript_.append(*message_body(*wrapped(controller_.chat_sending)));
+        }
+        if (controller_.chat_running && !controller_.chat_steps.empty()) {
+            // This answer's steps so far; the saved conversation shows the finished ones once it is done.
+            auto* steps = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 4);
+            for (const Activity& step : controller_.chat_steps) {
+                const bool saved = chat && std::any_of(chat->steps.begin(), chat->steps.end(), [&](const Activity& item) { return item.id == step.id; });
+                if (!saved) steps->append(*step_row(step));
+            }
+            transcript_.append(*message_body(*steps));
+        }
+        if (controller_.chat_approval) transcript_.append(*message_body(*approval_card(*controller_.chat_approval)));
         if (controller_.chat_running) {
             // The answer being written: the planning pose beside the streamed words.
             auto* row = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::HORIZONTAL, 10);

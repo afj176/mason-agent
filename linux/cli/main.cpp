@@ -28,6 +28,8 @@
 #include "bundles.hpp"
 #include "models.hpp"
 #include "model_memory.hpp"
+#include "catalogue.hpp"
+#include "chat.hpp"
 #include "terminal.hpp"
 
 using namespace mason;
@@ -52,6 +54,17 @@ std::string label_of(const std::string& tool) { return replace_all(tool, "_", " 
 /// /theme and "mason theme": lists the families, or saves one to appearance.json for the CLI and the app.
 void theme_command(const std::string& asked) {
     const std::string name = trim(asked);
+    const std::string mode = to_lower(name);
+    if (mode == "light" || mode == "dark" || mode == "system") {
+        try {
+            theme::save_mode(data_home(), mode);
+        } catch (const std::exception& error) {
+            term::line(paint(term::red, "  The mode could not be saved: ") + error.what());
+            return;
+        }
+        term::line("  " + paint(std::string(term::accent) + term::bold, "✓") + " Mode set to " + paint(term::accent, mode) + paint(term::dim, ". Mason Agent uses it the next time it starts."));
+        return;
+    }
     if (!name.empty()) {
         const theme::Family* found = theme::try_find(name);
         if (!found) {
@@ -71,7 +84,8 @@ void theme_command(const std::string& asked) {
         const std::string swatch = term::styled ? "\x1b[38;2;" + term::rgb_code(item.dark.accent) + "m■" + term::reset + " \x1b[38;2;" + term::rgb_code(item.light.accent) + "m■" + term::reset : "";
         term::line("  " + (current ? paint(std::string(term::accent) + term::bold, "›") : std::string(" ")) + " " + swatch + " " + term::pad(item.slug(), 12) + (current ? paint(term::dim, "current") : ""));
     }
-    term::line(paint(term::dim, "  /theme NAME chooses one. It is shared with Mason Agent's Appearance setting."));
+    term::line(paint(term::dim, "  Mode: " + theme::saved_mode(data_home())));
+    term::line(paint(term::dim, "  /theme NAME chooses one; /theme light|dark|system sets the mode. Both are shared with Mason Agent."));
 }
 
 /// What the engine reports while a request runs, handed from its thread to the terminal loop.
@@ -525,6 +539,12 @@ private:
             if (choice == 'n') { term::line(paint(term::yellow, "declined")); return false; }
             if (choice == 'y') { term::line(paint(term::green, "allowed once")); return true; }
             term::line("always");
+            if (request.tool == "network") {
+                // A host is kept exactly as named, in the project's one list of always-allowed hosts.
+                ApprovalRules(store_.home(), session_.workspace).add("network", request.subject);
+                term::line(paint(term::green, "  Saved: always allow " + request.subject + " for this project") + paint(term::dim, "  ·  /rules lists and revokes"));
+                return true;
+            }
             const std::string suggested = ApprovalRules::suggestion(request.tool, request.subject);
             term::raw(false);
             term::write("  Allow " + tool + " when it starts with [" + paint(term::cyan, suggested) + "] (Enter keeps it, a single - cancels): ");
@@ -548,7 +568,10 @@ private:
     bool command(const std::string& input) {
         const size_t space = input.find(' ');
         std::string name = to_lower(input.substr(0, space)), rest = space == std::string::npos ? "" : trim(input.substr(space + 1));
-        if (name == "/read" || name == "/review" || name == "/edits" || name == "/auto") { rest = name.substr(1); name = "/permission"; }
+        // "/review changes" asks the model to review; a bare "/review" is the permission shortcut.
+        const bool review_changes = name == "/review" && rest.rfind("changes", 0) == 0;
+        if (review_changes) rest = rest.size() > 7 ? rest.substr(8) : "";
+        if (!review_changes && (name == "/read" || name == "/review" || name == "/edits" || name == "/auto")) { rest = name.substr(1); name = "/permission"; }
         if (name == "/exit" || name == "/quit") return false;
         if (name == "/help" || name == "/?") { help(); return true; }
         if (name == "/new") {
@@ -567,6 +590,28 @@ private:
             for (const Session& item : store_.sessions_in(workspace_.root())) {
                 if ((!item.turns.empty() || item.id == session_.id) && mine.size() < 20) mine.push_back(item);
             }
+            const std::vector<std::string> words = split(rest, ' ', false);
+            if (!words.empty() && to_lower(words[0]) == "delete") {
+                const int chosen = words.size() == 2 ? std::atoi(words[1].c_str()) : 0;
+                if (chosen < 1 || static_cast<size_t>(chosen) > mine.size()) throw Error("Use /sessions delete NUMBER. /sessions lists them.");
+                const Session doomed = mine[static_cast<size_t>(chosen) - 1];
+                const std::string question = "Delete session " + std::to_string(chosen) + ", " + doomed.title + "?";
+                if (!term::interactive) { term::line("  " + question + " Not confirmed: there is no terminal to ask."); return true; }
+                term::write("  " + question + " y/n ");
+                const std::string answer = to_lower(trim(read_line().value_or("")));
+                if (answer != "y" && answer != "yes") { term::line(paint(term::dim, "  Kept.")); return true; }
+                store_.remove(doomed.id);
+                term::line(paint(term::dim, "  Deleted " + doomed.title + "."));
+                if (doomed.id == session_.id) {
+                    // The session in use is gone: carry on in a fresh one with the same permission.
+                    const Session previous = session_;
+                    session_ = store_.create(workspace_.root(), previous.permission);
+                    session_.ask_only = previous.ask_only;
+                    store_.save(session_);
+                    term::line(paint(term::dim, "  New session · " + mode_name()));
+                }
+                return true;
+            }
             const int number = rest.empty() ? 0 : std::atoi(rest.c_str());
             if (number >= 1 && static_cast<size_t>(number) <= mine.size()) {
                 session_ = mine[static_cast<size_t>(number) - 1];
@@ -579,7 +624,7 @@ private:
                 term::line("  " + paint(term::dim, term::left_pad(std::to_string(i + 1), 2)) + "  " + (current ? paint(term::bold, term::clip(mine[i].title, 60)) : term::clip(mine[i].title, 60)) +
                            paint(term::dim, "  ·  " + mine[i].state + (current ? "  ← current" : "")));
             }
-            term::line(paint(term::dim, "  Continue one with /resume NUMBER."));
+            term::line(paint(term::dim, "  Continue one with /resume NUMBER; delete one with /sessions delete NUMBER."));
             return true;
         }
         if (name == "/ask") {
@@ -620,7 +665,37 @@ private:
             return true;
         }
         if (name == "/rules") { rules(rest); return true; }
+        if (name == "/compact" && (to_lower(rest) == "auto" || to_lower(rest).rfind("auto ", 0) == 0)) {
+            const auto [on, said] = compaction::auto_text(to_lower(rest).substr(4), session_.automatic_compaction);
+            if (on != session_.automatic_compaction) {
+                session_.automatic_compaction = on;
+                store_.save(session_);
+            }
+            term::line("  " + said);
+            return true;
+        }
         if (name == "/compact") { compact(); return true; }
+        if (name == "/reasoning") {
+            const std::string level = to_lower(rest);
+            if (level.empty()) {
+                term::line("  Reasoning: " + (session_.reasoning.empty() ? std::string("the server's default") : session_.reasoning) + paint(term::dim, "  ·  /reasoning off|low|medium|high|default"));
+                return true;
+            }
+            if (level != "default" && level != "off" && level != "low" && level != "medium" && level != "high") throw Error("Use /reasoning off, low, medium, high or default.");
+            session_.reasoning = level == "default" ? "" : level;
+            store_.save(session_);
+            term::line(paint(term::dim, "  Reasoning: " + (level == "default" ? std::string("the server's default") : level)));
+            return true;
+        }
+        const std::vector<std::string> parts = split(rest, ' ', false);
+        if ((name == "/agent" || name == "/agents" || name == "/commands") && !parts.empty() && to_lower(parts[0]) == "new") {
+            const bool is_command = name == "/commands";
+            if (parts.size() != 2) throw Error(std::string("Use ") + (is_command ? "/commands" : "/agent") + " new NAME.");
+            const fs::path made = customization::create(workspace_, parts[1], is_command);
+            term::line("  Made " + made.string());
+            open_in_editor(made);
+            return true;
+        }
         if (name == "/agent" || name == "/agents") { agent(rest); return true; }
         if (name == "/commands") { commands(); return true; }
         if (name == "/queue") {
@@ -787,6 +862,30 @@ private:
             for (const std::string& line : split(semantic::command(rest, store_.home()), '\n')) term::line("  " + line);
             return true;
         }
+        if (name == "/skills") { skills_command(rest); return true; }
+        if (name == "/skill") {
+            const size_t gap = rest.find(' ');
+            const std::string skill = rest.substr(0, gap);
+            std::string asked = gap == std::string::npos ? "" : trim(rest.substr(gap + 1));
+            if (skill.empty()) throw Error("Use /skill NAME [request]. /skills lists them.");
+            const std::vector<Skill> known = skills::all(workspace_, store_.home());
+            skills::request(known, skill, "");  // refuses an unknown or switched-off skill before asking for a request
+            if (asked.empty()) {
+                if (!term::interactive) throw Error("Use /skill " + skill + " REQUEST.");
+                term::write("  " + paint(term::bold, "Request for " + skill + ": "));
+                asked = trim(read_line().value_or(""));
+                if (asked.empty()) { term::line(paint(term::dim, "  Nothing sent.")); return true; }
+            }
+            send(skills::request(known, skill, asked));
+            return true;
+        }
+        if (name == "/tools") {
+            for (const std::string& line : split(tool_catalogue::command(rest, workspace_.root(), store_.home()), '\n')) {
+                const bool heading = !line.empty() && line[0] != ' ' && !starts_with(line, "mcp:") && !starts_with(line, "/");
+                term::line("  " + (heading ? paint(term::bold, line) : starts_with(line, "  off") ? paint(term::dim, line) : line));
+            }
+            return true;
+        }
         if (name == "/mcp") { mcp_command(rest); return true; }
         if (name == "/model") { choose_model(rest); return true; }
         if (name == "/models") { models(rest); return true; }
@@ -800,14 +899,19 @@ private:
         const std::pair<const char*, const char*> rows[] = {
             {"/new [request]", "Start a separate session, optionally with its first request"},
             {"/resume [number]", "List this folder's sessions, or continue one"},
+            {"/sessions delete NUMBER", "Delete a session from this folder, after you confirm"},
             {"/ask · /build", "Answer questions only, or make changes"},
             {"/permission read|review|edits|auto", "What Mason may do without asking (also /review, /edits, /auto)"},
             {"/diff [path]", "Show what this session changed"},
             {"/undo · /redo", "Put back, or reapply, everything the latest request changed"},
             {"/compact", "Replace the conversation so far with a summary to free context"},
+            {"/compact auto on|off", "Compact automatically when the context fills up, or never"},
             {"/queue", "Run the messages you queued, after a stop or a failure"},
+            {"/reasoning off|low|medium|high|default", "How much the model thinks before answering, for this session"},
             {"/agent [name|none]", "List your custom agents, or use one for this session"},
+            {"/agent new NAME", "Make .mason/agents/NAME.md and open it"},
             {"/commands", "List your custom slash commands"},
+            {"/commands new NAME", "Make .mason/commands/NAME.md and open it"},
             {"/comment PATH:LINE NOTE", "Pin a note to a line, sent with your next request (see /comment help)"},
             {"/milestone", "A saved plan: milestones, the files each covers and how each is checked"},
             {"/bundle", "Install a folder of skills and documentation for every project to use (see /bundle help)"},
@@ -816,12 +920,19 @@ private:
             {"/note TEXT", "Keep a note for this project"},
             {"/generation", "Temperature, top P and the like, kept for the model in use (see /generation help)"},
             {"/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"},
-            {"/network", "In Auto: no network for commands, or ask before one reaches a host over HTTPS (/network ask, /network off)"},
+            {"/network", "Internet for commands in Auto and for web_fetch/web_search: ask before each host, or off"},
+            {"/skills", "Every skill: on, off or hidden, where it comes from and what it is for"},
+            {"/skills show NAME", "Print a skill's path and its SKILL.md"},
+            {"/skills new NAME [description]", "Make a skill in .mason/skills"},
+            {"/skills on|off NAME", "Switch a skill on or off for this project"},
+            {"/skill NAME [request]", "Run a request that follows a skill"},
+            {"/tools", "Every tool by group, on or off for this project, then your MCP servers"},
+            {"/tools on|off NAME", "Switch a tool on or off for this project"},
             {"/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"},
             {"/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"},
             {"/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"},
             {"/experiment", "Try something in a copy of the project in its own worktree, then apply the hunks you want (see /experiment help)"},
-            {"/review", "Have the model read what this session changed and pin what it finds as comments"},
+            {"/review changes", "Have the model read what this session changed and pin what it finds as comments"},
             {"/accept", "Run the scenarios in mason.acceptance.json in a real browser, at phone and desktop widths"},
             {"/fork NUMBER [files]", "A new session from before an earlier request; \"files\" also puts the project back"},
             {"/export FILE [sanitized] · /import FILE", "Save this session as a file, or add an exported one to this project"},
@@ -845,6 +956,7 @@ private:
             {"/models runtime", "Install or update llama.cpp"},
             {"/status", "Session, model, permission and storage"},
             {"/theme [name]", "List the theme families, or choose one (shared with Mason Agent)"},
+            {"/theme light|dark|system", "Choose the light or dark mode, or follow the system (shared with Mason Agent)"},
             {"/exit", "Leave (Ctrl+C twice also works)"},
         };
         term::line();
@@ -895,6 +1007,36 @@ private:
             return;
         }
         throw Error("No agent named " + rest + ". /agent lists them.");
+    }
+
+    /// Opens a file in $VISUAL or $EDITOR, when one is set and there is a terminal, and waits for it to close.
+    void open_in_editor(const fs::path& file) {
+        const char* visual = std::getenv("VISUAL");
+        const char* editor = visual && *visual ? visual : std::getenv("EDITOR");
+        if (!editor || !*editor || !term::interactive) return;
+        term::raw(false);
+        const int status = std::system((std::string(editor) + " " + shell::quote(file.string())).c_str());
+        if (status != 0) term::line(paint(term::yellow, "  The editor ended with an error; the file is kept."));
+    }
+
+    /// /skills: list, show, new, on and off. A new skill opens in $VISUAL or $EDITOR when one is set.
+    void skills_command(const std::string& rest) {
+        const std::vector<std::string> words = split(trim(rest), ' ', false);
+        if (!words.empty() && to_lower(words[0]) == "new") {
+            if (words.size() < 2) throw Error("Use /skills new NAME [description].");
+            const std::string description = join(std::vector<std::string>(words.begin() + 2, words.end()), " ");
+            const fs::path made = skills::create(workspace_, words[1], description);
+            term::line("  " + paint(term::green, "✓") + " Made " + made.string());
+            open_in_editor(made);
+            return;
+        }
+        const std::string said = skills::command(rest, workspace_, store_.home());
+        const bool listing = words.empty() || to_lower(words[0]) == "list";
+        for (const std::string& line : split(said, '\n')) {
+            if (listing && line.find("  hidden  ") != std::string::npos) term::line("  " + paint(term::dim, line));
+            else if (listing && line.find("  off     ") != std::string::npos) term::line("  " + paint(term::dim, line));
+            else term::line("  " + line);
+        }
     }
 
     void commands() {
@@ -1007,6 +1149,7 @@ private:
         row("Mode", mode_name());
         row("Shell", shell::path() + (shell::sandbox_available() ? paint(term::dim, "  ·  sandbox available for Auto") : paint(term::yellow, "  ·  no sandbox: Auto refuses commands")));
         if (!session_.agent.empty()) row("Agent", session_.agent);
+        if (!session_.reasoning.empty()) row("Reasoning", session_.reasoning);
         if (session_.prompt_tokens > 0) row("Context", std::to_string(session_.prompt_tokens) + " tokens in the last request");
         if (session_.compactions > 0) row("Compacted", std::to_string(session_.compactions) + (session_.compactions == 1 ? " time; " : " times; ") + std::to_string(session_.archived.size()) + " messages archived");
         row("Stored in", store_.folder().string());
@@ -1701,15 +1844,383 @@ private:
     }
 };
 
+/// What a chat reports while it answers, handed from its thread to the terminal loop.
+struct ChatFeed {
+    std::mutex lock;
+    std::condition_variable answered;
+    std::string live, doing;
+    std::vector<Activity> finished;
+    const ApprovalRequest* asking = nullptr;
+    std::optional<ChatAnswer> answer;
+    bool done = false;
+
+    ChatAnswer ask(const ApprovalRequest& request) {
+        std::unique_lock<std::mutex> guard(lock);
+        asking = &request;
+        answer.reset();
+        answered.wait(guard, [&] { return answer.has_value(); });
+        asking = nullptr;
+        return *answer;
+    }
+};
+
+/// mason chat: the app's Chat in the terminal, with the same saved conversations. Not tied to a project: it never
+/// reads files or runs commands. It may read the web, read skills and call MCP servers, each asking first.
+class ChatCli {
+public:
+    explicit ChatCli(ChatStore& store) : store_(store) {}
+    std::optional<ModelEndpoint> endpoint;
+    std::string endpoint_name;
+
+    void loop(bool resume) {
+        if (!endpoint) find_running_model();
+        if (resume && !store_.conversations().empty()) conversation_ = store_.conversations().front();
+        else fresh();
+        term::line();
+        term::line("  " + paint(std::string(term::bold) + term::accent, "Mason Chat") + paint(term::dim, "  ·  not tied to a project: no files, no commands"));
+        term::line("  " + paint(term::dim, "model ") + (endpoint ? endpoint_name : paint(term::yellow, "none running")) + paint(term::dim, "  ·  /help for commands"));
+        if (resume && conversation_.messages.size() > 1) {
+            term::line("  " + paint(term::dim, "resumed ") + conversation_.title + paint(term::dim, "  ·  " + std::to_string(conversation_.messages.size()) + " messages"));
+            show_last_answer();
+        }
+        while (true) {
+            term::line();
+            if (!attachments_.empty()) {
+                std::vector<std::string> names;
+                for (const ChatAttachment& file : attachments_) names.push_back(file.name);
+                term::line(paint(term::dim, "  attached: " + join(names, ", ")));
+            }
+            term::write(paint(std::string(term::accent) + term::bold, "chat › "));
+            const std::optional<std::string> input = read_line();
+            if (!input) { term::line(); return; }
+            const std::string text = trim(*input);
+            if (text.empty()) continue;
+            try {
+                if (text[0] == '/') { if (!command(text)) return; }
+                else send(text);
+            } catch (const Cancelled&) {
+                term::line(paint(term::yellow, "  Cancelled."));
+            } catch (const std::exception& error) {
+                term::line(paint(term::red, std::string("  ✗ ") + error.what()));
+            }
+        }
+    }
+
+private:
+    ChatStore& store_;
+    ChatConversation conversation_;
+    std::vector<ChatAttachment> attachments_;
+    fs::path home_ = data_home();
+    std::chrono::steady_clock::time_point last_interrupt_{};
+
+    std::optional<std::string> read_line() {
+        while (true) {
+            std::string line;
+            if (std::getline(std::cin, line)) return line;
+            if (g_ending) return std::nullopt;
+            if (g_interrupts > 0) {
+                g_interrupts = 0;
+                std::cin.clear();
+                clearerr(stdin);
+                const auto now = std::chrono::steady_clock::now();
+                if (last_interrupt_.time_since_epoch().count() != 0 && now - last_interrupt_ < std::chrono::seconds(5)) return std::nullopt;
+                last_interrupt_ = now;
+                term::line();
+                term::line(paint(term::dim, "  Press Ctrl+C again or type /exit to leave."));
+                term::write(paint(std::string(term::accent) + term::bold, "chat › "));
+                continue;
+            }
+            return std::nullopt;
+        }
+    }
+
+    /// A new conversation, or the newest one when it has not been used yet, as the app does.
+    void fresh() {
+        for (const ChatConversation& item : store_.conversations()) {
+            if (item.messages.size() <= 1) { conversation_ = item; return; }
+        }
+        conversation_ = store_.create();
+    }
+
+    void find_running_model() {
+        if (const auto last = Preferences::load().last_endpoint) {
+            const auto listed = OpenAIClient::models(last->url);
+            if (listed && std::find(listed->begin(), listed->end(), last->model) != listed->end()) { endpoint = *last; endpoint_name = last->model; return; }
+        }
+        const std::vector<RunningServer> servers = detect_servers();
+        if (!servers.empty()) { endpoint = servers[0].endpoint; endpoint_name = servers[0].endpoint.model + " (" + servers[0].name + ")"; }
+    }
+
+    ChatTools tools() const {
+        ChatTools made;
+        made.home = home_;
+        // A server that refused tools earlier in this run is sent none.
+        if (endpoint) made.calls_tools = chat::calls_tools(OpenAIClient(*endpoint));
+        return made;
+    }
+
+    void show_last_answer() {
+        for (auto message = conversation_.messages.rbegin(); message != conversation_.messages.rend(); ++message) {
+            if (message->role == "assistant" && message->tool_calls.empty() && !trim(message->content).empty()) {
+                term::line();
+                for (const std::string& line : term::markdown(message->content)) term::line("  " + line);
+                return;
+            }
+        }
+    }
+
+    void show_step(const Activity& step) {
+        const std::string mark = step.state == "completed" ? paint(term::green, "✓") : step.state == "denied" ? paint(term::yellow, "⊘") : paint(term::red, "✗");
+        const std::string label = label_of(step.tool);
+        term::line("  " + mark + " " + paint(term::bold, label) + " " + term::clip(replace_all(step.subject, "\n", " "), std::max(10, term::width() - static_cast<int>(label.size()) - 8)));
+        if (step.state == "failed") term::line(paint(term::dim, "    │ " + term::clip(replace_all(step.result, "\n", " "), term::width() - 8)));
+    }
+
+    /// One key: y once, a always, n no. Esc or Ctrl+C is no.
+    ChatAnswer approve(const ApprovalRequest& request, const CancelToken& cancel) {
+        const std::string bar = paint(term::yellow, "  ▌ ");
+        term::line();
+        term::line(bar + paint(term::bold, request.title));
+        const std::vector<std::string> detail = split(request.detail, '\n');
+        for (size_t i = 0; i < detail.size() && i < 20; i++) term::line(bar + paint(term::dim, term::clip(detail[i], term::width() - 6)));
+        if (!term::interactive) { term::line(bar + "Declined: there is no terminal to ask."); return ChatAnswer::No; }
+        const bool host = request.tool == "network";
+        term::write("  " + paint(term::bold, "Allow?") + "  " + paint(term::accent, "y") + " once   " + paint(term::accent, "a") + (host ? " always in Chat   " : " always   ") + paint(term::accent, "n") + " no  › ");
+        term::drain_keys();
+        while (true) {
+            if (cancel->load()) { term::line("cancelled"); return ChatAnswer::No; }
+            const int pressed = term::key();
+            if (pressed < 0) continue;
+            const int lowered = std::tolower(pressed);
+            if (pressed == 3 || pressed == 27 || lowered == 'n') { term::line(paint(term::yellow, "no")); return ChatAnswer::No; }
+            if (lowered == 'y') { term::line(paint(term::green, "once")); return ChatAnswer::Once; }
+            if (lowered == 'a') { term::line(paint(term::green, "always")); return ChatAnswer::Always; }
+        }
+    }
+
+    void send(const std::string& text) {
+        if (!endpoint) {
+            term::line(paint(term::yellow, "  No model is running.") + paint(term::dim, " Start one with mason, then /models; or /model lists running servers."));
+            return;
+        }
+        if (!OpenAIClient::models(endpoint->url)) {
+            term::line(paint(term::yellow, "  " + endpoint_name + " is not answering at " + endpoint->url + ". Start it again or choose another with /model."));
+            return;
+        }
+        OpenAIClient model(*endpoint);
+        ChatFeed feed;
+        ChatTools with = tools();
+        const bool could_call_tools = with.calls_tools;
+        with.approve = [&](const ApprovalRequest& request) { return feed.ask(request); };
+        with.step = [&](const Activity& step) {
+            std::lock_guard<std::mutex> guard(feed.lock);
+            if (step.state == "running") feed.doing = label_of(step.tool);
+            else { feed.finished.push_back(step); feed.doing.clear(); }
+            feed.live.clear();
+        };
+        const CancelToken cancel = make_cancel();
+        ChatConversation working = conversation_;
+        const std::vector<ChatAttachment> files = attachments_;
+        attachments_.clear();
+        std::string problem;
+        std::thread worker([&] {
+            try {
+                chat::send(working, text, files, model, store_, [&](const std::string& piece) { std::lock_guard<std::mutex> guard(feed.lock); feed.live += piece; }, cancel, &with);
+            } catch (const Cancelled&) {
+                problem = "Stopped.";
+            } catch (const std::exception& error) {
+                problem = error.what();
+            }
+            std::lock_guard<std::mutex> guard(feed.lock);
+            feed.done = true;
+        });
+        g_running_cancel = cancel.get();
+        term::raw(true);
+        const auto started = std::chrono::steady_clock::now();
+        int frame = 0;
+        while (true) {
+            std::vector<Activity> finished;
+            const ApprovalRequest* asking = nullptr;
+            bool done;
+            std::string live, doing;
+            {
+                std::lock_guard<std::mutex> guard(feed.lock);
+                finished.swap(feed.finished);
+                if (feed.asking && !feed.answer) asking = feed.asking;
+                done = feed.done;
+                live = feed.live;
+                doing = feed.doing;
+            }
+            if (!finished.empty()) term::set_status("");
+            for (const Activity& step : finished) show_step(step);
+            if (done) break;
+            if (asking) {
+                term::set_status("");
+                const ChatAnswer answer = approve(*asking, cancel);
+                { std::lock_guard<std::mutex> guard(feed.lock); feed.answer = answer; }
+                feed.answered.notify_all();
+                continue;
+            }
+            const int pressed = term::key();
+            if (pressed == 3 || (pressed == 27 && term::was_escape_alone())) cancel->store(true);
+            const std::string shown = !live.empty() ? replace_all(live, "\n", " ") : !doing.empty() ? doing : "Thinking";
+            const int room = std::max(20, term::width() - 30);
+            const long seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count();
+            term::set_status(std::string("  ") + kSpinner[frame++ % 10] + " " + (static_cast<int>(utf8_length(shown)) > room ? "…" + utf8_suffix(shown, static_cast<size_t>(room - 1)) : shown) +
+                             "  ·  " + std::to_string(seconds) + "s  ·  Esc to stop");
+        }
+        worker.join();
+        g_running_cancel = nullptr;
+        term::set_status("");
+        term::raw(false);
+        // Whatever happened, the store has the conversation as far as it got.
+        conversation_ = working;
+        if (could_call_tools && !chat::calls_tools(model)) {
+            term::line(paint(term::yellow, std::string("  ") + chat::kNoTools) + paint(term::dim, " The message was sent without them; this chat's tools stay off until mason restarts."));
+        }
+        if (!problem.empty()) {
+            term::line(paint(problem == "Stopped." ? term::yellow : term::red, "  " + problem));
+            return;
+        }
+        show_last_answer();
+    }
+
+    /// Returns false to leave.
+    bool command(const std::string& input) {
+        const size_t space = input.find(' ');
+        const std::string name = to_lower(input.substr(0, space)), rest = space == std::string::npos ? "" : trim(input.substr(space + 1));
+        if (name == "/exit" || name == "/quit") return false;
+        if (name == "/help" || name == "/?") {
+            const std::pair<const char*, const char*> rows[] = {
+                {"/new", "Start a new chat"},
+                {"/resume [number]", "List recent chats, or continue one"},
+                {"/attach FILE", "Attach a text file, picture, PDF or Word document to the next message (up to 5)"},
+                {"/reasoning off|low|medium|high|default", "How much the model thinks before it answers"},
+                {"/compact auto on|off", "Compact automatically when the context fills up, or never"},
+                {"/tools", "This chat's tools: web, skills and MCP, each on or off"},
+                {"/tools on|off web|skills|mcp", "Switch one on or off for this chat"},
+                {"/model [number]", "List running model servers, or switch to one"},
+                {"/help", "These commands"},
+                {"/exit", "Leave (Ctrl+C twice also works)"},
+            };
+            term::line();
+            for (const auto& [command_name, text] : rows) term::line("  " + paint(term::accent, term::pad(command_name, 40)) + " " + paint(term::dim, text));
+            term::line();
+            term::line(paint(term::dim, "  Approvals take one key: y once, a always, n no. While an answer comes, Esc stops it."));
+            return true;
+        }
+        if (name == "/new") {
+            fresh();
+            attachments_.clear();
+            term::line(paint(term::dim, "  New chat."));
+            return true;
+        }
+        if (name == "/resume") {
+            // The app may have saved chats since this started.
+            store_.reload();
+            std::vector<ChatConversation> recent;
+            for (const ChatConversation& item : store_.conversations()) {
+                if (item.messages.size() > 1 && recent.size() < 20) recent.push_back(item);
+            }
+            if (recent.empty()) { term::line(paint(term::dim, "  No saved chats yet.")); return true; }
+            int number = rest.empty() ? 0 : std::atoi(rest.c_str());
+            if (number < 1) {
+                term::line();
+                for (size_t i = 0; i < recent.size(); i++) {
+                    const bool current = recent[i].id == conversation_.id;
+                    term::line("  " + paint(term::dim, term::left_pad(std::to_string(i + 1), 2)) + "  " + (current ? paint(term::bold, term::clip(recent[i].title, 60)) : term::clip(recent[i].title, 60)) +
+                               paint(term::dim, "  ·  " + recent[i].updated.substr(0, 10) + (current ? "  ← current" : "")));
+                }
+                if (!term::interactive) { term::line(paint(term::dim, "  Continue one with /resume NUMBER.")); return true; }
+                term::write("  Which one? Type a number, or press Enter to stay: ");
+                number = std::atoi(trim(read_line().value_or("")).c_str());
+            }
+            if (number >= 1 && static_cast<size_t>(number) <= recent.size()) {
+                conversation_ = recent[static_cast<size_t>(number) - 1];
+                attachments_.clear();
+                term::line("  Resumed " + paint(term::bold, conversation_.title));
+                show_last_answer();
+            }
+            return true;
+        }
+        if (name == "/attach") {
+            if (rest.empty()) throw Error("Use /attach FILE.");
+            if (attachments_.size() >= ChatAttachment::kMaxPerMessage) throw Error("Attach at most 5 files to one message.");
+            const fs::path file = starts_with(rest, "~/") ? fs::path(home_dir()) / rest.substr(2) : fs::path(rest);
+            ChatAttachment attached = ChatAttachment::from_file(file);
+            term::line(paint(term::dim, "  Attached " + attached.name + "; it goes with your next message."));
+            attachments_.push_back(std::move(attached));
+            return true;
+        }
+        if (name == "/reasoning") {
+            if (rest.empty()) { term::line("  " + (conversation_.reasoning.empty() ? std::string("default") : conversation_.reasoning) + paint(term::dim, "  ·  /reasoning off|low|medium|high|default")); return true; }
+            chat::configure(conversation_, to_lower(rest), conversation_.max_tokens, conversation_.reference);
+            store_.save(conversation_);
+            term::line(paint(term::dim, "  Reasoning: " + to_lower(rest) + "."));
+            return true;
+        }
+        if (name == "/compact") {
+            const std::string asked = to_lower(rest);
+            if (asked != "auto" && asked.rfind("auto ", 0) != 0) throw Error("Use /compact auto on or /compact auto off.");
+            const auto [on, said] = compaction::auto_text(asked.substr(4), conversation_.automatic_compaction, true);
+            if (on != conversation_.automatic_compaction) {
+                conversation_.automatic_compaction = on;
+                store_.save(conversation_);
+            }
+            term::line("  " + said);
+            return true;
+        }
+        if (name == "/tools") {
+            const std::vector<std::string> words = split(rest, ' ', false);
+            if (!words.empty()) {
+                const std::string verb = to_lower(words[0]);
+                if ((verb != "on" && verb != "off") || words.size() != 2) throw Error("Use /tools on|off web|skills|mcp.");
+                chat::set_tool(conversation_, words[1], verb == "on");
+                store_.save(conversation_);
+            }
+            for (const std::string& line : split(chat::describe_tools(conversation_, tools()), '\n')) term::line("  " + line);
+            return true;
+        }
+        if (name == "/model") {
+            const std::vector<RunningServer> servers = detect_servers();
+            if (servers.empty()) { term::line(paint(term::dim, "  No model server is running on this computer. Run mason and /models to start one.")); return true; }
+            const int number = rest.empty() ? 0 : std::atoi(rest.c_str());
+            if (number >= 1 && static_cast<size_t>(number) <= servers.size()) {
+                const RunningServer& chosen = servers[static_cast<size_t>(number) - 1];
+                endpoint = chosen.endpoint;
+                endpoint_name = chosen.endpoint.model + " (" + chosen.name + ")";
+                Preferences preferences = Preferences::load();
+                preferences.last_endpoint = chosen.endpoint;
+                preferences.save();
+                term::line("  Model: " + paint(term::bold, endpoint_name));
+                return true;
+            }
+            term::line();
+            for (size_t i = 0; i < servers.size(); i++) {
+                const bool current = endpoint && servers[i].endpoint == *endpoint;
+                term::line("  " + paint(term::dim, term::left_pad(std::to_string(i + 1), 2)) + "  " + paint(term::green, "●") + " " + (current ? paint(term::bold, servers[i].endpoint.model) : servers[i].endpoint.model) +
+                           paint(term::dim, "  " + servers[i].name + " · " + servers[i].endpoint.url + (current ? "  ← current" : "")));
+            }
+            term::line(paint(term::dim, "  Choose with /model NUMBER."));
+            return true;
+        }
+        term::line(paint(term::yellow, "  Unknown command " + name + ".") + paint(term::dim, " /help lists them."));
+        return true;
+    }
+};
+
 const char* const kUsage =
     "mason [--workspace PATH] [--resume] [--endpoint URL --model ID] [--read-only | --review | --edits | --auto]\n"
     "  Opens an interactive session in the current folder. No options are needed: mason uses a model that is\n"
     "  already running, restarts the one you used last, or helps you choose or download one.\n"
     "  New sessions ask before each edit and command (--review).\n"
+    "mason chat [--resume] [--endpoint URL --model ID]\n"
+    "  Chat with the model, not tied to a project: the same saved chats as Mason Agent's Chat. It can read the web,\n"
+    "  read skills and call MCP servers, asking first. --resume continues the latest chat.\n"
     "mason --run-due\n"
     "  Runs the scheduled requests that are due, unattended, and exits. For cron or a systemd timer; the app does this itself while open.\n"
-    "mason theme [blueprint|evergreen|graphite|kiln|retro-neon]\n"
-    "  Lists the theme families, or chooses one for the CLI and Mason Agent.\n";
+    "mason theme [blueprint|evergreen|graphite|kiln|retro-neon|light|dark|system]\n"
+    "  Lists the theme families, or chooses one or the light/dark mode for the CLI and Mason Agent.\n";
 
 }  // namespace
 
@@ -1728,7 +2239,45 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    if (!arguments.empty() && arguments[0] == "chat") arguments.erase(arguments.begin());
+    if (!arguments.empty() && arguments[0] == "chat") {
+        // mason chat: the app's Chat in the terminal. Plain mason stays the coding agent.
+        bool resume_chat = false;
+        std::string url, id;
+        for (size_t i = 1; i < arguments.size(); i++) {
+            const std::string& name = arguments[i];
+            if (name == "--help" || name == "-h") { std::cout << kUsage; return 0; }
+            if (name == "--resume") resume_chat = true;
+            else if ((name == "--endpoint" || name == "--model") && i + 1 < arguments.size()) (name == "--endpoint" ? url : id) = arguments[++i];
+            else {
+                std::cerr << "Unknown option " << name << ", or it needs a value. Run mason chat --help.\n";
+                return 1;
+            }
+        }
+        try {
+            if (url.empty() != id.empty()) throw Error("Use --endpoint and --model together.");
+            struct sigaction interrupt {};
+            interrupt.sa_handler = on_interrupt;
+            sigaction(SIGINT, &interrupt, nullptr);
+            struct sigaction ending {};
+            ending.sa_handler = on_ending;
+            sigaction(SIGTERM, &ending, nullptr);
+            sigaction(SIGHUP, &ending, nullptr);
+            std::signal(SIGPIPE, SIG_IGN);
+            ChatStore store;
+            ChatCli chat(store);
+            if (!url.empty()) {
+                chat.endpoint = ModelEndpoint{validated_endpoint(url), id, ""};
+                chat.endpoint_name = id;
+            }
+            chat.loop(resume_chat);
+            term::raw(false);
+            return 0;
+        } catch (const std::exception& error) {
+            term::raw(false);
+            std::cerr << error.what() << "\n";
+            return 1;
+        }
+    }
     // A script operation prints JSON Lines and exits; everything else opens the interactive session.
     if (!arguments.empty() && script::names().count(arguments[0])) {
         return script::run(arguments, [](const std::string& line) { std::cout << line << std::endl; });

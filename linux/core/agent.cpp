@@ -6,6 +6,7 @@
 #include "planning.hpp"
 #include "roles.hpp"
 #include "bundles.hpp"
+#include "chat.hpp"
 #include "notes.hpp"
 
 #include <algorithm>
@@ -289,6 +290,8 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
     }
     if (bundles::has_documents(home, workspace)) list.push_back({"read_documentation", "Look something up in the documentation that comes with this project (.mason/docs) and with the bundles the user installed. Give a few words; it returns the sections that mention them, each with where it came from, so you can cite it.", schema({{"query", text}}, {"query"})});
     if (!skills::list(workspace, home).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
+    // Reading the web changes nothing here, so it is offered in every mode; every new host still asks.
+    if (network_settings::web(session, home)) list.insert(list.end(), web::tools().begin(), web::tools().end());
     return list;
 }
 
@@ -601,16 +604,7 @@ std::optional<std::pair<std::string, std::string>> Agent::perform_extra(const To
         return Outcome{"completed", jobs_.send(*id, text("text").value_or(""), eof)};
     }
     if (call.name == "read_documentation") return Outcome{"completed", bundles::read(text("query").value_or(""), store_.home(), workspace)};
-    if (call.name == "read_skill") {
-        const std::vector<Definition> known = skills::list(workspace, store_.home());
-        const std::string wanted = to_lower(text("name").value_or(""));
-        for (const Definition& skill : known) {
-            if (to_lower(skill.name) == wanted) return Outcome{"completed", "Skill " + skill.name + " (" + skill.source + "):\n" + skill.body};
-        }
-        std::vector<std::string> names;
-        for (const Definition& skill : known) names.push_back(skill.name);
-        throw Error("No skill named " + wanted + ". Skills: " + join(names, ", "));
-    }
+    if (call.name == "read_skill") return Outcome{"completed", skills::read(skills::all(workspace, store_.home()), text("name").value_or(""))};
     return std::nullopt;
 }
 
@@ -694,7 +688,14 @@ const FollowUp* next_follow_up(const std::vector<FollowUp>& pending) {
 }
 }  // namespace
 
+void Agent::apply_reasoning(const std::string& level, ChatModel& model) {
+    ChatModel* inner = &model;
+    while (auto* role = dynamic_cast<RoleModel*>(inner)) inner = &role->base();
+    if (auto* client = dynamic_cast<OpenAIClient*>(inner)) client->add_extra_body(chat::reasoning_body(level));
+}
+
 void Agent::run(Session& session, const std::string& request, const CancelToken& cancel) {
+    apply_reasoning(session.reasoning, model_);
     std::string input = request;
     if (to_lower(trim(request)) == "/queue") {
         const FollowUp* next = next_follow_up(session.pending_input);
@@ -767,6 +768,7 @@ void Agent::run(Session& session, const std::string& request, const CancelToken&
             language_answers_.clear();
             language_told_.clear();
             network_.reset();
+            web_.reset();
             return;
         }
         emit_({AgentEvent::Kind::FollowUp, input, {}, std::make_shared<const Session>(session)});
@@ -936,15 +938,18 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
             prompt += "\nMore tools load on request. Call enable_tools with one of: " + join(waiting, "; ") + ".";
         }
     }
-    {
-        std::vector<std::string> listed;
-        for (const Definition& skill : skills::list(*workspace, store_.home())) listed.push_back(skill.name + " (" + skill.description + ")");
-        if (!listed.empty()) prompt += "\nThis project has instructions for particular kinds of work. Read the one that fits with read_skill before starting: " + join(listed, "; ") + ".";
-    }
+    if (const std::string listed = skills::prompt(skills::all(*workspace, store_.home())); !listed.empty() && std::find(offered_names_.begin(), offered_names_.end(), "read_skill") != offered_names_.end()) prompt += "\n" + listed;
     {
         std::vector<std::string> names;
         for (const McpServer& server : mcp::enabled(store_.home())) names.push_back(server.name);
         if (!names.empty()) prompt += "\nThe user registered these MCP servers: " + join(names, ", ") + ". Use mcp_tools to see what one offers before calling it.";
+    }
+    {
+        // Whatever arrives from the web, an MCP server or documentation is material to read, never instructions.
+        const bool outside = std::any_of(offered_names_.begin(), offered_names_.end(), [](const std::string& name) {
+            return name == "web_fetch" || name == "web_search" || name == "read_documentation" || starts_with(name, "mcp_");
+        });
+        if (outside) prompt += std::string("\n") + web::kUntrustedNote;
     }
     if (const std::string notes = project_notes::context(store_.home(), *workspace); !notes.empty()) prompt += "\n" + notes;
     if (std::find(offered_names_.begin(), offered_names_.end(), "verify_acceptance") != offered_names_.end()) {
@@ -1012,7 +1017,10 @@ void Agent::run_turn(Session& session, const std::string& request, const CancelT
         const int window = model_.context_window();
         for (int step = 0; step < action_limit; step++) {
             check_cancel(cancel);
-            if (compaction::needed(session, window)) {
+            if (!session.automatic_compaction) {
+                // Off: never summarized by itself; a full context stops the run, with the originals kept.
+                if (compaction::full(session.prompt_tokens, window)) throw Error(compaction::kFullMessage);
+            } else if (compaction::needed(session, window)) {
                 emit_({AgentEvent::Kind::Status, "Compacting the conversation", {}});
                 if (compaction::compact(session, model_, 6, cancel)) store_.save(session);
                 else session.prompt_tokens = 0;
@@ -1304,6 +1312,54 @@ std::string Agent::network_note(size_t since) {
     return "\n[Network: " + join(std::vector<std::string>(all.begin() + static_cast<std::ptrdiff_t>(since), all.end()), "; ") + "]";
 }
 
+std::string Agent::perform_web(const ToolCall& call, const json& arguments, Session& session, Activity& activity, const CancelToken& cancel, std::string& state) {
+    if (!network_settings::web(session, store_.home())) throw Error("The internet is off for this session (/network). Answer without the web.");
+    if (!web_) {
+        web_ = std::make_unique<web::Access>([this, &session](const std::string& host) {
+            // A host kept for this project is not asked about again. The rule names it exactly.
+            if (network_settings::always_allowed(store_.home(), session.workspace).count(host)) return true;
+            session.state = "Awaiting review";
+            store_.save(session);
+            const bool answer = approve_ && approve_(ApprovalRequest{"network", "Allow Mason to read " + host + "?",
+                                                                      "Mason reads pages from " + host + " over HTTPS for this request: a GET with no cookies or passwords. Always Allow keeps " + host + " for this project.", host});
+            session.state = "Running";
+            return answer;
+        }, web_resolve_, web_fetch_);
+    }
+    const auto text = [&](const char* key) { return arguments.contains(key) && arguments[key].is_string() ? arguments[key].get<std::string>() : std::string(); };
+    const std::string url = text("url"), query = text("query");
+    size_t offset = 0;
+    if (arguments.contains("offset")) {
+        const json& given = arguments["offset"];
+        if (given.is_number_integer() && given.get<long long>() >= 0) offset = static_cast<size_t>(given.get<long long>());
+        else if (given.is_string() && !given.get<std::string>().empty() && given.get<std::string>().size() < 10 && given.get<std::string>().find_first_not_of("0123456789") == std::string::npos) offset = std::stoul(given.get<std::string>());
+    }
+    // The activity names the host (or the query) and how it went: allowed and the size, declined, or the error.
+    std::string subject = call.name == "web_search" ? trim(query) : "";
+    if (call.name == "web_fetch") {
+        if (const auto parsed = web::parse(url)) subject = to_lower(parsed->host);
+        else subject = utf8_prefix(trim(url), 80);
+    }
+    activity.subject = subject;
+    try {
+        emit_({AgentEvent::Kind::Status, call.name == "web_search" ? "Searching the web" : "Reading " + subject, {}});
+        const web::Access::Result found = call.name == "web_search" ? web_->search(query, cancel) : web_->fetch(url, offset, cancel);
+        activity.subject = (call.name == "web_search" ? subject + " · " + std::to_string(std::max(0, found.results)) + (found.results == 1 ? " result" : " results") : found.host) + " · allowed · " + byte_text(static_cast<int64_t>(found.bytes));
+        state = "completed";
+        return found.text;
+    } catch (const WebDenied& denied) {
+        activity.subject = subject + " · denied";
+        state = "denied";
+        return denied.what();
+    } catch (const Cancelled&) {
+        throw;
+    } catch (const std::exception& error) {
+        activity.subject = subject + (subject.empty() ? "" : " · ") + "error";
+        state = "failed";
+        return error.what();
+    }
+}
+
 bool Agent::allowed(const ApprovalRequest& request, Session& session) {
     if (ApprovalRules(store_.home(), session.workspace).allows(request.tool, request.subject)) return true;
     session.state = "Awaiting review";
@@ -1499,6 +1555,11 @@ std::string Agent::perform(const ToolCall& call, const Workspace& workspace, Ses
             const mcp::Operation operation = call.name == "mcp_read" ? mcp::Operation::Read : call.name == "mcp_resources" ? mcp::Operation::Resources : mcp::Operation::Tools;
             return finish("completed", mcp::request(*server, operation, uri.value_or(""), json::object(), cancel));
         }
+        if (call.name == "web_fetch" || call.name == "web_search") {
+            std::string state;
+            const std::string said = perform_web(call, arguments, session, activity, cancel, state);
+            return finish(state, said);
+        }
         if (const auto extra = perform_extra(call, arguments, workspace, session, cancel)) return finish(extra->first, extra->second);
         if (const auto window = perform_desktop(call, arguments, session, cancel)) return finish(window->first, window->second);
         throw Error("Unknown tool " + call.name + ". Use one of: " + join(offered_names_, ", "));
@@ -1644,6 +1705,7 @@ const std::vector<Group>& all() {
         {"workflows", "the project's named workflows and skills", {"read_skill", "run_workflow"}},
         {"jobs", "background programs and terminals", {"start_job", "poll_job", "stop_job", "start_terminal", "terminal_input", "terminal_status", "terminal_stop"}},
         {"mcp", "the user's MCP servers", {"mcp_tools", "mcp_call", "mcp_resources", "mcp_read"}},
+        {"web", "reading web pages and searching the web", {"web_fetch", "web_search"}},
     };
     return groups;
 }

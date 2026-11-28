@@ -395,7 +395,7 @@ ModelReply OpenAIClient::complete(const std::vector<ChatMessage>& messages, cons
                                         cancel, &error_body);
     if (status != 200) {
         const std::string detail = trim(error_body);
-        throw ModelUnavailable("The model server returned HTTP " + std::to_string(status) + "." + (detail.empty() ? "" : " " + utf8_prefix(detail, 600)));
+        throw ModelUnavailable("The model server returned HTTP " + std::to_string(status) + "." + (detail.empty() ? "" : " " + utf8_prefix(detail, 600)), static_cast<int>(status));
     }
     return assembler.finish();
 }

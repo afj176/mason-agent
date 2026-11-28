@@ -123,9 +123,21 @@ private:
     /// The sections the session bar's chips open. Owned by the page; reset whenever it is rebuilt.
     GtkWidget* delivery_group_ = nullptr;
     GtkWidget* task_group_ = nullptr;
+public:
+    /// The Tools groups the user opened, kept across rebuilds of the page.
+    std::set<std::string> open_tool_groups_;
+
+private:
+    /// Opens a file in the system's default app, or its folder in the file manager.
+    void open_file(const std::string& path, bool folder);
+    /// Shows a file's text, read-only.
+    void show_text(const std::string& title, const std::string& path, const std::string& text);
+    /// Asks for a name and description, makes .mason/skills/NAME/SKILL.md and opens it.
+    void new_skill(const std::string& workspace);
 };
 
-/// The Chat page: saved conversations, the selected one, and a message box. Chat has no tools.
+/// The Chat page: saved conversations, the selected one, and a message box. Chat is not tied to a project: its tools
+/// are the web, skills and MCP servers, switched per conversation with the Tools control.
 class ChatPage : public Gtk::Box {
 public:
     explicit ChatPage(Controller& controller);
@@ -148,7 +160,20 @@ private:
     Gtk::DropDown options_reasoning_;
     Gtk::Entry options_limit_;
     Gtk::TextView options_reference_;
+    Gtk::CheckButton options_auto_compact_;
+    bool options_updating_ = false;
     std::string options_shown_;
+    /// Web, Skills and MCP for the selected chat.
+    Gtk::MenuButton tools_;
+    Gtk::Popover tools_popover_;
+    Gtk::Switch tools_web_, tools_skills_, tools_mcp_;
+    Gtk::Label tools_note_;
+    std::string tools_shown_;
+    bool tools_updating_ = false;
+    /// A compact line for one tool step: its mark, the tool and what it was about.
+    Gtk::Widget* step_row(const Activity& step);
+    /// The card that asks about a host or an MCP call, with Once, Always and No.
+    Gtk::Widget* approval_card(const ApprovalRequest& request);
     Gtk::Label model_label_;
     Gtk::Label* live_label_ = nullptr;  ///< Owned by the transcript and reset when it is rebuilt.
     bool updating_ = false;

@@ -8,6 +8,7 @@
 #include "harness.hpp"
 #include "mcp.hpp"
 #include "network.hpp"
+#include "web.hpp"
 #include "policy.hpp"
 #include "tools.hpp"
 #include "model.hpp"
@@ -82,6 +83,8 @@ public:
     /// The reviewer that reads a request's changes before it may finish. Normally the model chosen with /roles; a test supplies its own.
     /// The relay this session's sandboxed commands may use, or nothing when they have no network. For tests.
     NetworkRelay* relay_for(const Session& session) { return relay(session); }
+    /// For tests: how web_fetch and web_search resolve names and read pages, instead of the network.
+    void set_web(web::Resolve resolve, web::Fetch fetch) { web_resolve_ = std::move(resolve); web_fetch_ = std::move(fetch); }
     void set_reviewer(ChatModel* reviewer) { reviewer_ = reviewer; }
     void set_presenter(std::function<void(const std::string& kind, const std::string& path, int line)> present) { present_ = std::move(present); }
     /// In Auto, Mason works out checks from the request and runs them itself when the model says it is done.
@@ -112,6 +115,9 @@ public:
     /// Puts back every file the latest request changed, whether an edit tool or a command changed it. A file changed
     /// again since is left alone and reported. Returns nothing when there is no such request.
     static std::optional<UndoResult> undo_latest(Session& session, SessionStore& store, bool redo = false);
+    /// Sends a session's reasoning level with its requests the way Chat sends it, in the client's extra body.
+    /// Each run gets its own client, so this never reaches another session's requests.
+    static void apply_reasoning(const std::string& level, ChatModel& model);
     /// A tool call without a result would make the next request invalid for the model, so calls that were cut short are closed.
     static void close_open_calls(Session& session);
 
@@ -170,6 +176,12 @@ private:
     /// The relay this request's sandboxed commands may reach hosts through, once one has been needed.
     std::unique_ptr<NetworkRelay> network_;
     NetworkRelay* relay(const Session& session);
+    /// This request's access to the web, made when web_fetch or web_search is first called. Host answers last for the request.
+    std::unique_ptr<web::Access> web_;
+    /// What a web tool fetches through, for tests; left unset, the real resolver and HTTPS client.
+    web::Resolve web_resolve_;
+    web::Fetch web_fetch_;
+    std::string perform_web(const ToolCall& call, const json& arguments, Session& session, Activity& activity, const CancelToken& cancel, std::string& state);
     std::string network_note(size_t since);
     std::function<void(const std::string&, const std::string&, int)> present_;
     std::optional<std::string> last_search_;  // this request's latest search_files text, which search_next continues

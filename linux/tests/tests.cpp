@@ -37,6 +37,8 @@
 #include "models.hpp"
 #include "model_memory.hpp"
 #include "scenes.hpp"
+#include "catalogue.hpp"
+#include "web.hpp"
 
 using namespace mason;
 
@@ -619,6 +621,141 @@ static void test_undo_of_command_changes() {
     CHECK(second.read("calc.py") == "def add(a, b):\n    return a - b\n");
 }
 
+/// A server that answers HTTP 400 to any request that offers tools, as servers without tool support do.
+struct ToolRefusingModel : ChatModel {
+    std::string id = "refuses-tools-" + new_id();
+    std::vector<std::vector<std::string>> seen_tools;
+    std::string name() const override { return id; }
+    ModelReply complete(const std::vector<ChatMessage>&, const std::vector<ToolSpec>& tools, const std::function<void(const std::string&)>&, const CancelToken&) override {
+        seen_tools.emplace_back();
+        for (const ToolSpec& tool : tools) seen_tools.back().push_back(tool.name);
+        if (!tools.empty()) throw ModelUnavailable("The model server returned HTTP 400. {\"error\":\"tools param requires --jinja flag\"}", 400);
+        ModelReply reply;
+        reply.text = seen_tools.size() == 2 ? "Hi without tools." : "Again without tools.";
+        return reply;
+    }
+};
+
+/// Automatic compaction off: nothing is summarized, and a full context stops the run with the Windows message.
+static void test_automatic_compaction_toggle() {
+    Sandbox box;
+    SessionStore store(box.home);
+    Session session = store.create(Workspace(box.project.string()).root());
+    CHECK(session.automatic_compaction);  // on by default
+    session.messages = {{"system", "s", {}, ""}, {"user", "one", {}, ""}, {"assistant", "two", {}, ""}, {"user", "three", {}, ""}, {"assistant", "four", {}, ""}};
+    session.prompt_tokens = 990;
+    session.automatic_compaction = false;
+    ScriptedModel model;
+    model.window = 1000;
+    model.replies = {say("A summary."), say("Done.")};
+    Agent(store, model, nullptr, [](const AgentEvent&) {}).run(session, "Go on");
+    CHECK(session.state == "Failed" && session.detail == compaction::kFullMessage);
+    CHECK(session.compactions == 0 && model.seen.empty());
+    CHECK(!SessionStore(box.home).sessions()[0].automatic_compaction);  // the setting is saved
+    CHECK(compaction::auto_text("", false).second == "Automatic compaction is off · /compact auto on | off");
+    CHECK(compaction::auto_text("on", false).first);
+    CHECK_THROWS(compaction::auto_text("sometimes", true));
+
+    // Files saved before the setting existed are on.
+    json old = json::parse(read_file(store.folder() / (session.id + ".json")));
+    old.erase("automaticCompaction");
+    write_file_atomic(store.folder() / (session.id + ".json"), old.dump());
+    CHECK(SessionStore(box.home).sessions()[0].automatic_compaction);
+
+    ChatStore chats(box.home);
+    ChatConversation conversation = chats.create();
+    CHECK(conversation.automatic_compaction);
+    conversation.automatic_compaction = false;
+    conversation.prompt_tokens = 995;
+    ScriptedModel chat_model;
+    chat_model.window = 1000;
+    chat_model.replies = {say("A summary."), say("Hi.")};
+    std::string stopped;
+    try {
+        chat::send(conversation, "Hello", {}, chat_model, chats, nullptr, nullptr, nullptr);
+    } catch (const Error& error) {
+        stopped = error.what();
+    }
+    CHECK(stopped == compaction::kChatFullMessage && chat_model.seen.empty());
+}
+
+/// A server that refuses tools gets the message again without them, and is sent none for the rest of the run.
+static void test_tool_refusal() {
+    Sandbox box;
+    ChatStore store(box.home);
+    ChatTools tools;
+    tools.home = box.home;
+    tools.approve = [](const ApprovalRequest&) { return ChatAnswer::No; };
+    ChatConversation conversation = store.create();
+    ToolRefusingModel model;
+    CHECK(chat::calls_tools(model) && !chat::offered(conversation, tools).empty());
+    chat::send(conversation, "Hello", {}, model, store, nullptr, nullptr, &tools);
+    CHECK(model.seen_tools.size() == 2 && !model.seen_tools[0].empty() && model.seen_tools[1].empty());
+    CHECK(conversation.messages.back().content == "Hi without tools.");
+    CHECK(!chat::calls_tools(model));
+    chat::send(conversation, "Again", {}, model, store, nullptr, nullptr, &tools);
+    CHECK(model.seen_tools.size() == 3 && model.seen_tools[2].empty());
+    CHECK(chat::refuses_tools(ModelUnavailable("The model server returned HTTP 501.", 501)));
+    CHECK(chat::refuses_tools(ModelUnavailable("The model server returned HTTP 422. Unsupported parameter: functions", 422)));
+    CHECK(!chat::refuses_tools(ModelUnavailable("The model server returned HTTP 500. tools are not supported", 500)));
+    CHECK(!chat::refuses_tools(ModelUnavailable("The model server returned HTTP 400. context length exceeded", 400)));
+
+    // A plain 400 is the error the user sees, and tools stay on.
+    struct TooLongModel : ChatModel {
+        std::string id = "too-long-" + new_id();
+        int calls = 0;
+        std::string name() const override { return id; }
+        ModelReply complete(const std::vector<ChatMessage>&, const std::vector<ToolSpec>&, const std::function<void(const std::string&)>&, const CancelToken&) override {
+            calls++;
+            throw ModelUnavailable("The model server returned HTTP 400. {\"error\":\"context length exceeded\"}", 400);
+        }
+    } too_long;
+    ChatConversation other = store.create();
+    std::string shown;
+    try {
+        chat::send(other, "Hello", {}, too_long, store, nullptr, nullptr, &tools);
+    } catch (const ModelUnavailable& error) {
+        shown = error.what();
+    }
+    CHECK(shown.find("context length exceeded") != std::string::npos && too_long.calls == 1);
+    CHECK(chat::calls_tools(too_long) && !chat::offered(other, tools).empty());
+    CHECK(!chat::refuses_tools(Error("tool")));  // not an answer from the server
+}
+
+/// The core behind /agent new, /commands new, /reasoning and /theme light|dark|system.
+static void test_cli_parity() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    const fs::path agent = customization::create(workspace, "careful", false);
+    const fs::path command = customization::create(workspace, "ship", true);
+    CHECK(agent == box.project / ".mason/agents/careful.md" && command == box.project / ".mason/commands/ship.md");
+    CHECK(read_file(agent).rfind("---\ndescription: \n---\n\n# careful\n", 0) == 0);
+    CHECK(customization::agents(box.home, workspace.root()).size() == 1 && customization::commands(box.home, workspace.root())[0].name == "ship");
+    CHECK_THROWS(customization::create(workspace, "careful", false));
+    CHECK_THROWS(customization::create(workspace, "../out", true));
+    CHECK_THROWS(customization::create(workspace, "compact", true));
+
+    OpenAIClient client(ModelEndpoint{"http://127.0.0.1:9", "m", ""});
+    Agent::apply_reasoning("", client);
+    CHECK(!client.extra_body().contains("chat_template_kwargs"));
+    RoleModel role(client, "implementer");
+    Agent::apply_reasoning("off", role);
+    CHECK(client.extra_body()["reasoning_effort"] == "none" && client.extra_body()["thinking_budget_tokens"] == 0);
+    Agent::apply_reasoning("high", client);
+    CHECK(client.extra_body()["thinking_budget_tokens"] == 8192 && client.extra_body()["chat_template_kwargs"]["enable_thinking"] == true);
+
+    SessionStore store(box.home);
+    Session session = store.create(workspace.root());
+    session.reasoning = "low";
+    store.save(session);
+    CHECK(SessionStore(box.home).sessions()[0].reasoning == "low");
+
+    CHECK(theme::saved_mode(box.home) == "system");
+    theme::save_mode(box.home, "dark");
+    CHECK(theme::saved_mode(box.home) == "dark" && read_file(box.home / "appearance") == "dark");
+    CHECK_THROWS(theme::save_mode(box.home, "kiln"));
+}
+
 static void test_custom_agents_and_commands() {
     Sandbox box;
     box.write(".claude/commands/review.md", "---\ndescription: Review one file\n---\nReview $1 for $2. All: $ARGUMENTS");
@@ -713,7 +850,8 @@ static void test_mcp() {
     CHECK(read_file(box.home / "mcp-servers.json").find("\"Name\"") != std::string::npos);  // written with the keys Windows uses
 
     const std::string python = "/usr/bin/python3";
-    const std::string script = (fs::path(__FILE__).parent_path() / "mcp-test-server.py").string();
+    // Absolute, because the server starts in its program's folder, where a path relative to the build would not resolve.
+    const std::string script = fs::absolute(fs::path(__FILE__).parent_path() / "mcp-test-server.py").lexically_normal().string();
     if (access(python.c_str(), X_OK) != 0 || !fs::exists(script)) {
         std::cout << "  note: python3 or the MCP test server is missing; the connection checks were skipped.\n";
         return;
@@ -1437,8 +1575,14 @@ static void test_extra_tools() {
                                                                                      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}) {
             CHECK(!network_policy::is_public(address));  // not on the public internet
         }
-        CHECK(network_settings::command("", box.home).find("no network") != std::string::npos);
-        CHECK(network_settings::command("ask", box.home).find("asks first") != std::string::npos && network_settings::asks(box.home));
+        // By default commands have no network and the web tools ask; ask lets both ask; off (saved as such) is neither.
+        CHECK(network_settings::mode(box.home).empty() && !network_settings::asks(box.home) && network_settings::web(box.home));
+        CHECK(network_settings::command("", box.home).find("Sandboxed commands in Auto have no network; web_fetch and web_search ask before each host") != std::string::npos);
+        CHECK(network_settings::command("off", box.home).find("Internet: off") != std::string::npos && !network_settings::asks(box.home) && !network_settings::web(box.home));
+        CHECK(network_settings::mode(box.home) == "off");
+        CHECK(network_settings::command("ask", box.home).find("ask before each host") != std::string::npos && network_settings::asks(box.home) && network_settings::web(box.home));
+        network_settings::command("default", box.home);
+        CHECK(network_settings::mode(box.home).empty() && !network_settings::asks(box.home) && network_settings::web(box.home));
 
         // A stand-in for a site: the project's page server on this computer. The test's resolver points names at it.
         box.write("index.html", "<h1>upstream</h1>");
@@ -1884,7 +2028,7 @@ static void test_extra_tools() {
         ScriptedModel model;
         model.replies = {call("read_skill", {{"name", "release"}}), call("run_workflow", {{"name", "stamp"}}), call("run_workflow", {{"name", "missing"}}), say("Done.")};
         Agent(store, model, [&](const ApprovalRequest& request) { asked.push_back(request.subject); return true; }, quiet).run(session, "Release it");
-        CHECK(model.seen[0][0].content.find("release (How we cut a release)") != std::string::npos);  // the model is told which skills exist
+        CHECK(model.seen[0][0].content.find("- release: How we cut a release\nCall read_skill with the name before doing work a skill covers.") != std::string::npos);  // the model is told which skills exist
         CHECK(session.activities.size() == 3 && session.activities[0].result.find("Tag, then publish.") != std::string::npos);
         CHECK(asked == std::vector<std::string>{"workflow stamp"});
         CHECK(session.activities[1].state == "completed" && session.activities[1].result.find("it's stamped") != std::string::npos && session.activities[1].result.find("stamp.txt") != std::string::npos);
@@ -1897,7 +2041,7 @@ static void test_extra_tools() {
         std::vector<std::string> offered = names(reading);
         offered.erase(std::remove(offered.begin(), offered.end(), "check_page"), offered.end());
         offered.erase(std::remove(offered.begin(), offered.end(), "inspect_symbol"), offered.end());
-        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "suggest_note", "navigate_code", "read_skill"}));  // no editing, job or workflow tools
+        CHECK(offered == (std::vector<std::string>{"read_lines", "git_status", "delegate_readonly", "repository_map", "ask_user", "suggest_note", "navigate_code", "read_skill", "web_fetch", "web_search"}));  // no editing, job or workflow tools; reading the web changes nothing
         box.write("mason.workflows.json", "{\"version\": 2}");
         CHECK_THROWS(workflows::load(workspace));
     }
@@ -3023,6 +3167,384 @@ static void test_generation_settings() {
     CHECK(generation::body(coder, box.home).empty() && generation::values(other, box.home).size() == 1);
 }
 
+static void test_skills() {
+    Sandbox box;
+    const Workspace workspace(box.project.string());
+    const fs::path data = box.base / "data";
+    auto put = [](const fs::path& file, const std::string& text) {
+        fs::create_directories(file.parent_path());
+        write_file_atomic(file, text);
+    };
+    CHECK(skills::command("", workspace, data) == "No skills yet. /skills new NAME makes one in .mason/skills.");
+    box.write(".mason/skills/release/SKILL.md", "---\nname: release\ndescription: How we cut a release\n---\nTag, then publish.");
+    box.write(".claude/skills/release/SKILL.md", "---\ndescription: The old way\n---\nDo not use.");
+    box.write(".claude/skills/lint/SKILL.md", "Run the linter first.");  // no front matter: no description
+    box.write(".agents/skills/deploy/SKILL.md", "---\ndescription: Ship it\n---\nDeploy with care.");
+    box.write(".agents/skills/bad name/SKILL.md", "---\ndescription: Not a valid name\n---\nx");
+    put(box.base / "kit/bundle.json", R"({"name": "kit", "version": "1.0.0"})");
+    put(box.base / "kit/skills/release/SKILL.md", "---\ndescription: The bundle's release\n---\nBundle steps.");
+    put(box.base / "kit/skills/style/SKILL.md", "---\ndescription: House style\n---\nShort sentences.");
+    bundles::install((box.base / "kit").string(), data);
+
+    // Precedence: .mason/skills, .claude/skills, .agents/skills, then bundles. Later skills of a name are kept, hidden.
+    const std::vector<Skill> known = skills::all(workspace, data);
+    std::vector<std::string> order;
+    for (const Skill& skill : known) order.push_back(skill.name + "@" + skill.source + (skill.shadowed() ? " hidden by " + skill.shadowed_by : ""));
+    CHECK(order == (std::vector<std::string>{"release@project", "lint@.claude", "release@.claude hidden by .mason/skills/release", "deploy@.agents", "release@bundle kit hidden by .mason/skills/release", "style@bundle kit"}));
+    CHECK(known[0].description == "How we cut a release" && known[1].description == "No description" && known[5].description == "House style");
+    const std::string listed = skills::command("", workspace, data);
+    CHECK(listed.find("release  on      project") != std::string::npos && listed.find("hidden") != std::string::npos && listed.find("Hidden by .mason/skills/release") != std::string::npos);
+    CHECK(listed.find("style    on      bundle kit") != std::string::npos);
+    CHECK(skills::command("show deploy", workspace, data).find("Deploy with care.") != std::string::npos);
+    CHECK(skills::read(known, "style").find("Short sentences.") != std::string::npos);
+
+    // A skill switched off for the project leaves the prompt, and read_skill refuses it.
+    CHECK(skills::command("off lint", workspace, data) == "The skill lint is off for this project.");
+    CHECK(policies::load(data, workspace.root())->disabled_skills == std::vector<std::string>{"lint"});
+    CHECK(skills::all(workspace, data)[1].state() == "off");
+    try {
+        skills::read(skills::all(workspace, data), "lint");
+        CHECK(false);
+    } catch (const Error& error) {
+        CHECK(std::string(error.what()) == "The skill lint is switched off for this project.");
+    }
+    {
+        SessionStore store(data);
+        Session session = store.create(workspace.root(), Permission::ReadOnly);
+        ScriptedModel model;
+        model.replies = {call("read_skill", {{"name", "lint"}}), call("read_skill", {{"name", "deploy"}}), say("Done.")};
+        Agent(store, model, [](const ApprovalRequest&) { return false; }, [](const AgentEvent&) {}).run(session, "Ship it");
+        const std::string prompt = model.seen[0][0].content;
+        CHECK(prompt.find("- release: How we cut a release") != std::string::npos && prompt.find("- deploy: Ship it") != std::string::npos && prompt.find("- style: House style") != std::string::npos);
+        CHECK(prompt.find("- lint:") == std::string::npos && prompt.find("The old way") == std::string::npos);
+        CHECK(session.activities.size() == 2 && session.activities[0].state == "failed" && session.activities[0].result == "The skill lint is switched off for this project.");
+        CHECK(session.activities[1].state == "completed" && session.activities[1].result.find("Deploy with care.") != std::string::npos);
+    }
+    CHECK(skills::command("on lint", workspace, data) == "The skill lint is on for this project.");
+    CHECK(policies::load(data, workspace.root())->disabled_skills.empty());
+
+    // /skills new writes the template, and refuses an invalid name or one already there.
+    const fs::path made = skills::create(workspace, "triage", "Sort incoming bugs");
+    CHECK(made == fs::path(workspace.root()) / ".mason/skills/triage/SKILL.md");
+    CHECK(read_file(made) == "---\nname: triage\ndescription: Sort incoming bugs\n---\n\n# triage\n\n## When to use\n\n## Steps\n\n");
+    CHECK(skills::template_text("x", "y") == "---\nname: x\ndescription: y\n---\n\n# x\n\n## When to use\n\n## Steps\n\n");
+    CHECK_THROWS(skills::create(workspace, "triage", "again"));
+    CHECK_THROWS(skills::create(workspace, "Release", "differs only in case"));
+    CHECK_THROWS(skills::create(workspace, "../escape", ""));
+    CHECK_THROWS(skills::create(workspace, "has space", ""));
+    CHECK_THROWS(skills::create(workspace, "", ""));
+    CHECK(skills::request(skills::all(workspace, data), "deploy", "the shop") == "Follow the skill deploy:\n\nDeploy with care.\n\nRequest: the shop");
+
+    // Chat reads skills from Mason's own folder and from bundles, never a project's.
+    put(data / "skills/notes/SKILL.md", "---\ndescription: How to take notes\n---\nBullet points.");
+    const std::vector<Skill> everywhere = skills::computer(data);
+    CHECK(everywhere.size() == 3 && everywhere[0].name == "notes" && everywhere[0].source == "computer" && everywhere[1].name == "release" && everywhere[1].source == "bundle kit");
+}
+
+namespace {
+/// A pretend web: pages by address, every name resolving to one public address.
+struct FakeWeb {
+    std::map<std::string, WebResponse> pages;
+    std::vector<std::string> fetched;
+    std::vector<std::vector<uint8_t>> pinned;
+    std::vector<uint8_t> address = {93, 184, 216, 34};
+    web::Resolve resolve() {
+        return [this](const std::string&) { return std::vector<RelayAddress>{{{10, 0, 0, 7}, 443}, {address, 443}}; };
+    }
+    web::Fetch fetch() {
+        return [this](const WebRequest& request, const CancelToken&) {
+            fetched.push_back(request.url);
+            pinned.push_back(request.address);
+            const auto found = pages.find(request.url);
+            if (found == pages.end()) return WebResponse{404, "text/html", "", "Not here", false};
+            return found->second;
+        };
+    }
+};
+
+const char* const kShopPage =
+    "<html><head><title>Shop &amp; Co</title><style>body { color: red }</style><script>var x = \"<p>no</p>\";</script></head>\n"
+    "<body><nav><a href=\"/home\">Home</a></nav>\n"
+    "<h1>Welcome</h1><p>Prices &lt;today&gt; are&nbsp;low &#8212; really.</p>\n"
+    "<ul><li>One</li><li><a href=\"/items/2\">Two</a></li></ul>\n"
+    "<noscript>enable scripts</noscript><svg><text>chart</text></svg>\n"
+    "<p>See <a href=\"https://other.example/x?y=1\">the   guide</a>.</p>\n"
+    "<footer>Copyright</footer></body></html>";
+
+const char* const kSearchPage =
+    "<div class=\"result results_links results_links_deep web-result\">\n"
+    " <h2 class=\"result__title\"><a rel=\"nofollow\" class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs%3Fa%3D1%26b%3D2&amp;rut=abc\">Example <b>Docs</b></a></h2>\n"
+    " <div class=\"result__extras\"><a class=\"result__url\" href=\"//duckduckgo.com/l/?uddg=x\">example.com/docs</a></div>\n"
+    " <a class=\"result__snippet\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs\">The <b>docs</b> &amp; guides.</a>\n"
+    "</div>\n"
+    "<div class=\"result result--ad\"><h2><a class=\"result__a\" href=\"https://duckduckgo.com/y.js?ad_domain=ads.example&amp;u3=1\">Buy now</a></h2></div>\n"
+    "<div class=\"result\"><h2><a class=\"result__a\" href=\"//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.wikipedia.org%2F&amp;rut=x\">Wikipedia</a></h2><div class=\"result__snippet\">Free encyclopedia</div></div>\n";
+}  // namespace
+
+static void test_web() {
+    // Destinations: HTTPS on port 443 to a public name only.
+    CHECK(web::destination("https://Shop.Example/page?q=1") == "shop.example");
+    for (const char* refused : {"http://shop.example/", "https://127.0.0.1/", "https://[::1]/", "https://localhost/", "https://printer.local/", "https://shop.example:8443/",
+                                "https://10.0.0.1/", "ftp://shop.example/", "https://user:pass@shop.example/", "https://intranet/", "shop.example"}) {
+        bool threw = false;
+        try { web::destination(refused); } catch (const Error&) { threw = true; }
+        CHECK(threw);
+    }
+    CHECK(web::absolute("/items/2", "https://shop.example/a/page") == "https://shop.example/items/2");
+    CHECK(web::absolute("../b/c?d=1", "https://shop.example/a/x/page") == "https://shop.example/a/b/c?d=1");
+    CHECK(web::absolute("//cdn.example/x", "https://shop.example/") == "https://cdn.example/x");
+    CHECK(web::readable_type("text/html; charset=utf-8") && web::readable_type("application/ld+json") && web::readable_type("application/atom+xml") && !web::readable_type("image/png") && !web::readable_type("application/pdf"));
+
+    // HTML to text.
+    std::string title;
+    const std::string text = web::html_to_text(kShopPage, "https://shop.example/page", &title);
+    CHECK(title == "Shop & Co");
+    CHECK(text == "# Welcome\nPrices <today> are low — really.\n- One\n- [Two](https://shop.example/items/2)\nSee [the guide](https://other.example/x?y=1).");
+
+    // Search results, with the real address from DuckDuckGo's redirect link; ads are left out.
+    const std::vector<web::SearchResult> results = web::parse_search(kSearchPage);
+    CHECK(results.size() == 2);
+    if (results.size() == 2) {
+        CHECK(results[0].title == "Example Docs" && results[0].url == "https://example.com/docs?a=1&b=2" && results[0].snippet == "The docs & guides.");
+        CHECK(results[1].title == "Wikipedia" && results[1].url == "https://www.wikipedia.org/" && results[1].snippet == "Free encyclopedia");
+    }
+    CHECK(web::search_text("q", web::parse_search("<html><body>We changed everything</body></html>")) == "No results, or DuckDuckGo changed its page.");
+    CHECK(web::search_text("q", results).find("1. Example Docs\n   https://example.com/docs?a=1&b=2\n   The docs & guides.") != std::string::npos);
+
+    // Each host asks once; a redirect to a new host asks again; a declined host stays declined; the connection is
+    // pinned to the public address the name resolved to.
+    FakeWeb site;
+    site.pages["https://shop.example/page"] = {200, "text/html; charset=utf-8", "", kShopPage, false};
+    site.pages["https://shop.example/moved"] = {301, "text/html", "/page", "", false};
+    site.pages["https://shop.example/away"] = {302, "text/html", "https://other.example/x", "", false};
+    site.pages["https://shop.example/picture"] = {200, "image/png", "", "\x89PNG", false};
+    site.pages["https://shop.example/loop"] = {302, "text/html", "/loop", "", false};
+    std::vector<std::string> asked;
+    web::Access access([&](const std::string& host) { asked.push_back(host); return host != "other.example"; }, site.resolve(), site.fetch());
+    const web::Access::Result page = access.fetch("https://shop.example/moved", 0);
+    CHECK(starts_with(page.text, "Source: https://shop.example/page\nTitle: Shop & Co\n") && page.text.find("# Welcome") != std::string::npos && page.host == "shop.example");
+    CHECK(asked == std::vector<std::string>{"shop.example"} && site.pinned.back() == std::vector<uint8_t>({93, 184, 216, 34}));
+    bool declined = false;
+    try { access.fetch("https://shop.example/away", 0); } catch (const WebDenied&) { declined = true; }
+    CHECK(declined && asked == (std::vector<std::string>{"shop.example", "other.example"}));
+    declined = false;
+    try { access.fetch("https://other.example/x", 0); } catch (const WebDenied&) { declined = true; }
+    CHECK(declined && asked.size() == 2);  // a declined host stays declined without asking again
+    CHECK(std::find(site.fetched.begin(), site.fetched.end(), "https://other.example/x") == site.fetched.end());
+    try {
+        access.fetch("https://shop.example/picture", 0);
+        CHECK(false);
+    } catch (const Error& error) {
+        CHECK(std::string(error.what()) == "The page at https://shop.example/picture is image/png, which web_fetch does not read.");
+    }
+    CHECK_THROWS(access.fetch("https://shop.example/loop", 0));  // more than five redirects
+
+    // An address that is not public is never connected to.
+    web::Access inward([](const std::string&) { return true; }, [](const std::string&) { return std::vector<RelayAddress>{{{192, 168, 1, 4}, 443}, {{127, 0, 0, 1}, 443}}; }, site.fetch());
+    const size_t before = site.fetched.size();
+    CHECK_THROWS(inward.fetch("https://rebind.example/", 0));
+    CHECK(site.fetched.size() == before);
+
+    // Long pages come in parts.
+    site.pages["https://shop.example/long"] = {200, "text/plain", "", std::string(25000, 'a'), false};
+    const std::string first = access.fetch("https://shop.example/long", 0).text;
+    CHECK(ends_with(first, "(more: call web_fetch with offset 20000)"));
+    const std::string second = access.fetch("https://shop.example/long", 20000).text;
+    CHECK(second.find(std::string(5000, 'a')) != std::string::npos && second.find("(more:") == std::string::npos);
+
+    // Searching asks about DuckDuckGo's host like any other.
+    site.pages["https://html.duckduckgo.com/html/?q=mason+agent"] = {200, "text/html", "", kSearchPage, false};
+    const web::Access::Result found = access.search("mason agent");
+    CHECK(found.results == 2 && found.text.find("2. Wikipedia") != std::string::npos && asked.back() == "html.duckduckgo.com");
+    site.pages["https://html.duckduckgo.com/html/?q=nothing"] = {200, "text/html", "", "<html>changed</html>", false};
+    CHECK(access.search("nothing").text == "No results, or DuckDuckGo changed its page.");
+
+    // Through the agent: the approval names the host, Always keeps it in the project's list, and the activity says how it went.
+    {
+        Sandbox box;
+        SessionStore store(box.home);
+        Session session = store.create(Workspace(box.project.string()).root(), Permission::ReviewEdits);
+        ScriptedModel model;
+        model.replies = {call("web_fetch", {{"url", "https://shop.example/page"}}), call("web_fetch", {{"url", "https://shop.example/long"}, {"offset", 20000}}), say("Read it.")};
+        std::vector<ApprovalRequest> requests;
+        Agent agent(store, model, [&](const ApprovalRequest& request) { requests.push_back(request); return true; }, [](const AgentEvent&) {});
+        agent.set_web(site.resolve(), site.fetch());
+        agent.run(session, "What does the shop sell?");
+        CHECK(requests.size() == 1 && requests[0].tool == "network" && requests[0].title == "Allow Mason to read shop.example?" && requests[0].subject == "shop.example");
+        CHECK(session.activities.size() == 2 && session.activities[0].state == "completed" && starts_with(session.activities[0].subject, "shop.example · allowed · "));
+        CHECK(starts_with(session.activities[0].result, "Source: https://shop.example/page"));
+        CHECK(model.seen[0][0].content.find(web::kUntrustedNote) != std::string::npos);
+        // A host always allowed for the project is not asked about; the relay and the web tools share the list.
+        ApprovalRules(box.home, session.workspace).add("network", "shop.example");
+        ScriptedModel again;
+        again.replies = {call("web_fetch", {{"url", "https://shop.example/page"}}), say("Again.")};
+        Agent second_agent(store, again, [&](const ApprovalRequest& request) { requests.push_back(request); return false; }, [](const AgentEvent&) {});
+        second_agent.set_web(site.resolve(), site.fetch());
+        second_agent.run(session, "Once more");
+        CHECK(requests.size() == 1 && session.activities.back().state == "completed");
+        network_settings::forget(box.home, session.workspace, "shop.example");
+        CHECK(network_settings::always_allowed(box.home, session.workspace).empty());
+
+        // With the internet off, the web group is not offered at all.
+        const Workspace workspace(box.project.string());
+        auto offers_web = [&] {
+            for (const ToolSpec& tool : Agent::extra_tools(session, workspace, false, false, box.home)) {
+                if (tool.name == "web_fetch" || tool.name == "web_search") return true;
+            }
+            return false;
+        };
+        // The default: sandboxed commands stay offline, but the web group is offered and asks per host.
+        CHECK(network_settings::mode(box.home).empty() && offers_web());
+        Session automatic = store.create(workspace.root(), Permission::Auto);
+        CHECK(!network_settings::asks(automatic, box.home) && agent.relay_for(automatic) == nullptr);
+        network_settings::command("off", box.home);
+        CHECK(!offers_web());
+        network_settings::session_command("ask", session, box.home);
+        CHECK(offers_web());  // a session's own choice wins
+        network_settings::session_command("off", session, box.home);
+        network_settings::command("ask", box.home);
+        CHECK(!offers_web());
+    }
+}
+
+static void test_tool_catalogue() {
+    Sandbox box;
+    SessionStore store(box.home);
+    const Workspace workspace(box.project.string());
+    // A project with everything: workflows, docs, skills, an MCP server, a window, a model for search by meaning.
+    box.write("mason.workflows.json", R"({"version": 1, "workflows": {"test": {"executable": "true"}}})");
+    box.write(".mason/docs/notes.md", "# Notes\nText.");
+    box.write(".mason/skills/release/SKILL.md", "---\ndescription: Release\n---\nSteps.");
+    Session session = store.create(workspace.root(), Permission::Auto);
+    session.desktop = DesktopWindow{7, "Calculator", "Calculator"};
+    std::set<std::string> offered;
+    for (const ToolSpec& tool : Agent::tools()) offered.insert(tool.name);
+    for (const ToolSpec& tool : Agent::extra_tools(session, workspace, true, true, box.home)) offered.insert(tool.name);
+    for (const ToolSpec& tool : Agent::desktop_tools(session, true)) offered.insert(tool.name);
+    for (const ToolSpec& tool : Agent::mcp_tools()) offered.insert(tool.name);
+    for (const ToolSpec& tool : web::tools()) offered.insert(tool.name);
+    // Tools that depend on what this computer has installed.
+    for (const char* name : {"inspect_symbol", "check_page", "verify_acceptance", "enable_tools"}) offered.insert(name);
+    for (const tool_groups::Group& group : tool_groups::all()) offered.insert(group.tools.begin(), group.tools.end());
+    ChatConversation conversation;
+    conversation.mcp = true;
+    ChatTools chat_tools;
+    chat_tools.home = box.home;
+    for (const ToolSpec& tool : chat::offered(conversation, chat_tools)) offered.insert(tool.name);
+    for (const std::string& name : offered) {
+        const CatalogueTool* entry = tool_catalogue::find(name);
+        if (!entry) std::cerr << "  missing from the tool catalogue: " << name << "\n";
+        CHECK(entry != nullptr);
+    }
+    std::set<std::string> groups;
+    for (const auto& [group, title] : tool_catalogue::groups()) groups.insert(group);
+    for (const CatalogueTool& tool : tool_catalogue::all()) CHECK(groups.count(tool.group) == 1 && !tool.line.empty());
+    CHECK(tool_catalogue::find("web_fetch")->internet && tool_catalogue::find("run_shell")->changes && tool_catalogue::find("enable_tools")->always_on);
+
+    // /tools off writes disabledTools; the tool is then not offered.
+    const std::string listed = tool_catalogue::command("", workspace.root(), box.home);
+    CHECK(listed.rfind("core\n  on   list_files", 0) == 0 && listed.find("\nweb\n  on   web_fetch") != std::string::npos);
+    CHECK(tool_catalogue::command("off run_shell", workspace.root(), box.home) == "run_shell is off for this project.");
+    CHECK(policies::load(box.home, workspace.root())->disabled_tools == std::vector<std::string>{"run_shell"});
+    CHECK(tool_catalogue::command("", workspace.root(), box.home).find("  off  run_shell") != std::string::npos);
+    CHECK_THROWS(tool_catalogue::command("off enable_tools", workspace.root(), box.home));
+    CHECK_THROWS(tool_catalogue::command("off no_such_tool", workspace.root(), box.home));
+    McpServer server;
+    server.name = "docs";
+    server.endpoint = "http://127.0.0.1:8088/mcp";
+    server.tools = {"search", "read"};
+    mcp::save({server}, box.home);
+    CHECK(ends_with(tool_catalogue::command("", workspace.root(), box.home), "\nmcp: docs (2 tools allowed)"));
+    ScriptedModel model;
+    model.replies = {say("Done.")};
+    Session plain = store.create(workspace.root(), Permission::ReviewEdits);
+    Agent(store, model, [](const ApprovalRequest&) { return false; }, [](const AgentEvent&) {}).run(plain, "Look");
+    CHECK(std::find(model.seen_tools[0].begin(), model.seen_tools[0].end(), "run_shell") == model.seen_tools[0].end());
+    CHECK(tool_catalogue::command("on run_shell", workspace.root(), box.home) == "run_shell is on for this project.");
+    CHECK(policies::load(box.home, workspace.root())->disabled_tools.empty());
+}
+
+static void test_chat_tools() {
+    Sandbox box;
+    ChatStore store(box.home);
+    FakeWeb site;
+    site.pages["https://html.duckduckgo.com/html/?q=mason"] = {200, "text/html", "", kSearchPage, false};
+    std::vector<ApprovalRequest> asked;
+    ChatTools tools;
+    tools.home = box.home;
+    tools.resolve = site.resolve();
+    tools.fetch = site.fetch();
+    tools.approve = [&](const ApprovalRequest& request) { asked.push_back(request); return ChatAnswer::Always; };
+    std::vector<std::string> steps;
+    tools.step = [&](const Activity& step) { steps.push_back(step.tool + ":" + step.state); };
+
+    ChatConversation conversation = store.create();
+    CHECK(conversation.web && conversation.skills && !conversation.mcp);  // web and skills on, MCP off
+    std::vector<std::string> names;
+    for (const ToolSpec& tool : chat::offered(conversation, tools)) names.push_back(tool.name);
+    CHECK(names == (std::vector<std::string>{"web_fetch", "web_search"}));  // no skills here yet, and never file or shell tools
+    ScriptedModel model;
+    model.replies = {call("web_search", {{"query", "mason"}}), say("Mason is on Wikipedia.")};
+    chat::send(conversation, "What is mason?", {}, model, store, nullptr, nullptr, &tools);
+    CHECK(asked.size() == 1 && asked[0].title == "Allow Mason to read html.duckduckgo.com?");
+    CHECK(network_settings::chat_hosts(box.home) == std::set<std::string>{"html.duckduckgo.com"});  // Always in Chat is computer-wide
+    CHECK(network_settings::always_allowed(box.home, box.project.string()).empty());                 // and apart from any project's list
+    CHECK(steps == (std::vector<std::string>{"web_search:running", "web_search:completed"}));
+    CHECK(conversation.steps.size() == 1 && starts_with(conversation.steps[0].subject, "mason · 2 results · allowed"));
+    CHECK(conversation.messages.back().content == "Mason is on Wikipedia." && model.seen[0][0].content.find(web::kUntrustedNote) != std::string::npos);
+    const ChatStore reread(box.home);
+    CHECK(reread.conversations().size() == 1 && reread.conversations()[0].steps.size() == 1 && reread.conversations()[0].messages.size() == conversation.messages.size());
+    // The saved host is not asked about again.
+    model.replies = {call("web_search", {{"query", "mason"}}), say("Still there.")};
+    chat::send(conversation, "Again?", {}, model, store, nullptr, nullptr, &tools);
+    CHECK(asked.size() == 1);
+
+    // Skills from Mason's own folder; at most eight rounds of tools, then the model is sent none and must answer.
+    fs::create_directories(box.home / "skills/notes");
+    write_file_atomic(box.home / "skills/notes/SKILL.md", "---\ndescription: How to take notes\n---\nBullet points.");
+    ScriptedModel busy;
+    for (int i = 0; i < 10; i++) busy.replies.push_back(call("read_skill", {{"name", "notes"}}));
+    busy.replies.push_back(say("Here are notes."));
+    busy.replies.insert(busy.replies.begin() + 8, say("Done reading."));
+    chat::send(conversation, "Take notes", {}, busy, store, nullptr, nullptr, &tools);
+    CHECK(busy.seen.size() == 9 && busy.seen_tools[0].size() == 3 && busy.seen_tools[8].empty());
+    CHECK(busy.seen[0][0].content.find("- notes: How to take notes") != std::string::npos);
+    CHECK(conversation.messages.back().content == "Done reading.");
+
+    // Switches: with web off, or the internet off on this computer, Chat has no web tools.
+    chat::set_tool(conversation, "web", false);
+    names.clear();
+    for (const ToolSpec& tool : chat::offered(conversation, tools)) names.push_back(tool.name);
+    CHECK(names == std::vector<std::string>{"read_skill"});
+    chat::set_tool(conversation, "web", true);
+    network_settings::command("off", box.home);
+    names.clear();
+    for (const ToolSpec& tool : chat::offered(conversation, tools)) names.push_back(tool.name);
+    CHECK(names == std::vector<std::string>{"read_skill"});
+    CHECK_THROWS(chat::set_tool(conversation, "shell", true));
+    tools.calls_tools = false;
+    CHECK(chat::offered(conversation, tools).empty() && chat::describe_tools(conversation, tools) == "This model can't call tools.");
+
+    // Two stores on one folder, like the app and mason chat: what one saves, the other sees after reloading.
+    ChatStore app(box.home), terminal(box.home);
+    const size_t before = app.conversations().size();
+    ChatConversation made = terminal.create();
+    made.title = "From the terminal";
+    terminal.save(made);
+    CHECK(app.conversations().size() == before);
+    app.reload();
+    // Saved times are to the second, so find the chat by id rather than by position.
+    const auto seen = [&]() -> const ChatConversation* {
+        for (const ChatConversation& chat : app.conversations()) if (chat.id == made.id) return &chat;
+        return nullptr;
+    };
+    CHECK(app.conversations().size() == before + 1 && seen() && seen()->title == "From the terminal");
+    made.messages.push_back({"user", "One more", {}, ""});
+    terminal.save(made);
+    app.reload();
+    CHECK(seen() && seen()->messages.size() == 1 && seen()->messages[0].content == "One more");
+}
+
 static void test_tool_groups() {
     Sandbox box;
     SessionStore store(box.home);
@@ -3039,7 +3561,7 @@ static void test_tool_groups() {
     // A group's tool called before its group was loaded loads the group rather than being turned away.
     CHECK(has(2, "git_status") && has(2, "repository_map"));
     CHECK(session.activities.size() == 3 && session.activities[0].state == "completed" && session.activities[0].result.find("Loaded the jobs tools: start_job") != std::string::npos);
-    CHECK(session.activities.size() == 3 && session.activities[1].state == "completed" && session.activities[2].state == "failed" && session.activities[2].result.find("code, docs, workflows, jobs, mcp") != std::string::npos);
+    CHECK(session.activities.size() == 3 && session.activities[1].state == "completed" && session.activities[2].state == "failed" && session.activities[2].result.find("code, docs, workflows, jobs, mcp, web") != std::string::npos);
     CHECK(!session.messages.empty() && session.messages[0].content.find("More tools load on request. Call enable_tools with one of: code for") != std::string::npos);
     CHECK(tool_groups::group_of("start_job") == "jobs" && tool_groups::group_of("read_file").empty());
 }
@@ -3780,7 +4302,7 @@ int main(int argc, char** argv) {
     const std::pair<const char*, void (*)()> tests[] = {
         {"workspace", test_workspace}, {"diff", test_diff}, {"stream and endpoint", test_stream_and_endpoint}, {"tool call recovery", test_recovery},
         {"agent edit and undo", test_agent_edit_undo}, {"agent refusals", test_agent_refusals}, {"repeat stop", test_repeat_stop}, {"run endings", test_run_endings}, {"scenes", test_scenes}, {"moments", test_moments},{"stuck models and the time limit", test_stuck_and_time_limit},{"commands and rules", test_commands_and_rules},
-        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"language servers", test_language_servers},
+        {"undo of command changes", test_undo_of_command_changes}, {"custom agents and commands", test_custom_agents_and_commands}, {"CLI parity", test_cli_parity}, {"automatic compaction toggle", test_automatic_compaction_toggle}, {"a server that refuses tools", test_tool_refusal}, {"compaction", test_compaction}, {"MCP servers", test_mcp}, {"chat", test_chat}, {"queue and steer", test_queue_and_steer}, {"schedules", test_schedules}, {"extra tools", test_extra_tools}, {"verification", test_verification}, {"browser checks", test_browser}, {"comments, milestones and search by meaning", test_planning}, {"Transformers models", test_transformers}, {"attached windows", test_desktop}, {"a window by sight", test_desktop_vision}, {"acceptance scenarios and review", test_acceptance}, {"fork, export and import", test_transfer}, {"code navigation", test_navigation}, {"an application under test", test_verification_app}, {"checks derived from a request", test_derived}, {"the catalog component", test_catalog}, {"project notes", test_project_notes}, {"note limits", test_note_limits}, {"suggest_note", test_suggest_note}, {"dismissed notes", test_dismissed_notes}, {"palette", test_palette}, {"theme families", test_theme_families}, {"graphics reading", test_gpu_reading}, {"generation settings", test_generation_settings}, {"tool groups", test_tool_groups}, {"skills", test_skills}, {"the web tools", test_web}, {"the tool catalogue", test_tool_catalogue}, {"chat tools", test_chat_tools}, {"language servers", test_language_servers},
         {"shell", test_shell}, {"sandbox", test_sandbox}, {"sha-256 and models", test_sha_and_models}, {"model memory and fit", test_model_memory},
     };
     for (const auto& [name, function] : tests) {

@@ -8,7 +8,9 @@
 namespace mason {
 
 void ProjectPolicy::check(const std::string& tool, const std::string& workflow) const {
-    const bool off = std::find(disabled_tools.begin(), disabled_tools.end(), tool) != disabled_tools.end();
+    // The loop cannot work without loading tool groups, so that is never switched off.
+    if (tool == "enable_tools") return;
+    const bool off =std::find(disabled_tools.begin(), disabled_tools.end(), tool) != disabled_tools.end();
     const bool unlisted = tool == "run_workflow" && workflows && std::find(workflows->begin(), workflows->end(), workflow) == workflows->end();
     if (off || unlisted) {
         throw Error("The project policy " + name + " does not allow " + (tool == "run_workflow" ? "the workflow " + workflow : tool) + ". The user set it; do not look for a way around it.");
@@ -40,12 +42,53 @@ std::string described(const ProjectPolicy& policy) {
         std::strftime(text, sizeof text, "%Y-%m-%d %H:%M", &local);
         when = std::string(text) + (policy.expires <= std::time(nullptr) ? " (lapsed)" : "");
     }
-    return "Policy " + policy.name + "\ntools off   " + (policy.disabled_tools.empty() ? std::string("none") : listed(policy.disabled_tools)) + "\nworkflows   " +
+    return "Policy " + policy.name + "\ntools off   " + (policy.disabled_tools.empty() ? std::string("none") : listed(policy.disabled_tools)) +
+           (policy.disabled_skills.empty() ? std::string() : "\nskills off  " + listed(policy.disabled_skills)) + "\nworkflows   " +
            (policy.workflows ? (policy.workflows->empty() ? std::string("none may run") : listed(*policy.workflows)) : std::string("any")) + "\nhooks       " +
            (policy.hooks ? "on: workflows marked afterEdit or beforeVerify run by themselves in Auto" : "off") + "\nexpires     " + when;
 }
 
+/// A new policy for the project, with nothing switched off.
+ProjectPolicy fresh(const std::string& root) {
+    ProjectPolicy policy;
+    policy.name = "for " + fs::path(root).filename().string();
+    policy.workspace = real(root);
+    return policy;
+}
+
+/// Adds or removes one name in a list, keeping it sorted and without repeats.
+void switch_name(std::vector<std::string>& names, const std::string& name, bool off) {
+    std::set<std::string> all(names.begin(), names.end());
+    if (off) all.insert(name);
+    else all.erase(name);
+    names.assign(all.begin(), all.end());
+}
+
 }  // namespace
+
+void set_tool(const std::string& tool, bool on, const std::string& workspace, const fs::path& home) {
+    if (trim(tool).empty()) throw Error("Name a tool.");
+    ProjectPolicy policy = load(home, workspace, true).value_or(fresh(workspace));
+    switch_name(policy.disabled_tools, trim(tool), !on);
+    set(policy, home, workspace);
+}
+
+void set_skill(const std::string& skill, bool on, const std::string& workspace, const fs::path& home) {
+    if (trim(skill).empty()) throw Error("Name a skill.");
+    ProjectPolicy policy = load(home, workspace, true).value_or(fresh(workspace));
+    switch_name(policy.disabled_skills, trim(skill), !on);
+    set(policy, home, workspace);
+}
+
+std::vector<std::string> disabled_tools(const fs::path& home, const std::string& workspace) {
+    const std::optional<ProjectPolicy> policy = load(home, workspace);
+    return policy ? policy->disabled_tools : std::vector<std::string>{};
+}
+
+std::vector<std::string> disabled_skills(const fs::path& home, const std::string& workspace) {
+    const std::optional<ProjectPolicy> policy = load(home, workspace);
+    return policy ? policy->disabled_skills : std::vector<std::string>{};
+}
 
 const char* const kUsage =
     "/policy                         This project's policy\n"
@@ -70,6 +113,11 @@ std::optional<ProjectPolicy> load(const fs::path& home, const std::string& works
             if (item.is_string()) policy.disabled_tools.push_back(item.get<std::string>());
         }
     }
+    if (value.contains("disabledSkills") && value["disabledSkills"].is_array()) {
+        for (const json& item : value["disabledSkills"]) {
+            if (item.is_string()) policy.disabled_skills.push_back(item.get<std::string>());
+        }
+    }
     if (value.contains("workflows") && value["workflows"].is_array()) {
         policy.workflows.emplace();
         for (const json& item : value["workflows"]) {
@@ -90,12 +138,14 @@ void set(const std::optional<ProjectPolicy>& policy, const fs::path& home, const
         fs::remove(path, ignored);
         return;
     }
-    bool valid = !policy->name.empty() && utf8_length(policy->name) <= 80 && policy->disabled_tools.size() <= 128 && (!policy->workflows || policy->workflows->size() <= 32);
+    bool valid = !policy->name.empty() && utf8_length(policy->name) <= 80 && policy->disabled_tools.size() <= 128 && policy->disabled_skills.size() <= 256 && (!policy->workflows || policy->workflows->size() <= 32);
     std::vector<std::string> names = policy->disabled_tools;
+    names.insert(names.end(), policy->disabled_skills.begin(), policy->disabled_skills.end());
     if (policy->workflows) names.insert(names.end(), policy->workflows->begin(), policy->workflows->end());
     for (const std::string& item : names) valid = valid && !item.empty() && item.size() <= 80;
-    if (!valid) throw Error("A policy has a name of up to 80 characters, up to 128 tools and up to 32 workflows.");
+    if (!valid) throw Error("A policy has a name of up to 80 characters, up to 128 tools, 256 skills and 32 workflows.");
     json value = {{"name", policy->name}, {"workspace", policy->workspace}, {"disabledTools", policy->disabled_tools}, {"expires", static_cast<long long>(policy->expires)}, {"hooks", policy->hooks}};
+    if (!policy->disabled_skills.empty()) value["disabledSkills"] = policy->disabled_skills;
     if (policy->workflows) value["workflows"] = *policy->workflows;
     fs::create_directories(path.parent_path());
     write_file_atomic(path, value.dump(2));
@@ -108,7 +158,7 @@ std::string command(const std::string& rest, const Workspace& workspace, const f
     if (words.empty()) {
         return existing ? described(*existing) : std::string("This project has no policy: every tool is available, any workflow may run, and hooks are off.\n") + kUsage;
     }
-    ProjectPolicy policy = existing.value_or(ProjectPolicy{"for " + fs::path(root).filename().string(), real(root), {}, std::nullopt, 0, false});
+    ProjectPolicy policy = existing.value_or(fresh(root));
     const std::string verb = to_lower(words[0]);
     const std::vector<std::string> named(words.begin() + 1, words.end());
     if (verb == "disable") {

@@ -22,13 +22,27 @@ std::string host(const std::string& value, int port);
 bool is_public(std::vector<uint8_t> address);
 }  // namespace network_policy
 
-/// Whether Auto asks before a command reaches the network, or commands simply have none. Saved for this computer.
+/// Internet for sandboxed commands in Auto and for the web tools. Unset (the default): commands have no network and
+/// the web tools ask before each host. "ask": both ask before each host. "off" (saved as such): neither, and the web
+/// tools are not offered. Saved for this computer; a session can choose its own.
 namespace network_settings {
+/// "", "ask" or "off".
+std::string mode(const fs::path& home);
+/// Whether sandboxed commands may ask for a host.
 bool asks(const fs::path& home);
-/// Whether this session asks: its own choice when it has made one, otherwise the computer's.
+/// Whether this session's commands ask: its own choice when it has made one, otherwise the computer's.
 bool asks(const Session& session, const fs::path& home);
-/// The hosts the user chose to always allow for this project. A rule names one host exactly.
+/// Whether the web tools are offered: everywhere but off.
+bool web(const fs::path& home);
+bool web(const Session& session, const fs::path& home);
+/// The hosts the user chose to always allow for this project. A rule names one host exactly. The relay and the web
+/// tools share this one list.
 std::set<std::string> always_allowed(const fs::path& home, const std::string& workspace);
+void forget(const fs::path& home, const std::string& workspace, const std::string& host);
+/// The hosts always allowed in Chat, for the whole computer, kept apart from the projects' lists.
+std::set<std::string> chat_hosts(const fs::path& home);
+void allow_in_chat(const fs::path& home, const std::string& host);
+void forget_in_chat(const fs::path& home, const std::string& host);
 /// /network in a session: ask and off choose for this session, default goes back to the computer's setting, and
 /// "computer ask" or "computer off" changes that setting.
 std::string session_command(const std::string& rest, Session& session, const fs::path& home);
@@ -82,6 +96,8 @@ private:
 };
 
 namespace network {
+/// The addresses a name resolves to, with the system's resolver, for port 443.
+std::vector<RelayAddress> resolve(const std::string& host);
 /// When a program is started as `PROGRAM net-forward SOCKET PORT`, it listens on 127.0.0.1:PORT, carries each
 /// connection to the Unix socket, and this returns its exit code. Otherwise this returns nothing and the program goes
 /// on as usual. Every Mason program calls it first, because the sandbox starts whichever one is running.

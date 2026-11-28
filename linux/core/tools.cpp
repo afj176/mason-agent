@@ -1,6 +1,7 @@
 #include "tools.hpp"
 
 #include "bundles.hpp"
+#include "policy.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -70,32 +71,216 @@ std::string command_line(const ProjectWorkflow& workflow) {
 
 namespace skills {
 
-std::vector<Definition> list(const Workspace& workspace, const fs::path& home) {
-    static const std::regex name_pattern("^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$");
-    std::map<std::string, Definition> found;
-    for (const char* folder : {".mason/skills", ".claude/skills", ".agents/skills"}) {
-        std::vector<std::string> names;
-        std::error_code failure;
-        for (const fs::directory_entry& entry : fs::directory_iterator(fs::path(workspace.root()) / folder, failure)) names.push_back(entry.path().filename().string());
-        std::sort(names.begin(), names.end());
-        if (names.size() > 64) names.resize(64);
-        for (const std::string& name : names) {
-            if (!std::regex_match(name, name_pattern) || found.count(to_lower(name))) continue;
-            const std::string relative = std::string(folder) + "/" + name + "/SKILL.md";
+namespace {
+
+constexpr size_t kMaxPerFolder = 64;
+constexpr uintmax_t kMaxSkillBytes = 256 * 1024;
+
+std::vector<std::string> names_in(const fs::path& folder) {
+    std::vector<std::string> names;
+    std::error_code failure;
+    for (const fs::directory_entry& entry : fs::directory_iterator(folder, failure)) names.push_back(entry.path().filename().string());
+    std::sort(names.begin(), names.end());
+    if (names.size() > kMaxPerFolder) names.resize(kMaxPerFolder);
+    return names;
+}
+
+/// A skill from its SKILL.md. The name is the folder's; the description comes from the front matter only.
+Skill made(const std::string& name, const std::string& text, const std::string& source, const std::string& where, const fs::path& file) {
+    const Definition parsed = customization::parse(name, text, where);
+    Skill skill;
+    skill.name = name;
+    const auto described = parsed.fields.find("description");
+    skill.description = described != parsed.fields.end() && !trim(described->second).empty() ? trim(described->second) : "No description";
+    if (utf8_length(skill.description) > 300) skill.description = utf8_prefix(skill.description, 300) + "…";
+    skill.body = parsed.body;
+    skill.source = source;
+    skill.where = where;
+    skill.file = file;
+    return skill;
+}
+
+/// Skills kept outside a project: in a plain folder (Mason's own) and in installed bundles.
+void outside(std::vector<Skill>& found, const fs::path& home, bool own) {
+    auto take = [&](const fs::path& folder, const std::string& source, const std::function<std::string(const std::string&)>& where) {
+        for (const std::string& name : names_in(folder)) {
+            std::error_code failure;
+            const fs::path file = folder / name / "SKILL.md";
+            // A link could point anywhere on the computer, so only ordinary files are read.
+            if (!skills::valid_name(name) || fs::is_symlink(folder / name, failure) || fs::is_symlink(file, failure) || !fs::is_regular_file(file, failure) || fs::file_size(file, failure) > kMaxSkillBytes) continue;
+            try {
+                found.push_back(made(name, read_file(file), source, where(name), file));
+            } catch (const std::exception&) {
+            }
+        }
+    };
+    if (own) take(home / "skills", "computer", [&](const std::string& name) { return (home / "skills" / name).string(); });
+    for (const InstalledBundle& bundle : bundles::list(home)) take(bundle.folder / "skills", "bundle " + bundle.name, [&](const std::string&) { return "bundle " + bundle.name; });
+}
+
+/// Marks every skill after the first of a name as hidden by that first one.
+void shadow(std::vector<Skill>& found) {
+    std::map<std::string, std::string> first;
+    for (Skill& skill : found) {
+        const auto seen = first.find(to_lower(skill.name));
+        if (seen != first.end()) skill.shadowed_by = seen->second;
+        else first[to_lower(skill.name)] = skill.where;
+    }
+}
+
+}  // namespace
+
+const char* const kUsage =
+    "/skills                       Every skill this project can see, on, off or hidden\n"
+    "/skills show NAME             Where a skill is and its whole SKILL.md\n"
+    "/skills new NAME [description] Make .mason/skills/NAME/SKILL.md\n"
+    "/skills on NAME · off NAME    Switch a skill on or off for this project\n"
+    "/skill NAME [request]         Run a request that follows the skill";
+
+const std::vector<std::string>& folders() {
+    static const std::vector<std::string> list = {".mason/skills", ".claude/skills", ".agents/skills"};
+    return list;
+}
+
+bool valid_name(const std::string& name) {
+    static const std::regex pattern("^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$");
+    return std::regex_match(name, pattern);
+}
+
+std::vector<Skill> all(const Workspace& workspace, const fs::path& home) {
+    std::vector<Skill> found;
+    for (const std::string& folder : folders()) {
+        const std::string source = folder == ".mason/skills" ? "project" : folder.substr(0, folder.find('/'));
+        for (const std::string& name : names_in(fs::path(workspace.root()) / folder)) {
+            if (!valid_name(name)) continue;
+            const std::string relative = folder + "/" + name + "/SKILL.md";
             try {
                 // Read through the workspace, so a link out of the project or an oversized file is refused.
-                found[to_lower(name)] = customization::parse(name, workspace.read(relative), relative);
+                const fs::path file = workspace.resolve(relative);
+                std::error_code failure;
+                if (!fs::is_regular_file(file, failure) || fs::file_size(file, failure) > kMaxSkillBytes) continue;
+                found.push_back(made(name, workspace.read(relative), source, folder + "/" + name, file));
             } catch (const std::exception&) {
             }
         }
     }
-    for (const Definition& skill : bundles::skills(home)) {
-        if (!found.count(to_lower(skill.name))) found[to_lower(skill.name)] = skill;
+    outside(found, home, false);
+    shadow(found);
+    const std::vector<std::string> off = policies::disabled_skills(home, workspace.root());
+    for (Skill& skill : found) {
+        skill.enabled = std::none_of(off.begin(), off.end(), [&](const std::string& name) { return to_lower(name) == to_lower(skill.name); });
     }
+    return found;
+}
+
+std::vector<Skill> computer(const fs::path& home) {
+    std::vector<Skill> found;
+    outside(found, home, true);
+    shadow(found);
+    return found;
+}
+
+std::vector<Definition> list(const Workspace& workspace, const fs::path& home) {
     std::vector<Definition> result;
-    for (auto& [key, definition] : found) result.push_back(std::move(definition));
-    std::sort(result.begin(), result.end(), [](const Definition& a, const Definition& b) { return to_lower(a.name) < to_lower(b.name); });
+    for (const Skill& skill : all(workspace, home)) {
+        if (skill.shadowed() || !skill.enabled) continue;
+        Definition definition;
+        definition.name = skill.name;
+        definition.description = skill.description;
+        definition.body = skill.body;
+        definition.source = skill.where;
+        result.push_back(std::move(definition));
+    }
     return result;
+}
+
+std::string read(const std::vector<Skill>& known, const std::string& name) {
+    const std::string wanted = to_lower(trim(name));
+    std::vector<std::string> names;
+    for (const Skill& skill : known) {
+        if (skill.shadowed()) continue;
+        if (to_lower(skill.name) == wanted) {
+            if (!skill.enabled) throw Error("The skill " + skill.name + " is switched off for this project.");
+            return "Skill " + skill.name + " (" + skill.where + "):\n" + skill.body;
+        }
+        if (skill.enabled) names.push_back(skill.name);
+    }
+    throw Error("No skill named " + trim(name) + ". Skills: " + (names.empty() ? std::string("none") : join(names, ", ")));
+}
+
+std::string prompt(const std::vector<Skill>& known) {
+    std::string lines;
+    for (const Skill& skill : known) {
+        if (!skill.shadowed() && skill.enabled) lines += "\n- " + skill.name + ": " + skill.description;
+    }
+    if (lines.empty()) return "";
+    return "Skills: instructions for particular kinds of work." + lines + "\nCall read_skill with the name before doing work a skill covers.";
+}
+
+std::string template_text(const std::string& name, const std::string& description) {
+    return "---\nname: " + name + "\ndescription: " + description + "\n---\n\n# " + name + "\n\n## When to use\n\n## Steps\n\n";
+}
+
+fs::path create(const Workspace& workspace, const std::string& name, const std::string& description) {
+    const std::string wanted = trim(name);
+    if (!valid_name(wanted)) throw Error("A skill's name is 1 to 48 letters, digits, dots, dashes or underscores, starting with a letter or digit.");
+    const std::string said = trim(replace_all(replace_all(description, "\r", " "), "\n", " "));
+    if (utf8_length(said) > 300) throw Error("A description is at most 300 characters.");
+    std::error_code failure;
+    const fs::path folder = fs::path(workspace.root()) / ".mason/skills";
+    for (const std::string& existing : names_in(folder)) {
+        if (to_lower(existing) == to_lower(wanted)) throw Error("A skill named " + existing + " is already in .mason/skills.");
+    }
+    if (fs::exists(folder / wanted, failure)) throw Error("A skill named " + wanted + " is already in .mason/skills.");
+    const std::string relative = ".mason/skills/" + wanted + "/SKILL.md";
+    workspace.write(relative, template_text(wanted, said));
+    return workspace.resolve(relative);
+}
+
+std::string request(const std::vector<Skill>& known, const std::string& name, const std::string& asked) {
+    const std::string wanted = to_lower(trim(name));
+    for (const Skill& skill : known) {
+        if (skill.shadowed() || to_lower(skill.name) != wanted) continue;
+        if (!skill.enabled) throw Error("The skill " + skill.name + " is switched off for this project.");
+        return "Follow the skill " + skill.name + ":\n\n" + skill.body + "\n\nRequest: " + trim(asked);
+    }
+    throw Error("No skill named " + trim(name) + ". /skills lists them.");
+}
+
+std::string command(const std::string& rest, const Workspace& workspace, const fs::path& home) {
+    const std::vector<std::string> words = split(trim(rest), ' ', false);
+    const std::string verb = words.empty() ? "" : to_lower(words[0]);
+    const std::vector<Skill> known = all(workspace, home);
+    auto find = [&](const std::string& name) -> const Skill& {
+        for (const Skill& skill : known) {
+            if (!skill.shadowed() && to_lower(skill.name) == to_lower(name)) return skill;
+        }
+        throw Error("No skill named " + name + ". /skills lists them.");
+    };
+    if (verb.empty() || verb == "list") {
+        if (known.empty()) return "No skills yet. /skills new NAME makes one in .mason/skills.";
+        size_t width = 4;
+        for (const Skill& skill : known) width = std::max(width, skill.name.size());
+        std::string text;
+        for (const Skill& skill : known) {
+            std::string source = skill.source;
+            text += (text.empty() ? "" : "\n") + skill.name + std::string(width + 2 - skill.name.size(), ' ') + skill.state() + std::string(8 - skill.state().size(), ' ') + source +
+                    std::string(source.size() < 14 ? 14 - source.size() : 1, ' ') + (skill.shadowed() ? "Hidden by " + skill.shadowed_by : skill.description);
+        }
+        return text;
+    }
+    if (verb == "show") {
+        if (words.size() < 2) throw Error("Use /skills show NAME.");
+        const Skill& skill = find(words[1]);
+        return skill.file.string() + "\n\n" + read_file(skill.file);
+    }
+    if (verb == "on" || verb == "off") {
+        if (words.size() < 2) throw Error("Use /skills " + verb + " NAME.");
+        const Skill& skill = find(words[1]);
+        policies::set_skill(skill.name, verb == "on", workspace.root(), home);
+        return "The skill " + skill.name + " is " + verb + " for this project.";
+    }
+    return kUsage;
 }
 
 }  // namespace skills

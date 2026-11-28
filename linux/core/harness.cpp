@@ -199,6 +199,25 @@ Definition parse(const std::string& name, std::string text, const std::string& s
     return definition;
 }
 
+std::string template_text(const std::string& name, bool command) {
+    return command ? "---\ndescription: \n---\n\n# " + name + "\n\nWhat Mason should do. $ARGUMENTS is what you type after /" + name + ".\n"
+                   : "---\ndescription: \n---\n\n# " + name + "\n\nStanding instructions Mason follows while this agent is in use.\n";
+}
+
+fs::path create(const Workspace& workspace, const std::string& name, bool command) {
+    const std::string kind = command ? "command" : "agent";
+    const std::string wanted = trim(name);
+    if (!valid_name(wanted)) throw Error(std::string(command ? "A " : "An ") + kind + " name starts with a letter or digit and has up to 48 letters, digits, '.', '_' or '-'.");
+    if (std::find(kReserved.begin(), kReserved.end(), to_lower(wanted)) != kReserved.end()) throw Error(wanted + " is a built-in command. Choose another name.");
+    const std::string relative = ".mason/" + kind + "s/" + wanted + ".md";
+    std::error_code failure;
+    for (const auto& entry : fs::directory_iterator(fs::path(workspace.root()) / (".mason/" + kind + "s"), failure)) {
+        if (to_lower(entry.path().filename().string()) == to_lower(wanted) + ".md") throw Error(relative + " already exists.");
+    }
+    workspace.write(relative, template_text(wanted, command));
+    return workspace.resolve(relative);
+}
+
 std::optional<std::string> expand(const std::vector<Definition>& commands, const std::string& input) {
     const size_t start = input.find_first_not_of(" \t\r\n");
     if (start == std::string::npos || input[start] != '/') return std::nullopt;
@@ -260,6 +279,16 @@ std::string transcript(const std::vector<ChatMessage>& messages, size_t from, si
 
 bool needed(int prompt_tokens, int window) { return window > 0 && prompt_tokens > 0 && prompt_tokens >= window * kThreshold; }
 bool needed(const Session& session, int window) { return needed(session.prompt_tokens, window); }
+
+bool full(int prompt_tokens, int window) { return window > 0 && prompt_tokens > 0 && window - prompt_tokens < 128; }
+
+std::pair<bool, std::string> auto_text(const std::string& argument, bool current, bool chat) {
+    const std::string choice = to_lower(trim(argument));
+    if (choice.empty()) return {current, std::string("Automatic compaction is ") + (current ? "on" : "off") + " · /compact auto on | off"};
+    if (choice == "on") return {true, "Automatic compaction on: a long conversation is summarized when the context fills up."};
+    if (choice == "off") return {false, chat ? "Automatic compaction off: the full history is sent until you start a new chat." : "Automatic compaction off: the full history is sent until you /compact."};
+    throw Error("Use /compact auto on or /compact auto off.");
+}
 
 size_t cut(const std::vector<ChatMessage>& messages, size_t keep) {
     size_t start = messages.size() > keep + 1 ? messages.size() - keep : 1;

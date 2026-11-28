@@ -69,6 +69,10 @@ public:
     std::chrono::steady_clock::time_point restored_at{};
     /// Replaces the conversation so far with a summary from the model. The original messages stay in the session.
     void compact();
+    /// Whether a session summarizes a long conversation by itself when the context fills up.
+    void set_automatic_compaction(const std::string& id, bool on);
+    /// The same for the selected chat.
+    void set_chat_automatic_compaction(bool on);
     /// "" lists the project's custom agents, a name uses one, "none" goes back to the default.
     void choose_agent(const std::string& name);
     /// Runs one of the commands the app shares with the command line (/experiment, /deliver, /task, /roles, /policy,
@@ -134,6 +138,8 @@ public:
     /// Files waiting to go with the next message.
     std::vector<ChatAttachment> chat_attachments;
     void select_chat(const std::string& id);
+    /// Reads the chats again, so ones mason chat made or continued appear. Never while a reply is running.
+    void reload_chats();
     void new_chat();
     /// Sets the selected chat's reasoning level ("default" for the server's own), output limit (0 for none) and pinned reference.
     void configure_chat(const std::string& reasoning, int max_tokens, const std::string& reference);
@@ -142,6 +148,17 @@ public:
     void detach_from_chat(const std::string& name);
     void send_chat(const std::string& text);
     void stop_chat();
+    /// Switches web, skills or mcp on or off for the selected chat; the choice is saved with it.
+    void set_chat_tool(const std::string& group, bool on);
+    /// Whether the model in use can call tools; when it cannot, Chat offers none.
+    bool chat_calls_tools() const;
+    /// The tool steps of the answer being written, as they start and end.
+    std::vector<Activity> chat_steps;
+    /// The message being answered, shown until the saved conversation has it.
+    std::string chat_sending;
+    /// A question the chat is waiting on: a host to read or an MCP call to make.
+    std::optional<ApprovalRequest> chat_approval;
+    void answer_chat(ChatAnswer answer);
 
     // ---- models ----
     std::optional<ModelEndpoint> endpoint;
@@ -208,6 +225,7 @@ private:
     std::mutex approval_lock_;
     std::condition_variable approval_answered_;
     std::optional<bool> approval_answer_;
+    std::optional<ChatAnswer> chat_answer_;
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 

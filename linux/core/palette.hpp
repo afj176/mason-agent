@@ -7,7 +7,7 @@
 namespace mason {
 
 struct PaletteItem {
-    std::string kind;    ///< session, project, file, command or chat
+    std::string kind;    ///< session, project, file, command, action or chat
     std::string title, detail;
     std::string value;   ///< What the app acts on: a session or chat id, a folder, a file path, or a command's name.
 };

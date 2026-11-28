@@ -54,6 +54,7 @@ Controller::~Controller() {
         // A request waiting for an approval must not wait forever.
         std::lock_guard<std::mutex> guard(approval_lock_);
         approval_answer_ = false;
+        chat_answer_ = ChatAnswer::No;
     }
     approval_answered_.notify_all();
     if (plan_cancel_) plan_cancel_->store(true);
@@ -478,6 +479,16 @@ void Controller::send(const std::string& text) {
     // Two commands act on the session itself. Any other /name is a custom command, which the engine expands.
     const std::string lowered = to_lower(input);
     if (lowered == "/compact") { compact(); return; }
+    if (lowered == "/compact auto" || starts_with(lowered, "/compact auto ")) {
+        try {
+            const auto [on, said] = compaction::auto_text(lowered.substr(13), current->automatic_compaction);
+            if (on != current->automatic_compaction) set_automatic_compaction(current->id, on);
+            else notice.emit(said);
+        } catch (const std::exception& error) {
+            notice.emit(error.what());
+        }
+        return;
+    }
     if (lowered == "/mcp") { show_mcp_servers(); return; }
     if (lowered == "/schedule" || lowered == "/schedules" || starts_with(lowered, "/schedule ")) {
         const size_t space = input.find(' ');
@@ -653,6 +664,25 @@ void Controller::select_chat(const std::string& id) {
     changed.emit();
 }
 
+void Controller::reload_chats() {
+    if (!chat_store_ || chat_running) return;
+    chat_store_->reload();
+    std::vector<ChatConversation> fresh = chat_store_->conversations();
+    // Only a change on disk is shown; the selected chat follows its newer version, or the newest when it is gone.
+    auto same = [](const std::vector<ChatConversation>& a, const std::vector<ChatConversation>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); i++) {
+            if (a[i].id != b[i].id || a[i].updated != b[i].updated || a[i].messages.size() != b[i].messages.size()) return false;
+        }
+        return true;
+    };
+    if (same(fresh, chats_)) return;
+    chats_ = std::move(fresh);
+    const bool kept = std::any_of(chats_.begin(), chats_.end(), [&](const ChatConversation& item) { return item.id == chat_selection; });
+    if (!kept) chat_selection = chats_.empty() ? "" : chats_.front().id;
+    changed.emit();
+}
+
 void Controller::configure_chat(const std::string& reasoning, int max_tokens, const std::string& reference) {
     const ChatConversation* current = chat();
     if (!current || !chat_store_ || chat_running) return;
@@ -724,19 +754,49 @@ void Controller::send_chat(const std::string& text) {
     chat_running = true;
     chat_live.clear();
     chat_problem.clear();
+    chat_steps.clear();
+    chat_approval.reset();
+    chat_sending = trim(text);
+    for (const ChatAttachment& file : chat_attachments) chat_sending += (chat_sending.empty() ? "" : "\n") + std::string("📎 ") + file.name;
     chat_cancel_ = make_cancel();
+    {
+        std::lock_guard<std::mutex> guard(approval_lock_);
+        chat_answer_.reset();
+    }
     const std::vector<ChatAttachment> files = chat_attachments;
     chat_attachments.clear();
     const ModelEndpoint target = *endpoint;
     const CancelToken cancel = chat_cancel_;
+    const fs::path home = store_ ? store_->home() : data_home();
     changed.emit();
-    chat_thread_ = std::thread([this, working = *current, text, files, target, cancel]() mutable {
+    chat_thread_ = std::thread([this, working = *current, text, files, target, cancel, home]() mutable {
         std::string problem;
         try {
             OpenAIClient model(target);
+            ChatTools tools;
+            tools.home = home;
+            tools.calls_tools = chat::calls_tools(model);
+            // A question waits for the user's answer on the card in the conversation; stopping the chat answers no.
+            tools.approve = [this, cancel](const ApprovalRequest& request) {
+                post([this, request] { chat_approval = request; changed.emit(); notification.emit("Mason needs your approval", request.title); });
+                std::unique_lock<std::mutex> guard(approval_lock_);
+                approval_answered_.wait(guard, [&] { return chat_answer_.has_value() || is_cancelled(cancel); });
+                const ChatAnswer answer = chat_answer_.value_or(ChatAnswer::No);
+                chat_answer_.reset();
+                return answer;
+            };
+            tools.step = [this](const Activity& step) {
+                post([this, step] {
+                    const auto found = std::find_if(chat_steps.begin(), chat_steps.end(), [&](const Activity& item) { return item.id == step.id; });
+                    if (found != chat_steps.end()) *found = step;
+                    else chat_steps.push_back(step);
+                    chat_live.clear();
+                    changed.emit();
+                });
+            };
             chat::send(working, text, files, model, *chat_store_, [this](const std::string& piece) {
                 post([this, piece] { chat_live += piece; changed.emit(); });
-            }, cancel);
+            }, cancel, &tools);
         } catch (const Cancelled&) {
         } catch (const std::exception& error) {
             problem = error.what();
@@ -746,6 +806,9 @@ void Controller::send_chat(const std::string& text) {
             chats_ = chat_store_->conversations();
             chat_running = false;
             chat_live.clear();
+            chat_steps.clear();
+            chat_approval.reset();
+            chat_sending.clear();
             chat_problem = problem;
             changed.emit();
             if (!problem.empty()) notice.emit(problem);
@@ -755,6 +818,38 @@ void Controller::send_chat(const std::string& text) {
 
 void Controller::stop_chat() {
     if (chat_cancel_) chat_cancel_->store(true);
+    if (chat_approval) answer_chat(ChatAnswer::No);
+}
+
+void Controller::answer_chat(ChatAnswer answer) {
+    if (!chat_approval) return;
+    chat_approval.reset();
+    {
+        std::lock_guard<std::mutex> guard(approval_lock_);
+        chat_answer_ = answer;
+    }
+    approval_answered_.notify_all();
+    changed.emit();
+}
+
+bool Controller::chat_calls_tools() const {
+    if (!endpoint) return true;
+    return chat::calls_tools(OpenAIClient(*endpoint));
+}
+
+void Controller::set_chat_tool(const std::string& group, bool on) {
+    const ChatConversation* current = chat();
+    if (!current || !chat_store_ || chat_running) return;
+    ChatConversation updated = *current;
+    try {
+        chat::set_tool(updated, group, on);
+        chat_store_->save(updated);
+        chats_ = chat_store_->conversations();
+        chat_selection = updated.id;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
 }
 
 void Controller::compact() {
@@ -793,6 +888,37 @@ void Controller::compact() {
             notice.emit(message);
         });
     });
+}
+
+void Controller::set_automatic_compaction(const std::string& id, bool on) {
+    if (running || !store_) return;
+    const auto found = std::find_if(sessions_.begin(), sessions_.end(), [&](const Session& item) { return item.id == id; });
+    if (found == sessions_.end()) return;
+    Session updated = *found;
+    updated.automatic_compaction = on;
+    try {
+        store_->save(updated);
+        replace(updated);
+        changed.emit();
+        notice.emit(compaction::auto_text(on ? "on" : "off", on).second);
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+}
+
+void Controller::set_chat_automatic_compaction(bool on) {
+    const ChatConversation* current = chat();
+    if (!current || !chat_store_ || chat_running || current->automatic_compaction == on) return;
+    ChatConversation updated = *current;
+    updated.automatic_compaction = on;
+    try {
+        chat_store_->save(updated);
+        chats_ = chat_store_->conversations();
+        chat_selection = updated.id;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
 }
 
 void Controller::choose_agent(const std::string& name) {

@@ -4,6 +4,7 @@
 
 #include "background.hpp"
 #include "bundles.hpp"
+#include "catalogue.hpp"
 #include "generation.hpp"
 #include "language.hpp"
 #include "delivery.hpp"
@@ -228,7 +229,16 @@ void SettingsPage::refresh() {
 
     const std::optional<ProjectPolicy> policy = workspace.empty() ? std::nullopt : policies::load(home, workspace, true);
     const ModelRoles chosen_roles = roles::load(home);
-    const bool asks_network = network_settings::asks(home);
+    const std::string network_mode = network_settings::mode(home);
+    const std::set<std::string> project_hosts = workspace.empty() ? std::set<std::string>{} : network_settings::always_allowed(home, workspace);
+    const std::set<std::string> chat_hosts = network_settings::chat_hosts(home);
+    std::vector<Skill> skill_list;
+    if (!workspace.empty()) {
+        try {
+            skill_list = skills::all(Workspace(workspace), home);
+        } catch (const std::exception&) {
+        }
+    }
     const std::vector<InstalledBundle> installed = bundles::list(home);
     std::vector<Experiment> trials;
     std::optional<DeliveryDraft> draft;
@@ -249,8 +259,12 @@ void SettingsPage::refresh() {
     print += embeddings ? embeddings->url + embeddings->model + embeddings->rerank_url + embeddings->rerank_model + "|" : "none|";
     for (const auto& rule : rules.rules()) print += rule.tool + rule.prefix + "|";
     print += policy ? policy->name + (policy->hooks ? "h" : "") + join(policy->disabled_tools, ",") + (policy->workflows ? join(*policy->workflows, ",") : "any") + std::to_string(policy->expires) + "|" : "nopolicy|";
-    print += (chosen_roles.reviewer ? chosen_roles.reviewer->url + chosen_roles.reviewer->model : "") + "|" + (chosen_roles.visual ? chosen_roles.visual->url + chosen_roles.visual->model : "") + "|" + chosen_roles.trace + std::to_string(chosen_roles.limit) + (asks_network ? "|ask|" : "|off|");
+    print += (chosen_roles.reviewer ? chosen_roles.reviewer->url + chosen_roles.reviewer->model : "") + "|" + (chosen_roles.visual ? chosen_roles.visual->url + chosen_roles.visual->model : "") + "|" + chosen_roles.trace + std::to_string(chosen_roles.limit) + "|" + network_mode + "|";
     for (const InstalledBundle& bundle : installed) print += bundle.name + bundle.version + "|";
+    print += policy ? join(policy->disabled_skills, ",") + "|" : "|";
+    for (const std::string& host : project_hosts) print += "h:" + host + "|";
+    for (const std::string& host : chat_hosts) print += "c:" + host + "|";
+    for (const Skill& skill : skill_list) print += skill.name + skill.source + skill.state() + skill.description + "|";
     for (const Experiment& trial : trials) print += trial.name + "|";
     print += draft ? draft->id + draft->url + "|" : "nodraft|";
     for (const auto& [task, status] : tasks) print += task.id + status.state + (status.approval ? status.approval->id : "") + "|";
@@ -262,7 +276,10 @@ void SettingsPage::refresh() {
     if (print == shown_) return;
     shown_ = print;
     delivery_group_ = task_group_ = nullptr;
+    // A switch flipped on the page rebuilds it; the page stays where it was scrolled.
+    const double scrolled = get_vadjustment()->get_value();
     clear(content_);
+    Glib::signal_idle().connect_once([this, scrolled] { get_vadjustment()->set_value(scrolled); });
 
     auto report = [&c](const std::function<void()>& work) {
         try {
@@ -305,6 +322,87 @@ void SettingsPage::refresh() {
     AdwPreferencesGroup* command_group = group(content_, "Slash commands", "Requests you run by name, as Markdown files in .mason/commands (also .claude/commands and .opencode/command). Type the name in the request box.");
     if (commands.empty()) row(command_group, "No custom commands", workspace.empty() ? "Open a project first." : "Add a Markdown file to .mason/commands in " + project + ".");
     for (const Definition& command : commands) row(command_group, "/" + command.name, command.description + "  ·  " + command.source);
+
+    // ---- skills ----
+    AdwPreferencesGroup* skill_group = group(content_, "Skills", "Instructions for particular kinds of work, as SKILL.md files in .mason/skills (also .claude/skills and .agents/skills) and in your bundles. Mason reads one when the work fits. A skill switched off is left out for this project.");
+    if (workspace.empty()) row(skill_group, "No project open", "Open a project to see its skills.");
+    else if (skill_list.empty()) row(skill_group, "No skills yet", "Choose New Skill… to make one in .mason/skills.");
+    for (const Skill& skill : skill_list) {
+        AdwActionRow* line = row(skill_group, skill.name, skill.source + "  ·  " + skill.description);
+        const std::string path = skill.file.string(), name = skill.name, title = skill.name;
+        button(line, "Open", [this, path] { open_file(path, false); });
+        button(line, "Show in Folder", [this, path] { open_file(path, true); });
+        button(line, "View", [this, path, title] {
+            std::string text;
+            try {
+                text = read_file(path);
+            } catch (const std::exception& error) {
+                text = error.what();
+            }
+            show_text(title + " · SKILL.md", path, text);
+        });
+        if (skill.shadowed()) {
+            auto* hidden = dim_label("Hidden by " + skill.shadowed_by);
+            hidden->set_valign(Gtk::Align::CENTER);
+            adw_action_row_add_suffix(line, GTK_WIDGET(hidden->gobj()));
+        } else {
+            toggle(line, skill.enabled, "Use the skill " + name, [report, home, workspace, name](bool on) { report([&] { policies::set_skill(name, on, workspace, home); }); });
+        }
+    }
+    if (!workspace.empty()) {
+        AdwActionRow* new_row = row(skill_group, "New skill", "Makes .mason/skills/NAME/SKILL.md from a short template and opens it.");
+        button(new_row, "New Skill…", [this, workspace] { new_skill(workspace); });
+    }
+
+    // ---- tools ----
+    AdwPreferencesGroup* tools_group = group(content_, "Tools", workspace.empty() ? "Every tool Mason can be offered. Open a project to switch tools off for it."
+        : "Every tool Mason can be offered in " + project + ". A tool switched off is not offered at all. Kept in the project's policy, outside the project.");
+    const std::vector<std::string> tools_off = policy ? policy->disabled_tools : std::vector<std::string>{};
+    for (const auto& [group_key, group_title] : tool_catalogue::groups()) {
+        int total = 0, on = 0;
+        for (const CatalogueTool& tool : tool_catalogue::all()) {
+            if (tool.group != group_key) continue;
+            total++;
+            if (tool.always_on || std::find(tools_off.begin(), tools_off.end(), tool.name) == tools_off.end()) on++;
+        }
+        GtkWidget* expander = adw_expander_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(expander), group_title.c_str());
+        adw_expander_row_set_subtitle(ADW_EXPANDER_ROW(expander), (std::to_string(on) + " of " + std::to_string(total) + " on").c_str());
+        // An open group stays open when the page is rebuilt.
+        adw_expander_row_set_expanded(ADW_EXPANDER_ROW(expander), open_tool_groups_.count(group_key) > 0);
+        auto* key = new std::string(group_key);
+        using Opened = std::pair<SettingsPage*, std::string*>;
+        g_signal_connect_data(expander, "notify::expanded", G_CALLBACK(+[](GObject* row, GParamSpec*, gpointer data) {
+            auto* page = static_cast<Opened*>(data);
+            if (adw_expander_row_get_expanded(ADW_EXPANDER_ROW(row))) page->first->open_tool_groups_.insert(*page->second);
+            else page->first->open_tool_groups_.erase(*page->second);
+        }), new Opened(this, key), +[](gpointer data, GClosure*) {
+            auto* pair = static_cast<Opened*>(data);
+            delete pair->second;
+            delete pair;
+        }, GConnectFlags(0));
+        for (const CatalogueTool& tool : tool_catalogue::all()) {
+            if (tool.group != group_key) continue;
+            GtkWidget* tool_row = adw_action_row_new();
+            adw_preferences_row_set_title(ADW_PREFERENCES_ROW(tool_row), tool.name.c_str());
+            std::string about = tool.line;
+            if (tool.changes) about += "  ·  Changes files or runs commands";
+            if (tool.internet) about += "  ·  Uses the internet";
+            adw_action_row_set_subtitle(ADW_ACTION_ROW(tool_row), Glib::Markup::escape_text(about).c_str());
+            if (tool.always_on) {
+                auto* always = dim_label("Always on");
+                always->set_valign(Gtk::Align::CENTER);
+                adw_action_row_add_suffix(ADW_ACTION_ROW(tool_row), GTK_WIDGET(always->gobj()));
+            } else {
+                const std::string name = tool.name;
+                const bool active = std::find(tools_off.begin(), tools_off.end(), tool.name) == tools_off.end();
+                Gtk::Switch* control = toggle(ADW_ACTION_ROW(tool_row), active, "Offer " + name, [report, home, workspace, name](bool enabled) { report([&] { policies::set_tool(name, enabled, workspace, home); }); });
+                control->set_sensitive(!workspace.empty());
+            }
+            adw_expander_row_add_row(ADW_EXPANDER_ROW(expander), tool_row);
+        }
+        adw_preferences_group_add(tools_group, expander);
+    }
 
     // ---- MCP servers ----
     AdwPreferencesGroup* mcp_group = group(content_, "MCP servers", "Servers on this computer whose tools Mason may call. Every call shows its arguments and asks first. Registered for all projects, in Mason's data folder.");
@@ -369,6 +467,47 @@ void SettingsPage::refresh() {
         if (!added.empty()) c.discover_mcp(added);
     });
 
+    // ---- internet ----
+    AdwPreferencesGroup* internet_group = group(content_, "Internet", "Web pages are read over HTTPS from public hosts only. Every new host asks first.");
+    {
+        // Three choices: the default (web tools ask, commands have no network), both ask, or off for both.
+        GtkWidget* choice = adw_combo_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(choice), "Internet access");
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(choice), "Default: web_fetch and web_search ask before each host, in projects and in Chat; sandboxed commands in Auto have no network. "
+                                                            "Ask for both: commands ask too. Off: neither. A session can choose its own with /network.");
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(choice), 4);
+        GtkStringList* modes = gtk_string_list_new(nullptr);
+        for (const char* name : {"Default", "Ask for both", "Off"}) gtk_string_list_append(modes, name);
+        adw_combo_row_set_model(ADW_COMBO_ROW(choice), G_LIST_MODEL(modes));
+        g_object_unref(modes);
+        adw_combo_row_set_selected(ADW_COMBO_ROW(choice), network_mode == "ask" ? 1 : network_mode == "off" ? 2 : 0);
+        auto* chosen = new std::function<void(guint)>([report, home](guint selected) {
+            report([&] { network_settings::command(selected == 1 ? "ask" : selected == 2 ? "off" : "default", home); });
+        });
+        g_signal_connect_data(choice, "notify::selected", G_CALLBACK(+[](GObject* row, GParamSpec*, gpointer data) {
+            const guint selected = adw_combo_row_get_selected(ADW_COMBO_ROW(row));
+            // Run once the combo's own handling is over, as the page rebuilds itself.
+            auto* call = new std::function<void()>([action = *static_cast<std::function<void(guint)>*>(data), selected] { action(selected); });
+            g_idle_add_once(+[](gpointer pending) {
+                auto* run = static_cast<std::function<void()>*>(pending);
+                (*run)();
+                delete run;
+            }, call);
+        }), chosen, +[](gpointer data, GClosure*) { delete static_cast<std::function<void(guint)>*>(data); }, GConnectFlags(0));
+        adw_preferences_group_add(internet_group, choice);
+    }
+    if (!workspace.empty()) {
+        if (project_hosts.empty()) row(internet_group, "No hosts always allowed in " + project, "Choose Always Allow when Mason asks to read a host or a command asks to reach one.");
+        for (const std::string& host : project_hosts) {
+            AdwActionRow* line = row(internet_group, host, "Always allowed in " + project);
+            button(line, "Remove", [report, home, workspace, host] { report([&] { network_settings::forget(home, workspace, host); }); });
+        }
+    }
+    for (const std::string& host : chat_hosts) {
+        AdwActionRow* line = row(internet_group, host, "Always allowed in Chat, on this computer");
+        button(line, "Remove", [report, home, host] { report([&] { network_settings::forget_in_chat(home, host); }); });
+    }
+
     // ---- code search by meaning ----
     AdwPreferencesGroup* search_group = group(content_, "Code search by meaning", "With an embeddings server chosen, Mason can find code from a description such as “where are invoice totals calculated”. Any server on this computer that answers /v1/embeddings works, for example llama-server --embedding with an embeddings model.");
     auto typed = [&c, home](const std::string& arguments) {
@@ -415,9 +554,6 @@ void SettingsPage::refresh() {
         AdwPreferencesGroup* policy_group = group(content_, "Project policy", "Limits for this project, kept outside it so nothing in the project can change them.");
         AdwActionRow* hooks = row(policy_group, "Run the project's hooks", "In Auto, workflows marked afterEdit run after each edit, and ones marked beforeVerify must pass before a request may finish.");
         toggle(hooks, policy && policy->hooks, "Run the project's hooks", [run](bool on) { run("/policy", on ? "hooks on" : "hooks off"); });
-        row(policy_group, "Tools switched off", policy && !policy->disabled_tools.empty() ? join(policy->disabled_tools, ", ") : "None. Every tool is available.");
-        entry_row(policy_group, "Switch tools off", "run_shell start_job", "Switch Off", [run](const std::string& text) { run("/policy", "disable " + text); });
-        if (policy && !policy->disabled_tools.empty()) entry_row(policy_group, "Switch tools back on", join(policy->disabled_tools, " "), "Switch On", [run](const std::string& text) { run("/policy", "enable " + text); });
         row(policy_group, "Workflows that may run", policy && policy->workflows ? (policy->workflows->empty() ? std::string("None") : join(*policy->workflows, ", ")) : "Any workflow in mason.workflows.json.");
         entry_row(policy_group, "Limit workflows", "test lint    (or: any)", "Set", [run](const std::string& text) { run("/policy", "workflows " + text); });
         if (policy) {
@@ -458,11 +594,6 @@ void SettingsPage::refresh() {
             button(clear_generation, "Use the Server's Defaults", [run] { run("/generation", "clear"); });
         }
     }
-
-    // ---- network ----
-    AdwPreferencesGroup* network_group = group(content_, "Network in Auto", "The setting for this computer; a session can choose its own with /network. Commands in the sandbox have no network unless you allow it.");
-    AdwActionRow* network_row = row(network_group, "Ask when a command needs a host", "A sandboxed command can then ask for one host over HTTPS. Your answer lasts for that request. This computer, your local network and plain HTTP stay out of reach.");
-    toggle(network_row, asks_network, "Ask when a command needs a host", [run](bool on) { run("/network", on ? "computer ask" : "computer off"); });
 
     // ---- bundles ----
     AdwPreferencesGroup* bundle_group = group(content_, "Bundles", "Folders of skills and documentation, installed once for every project. A bundle may also name MCP servers; they are added switched off.");
@@ -564,6 +695,127 @@ void SettingsPage::refresh() {
     entry_row(task_group, "Start a background task", "What to do", "Start", [run](const std::string& text) { run("/task", "start " + text); });
     AdwActionRow* refresh_row = row(task_group, "Tasks run on their own", "This list is read when the page is opened.");
     button(refresh_row, "Refresh", [this] { shown_.clear(); refresh(); });
+}
+
+void SettingsPage::open_file(const std::string& path, bool folder) {
+    GFile* file = g_file_new_for_path(path.c_str());
+    GtkFileLauncher* launcher = gtk_file_launcher_new(file);
+    g_object_unref(file);
+    GtkWindow* window = GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(gobj())));
+    auto finished = +[](GObject* source, GAsyncResult* result, gpointer) {
+        GError* error = nullptr;
+        gtk_file_launcher_launch_finish(GTK_FILE_LAUNCHER(source), result, &error);
+        if (error) g_error_free(error);
+        g_object_unref(source);
+    };
+    auto finished_folder = +[](GObject* source, GAsyncResult* result, gpointer) {
+        GError* error = nullptr;
+        gtk_file_launcher_open_containing_folder_finish(GTK_FILE_LAUNCHER(source), result, &error);
+        if (error) g_error_free(error);
+        g_object_unref(source);
+    };
+    if (folder) gtk_file_launcher_open_containing_folder(launcher, window, nullptr, finished_folder, nullptr);
+    else gtk_file_launcher_launch(launcher, window, nullptr, finished, nullptr);
+}
+
+void SettingsPage::show_text(const std::string& title, const std::string& path, const std::string& text) {
+    auto* view = Gtk::make_managed<Gtk::TextView>();
+    view->set_editable(false);
+    view->set_cursor_visible(false);
+    view->set_monospace(true);
+    view->set_wrap_mode(Gtk::WrapMode::WORD_CHAR);
+    view->set_left_margin(12);
+    view->set_right_margin(12);
+    view->set_top_margin(12);
+    view->set_bottom_margin(12);
+    view->get_buffer()->set_text(text);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(view->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, title.c_str(), -1);
+    auto* scroll = Gtk::make_managed<Gtk::ScrolledWindow>();
+    scroll->set_child(*view);
+    scroll->set_vexpand(true);
+    auto* where = dim_label(path);
+    where->add_css_class("caption");
+    where->set_margin(8);
+    where->set_ellipsize(Pango::EllipsizeMode::MIDDLE);
+    auto* body = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 0);
+    body->append(*scroll);
+    body->append(*where);
+    GtkWidget* toolbar = adw_toolbar_view_new();
+    GtkWidget* header = adw_header_bar_new();
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), adw_window_title_new(title.c_str(), ""));
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar), header);
+    adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar), GTK_WIDGET(body->gobj()));
+#if ADW_CHECK_VERSION(1, 5, 0)
+    AdwDialog* dialog = adw_dialog_new();
+    adw_dialog_set_title(dialog, title.c_str());
+    adw_dialog_set_content_width(dialog, 680);
+    adw_dialog_set_content_height(dialog, 560);
+    adw_dialog_set_child(dialog, toolbar);
+    adw_dialog_present(dialog, GTK_WIDGET(gobj()));
+#else
+    GtkWidget* window = adw_window_new();
+    gtk_window_set_title(GTK_WINDOW(window), title.c_str());
+    gtk_window_set_default_size(GTK_WINDOW(window), 680, 560);
+    gtk_window_set_modal(GTK_WINDOW(window), true);
+    gtk_window_set_transient_for(GTK_WINDOW(window), GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(gobj()))));
+    adw_window_set_content(ADW_WINDOW(window), toolbar);
+    gtk_window_present(GTK_WINDOW(window));
+#endif
+}
+
+void SettingsPage::new_skill(const std::string& workspace) {
+    struct Request {
+        SettingsPage* page;
+        std::string workspace;
+        GtkWidget *name, *description;
+    };
+    auto* fields = Gtk::make_managed<Gtk::Box>(Gtk::Orientation::VERTICAL, 8);
+    auto* name = Gtk::make_managed<Gtk::Entry>();
+    name->set_placeholder_text("Name, such as release-notes");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(name->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Skill name", -1);
+    auto* description = Gtk::make_managed<Gtk::Entry>();
+    description->set_placeholder_text("When to use it, in one line");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(description->gobj()), GTK_ACCESSIBLE_PROPERTY_LABEL, "Skill description", -1);
+    fields->append(*name);
+    fields->append(*description);
+    auto* request = new Request{this, workspace, GTK_WIDGET(name->gobj()), GTK_WIDGET(description->gobj())};
+    auto respond = +[](GObject*, const char* response, gpointer data) {
+        auto* request = static_cast<Request*>(data);
+        if (std::string(response) != "create") return;
+        Controller& c = request->page->controller_;
+        try {
+            const std::string typed = gtk_editable_get_text(GTK_EDITABLE(request->name));
+            const std::string about = gtk_editable_get_text(GTK_EDITABLE(request->description));
+            const fs::path made = skills::create(Workspace(request->workspace), trim(typed), about);
+            c.notice.emit("Made " + made.string());
+            request->page->open_file(made.string(), false);
+        } catch (const std::exception& error) {
+            c.notice.emit(error.what());
+        }
+        c.changed.emit();
+    };
+    auto release = +[](gpointer data, GClosure*) { delete static_cast<Request*>(data); };
+    const std::string body = "Mason makes .mason/skills/NAME/SKILL.md in this project from a short template and opens it.";
+#if ADW_CHECK_VERSION(1, 5, 0)
+    AdwDialog* dialog = adw_alert_dialog_new("New Skill", body.c_str());
+    adw_alert_dialog_set_extra_child(ADW_ALERT_DIALOG(dialog), GTK_WIDGET(fields->gobj()));
+    adw_alert_dialog_add_responses(ADW_ALERT_DIALOG(dialog), "cancel", "Cancel", "create", "Create", nullptr);
+    adw_alert_dialog_set_response_appearance(ADW_ALERT_DIALOG(dialog), "create", ADW_RESPONSE_SUGGESTED);
+    adw_alert_dialog_set_default_response(ADW_ALERT_DIALOG(dialog), "create");
+    adw_alert_dialog_set_close_response(ADW_ALERT_DIALOG(dialog), "cancel");
+    g_signal_connect_data(dialog, "response", G_CALLBACK(respond), request, release, GConnectFlags(0));
+    adw_dialog_present(dialog, GTK_WIDGET(gobj()));
+#else
+    GtkWidget* dialog = adw_message_dialog_new(GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(gobj()))), "New Skill", body.c_str());
+    adw_message_dialog_set_extra_child(ADW_MESSAGE_DIALOG(dialog), GTK_WIDGET(fields->gobj()));
+    adw_message_dialog_add_responses(ADW_MESSAGE_DIALOG(dialog), "cancel", "Cancel", "create", "Create", nullptr);
+    adw_message_dialog_set_response_appearance(ADW_MESSAGE_DIALOG(dialog), "create", ADW_RESPONSE_SUGGESTED);
+    adw_message_dialog_set_default_response(ADW_MESSAGE_DIALOG(dialog), "create");
+    adw_message_dialog_set_close_response(ADW_MESSAGE_DIALOG(dialog), "cancel");
+    g_signal_connect_data(dialog, "response", G_CALLBACK(respond), request, release, GConnectFlags(0));
+    gtk_window_present(GTK_WINDOW(dialog));
+#endif
+    name->grab_focus();
 }
 
 void SettingsPage::show_section(const std::string& section) {

@@ -212,6 +212,10 @@ struct Session {
     std::optional<RepeatStop> repeat_stop;
     /// How the latest request ended; empty while one runs and in sessions saved before endings existed.
     std::optional<RunEnding> ending;
+    /// The reasoning level sent with this session's requests (off, low, medium, high); empty leaves it to the server.
+    std::string reasoning;
+    /// Whether a long conversation is summarized when the context fills up. Sessions saved before the setting existed are on.
+    bool automatic_compaction = true;
 };
 
 json message_json(const ChatMessage& message);

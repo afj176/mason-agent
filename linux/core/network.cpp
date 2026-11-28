@@ -146,10 +146,57 @@ bool is_public(std::vector<uint8_t> b) {
 
 namespace network_settings {
 
-bool asks(const fs::path& home) {
-    if (!fs::exists(home / "network.json")) return false;
+std::string mode(const fs::path& home) {
+    std::error_code failure;
+    if (!fs::exists(home / "network.json", failure)) return "";
     const json value = json::parse(read_file(home / "network.json"), nullptr, false);
-    return value.is_object() && value.value("mode", "") == "ask";
+    const std::string saved = value.is_object() ? value.value("mode", "") : "";
+    return saved == "ask" ? "ask" : saved == "offline" ? "off" : "";
+}
+
+bool asks(const fs::path& home) { return mode(home) == "ask"; }
+
+bool web(const fs::path& home) { return mode(home) != "off"; }
+
+bool web(const Session& session, const fs::path& home) { return session.network.empty() ? web(home) : session.network == "ask"; }
+
+void forget(const fs::path& home, const std::string& workspace, const std::string& host) {
+    ApprovalRules saved(home, workspace);
+    for (size_t index = saved.rules().size(); index-- > 0;) {
+        if (saved.rules()[index].tool == "network" && to_lower(saved.rules()[index].prefix) == to_lower(host)) saved.remove(index);
+    }
+}
+
+std::set<std::string> chat_hosts(const fs::path& home) {
+    std::set<std::string> hosts;
+    std::error_code failure;
+    if (!fs::exists(home / "chat-hosts.json", failure)) return hosts;
+    const json value = json::parse(read_file(home / "chat-hosts.json"), nullptr, false);
+    if (!value.is_array()) return hosts;
+    for (const json& item : value) {
+        if (item.is_string()) hosts.insert(to_lower(item.get<std::string>()));
+    }
+    return hosts;
+}
+
+namespace {
+void save_chat_hosts(const fs::path& home, const std::set<std::string>& hosts) {
+    fs::create_directories(home);
+    write_file_atomic(home / "chat-hosts.json", json(std::vector<std::string>(hosts.begin(), hosts.end())).dump(1));
+}
+}  // namespace
+
+void allow_in_chat(const fs::path& home, const std::string& host) {
+    std::set<std::string> hosts = chat_hosts(home);
+    if (hosts.size() >= 512) throw Error("At most 512 hosts can be always allowed in Chat.");
+    hosts.insert(network_policy::host(host, 443));
+    save_chat_hosts(home, hosts);
+}
+
+void forget_in_chat(const fs::path& home, const std::string& host) {
+    std::set<std::string> hosts = chat_hosts(home);
+    hosts.erase(to_lower(host));
+    save_chat_hosts(home, hosts);
 }
 
 bool asks(const Session& session, const fs::path& home) { return session.network.empty() ? asks(home) : session.network == "ask"; }
@@ -169,11 +216,12 @@ std::string session_command(const std::string& rest, Session& session, const fs:
         if (words[0] == "ask" || words[0] == "off") session.network = words[0];
         else if (words[0] == "default") session.network.clear();
         else if (words[0] == "computer") return command(words.size() > 1 ? words[1] : "", home);
-        else return "/network                 What Auto does about the network in this session\n/network ask             Ask before a sandboxed command reaches a host over HTTPS\n/network off             Commands in Auto have no network\n/network default         Follow the computer's setting\n/network computer ask    Change the computer's setting (or: computer off)";
+        else return "/network                 Internet for commands in Auto and for web_fetch/web_search in this session\n/network ask             Commands and the web tools ask before each host over HTTPS\n/network off             No internet: commands have no network and the web tools are not offered\n/network default         Follow the computer's setting\n/network computer ask    Change the computer's setting (or: computer off, computer default)";
     }
     const std::string source = session.network.empty() ? "the computer's setting" : "this session's own choice";
-    std::string said = asks(session, home) ? "In Auto, a sandboxed command in this session that needs a host over HTTPS asks first (" + source + "). An answer lasts for that request; Always Allow keeps a host for this project."
-                                           : "In Auto, sandboxed commands in this session have no network (" + source + ").";
+    std::string said = asks(session, home) ? "Internet in this session: ask before each host (" + source + "). Sandboxed commands in Auto and web_fetch/web_search reach public hosts over HTTPS only after you allow each one. An answer lasts for that request; Always Allow keeps a host for this project."
+                     : web(session, home) ? "Internet in this session: the default (" + source + "). Sandboxed commands in Auto have no network; web_fetch and web_search ask before each host. /network ask lets commands ask too."
+                                          : "Internet in this session: off (" + source + "). Sandboxed commands have no network and the web tools are not offered.";
     const std::set<std::string> allowed = always_allowed(home, session.workspace);
     if (!allowed.empty()) said += "\nAlways allowed in this project: " + join(std::vector<std::string>(allowed.begin(), allowed.end()), ", ");
     return said;
@@ -182,13 +230,18 @@ std::string session_command(const std::string& rest, Session& session, const fs:
 std::string command(const std::string& rest, const fs::path& home) {
     const std::string word = to_lower(trim(rest));
     if (word == "ask" || word == "off") {
+        // Off is saved as such, so it is told apart from the default.
         fs::create_directories(home);
         write_file_atomic(home / "network.json", json{{"mode", word == "ask" ? "ask" : "offline"}}.dump());
+    } else if (word == "default") {
+        std::error_code ignored;
+        fs::remove(home / "network.json", ignored);
     } else if (!word.empty()) {
-        return "/network          What Auto does about the network\n/network ask      Ask before a sandboxed command reaches a host over HTTPS; allowed for that request only\n/network off      Commands in Auto have no network";
+        return "/network          Internet for commands in Auto and for web_fetch/web_search\n/network ask      Commands and the web tools ask before each host over HTTPS; an answer lasts for that request\n/network off      No internet for commands or the web tools\n/network default  Commands have no network; the web tools ask before each host";
     }
-    return asks(home) ? "In Auto, a sandboxed command that needs a host over HTTPS asks first. An answer lasts for that request. Nothing else is reachable: not this computer, not your local network, not plain HTTP."
-                      : "In Auto, sandboxed commands have no network. /network ask lets them ask for a host over HTTPS.";
+    if (asks(home)) return "Internet: ask before each host. Sandboxed commands in Auto and web_fetch/web_search reach a public host over HTTPS only after you allow it. Nothing else is reachable: not this computer, not your local network, not plain HTTP.";
+    if (web(home)) return "Internet: the default. Sandboxed commands in Auto have no network; web_fetch and web_search ask before each host. /network ask lets commands ask too; /network off turns both off.";
+    return "Internet: off. Sandboxed commands have no network and the web tools are not offered. /network ask lets both ask for a host over HTTPS.";
 }
 
 }  // namespace network_settings
@@ -319,6 +372,8 @@ void NetworkRelay::handle(int client) {
 }
 
 namespace network {
+
+std::vector<RelayAddress> resolve(const std::string& host) { return lookup(host); }
 
 std::optional<int> maybe_forward(int argc, char** argv) {
     if (argc != 4 || std::string(argv[1]) != "net-forward") return std::nullopt;

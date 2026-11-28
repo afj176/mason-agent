@@ -69,6 +69,10 @@ Definition parse(const std::string& name, std::string text, const std::string& s
 std::optional<std::string> expand(const std::vector<Definition>& commands, const std::string& input);
 /// The request sent to the model: a custom command expanded, framed by the session agent's instructions.
 std::string prepare(const fs::path& home, const Session& session, const std::string& input);
+/// The text a new agent or command starts with: a description to fill in and a heading for the body.
+std::string template_text(const std::string& name, bool command);
+/// Makes .mason/agents/NAME.md or .mason/commands/NAME.md from the template and returns the file.
+fs::path create(const Workspace& workspace, const std::string& name, bool command);
 
 }  // namespace customization
 
@@ -82,6 +86,14 @@ namespace compaction {
 constexpr double kThreshold = 0.75;
 bool needed(const Session& session, int window);
 bool needed(int prompt_tokens, int window);
+/// What a coding run stops with when its context is full and automatic compaction is off (the same words as Windows).
+constexpr const char* kFullMessage = "Coding context is full and automatic compaction is off. Originals are retained; compact manually or load a larger context.";
+/// What a chat stops with in the same case. Chat has no manual compaction.
+constexpr const char* kChatFullMessage = "Chat context is full and automatic compaction is off. Originals are retained; start a new chat or load a larger context.";
+/// True when the last request left no room to work: fewer than 128 tokens of the context are free (the Windows rule).
+bool full(int prompt_tokens, int window);
+/// /compact auto [on|off]: the setting after the command (`current` when none is given) and what to print.
+std::pair<bool, std::string> auto_text(const std::string& argument, bool current, bool chat = false);
 /// Where the kept tail begins when `keep` recent messages stay as they are. A tool result is never separated from
 /// the assistant message that asked for it.
 size_t cut(const std::vector<ChatMessage>& messages, size_t keep);
