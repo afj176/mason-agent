@@ -8,7 +8,9 @@ namespace Mason.Code;
 
 public sealed record DocSource(string Name,string Version,string Base);
 public sealed record HarnessBundle(string Name,string Version,Dictionary<string,string> Skills,McpRegistration[] Servers,DocSource[] Docs,string? Description=null);
-public sealed record InstalledBundle(HarnessBundle Package,bool Enabled);
+/// <summary>An installed bundle. <see cref="Installed"/> orders bundles: when two hold a skill of the same name, the one
+/// installed first wins. Updating a bundle keeps its place.</summary>
+public sealed record InstalledBundle(HarnessBundle Package,bool Enabled){public DateTimeOffset? Installed{get;init;}}
 public static class CodeBundles
 {
     static readonly Regex Identifier=new(@"\A[a-z][a-z0-9-]{0,39}\z");
@@ -43,16 +45,19 @@ public static class CodeBundles
         return files.Select(f=>{
             using var stream=new FileStream(f,FileMode.Open,FileAccess.Read,FileShare.Read|FileShare.Delete);
             if(stream.Length>1024*1024)throw new InvalidDataException("Installed extension exceeds its limit.");
-            return JsonSerializer.Deserialize<InstalledBundle>(stream,Json)??throw new InvalidDataException("Missing extension entry.");
-        }).OrderBy(b=>b.Package.Name,StringComparer.Ordinal).ToArray();
+            var entry=JsonSerializer.Deserialize<InstalledBundle>(stream,Json)??throw new InvalidDataException("Missing extension entry.");
+            // Bundles saved before the install time was kept fall back to when their file was created.
+            return entry.Installed!=null?entry:entry with{Installed=File.GetCreationTimeUtc(f)};
+        }).OrderBy(b=>b.Installed).ThenBy(b=>b.Package.Name,StringComparer.Ordinal).ToArray();
     }
     public static void Save(string root,HarnessBundle bundle,bool enabled)
     {
         Inspect(JsonSerializer.Serialize(bundle));
         var path=BundlePath(root,bundle.Name);Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        if(!File.Exists(path) && List(root).Length>=32)throw new InvalidOperationException("32 extensions are already installed.");
+        var existing=File.Exists(path)?List(root).FirstOrDefault(b=>b.Package.Name==bundle.Name):null;
+        if(existing==null && List(root).Length>=32)throw new InvalidOperationException("32 extensions are already installed.");
         string temp=path+"."+Guid.NewGuid().ToString("N")+".tmp";
-        try{File.WriteAllText(temp,JsonSerializer.Serialize(new InstalledBundle(bundle,enabled)));File.Move(temp,path,true);}
+        try{File.WriteAllText(temp,JsonSerializer.Serialize(new InstalledBundle(bundle,enabled){Installed=existing?.Installed??DateTimeOffset.UtcNow}));File.Move(temp,path,true);}
         finally{if(File.Exists(temp))File.Delete(temp);}
     }
     public static void Remove(string root,string name)

@@ -26,27 +26,15 @@ public sealed partial class MainWindow
     /// <summary>Starts one scheduled request as a background task with its saved connection and permission.</summary>
     void RunSchedule(CodeSchedule schedule)
     {
-        string outcome; Guid? task = null;
-        try
+        var (outcome, _) = CodeSchedules.Start(Store.Root, schedule, Path.Combine(AppContext.BaseDirectory, "mason.exe"), due =>
         {
-            var profile = (Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []).SingleOrDefault(p => p.Id == schedule.Connection)
+            var profile = (Store.Read<List<AiEndpointProfile>>("ai-connections.json") ?? []).SingleOrDefault(p => p.Id == due.Connection)
                 ?? throw new InvalidOperationException("its model connection was removed");
             var live = modelServing.Running.FirstOrDefault(s => s.Profile.Id == profile.Id && s.Owner.IsRunning);
             if (live == null && profile.ManagedCapability != null) throw new InvalidOperationException("its managed model is not running");
             var key = aiSessionKeys.TryGetValue(profile.Id, out var sessionKey) ? (string.IsNullOrEmpty(sessionKey) ? "" : Store.Protect(sessionKey)) : profile.Secret;
-            var main = new TaskModelConnection(LocalAiClient.ValidateEndpoint((live?.Profile ?? profile).Endpoint).AbsoluteUri, profile.Model, key, live?.Owner.Lifetime);
-            var permission = schedule.Auto ? CodePermission.Auto : CodePermission.ReadOnly;
-            task = new LocalTasks(Store.Root).Start(Path.Combine(AppContext.BaseDirectory, "mason.exe"), schedule.Workspace, schedule.Prompt, main.Endpoint, main.Model, permission, main.Lifetime,
-                models: new TaskModelOptions(main, null, null, "default", 64, false));
-            outcome = "started";
-            status.Text = "Scheduled run started · " + schedule.Name;
-        }
-        catch (Exception e) { outcome = "skipped: " + e.Message; status.Text = "Scheduled run “" + schedule.Name + "” skipped · " + e.Message; }
-        try
-        {
-            var all = CodeSchedules.Load(Store.Root); var i = all.FindIndex(s => s.Id == schedule.Id);
-            if (i >= 0) { all[i] = all[i] with { LastRun = DateTimeOffset.Now, LastTask = task ?? all[i].LastTask, LastOutcome = outcome }; CodeSchedules.Save(Store.Root, all); }
-        }
-        catch (Exception) { /* The run already started; a failed bookkeeping write only risks one repeat. */ }
+            return new TaskModelConnection(LocalAiClient.ValidateEndpoint((live?.Profile ?? profile).Endpoint).AbsoluteUri, profile.Model, key, live?.Owner.Lifetime);
+        });
+        status.Text = outcome == "started" ? "Scheduled run started · " + schedule.Name : "Scheduled run “" + schedule.Name + "” skipped · " + outcome["skipped: ".Length..];
     }
 }

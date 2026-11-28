@@ -53,7 +53,6 @@ public sealed partial class MainWindow
         }
         async Task CreateDefinition(bool agent)
         {
-            var folder = Path.Combine(scope.Root, ".mason", agent ? "agents" : "commands");
             var name = new TextBox { Header = "Name", PlaceholderText = agent ? "reviewer" : "fix-issue", MaxLength = 48 };
             var description = new TextBox { Header = "Description", PlaceholderText = agent ? "Reviews changes and reports risks" : "Fix a numbered issue" };
             var body = new TextBox { Header = agent ? "Instructions" : "Request template", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 120, PlaceholderText = agent ? "Never edit files. Read the change and list risks with file and line." : "Fix issue $1. Extra context: $ARGUMENTS" };
@@ -63,13 +62,7 @@ public sealed partial class MainWindow
             if (await new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme, Title = agent ? "New agent" : "New command", Content = new ScrollViewer { Content = content, MaxHeight = 460 }, PrimaryButtonText = "Create", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary }.ShowAsync() != ContentDialogResult.Primary) return;
             try
             {
-                var file = name.Text.Trim();
-                if (!System.Text.RegularExpressions.Regex.IsMatch(file, "^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")) throw new ArgumentException("Use letters, numbers, dots, dashes or underscores for the name.");
-                Directory.CreateDirectory(folder);
-                var path = Path.Combine(folder, file + ".md");
-                if (File.Exists(path)) throw new IOException(Path.GetFileName(path) + " already exists.");
-                var front = "---\ndescription: " + description.Text.Trim().Replace('\n', ' ') + (agent ? "\nmode: " + (askOnly.IsOn ? "plan" : "build") : "") + "\n---\n";
-                await File.WriteAllTextAsync(path, front + body.Text.ReplaceLineEndings("\n").Trim() + "\n");
+                var path = await Task.Run(() => CodeCustomization.Create(scope.Root, agent, name.Text, description.Text, body.Text, askOnly.IsOn));
                 RenderDefinitions(); Say("Created " + Path.GetRelativePath(scope.Root, path) + ".");
             }
             catch (Exception e) { Fail(e); }

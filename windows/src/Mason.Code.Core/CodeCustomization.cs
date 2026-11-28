@@ -27,6 +27,26 @@ public static partial class CodeCustomization
     public static IReadOnlyList<CodeDefinition> Agents(string settingsRoot, string workspace) => Load(settingsRoot, workspace, AgentFolders, "agents");
     public static IReadOnlyList<CodeDefinition> Commands(string settingsRoot, string workspace) => Load(settingsRoot, workspace, CommandFolders, "commands");
 
+    /// <summary>The example text the app's "New agent" and "New command" dialogs show, which the CLI writes as a starting point.</summary>
+    public static (string Name, string Description, string Body) Example(bool agent) => agent
+        ? ("reviewer", "Reviews changes and reports risks", "Never edit files. Read the change and list risks with file and line.")
+        : ("fix-issue", "Fix a numbered issue", "Fix issue $1. Extra context: $ARGUMENTS");
+
+    /// <summary>Creates .mason/agents/NAME.md or .mason/commands/NAME.md in the project, the template the app's
+    /// "New agent" and "New command" use: front matter with the description (and an agent's mode), then the body.</summary>
+    public static string Create(string workspace, bool agent, string name, string description, string body, bool askOnly)
+    {
+        name = name.Trim();
+        if (!System.Text.RegularExpressions.Regex.IsMatch(name, "^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")) throw new ArgumentException("Use letters, numbers, dots, dashes or underscores for the name.");
+        var folder = Path.Combine(workspace, ".mason", agent ? "agents" : "commands");
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, name + ".md");
+        if (File.Exists(path)) throw new IOException(Path.GetFileName(path) + " already exists.");
+        var front = "---\ndescription: " + description.Trim().Replace('\n', ' ') + (agent ? "\nmode: " + (askOnly ? "plan" : "build") : "") + "\n---\n";
+        File.WriteAllText(path, front + body.ReplaceLineEndings("\n").Trim() + "\n");
+        return path;
+    }
+
     static IReadOnlyList<CodeDefinition> Load(string settingsRoot, string workspace, string[] projectFolders, string profileFolder)
     {
         var found = new Dictionary<string, CodeDefinition>(StringComparer.OrdinalIgnoreCase);

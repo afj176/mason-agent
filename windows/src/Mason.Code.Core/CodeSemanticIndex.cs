@@ -22,6 +22,25 @@ public static class CodeSemanticIndex
     public static Func<ICodeSemanticModels?>? Provider { get; set; }
     public static bool Available => Provider?.Invoke() != null;
 
+    public const string SettingsFile = "code-search.json";
+
+    /// <summary>True when the user switched code search off ("Off": true in code-search.json, /embeddings off or the
+    /// app's Off choice). Then semantic_search is not offered, whatever embeddings connection is saved.</summary>
+    public static bool IsOff(string settingsRoot)
+    {
+        try
+        {
+            var path = Path.Combine(settingsRoot, SettingsFile);
+            if (!File.Exists(path)) return false;
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object && document.RootElement.TryGetProperty("Off", out var off) && off.ValueKind == System.Text.Json.JsonValueKind.True;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException) { return false; }
+    }
+
+    /// <summary>Routes semantic_search to <paramref name="pick"/>'s models, unless code search is switched off.</summary>
+    public static void Use(string settingsRoot, Func<ICodeSemanticModels?> pick) => Provider = () => IsOff(settingsRoot) ? null : pick();
+
     static readonly HashSet<string> Extensions = new(StringComparer.OrdinalIgnoreCase)
     { ".cs", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".h", ".cpp", ".hpp", ".php", ".dart", ".scala", ".sql", ".html", ".css", ".scss", ".vue", ".svelte", ".md", ".ps1", ".sh", ".json", ".yaml", ".yml", ".toml", ".xaml", ".csproj" };
     const int ChunkLines = 40, Overlap = 8, MaxFiles = 1000, MaxChunks = 6000, Batch = 32;

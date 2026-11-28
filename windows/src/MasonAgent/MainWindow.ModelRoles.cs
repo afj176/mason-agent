@@ -55,8 +55,12 @@ public sealed partial class MainWindow
         var search=CodeSearchSettings.Read();
         ComboBox SearchCombo(string header,AiEndpointProfile[] options,Guid? selected,string none)=>new(){Header=header,ItemsSource=new[]{none}.Concat(options.Select(p=>p.DisplayName+" · "+p.Endpoint)).ToArray(),SelectedIndex=selected.HasValue?Math.Max(0,Array.FindIndex(options,p=>p.Id==selected)+1):0,HorizontalAlignment=HorizontalAlignment.Stretch};
         var embedChoice=SearchCombo("Code search · embeddings model",embedders,search.Embeddings,embedders.Length==1?"Automatic · "+embedders[0].DisplayName:"Automatic · the one checked embeddings connection");
+        // Off is the last choice: no semantic_search for any session, with the chosen connection kept for later.
+        int offIndex=embedders.Length+1;
+        embedChoice.ItemsSource=((string[])embedChoice.ItemsSource).Append("Off · no code search").ToArray();
+        embedChoice.SelectedIndex=search.Off?offIndex:search.Embeddings.HasValue?Math.Max(0,Array.FindIndex(embedders,p=>p.Id==search.Embeddings)+1):0;
         var rerankChoice=SearchCombo("Code search · reranker",rerankers,search.Reranker,"Automatic · the one checked reranker, if any");
-        var searchState=CodeNote(Mason.Code.CodeSemanticIndex.Available?"Semantic code search is available to the agent now.":embedders.Length==0?"No embeddings model yet. Start one in Models (My models → Code search) or connect one, and the agent gains a semantic_search tool.":"An embeddings model is saved but not running or not checked. Start it in Models to enable semantic_search.");
+        var searchState=CodeNote(search.Off?"Code search is off. The agent is not offered semantic_search.":Mason.Code.CodeSemanticIndex.Available?"Semantic code search is available to the agent now.":embedders.Length==0?"No embeddings model yet. Start one in Models (My models → Code search) or connect one, and the agent gains a semantic_search tool.":"An embeddings model is saved but not running or not checked. Start it in Models to enable semantic_search.");
         var names=new[]{"Use coding model"}.Concat(profiles.Select(p=>p.DisplayName+" · "+p.Endpoint)).ToArray();
         ComboBox Combo(string name,Guid? selected)=>new(){Header=name,ItemsSource=names,SelectedIndex=selected.HasValue?Array.FindIndex(profiles,p=>p.Id==selected)+1:0,HorizontalAlignment=HorizontalAlignment.Stretch};
         var review=Combo("Independent reviewer",session.ReviewerModel);
@@ -75,7 +79,8 @@ public sealed partial class MainWindow
                 if(!double.IsFinite(limit.Value)||limit.Value<1||limit.Value>128)throw new ArgumentException("Choose a role budget from 1 to 128.");
                 session.ManageRoleMemory=manage.IsChecked==true;session.RoleCallLimit=(int)limit.Value;
                 codeStore!.Save(session);
-                Store.Write(CodeSearchSettings.File,new CodeSearchSettings(embedChoice.SelectedIndex<=0?null:embedders[embedChoice.SelectedIndex-1].Id,rerankChoice.SelectedIndex<=0?null:rerankers[rerankChoice.SelectedIndex-1].Id));
+                bool searchOff=embedChoice.SelectedIndex==offIndex;
+                Store.Write(CodeSearchSettings.File,new CodeSearchSettings(searchOff?search.Embeddings:embedChoice.SelectedIndex<=0?null:embedders[embedChoice.SelectedIndex-1].Id,rerankChoice.SelectedIndex<=0?null:rerankers[rerankChoice.SelectedIndex-1].Id,searchOff));
                 status.Text="Model roles saved. Code search settings apply to every session.";
             }catch(Exception e){(session.ReviewerModel,session.VisualModel,session.RecordModelDecisions,session.ManageRoleMemory,session.RoleCallLimit)=prior;status.Text=e.Message;}
         });

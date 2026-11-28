@@ -15,8 +15,8 @@ public sealed record CodeSkill(string Name, string Description, string Body, str
 
 /// <summary>
 /// Skills come from the project's .mason/skills, .claude/skills and .agents/skills, in that order, then from enabled
-/// bundles (named bundle/key). Each is NAME/SKILL.md with name and description front matter. When two share a name the
-/// first wins and the others are kept as hidden. The project policy's disabledSkills switches a skill off for one project.
+/// bundles, in the order they were installed. Each is NAME/SKILL.md with name and description front matter, and a bundle's
+/// skill keeps its plain name, as on macOS and Linux. When two share a name the first wins and the others are kept as hidden. The project policy's disabledSkills switches a skill off for one project.
 /// Chat, which has no project, reads bundle skills and the computer's own DATA_HOME/skills.
 /// </summary>
 public static partial class CodeSkills
@@ -43,17 +43,25 @@ public static partial class CodeSkills
                 if (shadow == null) winners[name] = path[..^"/SKILL.md".Length];
                 found.Add(new(name, Describe(parsed), Clip(parsed.Body), Short(folder), path, shadow, !disabled.Contains(name)));
             }
-        if (settingsRoot != null) foreach (var skill in BundleSkills(settingsRoot)) found.Add(skill with { Enabled = !disabled.Contains(skill.Name) });
+        if (settingsRoot != null)
+            foreach (var skill in BundleSkills(settingsRoot))
+            {
+                string? shadow = winners.TryGetValue(skill.Name, out var winner) ? winner : null;
+                if (shadow == null) winners[skill.Name] = skill.Source;
+                found.Add(skill with { ShadowedBy = shadow, Enabled = !disabled.Contains(skill.Name) });
+            }
         return found;
     }
 
     /// <summary>The skills the agent may read in this project: not hidden and not switched off.</summary>
     public static IReadOnlyList<CodeSkill> Active(string? settingsRoot, string workspace) => List(settingsRoot, workspace).Where(s => !s.Hidden && s.Enabled).ToArray();
 
-    /// <summary>Skills for Chat: enabled bundles, then the computer's DATA_HOME/skills.</summary>
+    /// <summary>Skills for Chat: enabled bundles, then the computer's DATA_HOME/skills. A name already taken is left out.</summary>
     public static IReadOnlyList<CodeSkill> Computer(string settingsRoot)
     {
-        var found = BundleSkills(settingsRoot).ToList();
+        var found = new List<CodeSkill>();
+        foreach (var skill in BundleSkills(settingsRoot))
+            if (!found.Any(s => s.Name.Equals(skill.Name, StringComparison.OrdinalIgnoreCase))) found.Add(skill);
         foreach (var (name, path, text) in Scan(settingsRoot, "skills"))
         {
             if (found.Any(s => s.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) continue;
@@ -167,9 +175,8 @@ public static partial class CodeSkills
         foreach (var bundle in bundles)
             foreach (var (key, text) in bundle.Skills.OrderBy(k => k.Key, StringComparer.Ordinal))
             {
-                var name = bundle.Name + "/" + key;
-                var parsed = CodeCustomization.Parse(key, text, name);
-                yield return new(name, Describe(parsed), Clip(parsed.Body), "bundle " + bundle.Name, null, null, true);
+                var parsed = CodeCustomization.Parse(key, text, "bundle " + bundle.Name);
+                yield return new(key, Describe(parsed), Clip(parsed.Body), "bundle " + bundle.Name, null, null, true);
             }
     }
 }

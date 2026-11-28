@@ -39,6 +39,76 @@ public static class CodeMilestones
         return result;
     }
 
+    public const string Help =
+        "/milestone                                  List the plan and where each milestone stands\n" +
+        "/milestone add TITLE | FILES [| after N,N] [| workflow NAME] [| decision TEXT]\n" +
+        "                                            Add one. FILES are project paths separated by commas\n" +
+        "/milestone check N [WHAT YOU SAW]           Run its workflow (in Auto), or record what you observed\n" +
+        "/milestone remove N                         Drop one";
+
+    /// <summary>The CLI's /milestone over the session's plan: list, add, check and remove. A check runs the
+    /// milestone's workflow only when <paramref name="allowWorkflow"/> is set (Auto), as the app does.</summary>
+    public static async Task<string> Command(string rest, CodeWorkspace workspace, CodeSession session, bool allowWorkflow, CancellationToken token)
+    {
+        rest = rest.Trim();
+        int space = rest.IndexOf(' ');
+        string verb = (space < 0 ? rest : rest[..space]).ToLowerInvariant(), after = space < 0 ? "" : rest[(space + 1)..].Trim();
+        var plan = session.Milestones;
+        int Numbered(string text) => int.TryParse(text.Trim(), out var n) && n >= 1 && n <= plan.Length ? n - 1 : throw new ArgumentException("Give the number of a milestone. /milestone lists them.");
+        if (verb.Length == 0)
+        {
+            if (plan.Length == 0) return "No milestones yet.\n" + Help;
+            var status = Inspect(workspace, plan);
+            return string.Join("\n", status.Select((row, i) =>
+            {
+                var text = $"{i + 1}. [{row.State}] {row.Item.Title}  ·  {string.Join(", ", row.Item.Files)}";
+                var afterIds = row.Item.DependsOn.Select(id => Array.FindIndex(plan, m => m.Id == id) + 1).Where(n => n > 0).ToArray();
+                if (afterIds.Length > 0) text += "  ·  after " + string.Join(", ", afterIds);
+                if (row.Item.Workflow.Length > 0) text += "  ·  workflow " + row.Item.Workflow;
+                return text + "\n   " + row.Reason.ReplaceLineEndings("\n").Split('\n')[0];
+            }));
+        }
+        if (verb == "help") return Help;
+        if (verb == "add")
+        {
+            var fields = after.Split('|').Select(f => f.Trim()).ToArray();
+            if (fields.Length < 2 || fields[1].Length == 0) throw new ArgumentException("Write it as /milestone add TITLE | FILES, for example /milestone add Totals are right | src/totals.py, tests/test_totals.py");
+            var files = fields[1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            var depends = new List<Guid>(); string workflow = "", decision = "";
+            foreach (var field in fields.Skip(2))
+            {
+                int gap = field.IndexOf(' ');
+                string key = (gap < 0 ? field : field[..gap]).ToLowerInvariant(), value = gap < 0 ? "" : field[(gap + 1)..].Trim();
+                if (key == "after") depends.AddRange(value.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(n => plan[Numbered(n)].Id));
+                else if (key == "workflow") { Workflow(workspace, value); workflow = value; }
+                else if (key == "decision") decision = value;
+                else throw new ArgumentException("After the files, use: after N,N · workflow NAME · decision TEXT.");
+            }
+            foreach (var file in files) workspace.Read(file);
+            var item = new CodeMilestone(Guid.NewGuid(), fields[0], decision, files, [.. depends], workflow);
+            session.Milestones = Put(workspace, plan, item);
+            return "Added milestone " + session.Milestones.Length + ": " + item.Title.Trim();
+        }
+        if (verb == "remove")
+        {
+            int index = Numbered(after); var removed = plan[index];
+            if (plan.Any(m => m.DependsOn.Contains(removed.Id))) throw new ArgumentException("Another milestone comes after " + removed.Title + ". Remove that one first.");
+            session.Milestones = plan.Where(m => m.Id != removed.Id).ToArray();
+            return "Removed " + removed.Title + ".";
+        }
+        if (verb == "check")
+        {
+            int gap = after.IndexOf(' ');
+            int index = Numbered(gap < 0 ? after : after[..gap]);
+            string observation = gap < 0 ? "" : after[(gap + 1)..];
+            var item = plan[index];
+            var receipt = await Check(workspace, item, plan, allowWorkflow, observation, token);
+            session.Milestones = plan.Select(m => m.Id == item.Id ? m with { Receipt = receipt } : m).ToArray();
+            return item.Title + ": " + Inspect(workspace, session.Milestones)[index].State + ".";
+        }
+        throw new ArgumentException("Use /milestone, /milestone add, /milestone check or /milestone remove. /milestone help shows how.");
+    }
+
     static string Revision(CodeWorkspace scope, CodeMilestone m, IReadOnlyList<CodeMilestone> plan)
     {
         var inputs = m.Files.Select(path => (path, hash: scope.Read(path).Sha256)).ToArray();
