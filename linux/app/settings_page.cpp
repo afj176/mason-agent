@@ -276,7 +276,10 @@ void SettingsPage::refresh() {
     if (print == shown_) return;
     shown_ = print;
     delivery_group_ = task_group_ = nullptr;
+    // A switch flipped on the page rebuilds it; the page stays where it was scrolled.
+    const double scrolled = get_vadjustment()->get_value();
     clear(content_);
+    Glib::signal_idle().connect_once([this, scrolled] { get_vadjustment()->set_value(scrolled); });
 
     auto report = [&c](const std::function<void()>& work) {
         try {
@@ -365,6 +368,19 @@ void SettingsPage::refresh() {
         GtkWidget* expander = adw_expander_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(expander), group_title.c_str());
         adw_expander_row_set_subtitle(ADW_EXPANDER_ROW(expander), (std::to_string(on) + " of " + std::to_string(total) + " on").c_str());
+        // An open group stays open when the page is rebuilt.
+        adw_expander_row_set_expanded(ADW_EXPANDER_ROW(expander), open_tool_groups_.count(group_key) > 0);
+        auto* key = new std::string(group_key);
+        using Opened = std::pair<SettingsPage*, std::string*>;
+        g_signal_connect_data(expander, "notify::expanded", G_CALLBACK(+[](GObject* row, GParamSpec*, gpointer data) {
+            auto* page = static_cast<Opened*>(data);
+            if (adw_expander_row_get_expanded(ADW_EXPANDER_ROW(row))) page->first->open_tool_groups_.insert(*page->second);
+            else page->first->open_tool_groups_.erase(*page->second);
+        }), new Opened(this, key), +[](gpointer data, GClosure*) {
+            auto* pair = static_cast<Opened*>(data);
+            delete pair->second;
+            delete pair;
+        }, GConnectFlags(0));
         for (const CatalogueTool& tool : tool_catalogue::all()) {
             if (tool.group != group_key) continue;
             GtkWidget* tool_row = adw_action_row_new();
@@ -457,10 +473,11 @@ void SettingsPage::refresh() {
         // Three choices: the default (web tools ask, commands have no network), both ask, or off for both.
         GtkWidget* choice = adw_combo_row_new();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(choice), "Internet access");
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(choice), "For web_fetch and web_search, in projects and in Chat, and for sandboxed commands in Auto. This computer's setting; a session can choose its own with /network.");
-        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(choice), 3);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(choice), "Default: web_fetch and web_search ask before each host, in projects and in Chat; sandboxed commands in Auto have no network. "
+                                                            "Ask for both: commands ask too. Off: neither. A session can choose its own with /network.");
+        adw_action_row_set_subtitle_lines(ADW_ACTION_ROW(choice), 4);
         GtkStringList* modes = gtk_string_list_new(nullptr);
-        for (const char* name : {"Web tools ask; commands have no network", "Web tools and commands ask", "Off"}) gtk_string_list_append(modes, name);
+        for (const char* name : {"Default", "Ask for both", "Off"}) gtk_string_list_append(modes, name);
         adw_combo_row_set_model(ADW_COMBO_ROW(choice), G_LIST_MODEL(modes));
         g_object_unref(modes);
         adw_combo_row_set_selected(ADW_COMBO_ROW(choice), network_mode == "ask" ? 1 : network_mode == "off" ? 2 : 0);

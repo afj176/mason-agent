@@ -123,6 +123,11 @@ private:
     /// The sections the session bar's chips open. Owned by the page; reset whenever it is rebuilt.
     GtkWidget* delivery_group_ = nullptr;
     GtkWidget* task_group_ = nullptr;
+public:
+    /// The Tools groups the user opened, kept across rebuilds of the page.
+    std::set<std::string> open_tool_groups_;
+
+private:
     /// Opens a file in the system's default app, or its folder in the file manager.
     void open_file(const std::string& path, bool folder);
     /// Shows a file's text, read-only.

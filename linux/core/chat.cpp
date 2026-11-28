@@ -439,6 +439,13 @@ void send(ChatConversation& conversation, const std::string& text, const std::ve
             Activity step;
             step.id = call.id.empty() ? new_id() : call.id;
             step.tool = call.name;
+            {
+                // While it runs, the step names what it is about: the query, the host, the skill or the server.
+                const json given = json::parse(call.arguments, nullptr, false);
+                const auto field = [&](const char* key) { return given.is_object() && given.contains(key) && given[key].is_string() ? given[key].get<std::string>() : std::string(); };
+                const auto address = web::parse(field("url"));
+                step.subject = address ? to_lower(address->host) : !field("query").empty() ? field("query") : !field("name").empty() ? field("name") : field("server");
+            }
             if (tools->step) tools->step(step);
             const std::string result = perform(call, conversation, *tools, access, step, cancel);
             if (step.state == "running") step.state = "completed";

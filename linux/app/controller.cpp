@@ -727,6 +727,8 @@ void Controller::send_chat(const std::string& text) {
     chat_problem.clear();
     chat_steps.clear();
     chat_approval.reset();
+    chat_sending = trim(text);
+    for (const ChatAttachment& file : chat_attachments) chat_sending += (chat_sending.empty() ? "" : "\n") + std::string("📎 ") + file.name;
     chat_cancel_ = make_cancel();
     {
         std::lock_guard<std::mutex> guard(approval_lock_);
@@ -777,6 +779,7 @@ void Controller::send_chat(const std::string& text) {
             chat_live.clear();
             chat_steps.clear();
             chat_approval.reset();
+            chat_sending.clear();
             chat_problem = problem;
             changed.emit();
             if (!problem.empty()) notice.emit(problem);

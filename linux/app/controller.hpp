@@ -148,6 +148,8 @@ public:
     bool chat_calls_tools() const;
     /// The tool steps of the answer being written, as they start and end.
     std::vector<Activity> chat_steps;
+    /// The message being answered, shown until the saved conversation has it.
+    std::string chat_sending;
     /// A question the chat is waiting on: a host to read or an MCP call to make.
     std::optional<ApprovalRequest> chat_approval;
     void answer_chat(ChatAnswer answer);

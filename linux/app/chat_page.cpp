@@ -279,7 +279,7 @@ void ChatPage::refresh_buttons() {
         tools_mcp_.set_active(current && current->mcp);
         tools_updating_ = false;
         int on = current ? (current->web && online ? 1 : 0) + (current->skills ? 1 : 0) + (current->mcp ? 1 : 0) : 0;
-        tools_.set_label(can_call ? "Tools · " + std::to_string(on) : "Tools");
+        tools_.set_label(can_call && current ? "Tools · " + std::to_string(on) : "Tools");
         tools_note_.set_text(!can_call ? chat::kNoTools : online ? "Chat never reads your files or runs commands." : "The internet is off on this computer, so the web tools are not offered. Change it in Settings, under Internet.");
         tools_.set_tooltip_text(can_call ? "What this chat may use: the web, skills and your MCP servers" : chat::kNoTools);
     }
@@ -416,7 +416,7 @@ void ChatPage::refresh() {
         transcript_shown_ = print;
         live_label_ = nullptr;
         clear(transcript_);
-        if (!chat || chat->messages.size() <= 1) {
+        if ((!chat || chat->messages.size() <= 1) && !controller_.chat_running) {
             auto* hint = dim_label(chat ? "Ask anything. Chat cannot read your project, edit files or run commands; use Code for that. With Tools it can read the web, use skills and call your MCP servers, asking first."
                                         : "Talk a problem through with the running model. Chats are saved on this computer. Choose New Chat to begin.");
             hint->set_wrap(true);
@@ -453,6 +453,11 @@ void ChatPage::refresh() {
                     for (const TableData& table : tables::find(message.content)) transcript_.append(*message_body(*table_card(table)));
                 }
             }
+        }
+        if (controller_.chat_running && !trim(controller_.chat_sending).empty()) {
+            // The message being answered, until the saved conversation holds it.
+            transcript_.append(*speaker(false));
+            transcript_.append(*message_body(*wrapped(controller_.chat_sending)));
         }
         if (controller_.chat_running && !controller_.chat_steps.empty()) {
             // This answer's steps so far; the saved conversation shows the finished ones once it is done.
