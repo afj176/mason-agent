@@ -54,9 +54,9 @@ internal static class HarnessIntegrationChecks
         var citation=JsonSerializer.SerializeToElement(await CodeBundles.ReadDocs(bundle.Docs[0],"guide.md","revision",_=>throw new Exception("Local docs used network"),default));
         if(citation.GetProperty("line").GetInt32()!=2||!citation.GetProperty("excerpt").GetString()!.Contains("before editing"))throw new Exception("Documentation lost the original citation.");
         await using(var services=new CodeRunServices(scope,default,[],host)){
-            if(services.Skill("qa/convention")!="Use the existing result type.")throw new Exception("Registered skill unavailable.");
+            if(services.Skill("convention")!="Use the existing result type.")throw new Exception("Registered skill unavailable.");
             CodeBundles.Save(host,bundle,false);
-            if(services.Skills.Contains("qa/convention"))throw new Exception("Disabled skill remained accessible.");
+            if(services.Skills.Contains("convention"))throw new Exception("Disabled skill remained accessible.");
         }
         CodeBundles.Remove(host,"qa");
         using var input=new CodeTerminalInput();using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(45));
