@@ -235,7 +235,7 @@ json name_schema(const std::vector<std::string>& names) {
 std::vector<ToolSpec> offered(const ChatConversation& conversation, const ChatTools& tools) {
     std::vector<ToolSpec> list;
     if (!tools.calls_tools) return list;
-    if (conversation.web && network_settings::asks(tools.home)) list.insert(list.end(), web::tools().begin(), web::tools().end());
+    if (conversation.web && network_settings::web(tools.home)) list.insert(list.end(), web::tools().begin(), web::tools().end());
     if (conversation.skills && !skills::computer(tools.home).empty()) list.push_back({"read_skill", "Read the instructions of one skill, by name.", name_schema({"name"})});
     if (conversation.mcp && !mcp::enabled(tools.home).empty()) {
         list.push_back({"mcp_tools", "List the tools you may call on one of the user's MCP servers.", name_schema({"server"})});
@@ -254,7 +254,7 @@ void set_tool(ChatConversation& conversation, const std::string& group, bool on)
 
 std::string describe_tools(const ChatConversation& conversation, const ChatTools& tools) {
     if (!tools.calls_tools) return kNoTools;
-    const bool online = network_settings::asks(tools.home);
+    const bool online = network_settings::web(tools.home);
     const size_t skill_count = skills::computer(tools.home).size(), servers = mcp::enabled(tools.home).size();
     auto row = [](const std::string& name, bool on, const std::string& note) { return name + std::string(8 - name.size(), ' ') + (on ? "on " : "off") + "  " + note; };
     return row("web", conversation.web, online ? "Read web pages and search, asking before each new host" : "The internet is off on this computer (/network)") + "\n" +

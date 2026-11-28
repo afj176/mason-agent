@@ -54,6 +54,7 @@ Controller::~Controller() {
         // A request waiting for an approval must not wait forever.
         std::lock_guard<std::mutex> guard(approval_lock_);
         approval_answer_ = false;
+        chat_answer_ = ChatAnswer::No;
     }
     approval_answered_.notify_all();
     if (plan_cancel_) plan_cancel_->store(true);
@@ -724,19 +725,47 @@ void Controller::send_chat(const std::string& text) {
     chat_running = true;
     chat_live.clear();
     chat_problem.clear();
+    chat_steps.clear();
+    chat_approval.reset();
     chat_cancel_ = make_cancel();
+    {
+        std::lock_guard<std::mutex> guard(approval_lock_);
+        chat_answer_.reset();
+    }
     const std::vector<ChatAttachment> files = chat_attachments;
     chat_attachments.clear();
     const ModelEndpoint target = *endpoint;
     const CancelToken cancel = chat_cancel_;
+    const fs::path home = store_ ? store_->home() : data_home();
     changed.emit();
-    chat_thread_ = std::thread([this, working = *current, text, files, target, cancel]() mutable {
+    chat_thread_ = std::thread([this, working = *current, text, files, target, cancel, home]() mutable {
         std::string problem;
         try {
             OpenAIClient model(target);
+            ChatTools tools;
+            tools.home = home;
+            tools.calls_tools = chat::calls_tools(model);
+            // A question waits for the user's answer on the card in the conversation; stopping the chat answers no.
+            tools.approve = [this, cancel](const ApprovalRequest& request) {
+                post([this, request] { chat_approval = request; changed.emit(); notification.emit("Mason needs your approval", request.title); });
+                std::unique_lock<std::mutex> guard(approval_lock_);
+                approval_answered_.wait(guard, [&] { return chat_answer_.has_value() || is_cancelled(cancel); });
+                const ChatAnswer answer = chat_answer_.value_or(ChatAnswer::No);
+                chat_answer_.reset();
+                return answer;
+            };
+            tools.step = [this](const Activity& step) {
+                post([this, step] {
+                    const auto found = std::find_if(chat_steps.begin(), chat_steps.end(), [&](const Activity& item) { return item.id == step.id; });
+                    if (found != chat_steps.end()) *found = step;
+                    else chat_steps.push_back(step);
+                    chat_live.clear();
+                    changed.emit();
+                });
+            };
             chat::send(working, text, files, model, *chat_store_, [this](const std::string& piece) {
                 post([this, piece] { chat_live += piece; changed.emit(); });
-            }, cancel);
+            }, cancel, &tools);
         } catch (const Cancelled&) {
         } catch (const std::exception& error) {
             problem = error.what();
@@ -746,6 +775,8 @@ void Controller::send_chat(const std::string& text) {
             chats_ = chat_store_->conversations();
             chat_running = false;
             chat_live.clear();
+            chat_steps.clear();
+            chat_approval.reset();
             chat_problem = problem;
             changed.emit();
             if (!problem.empty()) notice.emit(problem);
@@ -755,6 +786,38 @@ void Controller::send_chat(const std::string& text) {
 
 void Controller::stop_chat() {
     if (chat_cancel_) chat_cancel_->store(true);
+    if (chat_approval) answer_chat(ChatAnswer::No);
+}
+
+void Controller::answer_chat(ChatAnswer answer) {
+    if (!chat_approval) return;
+    chat_approval.reset();
+    {
+        std::lock_guard<std::mutex> guard(approval_lock_);
+        chat_answer_ = answer;
+    }
+    approval_answered_.notify_all();
+    changed.emit();
+}
+
+bool Controller::chat_calls_tools() const {
+    if (!endpoint) return true;
+    return chat::calls_tools(OpenAIClient(*endpoint));
+}
+
+void Controller::set_chat_tool(const std::string& group, bool on) {
+    const ChatConversation* current = chat();
+    if (!current || !chat_store_ || chat_running) return;
+    ChatConversation updated = *current;
+    try {
+        chat::set_tool(updated, group, on);
+        chat_store_->save(updated);
+        chats_ = chat_store_->conversations();
+        chat_selection = updated.id;
+    } catch (const std::exception& error) {
+        notice.emit(error.what());
+    }
+    changed.emit();
 }
 
 void Controller::compact() {

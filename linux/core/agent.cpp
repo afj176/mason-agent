@@ -290,7 +290,7 @@ std::vector<ToolSpec> Agent::extra_tools(const Session& session, const Workspace
     if (bundles::has_documents(home, workspace)) list.push_back({"read_documentation", "Look something up in the documentation that comes with this project (.mason/docs) and with the bundles the user installed. Give a few words; it returns the sections that mention them, each with where it came from, so you can cite it.", schema({{"query", text}}, {"query"})});
     if (!skills::list(workspace, home).empty()) list.push_back({"read_skill", "Read the project's instructions for one kind of work, by skill name.", schema({{"name", text}}, {"name"})});
     // Reading the web changes nothing here, so it is offered in every mode; every new host still asks.
-    if (network_settings::asks(session, home)) list.insert(list.end(), web::tools().begin(), web::tools().end());
+    if (network_settings::web(session, home)) list.insert(list.end(), web::tools().begin(), web::tools().end());
     return list;
 }
 
@@ -1302,7 +1302,7 @@ std::string Agent::network_note(size_t since) {
 }
 
 std::string Agent::perform_web(const ToolCall& call, const json& arguments, Session& session, Activity& activity, const CancelToken& cancel, std::string& state) {
-    if (!network_settings::asks(session, store_.home())) throw Error("The internet is off for this session (/network). Answer without the web.");
+    if (!network_settings::web(session, store_.home())) throw Error("The internet is off for this session (/network). Answer without the web.");
     if (!web_) {
         web_ = std::make_unique<web::Access>([this, &session](const std::string& host) {
             // A host kept for this project is not asked about again. The rule names it exactly.

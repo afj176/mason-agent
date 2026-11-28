@@ -22,13 +22,19 @@ std::string host(const std::string& value, int port);
 bool is_public(std::vector<uint8_t> address);
 }  // namespace network_policy
 
-/// Internet for sandboxed commands in Auto and for the web tools: ask before each host (the default), or off.
-/// Saved for this computer; a session can choose its own.
+/// Internet for sandboxed commands in Auto and for the web tools. Unset (the default): commands have no network and
+/// the web tools ask before each host. "ask": both ask before each host. "off" (saved as such): neither, and the web
+/// tools are not offered. Saved for this computer; a session can choose its own.
 namespace network_settings {
+/// "", "ask" or "off".
+std::string mode(const fs::path& home);
+/// Whether sandboxed commands may ask for a host.
 bool asks(const fs::path& home);
-/// Whether this session asks: its own choice when it has made one, otherwise the computer's. When it is off, the
-/// web tools are not offered at all.
+/// Whether this session's commands ask: its own choice when it has made one, otherwise the computer's.
 bool asks(const Session& session, const fs::path& home);
+/// Whether the web tools are offered: everywhere but off.
+bool web(const fs::path& home);
+bool web(const Session& session, const fs::path& home);
 /// The hosts the user chose to always allow for this project. A rule names one host exactly. The relay and the web
 /// tools share this one list.
 std::set<std::string> always_allowed(const fs::path& home, const std::string& workspace);

@@ -1439,10 +1439,14 @@ static void test_extra_tools() {
                                                                                      {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}}) {
             CHECK(!network_policy::is_public(address));  // not on the public internet
         }
-        // Asking is the default; off turns off the network for commands and the web tools alike.
-        CHECK(network_settings::asks(box.home) && network_settings::command("", box.home).find("ask before each host") != std::string::npos);
-        CHECK(network_settings::command("off", box.home).find("Internet: off") != std::string::npos && !network_settings::asks(box.home));
-        CHECK(network_settings::command("ask", box.home).find("ask before each host") != std::string::npos && network_settings::asks(box.home));
+        // By default commands have no network and the web tools ask; ask lets both ask; off (saved as such) is neither.
+        CHECK(network_settings::mode(box.home).empty() && !network_settings::asks(box.home) && network_settings::web(box.home));
+        CHECK(network_settings::command("", box.home).find("Sandboxed commands in Auto have no network; web_fetch and web_search ask before each host") != std::string::npos);
+        CHECK(network_settings::command("off", box.home).find("Internet: off") != std::string::npos && !network_settings::asks(box.home) && !network_settings::web(box.home));
+        CHECK(network_settings::mode(box.home) == "off");
+        CHECK(network_settings::command("ask", box.home).find("ask before each host") != std::string::npos && network_settings::asks(box.home) && network_settings::web(box.home));
+        network_settings::command("default", box.home);
+        CHECK(network_settings::mode(box.home).empty() && !network_settings::asks(box.home) && network_settings::web(box.home));
 
         // A stand-in for a site: the project's page server on this computer. The test's resolver points names at it.
         box.write("index.html", "<h1>upstream</h1>");
@@ -1788,7 +1792,6 @@ static void test_extra_tools() {
         Sandbox box;
         SessionStore store(box.home);
         Session session = store.create(Workspace(box.project.string()).root(), Permission::Auto);
-        network_settings::command("off", box.home);
         CHECK(!network_settings::asks(session, box.home));
         CHECK(network_settings::session_command("ask", session, box.home).find("this session's own choice") != std::string::npos);
         CHECK(network_settings::asks(session, box.home) && !network_settings::asks(box.home));  // one session asking does not change the computer's setting
@@ -3254,7 +3257,10 @@ static void test_web() {
             }
             return false;
         };
-        CHECK(offers_web());
+        // The default: sandboxed commands stay offline, but the web group is offered and asks per host.
+        CHECK(network_settings::mode(box.home).empty() && offers_web());
+        Session automatic = store.create(workspace.root(), Permission::Auto);
+        CHECK(!network_settings::asks(automatic, box.home) && agent.relay_for(automatic) == nullptr);
         network_settings::command("off", box.home);
         CHECK(!offers_web());
         network_settings::session_command("ask", session, box.home);
