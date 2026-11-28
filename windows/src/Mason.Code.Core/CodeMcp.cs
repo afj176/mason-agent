@@ -128,6 +128,11 @@ public static class CodeMcpRegistry
         if(Encoding.UTF8.GetByteCount(json)>32768)throw new InvalidDataException("MCP configuration exceeds 32 KiB.");
         File.WriteAllText(temp,json);File.Move(temp,path,true);
     }
+    /// <summary>The servers in use: switched-on registrations and the switched-on servers of enabled bundles.</summary>
+    public static McpRegistration[] Active(string root)=>CodeMcp.Read(root);
+    /// <summary>Calls one allowed tool with JSON object arguments. The caller has asked the user first.</summary>
+    public static Task<string> Call(McpRegistration server,string tool,JsonElement arguments,CancellationToken ct)=>CodeMcp.Request(server,tool,arguments,ct);
+    public static void Validate(McpRegistration server)=>CodeMcp.Validate(server);
     /// <summary>Connects once and lists every tool the server offers, regardless of the current allowlist.</summary>
     public static async Task<McpToolInfo[]> Discover(McpRegistration server,CancellationToken ct)
     {

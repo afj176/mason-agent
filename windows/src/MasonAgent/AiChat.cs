@@ -44,6 +44,9 @@ public sealed class ChatGenerationOptions
     public bool JsonOutput { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public JsonElement? ToolDefinitions { get; set; }
+    /// <summary>"none" makes a model answer without calling a tool; null leaves the choice to the model.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? ToolChoice { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
     public JsonElement? ResponseSchema { get; set; }
     public bool ParseReasoning { get; set; } = true;
@@ -89,7 +92,7 @@ public sealed class ChatGenerationOptions
             if(m.ToolCalls is { Count:>0 })message["tool_calls"]=m.ToolCalls.Select(t=>new { id=t.Id,type="function",function=new { name=t.Name,arguments=t.Arguments } }).ToArray();
             return message;
         }).ToArray();
-        if(ToolDefinitions.HasValue){body["tools"]=ToolDefinitions.Value;body["tool_choice"]="auto";body["parallel_tool_calls"]=false;}
+        if(ToolDefinitions.HasValue){body["tools"]=ToolDefinitions.Value;body["tool_choice"]=ToolChoice??"auto";body["parallel_tool_calls"]=false;}
         void Put(string key, object? value) { if (value != null) body[key] = value; }
         Put("temperature", Temperature); Put("top_p", TopP); Put("top_k", TopK); Put("min_p", MinP); Put("typical_p", TypicalP);
         Put("repeat_penalty", RepeatPenalty); Put("presence_penalty", PresencePenalty); Put("frequency_penalty", FrequencyPenalty); Put("seed", Seed);

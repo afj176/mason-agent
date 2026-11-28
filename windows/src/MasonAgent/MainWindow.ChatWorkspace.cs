@@ -230,6 +230,28 @@ public sealed partial class MainWindow
             resetSettings, Text("Settings are saved with this conversation. PDF and images are preview only for this text connection.", 12)), Width = 410, MaxHeight = 620 } };
         var settingsButton = ChatIcon("Conversation settings", "\uE713", (_, _) => { }); settingsButton.Flyout = Fluent.Acrylic(options);
         settingsButton.Content = MotifIcon(Fluent.Motif.Settings, 16);
+        // Tools for this conversation: the web, skills and MCP, saved with it. Offered only to a model that can call tools.
+        var webTools = new ToggleSwitch { Header = "Web", OnContent = "Read pages and search; every new host asks", OffContent = "Off" };
+        var skillTools = new ToggleSwitch { Header = "Skills", OnContent = "Skills from extensions and this computer", OffContent = "Off" };
+        var mcpTools = new ToggleSwitch { Header = "MCP", OnContent = "Your MCP servers' allowed tools; every call asks", OffContent = "Off" };
+        var toolsNote = Text("", 12); toolsNote.Opacity = .75; toolsNote.TextWrapping = TextWrapping.Wrap; toolsNote.MaxWidth = 300;
+        var toolsButton = ChatIcon("Tools", "", (_, _) => { });
+        toolsButton.Flyout = Fluent.Acrylic(new Flyout { Content = Stack(Text("Tools", 18), webTools, skillTools, mcpTools, toolsNote) });
+        void ToolSwitches()
+        {
+            bool was = loading; loading = true;
+            try { webTools.IsOn = conversation.Tools.Web; skillTools.IsOn = conversation.Tools.Skills; mcpTools.IsOn = conversation.Tools.Mcp; }
+            finally { loading = was; }
+            bool supported = ChatTools.Supported(serverInfo);
+            webTools.IsEnabled = skillTools.IsEnabled = mcpTools.IsEnabled = supported && !busy;
+            toolsNote.Text = !supported ? ChatTools.Unsupported : ChatTools.InternetOn(Store.Root) ? "Saved with this conversation." : "Saved with this conversation. The internet is off on this computer, so Web stays off.";
+            var on = new[] { conversation.Tools.Web ? "Web" : null, conversation.Tools.Skills ? "Skills" : null, conversation.Tools.Mcp ? "MCP" : null }.OfType<string>().ToArray();
+            ToolTipService.SetToolTip(toolsButton, supported ? "Tools: " + (on.Length == 0 ? "none" : string.Join(", ", on)) : ChatTools.Unsupported);
+            toolsButton.Opacity = supported ? 1 : .55;
+        }
+        webTools.Toggled += (_, _) => { if (!loading) { conversation.Tools.Web = webTools.IsOn; SaveSoon(); ToolSwitches(); } };
+        skillTools.Toggled += (_, _) => { if (!loading) { conversation.Tools.Skills = skillTools.IsOn; SaveSoon(); ToolSwitches(); } };
+        mcpTools.Toggled += (_, _) => { if (!loading) { conversation.Tools.Mcp = mcpTools.IsOn; SaveSoon(); ToolSwitches(); } };
         system.TextChanged += (_, _) => { if (!loading) { conversation.SystemPrompt = system.Text; QueueContextUsage(); SaveSoon(); } };
         autoCompact.Toggled += (_, _) => { if (!loading) { conversation.AutomaticCompaction = autoCompact.IsOn; RenderTranscript(); QueueContextUsage(); SaveSoon(); } };
         tokens.ValueChanged += (_, _) => { if (!loading && (double.IsNaN(tokens.Value) || double.IsFinite(tokens.Value) && tokens.Value is >= 1 and <= int.MaxValue && tokens.Value == Math.Truncate(tokens.Value))) { conversation.MaxTokens = double.IsNaN(tokens.Value) ? null : (int)tokens.Value; BudgetPreview(); SaveSoon(); } };
@@ -246,6 +268,7 @@ public sealed partial class MainWindow
             stops.IsEnabled=jsonOutput.IsEnabled=serverInfo?.RestrictedTextAdapter!=true;
             parseReasoning.IsEnabled=serverInfo?.Llama==true;
             answerSpace.IsEnabled=serverInfo?.Llama==true && serverInfo.Reasoning;
+            ToolSwitches();
         }
         void ShowServerInfo(ChatServerInfo info)
         {
@@ -272,8 +295,19 @@ public sealed partial class MainWindow
             catch(Exception error){if(generation==serverGeneration){serverUnreachable=true;contextStatus.Text=error.Message;modelState.Text="Connection unavailable · check Models";}}
             finally { if(generation==serverGeneration){ServerControls(); BudgetPreview(); QueueContextUsage();} }
         }
+        // mason chat shares this history: take in what it added or changed before listing or opening conversations.
+        void Sync()
+        {
+            if (busy) return;
+            var before = conversation.Updated;
+            try { library.Refresh(); }
+            catch (Exception error) when (error is IOException or InvalidDataException or System.Text.Json.JsonException) { state.Text = "History could not be refreshed: " + error.Message; return; }
+            if (!saved.Conversations.Contains(conversation)) conversation = saved.Conversations.OrderByDescending(c => c.Updated).FirstOrDefault() ?? library.New();
+            if (conversation.Updated != before) { title.Text = conversation.Title; RenderTranscript(); }
+        }
         void History()
         {
+            Sync();
             refreshingHistory = true;
             var query = historySearch.Text.Trim(); string lastGroup = "";
             var items = saved.Conversations.Where(c => query.Length == 0 || c.Title.Contains(query, StringComparison.OrdinalIgnoreCase) || c.Turns.Any(t => t.Text.Contains(query, StringComparison.OrdinalIgnoreCase)))
@@ -341,6 +375,7 @@ public sealed partial class MainWindow
                 UIElement speaker = turn.Role == "user" ? new FontIcon { Glyph = "\uE77B", FontSize = 16, Width = 26 } : AppIconImage(26);
                 content.Children.Add(Row(speaker, name, time));
                 if (turn.Reasoning.Length > 0) content.Children.Add(new Expander { Header = "Reasoning", Content = ChatInline(turn.Reasoning, 14), HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+                foreach (var step in turn.Steps) content.Children.Add(ChatStepRow(step));
                 content.Children.Add(ChatMarkdown(turn.Text, ShowArtifact));
                 foreach (var file in turn.Attachments) content.Children.Add(Button(file.Label, (_, _) => ShowArtifact(new(file.Name, file.Kind, file.Text, file))));
                 var actions = Row(ChatIcon("Copy message", "\uE8C8", (_, _) => ChatCopy(turn.Text)), ChatIcon("Open message in reference sidebar", "\uE8A5", (_, _) => ShowArtifact(new("Message", "markdown", turn.Text))));
@@ -409,7 +444,7 @@ public sealed partial class MainWindow
         };
         void Select(ChatConversation selected)
         {
-            conversation = selected; saved.Selected = selected.Id; editing = null; loading = true;
+            Sync(); conversation = selected; saved.Selected = selected.Id; editing = null; loading = true;
             state.Text = "Ready · draft context is counted by the selected local server; generation starts when you choose Send.";
             title.Text = conversation.Title; message.Text = conversation.Draft; system.Text = conversation.SystemPrompt; LoadSettings(); loading = false;
             refreshNativeChatProfiles(); RenderTranscript(); RenderDraft(); RefreshArtifacts(); History(); Save();
@@ -615,7 +650,13 @@ public sealed partial class MainWindow
             timer.Start(); state.Text = "Waiting for the local model…";
             try
             {
-                var result = await client.StreamChat(profile, key, request, plan.Output, chunk => { text.Append(chunk); state.Text = "Receiving local answer…"; }, cancellation.Token, chunk => { reasoning.Append(chunk); state.Text = "Reasoning…"; },generationOptions,verifiedServer);
+                // Tool calls show as compact steps above the answer, and approvals as cards among them.
+                var steps = new StackPanel { Spacing = 6 }; live.Children.Insert(1, steps);
+                var tools = new ChatTools.Session(Store.Root, (ask, token) => ChatApproval(steps, ask, token));
+                var result = await ChatTools.Run(client, profile, key, request, plan.Output, conversation.MaxTokens, generationOptions, verifiedServer, conversation.Tools, tools,
+                    step => { answer.Steps.Add(step); steps.Children.Add(ChatStepRow(step)); state.Text = step.Label; },
+                    chunk => { text.Append(chunk); state.Text = "Receiving local answer…"; }, chunk => { reasoning.Append(chunk); state.Text = "Reasoning…"; },
+                    () => text.Clear(), cancellation.Token);
                 var feedback = ChatCompletionFeedback.From(result, plan);
                 answer.State = feedback.State; answer.StatusDetail = feedback.Detail; answer.PerformanceSummary = result.PerformanceSummary;
                 state.Text = answer.State + " · " + result.PerformanceSummary + $" · {clock.Elapsed.TotalSeconds:0.0}s" + (feedback.Detail.Length > 0 ? " · See the message for details and recovery." : $" · {result.Characters:N0} characters");
@@ -660,7 +701,7 @@ public sealed partial class MainWindow
         // The welcome reads from the top: in a short window its title stays in view and the prompts scroll beneath it.
         void KeepTail() { if (followTail) transcriptScroll.ChangeView(null, welcomeHost != null ? 0 : transcriptScroll.ScrollableHeight, null, true); }
         transcript.SizeChanged += (_, _) => KeepTail(); transcriptScroll.SizeChanged += (_, _) => KeepTail();
-        var composerFooter = Toolbar(ScrollTools(Row(attach, attachmentRow)), Row(reasoningChoice, send, stop));
+        var composerFooter = Toolbar(ScrollTools(Row(attach, attachmentRow)), Row(toolsButton, reasoningChoice, send, stop));
         // The composer floats above the transcript, with the window's shared soft shadow beneath it.
         var composer = Fluent.Float(ChatSurface(Stack(message, composerFooter), new Thickness(10)), 24);
         composer.CornerRadius = new CornerRadius(12);

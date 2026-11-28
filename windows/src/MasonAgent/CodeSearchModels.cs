@@ -3,9 +3,10 @@ using Mason.Code;
 namespace Mason;
 
 /// <summary>Which connections power the agent's semantic code search. Applies to every coding session.</summary>
-public sealed record CodeSearchSettings(Guid? Embeddings = null, Guid? Reranker = null)
+/// <summary>Off switches code search off for every session; Embeddings and Reranker are kept for when it is back on.</summary>
+public sealed record CodeSearchSettings(Guid? Embeddings = null, Guid? Reranker = null, bool Off = false)
 {
-    public const string File = "code-search.json";
+    public const string File = CodeSemanticIndex.SettingsFile;
     public static CodeSearchSettings Read() { try { return Store.Read<CodeSearchSettings>(File) ?? new(); } catch { return new(); } }
 }
 

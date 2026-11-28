@@ -157,7 +157,7 @@ public sealed class CodeSession
     public bool RecordModelDecisions { get; set; }
     public Guid? Model { get; set; }
     public CodePermission Permission { get; set; } = CodePermission.ReadOnly;
-    public CodeNetworkMode Network { get; set; } = CodeNetworkMode.Offline;
+    public CodeNetworkMode Network { get; set; } = CodeNetworkMode.Default;
     // Missing legacy JSON fields retain their original routing; CodeStore.New chooses Recommended.
     public CodeShellKind Shell { get; set; } = CodeShellKind.Direct;
     public string? ShellExecutable { get; set; }
@@ -240,7 +240,7 @@ public sealed partial class CodeStore : IDisposable
         var preferred = Sessions.Where(s => s.Workspace.Equals(scope.Root, StringComparison.OrdinalIgnoreCase)).OrderByDescending(s => s.Updated).FirstOrDefault();
         var selectedProject = ProjectForWorkspace(scope.Root);
         var shell=selectedProject?.PreferredShell ?? preferred?.Shell ?? CodeShellKind.Recommended;
-        var session = new CodeSession { Workspace = scope.Root, Shell = shell, ShellExecutable = preferred?.Shell==shell?preferred.ShellExecutable:CodeShells.Find(shell) };
+        var session = new CodeSession { Workspace = scope.Root, Shell = shell, ShellExecutable = preferred?.Shell==shell?preferred.ShellExecutable:CodeShells.Find(shell), Network = CodeNetworkSettings.Computer(SettingsRoot) };
         Save(session); Sessions.Insert(0, session);
         var project=AddProject(scope.Root); ActivateProject(project.Id,session.Id); return session;
     }

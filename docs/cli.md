@@ -19,16 +19,30 @@ Type a request and each step prints as it finishes. Approvals take one key: `y` 
 | `/permission read\|review\|edits\|auto` | What Mason may do without asking. `auto` runs commands in your system's sandbox |
 | `/ask` · `/build` | Answer questions only, or make changes |
 | `/new` · `/resume` · `/compact` · `/status` | Start, continue, shrink or inspect a session |
+| `/sessions delete N` · `/fork N` · `/export` · `/import FILE` | Delete a session (asks first), start over from before request N, or move a session between computers |
+| `/reasoning off\|low\|medium\|high` | How long the model thinks before answering |
 | `/model` | Switch between running models |
 | `/models` | The models on this computer and what each can do for the agent |
 | `/models start` · `/models stop` | Run one of your models, with a context size that fits your memory |
 | `/models search TEXT` · `/models download REPO` | Find and download a model from Hugging Face |
 | `/models setup` | Install llama.cpp and download a model that fits |
-| `/rules` · `/agent` · `/commands` | Saved approvals, and your agents and commands |
+| `/rules` · `/agent` · `/commands` | Saved approvals, and your agents and commands; `/agent new NAME` and `/commands new NAME` make one |
+| `/skills` · `/skills new NAME` · `/skills on\|off NAME` | Every skill and where it comes from; make one; switch one for this project |
+| `/skill NAME request` | Run a request that follows a skill |
+| `/tools` · `/tools on\|off NAME` | Every tool by group; switch one for this project |
+| `/network default\|ask\|off` | The web asks before each site; `ask` lets commands in Auto ask too; `off` is no internet |
+| `/mcp` · `/bundle` · `/policy` | MCP servers, installed bundles and the project's policy |
 | `/languages` | The language servers that check your code; install a missing one |
 | `/notes` · `/note TEXT` | The notes Mason reads with every request; add one, `/notes about PATH TEXT`, `/notes remove N`, `/notes clear` |
-| `/theme` | Choose the theme the app and `mason` share |
+| `/theme` · `/theme light\|dark\|system` | Choose the theme and appearance the app and `mason` share |
+| `/review changes` · `/comment` · `/milestone` · `/accept` | Have the model review what changed, pin a comment, track a plan, check pages in a browser |
+| `/schedule` · `/task` · `/experiment` · `/deliver` | Scheduled runs, background tasks, worktree experiments and pull requests |
+| `/roles` · `/generation` · `/embeddings` · `/window` | Reviewer and visual models, sampling settings, code search, and attaching another app's window |
 | `/help` | Everything else |
+
+## Chat
+
+`mason chat` is a plain conversation, apart from your project, that shares its history with the app's Chat. It can search and read the web, use skills and call MCP servers, asking first. `/attach FILE` adds a document or picture, `/reasoning` sets how long the model thinks, `/tools` switches web, skills and MCP, and `/resume` picks up an earlier chat. `mason chat --resume` continues the latest.
 
 ## Options
 

@@ -6,7 +6,7 @@ Everything here works in the Windows, macOS and Linux apps. Where a feature is r
 
 - **Sessions by project.** Add a folder and Mason keeps its sessions, files and changes together. Watch each step as it happens.
 - **Permissions.** Sessions start read-only. Choose Review edits (approve each edit and command), Workspace edits, or Auto. `/permission` changes it.
-- **Auto runs in a sandbox.** Commands can only write inside the project, can't read credential folders such as `~/.ssh`, and have no network unless you allow a destination.
+- **Auto runs in a sandbox.** Commands can only write inside the project, can't read credential folders such as `~/.ssh`, and have no network unless you turn it on with `/network ask`, and then each destination asks first.
 - **Approvals you can save.** **Always Allow…** remembers a command, folder or tool for the project. Saved rules are listed in Settings, where you can revoke them.
 - **Undo a whole request.** `/undo` puts back everything the last request changed, including files its commands created or deleted, and `/redo` reapplies it. Files you edited since are left alone.
 - **Queue and steer.** While Mason works, queue a follow-up for after it finishes, or steer it to stop and do something else next.
@@ -31,7 +31,9 @@ Everything here works in the Windows, macOS and Linux apps. Where a feature is r
 ## Your setup
 
 - **Agents and commands.** Markdown files in `.mason/agents` and `.mason/commands`. Mason also reads the ones in `.claude/` and `.opencode/`.
-- **Skills.** Instructions in `.mason/skills/NAME/SKILL.md` that the agent reads when the work calls for them.
+- **Skills.** Instructions in `.mason/skills/NAME/SKILL.md` that the agent reads when the work calls for them. Mason also reads `.claude/skills` and `.agents/skills`, and skills from installed bundles. Settings lists every skill with where it comes from, switches one off for the project, and makes a new one from a template. `/skill NAME request` runs a request that follows a skill.
+- **Tools.** Settings lists every tool the agent can use, by group, with a switch for each. `/tools` does the same in `mason`.
+- **The web.** The agent can read a page (`web_fetch`) and search DuckDuckGo (`web_search`). It asks before each new site, reads public HTTPS sites only, and never sends cookies or passwords. **Always** keeps a site for the project. `/network off` turns the web off.
 - **MCP servers.** Add a server on this computer and switch on the tools Mason may use. Every call asks first unless you saved a rule.
 - **Notes.** Short facts about the project, kept in the Notes tray under the request box (the Notes tab, Ctrl+Shift+N on Windows and Linux, ⌥⌘N on macOS, or `/note TEXT`). Mason reads every current note, up to 12, with each request. A note can be about a file; when that file changes it is not sent until you keep it again. After a request Mason may suggest one note for you to Remember or Dismiss.
 - **Themes.** Five theme families, each in light and dark, shared by the app and `mason`. Choose one in Appearance (the gear menu on Windows, Settings on macOS and Linux) or with `/theme`.
@@ -40,7 +42,7 @@ Everything here works in the Windows, macOS and Linux apps. Where a feature is r
 
 ## Beyond one request
 
-- **Chat.** Talk a problem through with a model, apart from your sessions, with documents and pictures attached.
+- **Chat.** Talk a problem through with a model, apart from your sessions, with documents and pictures attached. Chat can search and read the web, use skills and call your MCP servers, asking first; **Tools** in the request box switches each on or off. It never reads your project or runs commands. `mason chat` continues the same chats in the terminal.
 - **Schedules.** Run a request hourly, daily, on weekdays or weekly. Nothing is approved for a scheduled run unless you allow Auto.
 - **Notifications.** Your system tells you when a session finishes or needs your approval.
 - **Background tasks.** Run a request in its own process that keeps going after you close the app, with its approvals waiting for you.

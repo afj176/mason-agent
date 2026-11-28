@@ -53,7 +53,6 @@ public sealed partial class MainWindow
         }
         async Task CreateDefinition(bool agent)
         {
-            var folder = Path.Combine(scope.Root, ".mason", agent ? "agents" : "commands");
             var name = new TextBox { Header = "Name", PlaceholderText = agent ? "reviewer" : "fix-issue", MaxLength = 48 };
             var description = new TextBox { Header = "Description", PlaceholderText = agent ? "Reviews changes and reports risks" : "Fix a numbered issue" };
             var body = new TextBox { Header = agent ? "Instructions" : "Request template", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 120, PlaceholderText = agent ? "Never edit files. Read the change and list risks with file and line." : "Fix issue $1. Extra context: $ARGUMENTS" };
@@ -63,13 +62,7 @@ public sealed partial class MainWindow
             if (await new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.ActualTheme, Title = agent ? "New agent" : "New command", Content = new ScrollViewer { Content = content, MaxHeight = 460 }, PrimaryButtonText = "Create", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary }.ShowAsync() != ContentDialogResult.Primary) return;
             try
             {
-                var file = name.Text.Trim();
-                if (!System.Text.RegularExpressions.Regex.IsMatch(file, "^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$")) throw new ArgumentException("Use letters, numbers, dots, dashes or underscores for the name.");
-                Directory.CreateDirectory(folder);
-                var path = Path.Combine(folder, file + ".md");
-                if (File.Exists(path)) throw new IOException(Path.GetFileName(path) + " already exists.");
-                var front = "---\ndescription: " + description.Text.Trim().Replace('\n', ' ') + (agent ? "\nmode: " + (askOnly.IsOn ? "plan" : "build") : "") + "\n---\n";
-                await File.WriteAllTextAsync(path, front + body.Text.ReplaceLineEndings("\n").Trim() + "\n");
+                var path = await Task.Run(() => CodeCustomization.Create(scope.Root, agent, name.Text, description.Text, body.Text, askOnly.IsOn));
                 RenderDefinitions(); Say("Created " + Path.GetRelativePath(scope.Root, path) + ".");
             }
             catch (Exception e) { Fail(e); }
@@ -193,7 +186,6 @@ public sealed partial class MainWindow
         // ── Project policy and bundles (existing) ──────────────────────────────────────────────────
         var current = CodeProjectPolicy.Load(Store.Root, scope.Root, true);
         var name = new TextBox { Header = "Policy name", Text = current?.Name ?? "", MaxLength = 80, PlaceholderText = "Release freeze" };
-        var disabled = new TextBox { Header = "Disabled model tools", Text = string.Join(", ", current?.DisabledTools ?? []), PlaceholderText = "Comma-separated tool names" };
         var workflows = new TextBox { Header = "Allowed model workflows", Text = current?.Workflows == null ? "*" : string.Join(", ", current.Workflows), PlaceholderText = "* for all, empty for none" };
         var expiry = new TextBox { Header = "Expires (optional, UTC)", Text = current?.Expires?.UtcDateTime.ToString("O") ?? "" };
         var hooks = new ToggleSwitch { Header = "Run project workflow events in Auto", IsOn = current?.EnableHooks == true };
@@ -203,13 +195,15 @@ public sealed partial class MainWindow
             try
             {
                 DateTimeOffset? until = null; if (expiry.Text.Trim().Length > 0) until = DateTimeOffset.Parse(expiry.Text, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal);
-                CodeProjectPolicy.Set(Store.Root, scope.Root, new CodeProjectPolicy(name.Text.Trim(), scope.Root, List(disabled.Text), workflows.Text.Trim() == "*" ? null : List(workflows.Text), until, hooks.IsOn));
+                // Tools and skills are switched in their own sections; the policy keeps whatever they set.
+                var latest = CodeProjectPolicy.Load(Store.Root, scope.Root, true);
+                CodeProjectPolicy.Set(Store.Root, scope.Root, new CodeProjectPolicy(name.Text.Trim(), scope.Root, latest?.DisabledTools ?? [], workflows.Text.Trim() == "*" ? null : List(workflows.Text), until, hooks.IsOn, latest?.DisabledSkills));
                 Say("Policy saved for " + scope.Root);
             }
             catch (Exception e) { Fail(e); }
         }, true);
-        var revoke = Button("Revoke policy", (_, _) => { try { CodeProjectPolicy.Set(Store.Root, scope.Root, null); name.Text = disabled.Text = expiry.Text = ""; workflows.Text = "*"; hooks.IsOn = false; Say("Policy revoked."); } catch (Exception e) { Fail(e); } });
-        var policyForm = new Border { Style = Token("MasonCard"), Child = Stack(FormGrid(name, expiry, disabled, workflows), hooks, Row(apply, revoke)) };
+        var revoke = Button("Revoke policy", (_, _) => { try { CodeProjectPolicy.Set(Store.Root, scope.Root, null); name.Text = expiry.Text = ""; workflows.Text = "*"; hooks.IsOn = false; Say("Policy revoked."); } catch (Exception e) { Fail(e); } });
+        var policyForm = new Border { Style = Token("MasonCard"), Child = Stack(FormGrid(name, expiry, workflows), hooks, Row(apply, revoke)) };
 
         var bundles = new ListView { MaxHeight = 220, SelectionMode = ListViewSelectionMode.Single };
         var bundleInfo = new TextBlock { Style = Token("MasonMono"), MaxLines = 14, TextTrimming = TextTrimming.CharacterEllipsis };
@@ -267,12 +261,20 @@ public sealed partial class MainWindow
         RenderLanguages();
         var languagesNote = CodeNote("After each edit Mason hands the file to its language's server, and the errors the server reports go back to the model. A server runs with your Windows account, so Mason asks before starting one. Mason installs one only when you choose Install, using that language's own tool.");
 
+        var (skillActions, skillsHost) = SkillsSection(scope, message => Say(message), Fail);
+        var toolsHost = ToolCatalogSection(scope, message => Say(message), Fail);
+        var internetHost = InternetSection(scope, message => Say(message), Fail);
+        var mcpHeading = new TextBlock { Text = "MCP servers", Style = Token("MasonBodyStrong"), Margin = new Thickness(1, 12, 0, 2) };
+
         var page = SettingsPage(
-            PageHeader("Harness settings", "Approvals, agents, MCP servers and schedules for " + Path.GetFileName(scope.Root)),
+            PageHeader("Harness settings", "Approvals, agents, skills, tools and schedules for " + Path.GetFileName(scope.Root)),
             status,
             SettingsGroup("Approvals you saved"), rulesHost,
             SettingsGroup("Agents and commands"), Row(IconButton("\uE77B", "New agent", async (_, _) => await CreateDefinition(true)), IconButton("\uE756", "New command", async (_, _) => await CreateDefinition(false)), Button("Refresh", (_, _) => RenderDefinitions())), definitionsHost,
-            SettingsGroup("MCP servers"), Row(IconButton("\uE710", "Add server", async (_, _) => await EditMcp(null), true)), mcpHost,
+            SettingsGroup("Skills"), skillActions, skillsHost,
+            SettingsGroup("Tools"), Muted("Switch a tool off and Mason will not use it in this project.", 12), toolsHost,
+            mcpHeading, Row(IconButton("\uE710", "Add server", async (_, _) => await EditMcp(null), true)), mcpHost,
+            SettingsGroup("Internet"), internetHost,
             SettingsGroup("Scheduled runs"), Row(IconButton("\uE710", "Schedule a run", async (_, _) => await AddSchedule(), true)), schedulesHost,
             SettingsGroup("Project policy"), policyForm,
             SettingsGroup("Language servers"), languagesNote, languagesHost,

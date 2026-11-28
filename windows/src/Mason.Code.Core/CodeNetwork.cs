@@ -11,7 +11,24 @@ using Microsoft.Win32.SafeHandles;
 
 namespace Mason.Code;
 
-public enum CodeNetworkMode { Offline, Ask }
+/// <summary>Default (unset): commands in Auto stay offline as before, and web_fetch/web_search ask per host. Ask: commands
+/// in Auto and the web tools ask per host. Off: no internet at all. Sessions saved before the web tools wrote 0
+/// ("Offline") only because it was the one default, so 0 reads as Default; the explicit Off is 3, a value older
+/// versions never wrote.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(CodeNetworkModeJson))]
+public enum CodeNetworkMode { Default = 0, Ask = 1, Off = 3 }
+
+/// <summary>Reads the numbers and names any version wrote; writes the number.</summary>
+public sealed class CodeNetworkModeJson : System.Text.Json.Serialization.JsonConverter<CodeNetworkMode>
+{
+    public override CodeNetworkMode Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => reader.TokenType switch
+    {
+        JsonTokenType.Number => reader.GetInt32() switch { 1 => CodeNetworkMode.Ask, 3 => CodeNetworkMode.Off, 0 or 2 => CodeNetworkMode.Default, _ => throw new JsonException("Unknown network setting.") },
+        JsonTokenType.String => reader.GetString() switch { "Ask" => CodeNetworkMode.Ask, "Off" => CodeNetworkMode.Off, "Offline" or "Default" => CodeNetworkMode.Default, _ => throw new JsonException("Unknown network setting.") },
+        _ => throw new JsonException("Unknown network setting.")
+    };
+    public override void Write(Utf8JsonWriter writer, CodeNetworkMode value, JsonSerializerOptions options) => writer.WriteNumberValue((int)value);
+}
 
 /// <summary>Exact destination policy. Untrusted clients never choose an already-connected host socket.</summary>
 public static class CodeNetworkPolicy

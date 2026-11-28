@@ -51,6 +51,12 @@ if(args.Length==2 && args[0]=="--model-catalog-checks"){
 if(args.Length==2 && args[0]=="--harness-contract-checks"){
     await HarnessContractChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
 }
+if(args.Length==2 && args[0]=="--cli-command-checks"){
+    await CliCommandChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
+}
+if(args.Length==2 && args[0]=="--skills-tools-checks"){
+    await SkillsToolsWebChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
+}
 if(args.Length==2 && args[0]=="--extension-checks"){
     await HarnessExtensionChecks.Run(Path.GetFullPath(args[1]),(passed,name)=>{if(!passed)throw new Exception(name);Console.WriteLine("PASS "+name);});return;
 }
@@ -542,6 +548,8 @@ try
     }
     await HarnessRecoveryChecks.Run(root, Check);
     await HarnessContractChecks.Run(root, Check);
+    await SkillsToolsWebChecks.Run(root, Check);
+    await CliCommandChecks.Run(root, Check);
     await ModelCatalogChecks.Run(root, Check);
     if (OperatingSystem.IsWindows()) await HarnessRecoveryChecks.CheckNamedTests(root,Check);
     await CodingCompactionChecks.Run(root, workspace, Check);

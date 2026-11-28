@@ -9,6 +9,9 @@ public static class CodeActivityText
         try
         {
             using var json=JsonDocument.Parse(activity.Arguments);var root=json.RootElement;
+            // A web call shows what it read or searched for, then the host and the outcome: allowed, denied, the size or the error.
+            if(activity.Tool is "web_fetch" or "web_search")
+                return ((root.TryGetProperty("url",out var url)?url.GetString():root.TryGetProperty("query",out var query)?query.GetString():null)??"")+(activity.Authorization.Length>0?" · "+activity.Authorization:"");
             if(root.TryGetProperty("command",out var command))return command.GetString()??"";
             if(root.TryGetProperty("executable",out var executable))return CodeCommand.CommandLine(executable.GetString()??"",root.GetProperty("arguments").EnumerateArray().Select(a=>a.GetString()??"").ToArray());
             if(root.TryGetProperty("path",out var path))return path.GetString()??"";

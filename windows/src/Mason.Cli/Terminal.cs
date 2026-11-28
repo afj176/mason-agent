@@ -27,8 +27,12 @@ internal static class Term
             Ansi = GetConsoleMode(handle, out var mode) && (((mode & 4) != 0) || SetConsoleMode(handle, mode | 4));
         }
         Styled = Ansi && Environment.GetEnvironmentVariable("NO_COLOR") is null or "";
+        Mode = Mason.Code.ThemeFamilies.SavedMode(global::Interactive.DataHome());
         UseTheme(Mason.Code.ThemeFamilies.Saved(global::Interactive.DataHome()));
     }
+
+    /// <summary>Light, Dark or Default (follow the terminal), shared with Mason Agent's Appearance mode.</summary>
+    public static string Mode { get; set; } = "Default";
 
     /// <summary>The theme family chosen in Mason Agent's Appearance (appearance.json), used for the accent colour.</summary>
     public static Mason.Code.ThemeFamily Theme { get; private set; } = Mason.Code.ThemeFamilies.Default;
@@ -43,7 +47,7 @@ internal static class Term
     public static void UseTheme(Mason.Code.ThemeFamily family)
     {
         Theme = family;
-        var tokens = family.For(dark: !LightBackground);
+        var tokens = family.For(dark: Mode switch { "Light" => false, "Dark" => true, _ => !LightBackground });
         static string Rgb(uint c) => $"{(c >> 16) & 0xFF};{(c >> 8) & 0xFF};{c & 0xFF}";
         Accent = $"\x1b[38;2;{Rgb(tokens.Accent)}m";
         Selected = $"\x1b[48;2;{Rgb(tokens.Accent)}m\x1b[38;2;{Rgb(tokens.OnAccent)}m\x1b[1m";
