@@ -50,6 +50,8 @@ public:
     const fs::path& folder() const { return folder_; }
     /// Newest first.
     const std::vector<ChatConversation>& conversations() const { return conversations_; }
+    /// Reads the folder again, newest first, so chats another program saved (mason chat, or the app) appear.
+    void reload();
     ChatConversation create();
     void save(ChatConversation& conversation);
     void remove(const std::string& id);

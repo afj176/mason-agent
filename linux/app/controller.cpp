@@ -654,6 +654,25 @@ void Controller::select_chat(const std::string& id) {
     changed.emit();
 }
 
+void Controller::reload_chats() {
+    if (!chat_store_ || chat_running) return;
+    chat_store_->reload();
+    std::vector<ChatConversation> fresh = chat_store_->conversations();
+    // Only a change on disk is shown; the selected chat follows its newer version, or the newest when it is gone.
+    auto same = [](const std::vector<ChatConversation>& a, const std::vector<ChatConversation>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); i++) {
+            if (a[i].id != b[i].id || a[i].updated != b[i].updated || a[i].messages.size() != b[i].messages.size()) return false;
+        }
+        return true;
+    };
+    if (same(fresh, chats_)) return;
+    chats_ = std::move(fresh);
+    const bool kept = std::any_of(chats_.begin(), chats_.end(), [&](const ChatConversation& item) { return item.id == chat_selection; });
+    if (!kept) chat_selection = chats_.empty() ? "" : chats_.front().id;
+    changed.emit();
+}
+
 void Controller::configure_chat(const std::string& reasoning, int max_tokens, const std::string& reference) {
     const ChatConversation* current = chat();
     if (!current || !chat_store_ || chat_running) return;

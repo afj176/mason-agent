@@ -150,16 +150,24 @@ ChatAttachment ChatAttachment::from_file(const fs::path& file) {
 
 ChatStore::ChatStore(const fs::path& home) : folder_(home / "chats") {
     fs::create_directories(folder_);
-    for (const fs::directory_entry& entry : fs::directory_iterator(folder_)) {
+    reload();
+}
+
+void ChatStore::reload() {
+    std::vector<ChatConversation> found;
+    std::error_code failure;
+    for (const fs::directory_entry& entry : fs::directory_iterator(folder_, failure)) {
         if (entry.path().extension() != ".json") continue;
         try {
             const json parsed = json::parse(read_file(entry.path()), nullptr, false);
-            if (parsed.is_object()) conversations_.push_back(conversation_from_json(parsed));
+            if (parsed.is_object()) found.push_back(conversation_from_json(parsed));
         } catch (const std::exception&) {
             // A file that cannot be read is left where it is and not listed.
         }
     }
-    std::sort(conversations_.begin(), conversations_.end(), [](const ChatConversation& a, const ChatConversation& b) { return a.updated > b.updated; });
+    std::sort(found.begin(), found.end(), [](const ChatConversation& a, const ChatConversation& b) { return a.updated > b.updated; });
+    std::lock_guard<std::mutex> guard(lock_);
+    conversations_ = std::move(found);
 }
 
 ChatConversation ChatStore::create() {

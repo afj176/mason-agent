@@ -477,6 +477,14 @@ MainWindow::MainWindow(Gtk::Application& application, Controller& controller) : 
         const char* page = adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(stack));
         adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(split), page && std::string(page) == "code");
     }), split_);
+    // Chats that mason chat made or continued are read again when Chat is opened and when the window is focused.
+    g_signal_connect(stack_, "notify::visible-child-name", G_CALLBACK(+[](GObject* stack, GParamSpec*, gpointer self) {
+        const char* page = adw_view_stack_get_visible_child_name(ADW_VIEW_STACK(stack));
+        if (page && std::string(page) == "chat") static_cast<Controller*>(self)->reload_chats();
+    }), &controller_);
+    g_signal_connect(window_, "notify::is-active", G_CALLBACK(+[](GObject* window, GParamSpec*, gpointer self) {
+        if (gtk_window_is_active(GTK_WINDOW(window))) static_cast<Controller*>(self)->reload_chats();
+    }), &controller_);
 
     toasts_ = ADW_TOAST_OVERLAY(adw_toast_overlay_new());
     adw_toast_overlay_set_child(toasts_, split_);

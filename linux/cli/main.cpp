@@ -849,12 +849,13 @@ private:
             {"/generation", "Temperature, top P and the like, kept for the model in use (see /generation help)"},
             {"/policy", "This project's limits: tools switched off, the workflows that may run, and whether its hooks run (see /policy help)"},
             {"/network", "Internet for commands in Auto and for web_fetch/web_search: ask before each host, or off"},
-            {"/skills", "Every skill this project can see: on, off or hidden, its source and description"},
-            {"/skills show NAME · new NAME [description]", "A skill's path and SKILL.md; make one in .mason/skills"},
-            {"/skills on NAME · off NAME", "Switch a skill on or off for this project"},
-            {"/skill NAME [request]", "Run a request that follows the skill"},
-            {"/tools", "Every tool by group, on or off for this project, then the MCP servers"},
-            {"/tools on NAME · off NAME", "Switch a tool on or off for this project"},
+            {"/skills", "Every skill: on, off or hidden, where it comes from and what it is for"},
+            {"/skills show NAME", "Print a skill's path and its SKILL.md"},
+            {"/skills new NAME [description]", "Make a skill in .mason/skills"},
+            {"/skills on|off NAME", "Switch a skill on or off for this project"},
+            {"/skill NAME [request]", "Run a request that follows a skill"},
+            {"/tools", "Every tool by group, on or off for this project, then your MCP servers"},
+            {"/tools on|off NAME", "Switch a tool on or off for this project"},
             {"/roles", "A separate reviewer model, a separate model for pictures, and a trace of every model call (see /roles help)"},
             {"/task", "Run a request in the background; it keeps going after you close Mason (see /task help)"},
             {"/deliver", "Build one commit from the hunks you choose and open a draft pull request; bring CI results back (see /deliver help)"},
@@ -2012,7 +2013,7 @@ private:
                 {"/attach FILE", "Attach a text file, picture, PDF or Word document to the next message (up to 5)"},
                 {"/reasoning off|low|medium|high|default", "How much the model thinks before it answers"},
                 {"/tools", "This chat's tools: web, skills and MCP, each on or off"},
-                {"/tools on|off web|skills|mcp", "Switch one for this chat"},
+                {"/tools on|off web|skills|mcp", "Switch one on or off for this chat"},
                 {"/model [number]", "List running model servers, or switch to one"},
                 {"/help", "These commands"},
                 {"/exit", "Leave (Ctrl+C twice also works)"},
@@ -2030,6 +2031,8 @@ private:
             return true;
         }
         if (name == "/resume") {
+            // The app may have saved chats since this started.
+            store_.reload();
             std::vector<ChatConversation> recent;
             for (const ChatConversation& item : store_.conversations()) {
                 if (item.messages.size() > 1 && recent.size() < 20) recent.push_back(item);

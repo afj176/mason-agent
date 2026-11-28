@@ -134,6 +134,8 @@ public:
     /// Files waiting to go with the next message.
     std::vector<ChatAttachment> chat_attachments;
     void select_chat(const std::string& id);
+    /// Reads the chats again, so ones mason chat made or continued appear. Never while a reply is running.
+    void reload_chats();
     void new_chat();
     /// Sets the selected chat's reasoning level ("default" for the server's own), output limit (0 for none) and pinned reference.
     void configure_chat(const std::string& reasoning, int max_tokens, const std::string& reference);

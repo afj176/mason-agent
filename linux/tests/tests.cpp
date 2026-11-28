@@ -715,7 +715,8 @@ static void test_mcp() {
     CHECK(read_file(box.home / "mcp-servers.json").find("\"Name\"") != std::string::npos);  // written with the keys Windows uses
 
     const std::string python = "/usr/bin/python3";
-    const std::string script = (fs::path(__FILE__).parent_path() / "mcp-test-server.py").string();
+    // Absolute, because the server starts in its program's folder, where a path relative to the build would not resolve.
+    const std::string script = fs::absolute(fs::path(__FILE__).parent_path() / "mcp-test-server.py").lexically_normal().string();
     if (access(python.c_str(), X_OK) != 0 || !fs::exists(script)) {
         std::cout << "  note: python3 or the MCP test server is missing; the connection checks were skipped.\n";
         return;
@@ -3388,6 +3389,20 @@ static void test_chat_tools() {
     CHECK_THROWS(chat::set_tool(conversation, "shell", true));
     tools.calls_tools = false;
     CHECK(chat::offered(conversation, tools).empty() && chat::describe_tools(conversation, tools) == "This model can't call tools.");
+
+    // Two stores on one folder, like the app and mason chat: what one saves, the other sees after reloading.
+    ChatStore app(box.home), terminal(box.home);
+    const size_t before = app.conversations().size();
+    ChatConversation made = terminal.create();
+    made.title = "From the terminal";
+    terminal.save(made);
+    CHECK(app.conversations().size() == before);
+    app.reload();
+    CHECK(app.conversations().size() == before + 1 && app.conversations().front().id == made.id && app.conversations().front().title == "From the terminal");
+    made.messages.push_back({"user", "One more", {}, ""});
+    terminal.save(made);
+    app.reload();
+    CHECK(app.conversations().front().messages.size() == 1 && app.conversations().front().messages[0].content == "One more");
 }
 
 static void test_tool_groups() {
