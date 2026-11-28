@@ -38,13 +38,17 @@ internal sealed partial class Interactive
         mason chat [--resume] [--endpoint LOOPBACK --model ID]
           Chat with a model, with web, skills and MCP tools. Shares its conversations with Mason Agent's Chat;
           --resume continues the latest one.
-        mason theme [blueprint|evergreen|graphite|kiln|retro-neon]
-          Lists the theme families, or chooses one for the CLI and Mason Agent.
+        mason theme [blueprint|evergreen|graphite|kiln|retro-neon|light|dark|system]
+          Lists the theme families, or chooses one (or light, dark or system) for the CLI and Mason Agent.
+        mason --run-due
+          Starts every scheduled request that is due as a background task, then exits (for Task Scheduler).
         """;
 
     public static async Task<int> Start(string[] args)
     {
+        if (args is ["--run-due"]) return RunDue();
         Term.Start();
+        UseCodeSearch();
         var values = new Dictionary<string, string>(StringComparer.Ordinal); var flags = new HashSet<string>(StringComparer.Ordinal);
         for (int i = 0; i < args.Length; i++)
         {
@@ -277,7 +281,19 @@ internal sealed partial class Interactive
     RoleModels Models()
     {
         var model = new CodeLocalModel(profile!, key, session.Reasoning, value => context = value, progress: value => progress = value);
-        return new RoleModels(model, model, model, host, progress: value => progress = value);
+        // The session's roles, as the app's Model roles page sets them: another connection may review or look at pages.
+        var saved = Connections();
+        CodeLocalModel Role(Guid? id)
+        {
+            if (id == null || id == profile!.Id) return model;
+            var chosen = saved.FirstOrDefault(p => p.Id == id) ?? throw new InvalidOperationException("A model role references a removed connection. Choose another with /roles.");
+            string secret;
+            try { secret = Secret(chosen); } catch (System.Security.Cryptography.CryptographicException) { secret = ""; }
+            return new CodeLocalModel(chosen, secret, session.Reasoning, _ => { }, progress: value => progress = value);
+        }
+        return new RoleModels(model, Role(session.ReviewerModel), Role(session.VisualModel), host, progress: value => progress = value,
+            traceDirectory: session.RecordModelDecisions ? Path.Combine(host, "model-decisions", session.Id.ToString("N")) : null,
+            inspectBrowserFrames: session.VisualModel.HasValue, roleLimit: session.RoleCallLimit);
     }
 
     // ---- running a request -------------------------------------------------------------------------------------
@@ -298,7 +314,8 @@ internal sealed partial class Interactive
         }, () => { }, error => failure = error) { ModelName = profile!.DisplayName };
         var clock = Stopwatch.StartNew(); int frame = 0; bool stopping = false;
         Term.Line();
-        var work = Task.Run(() => engine.Run(session, input, cancellation.Token));
+        // Notes pinned with /comment (or by /review changes) travel with this request, as they do in the app.
+        var work = Task.Run(() => engine.Run(session, input, cancellation.Token, includeReview: session.ReviewComments.Count > 0 && !input.Trim().Equals("/queue", StringComparison.OrdinalIgnoreCase)));
         try
         {
             while (!work.IsCompleted)
@@ -476,7 +493,10 @@ internal sealed partial class Interactive
     {
         int space = input.IndexOf(' ');
         string name = (space < 0 ? input : input[..space]).ToLowerInvariant(), rest = space < 0 ? "" : input[(space + 1)..].Trim();
+        // "/review changes" asks the reviewer; a bare /review stays the permission shortcut it has always been.
+        if (name == "/review" && rest.Length > 0 && rest.ToLowerInvariant() is "changes" or "session") { await ReviewChanges(); return true; }
         if (name is "/read" or "/review" or "/edits" or "/auto") { rest = name[1..]; name = "/permission"; }
+        string verb = rest.Split(' ', 2)[0].ToLowerInvariant(), argument = rest.Contains(' ') ? rest[(rest.IndexOf(' ') + 1)..].Trim() : "";
         switch (name)
         {
             case "/exit" or "/quit": return false;
@@ -492,7 +512,9 @@ internal sealed partial class Interactive
                 Term.Line(Term.Paint(Term.Dim, "  New session · " + ModeName()));
                 if (rest.Length > 0) await Send(rest);
                 return true;
-            case "/sessions" or "/resume": Resume(rest); return true;
+            case "/sessions" or "/resume":
+                if (verb == "delete") DeleteSession(argument); else Resume(rest);
+                return true;
             case "/model":
                 if (rest.Length == 0) await ListModels();
                 else if (await SelectModel(rest)) Term.Line("  Model: " + Term.Paint(Term.Bold, profile!.DisplayName));
@@ -520,7 +542,9 @@ internal sealed partial class Interactive
                 if (permission == CodePermission.Auto && CodeShells.Unavailable(session) is { } reason) Term.Line(Term.Paint(Term.Yellow, "  " + reason));
                 return true;
             case "/status": Status(); return true;
-            case "/theme": Theme(rest); return true;
+            case "/theme":
+                Theme(rest);
+                return true;
             case "/notes": Notes(rest); return true;
             case "/note": Notes(rest.Trim().Length == 0 ? "" : "add " + rest); return true;
             case "/diff" or "/changes": Diff(rest); return true;
@@ -534,13 +558,17 @@ internal sealed partial class Interactive
                 }
                 catch (Exception e) when (e is ArgumentException or InvalidOperationException or IOException) { foreach (var line in e.Message.Split('\n')) Term.Line("  " + line.TrimEnd('\r')); }
                 return true;
-            case "/agent": Agent(rest); return true;
+            case "/agent" or "/agents":
+                if (verb == "new") NewDefinition(true, argument); else Agent(rest);
+                return true;
             case "/commands":
+                if (verb == "new") { NewDefinition(false, argument); return true; }
                 var commands = CodeCustomization.Commands(host, scope.Root);
                 if (commands.Count == 0) Term.Line(Term.Paint(Term.Dim, "  No custom commands. Add Markdown files to .mason/commands."));
                 foreach (var c in commands) Term.Line($"  {Term.Paint(Term.Accent, "/" + c.Name)}  {Term.Paint(Term.Dim, c.Description)}");
                 return true;
             case "/compact":
+                if (verb == "auto") { AutoCompact(argument); return true; }
                 if (profile == null && !await SelectModel(null)) return true;
                 using (var stop = new CancellationTokenSource())
                 {
@@ -566,6 +594,21 @@ internal sealed partial class Interactive
             case "/mcp": await Mcp(rest); return true;
             case "/policy": Lines(CodeProjectPolicy.Command(rest, host, scope.Root)); return true;
             case "/bundle" or "/bundles": Lines(CodeBundles.Command(rest, host)); return true;
+            case "/reasoning": Reasoning(rest); return true;
+            case "/fork": Fork(rest); return true;
+            case "/export": Export(rest); return true;
+            case "/import": Import(rest); return true;
+            case "/schedule" or "/schedules": await Schedule(rest); return true;
+            case "/generation": Generation(rest); return true;
+            case "/roles" or "/role": Roles(rest); return true;
+            case "/task" or "/tasks": TaskCommand(rest); return true;
+            case "/experiment" or "/experiments": await Experiment(rest); return true;
+            case "/milestone" or "/milestones": await Milestone(rest); return true;
+            case "/deliver": await Deliver(rest); return true;
+            case "/comment" or "/comments": await Comment(rest); return true;
+            case "/accept" or "/acceptance": await Accept(); return true;
+            case "/window" or "/windows": Window(rest); return true;
+            case "/embeddings": Embeddings(rest); return true;
         }
         if (CodeCustomization.Expand(CodeCustomization.Commands(host, scope.Root), input) != null) return null;
         Term.Line(Term.Paint(Term.Yellow, "  Unknown command " + name + ".") + Term.Paint(Term.Dim, " /help lists them."));
@@ -576,6 +619,7 @@ internal sealed partial class Interactive
     internal static void Theme(string name)
     {
         name = name.Trim();
+        if (name.ToLowerInvariant() is "light" or "dark" or "system" or "auto") { ThemeMode(name); return; }
         if (name.Length > 0)
         {
             if (!ThemeFamilies.TryFind(name, out var family))
@@ -627,7 +671,7 @@ internal sealed partial class Interactive
             ("/theme [name]", "List the theme families, or choose one (shared with Mason Agent)"),
             ("/exit", "Leave (Ctrl+C twice also works)"),
         ];
-        rows = [.. rows[..^2], .. HarnessHelp, .. rows[^2..]];
+        rows = [.. rows[..^2], .. HarnessHelp, .. WorkflowHelp, ("/theme light|dark|system", "Light or dark, or follow the system (shared with Mason Agent)"), .. rows[^2..]];
         Term.Line();
         foreach (var (command, text) in rows) Term.Line($"  {Term.Paint(Term.Accent, command.PadRight(36))} {Term.Paint(Term.Dim, text)}");
         Term.Line();
