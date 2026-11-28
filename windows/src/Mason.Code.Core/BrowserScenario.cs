@@ -81,6 +81,19 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
         Validate(steps);
         string? captured=null;
         var observations=new List<string>();
+        // Requests the page itself has in flight, such as the order a Checkout click sends. An assertion after an
+        // action waits for them first, so a slow machine is not mistaken for a wrong page.
+        int pending=0;
+        void Started(object? _, IRequest r){Interlocked.Increment(ref pending);}
+        void Ended(object? _, IRequest r){Interlocked.Decrement(ref pending);}
+        page.Request+=Started;page.RequestFinished+=Ended;page.RequestFailed+=Ended;
+        async Task Settle()
+        {
+            var waited=System.Diagnostics.Stopwatch.StartNew();
+            await Task.Delay(50,ct);
+            while(Volatile.Read(ref pending)>0 && waited.ElapsedMilliseconds<15000) await Task.Delay(50,ct);
+        }
+        try {
         for(int index=0;index<steps.Length;index++)
         {
             var step=steps[index];
@@ -94,10 +107,10 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
             var node=page.Locator("css="+step.Target).Filter(new(){Visible=true});
             try {
                 if(step.Op=="reload") { await page.ReloadAsync(new(){WaitUntil=WaitUntilState.Load}); continue; }
-                if(step.Op=="click") { await node.ClickAsync(); continue; }
-                if(step.Op=="double_click") { await node.DblClickAsync(); continue; }
-                if(step.Op=="click_if_enabled") { if(await node.IsEnabledAsync())await node.ClickAsync(); continue; }
-                if(step.Op=="fill") { await node.FillAsync(step.Value); await node.PressAsync("Tab"); continue; }
+                if(step.Op=="click") { await node.ClickAsync(); await Settle(); continue; }
+                if(step.Op=="double_click") { await node.DblClickAsync(); await Settle(); continue; }
+                if(step.Op=="click_if_enabled") { if(await node.IsEnabledAsync()){await node.ClickAsync(); await Settle();} continue; }
+                if(step.Op=="fill") { await node.FillAsync(step.Value); await node.PressAsync("Tab"); await Settle(); continue; }
             } catch(Exception e) when(e is TimeoutException or PlaywrightException) {
                 throw new InvalidDataException($"Step {index+1}, {step.Op} {step.Target} {step.Value}: {e.Message.Split('\n')[0]}",e);
             }
@@ -131,6 +144,7 @@ public sealed record BrowserContract(int Version, string? Application, BrowserSc
             observations.Add($"{step.Op} {step.Target} = {Clip(actual)}");
         }
         return string.Join("; ",observations);
+        } finally { page.Request-=Started;page.RequestFinished-=Ended;page.RequestFailed-=Ended; }
     }
     static string Clip(string s)
     {
