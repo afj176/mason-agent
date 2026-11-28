@@ -280,7 +280,7 @@ std::string transcript(const std::vector<ChatMessage>& messages, size_t from, si
 bool needed(int prompt_tokens, int window) { return window > 0 && prompt_tokens > 0 && prompt_tokens >= window * kThreshold; }
 bool needed(const Session& session, int window) { return needed(session.prompt_tokens, window); }
 
-bool full(int prompt_tokens, int window) { return window > 0 && prompt_tokens > 0 && window - prompt_tokens < std::max(128, window / 20); }
+bool full(int prompt_tokens, int window) { return window > 0 && prompt_tokens > 0 && window - prompt_tokens < 128; }
 
 std::pair<bool, std::string> auto_text(const std::string& argument, bool current, bool chat) {
     const std::string choice = to_lower(trim(argument));

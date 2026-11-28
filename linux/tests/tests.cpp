@@ -696,8 +696,29 @@ static void test_tool_refusal() {
     chat::send(conversation, "Again", {}, model, store, nullptr, nullptr, &tools);
     CHECK(model.seen_tools.size() == 3 && model.seen_tools[2].empty());
     CHECK(chat::refuses_tools(ModelUnavailable("The model server returned HTTP 501.", 501)));
-    CHECK(chat::refuses_tools(ModelUnavailable("The model server returned HTTP 500. tools are not supported", 500)));
-    CHECK(!chat::refuses_tools(ModelUnavailable("The model server returned HTTP 500.", 500)));
+    CHECK(chat::refuses_tools(ModelUnavailable("The model server returned HTTP 422. Unsupported parameter: functions", 422)));
+    CHECK(!chat::refuses_tools(ModelUnavailable("The model server returned HTTP 500. tools are not supported", 500)));
+    CHECK(!chat::refuses_tools(ModelUnavailable("The model server returned HTTP 400. context length exceeded", 400)));
+
+    // A plain 400 is the error the user sees, and tools stay on.
+    struct TooLongModel : ChatModel {
+        std::string id = "too-long-" + new_id();
+        int calls = 0;
+        std::string name() const override { return id; }
+        ModelReply complete(const std::vector<ChatMessage>&, const std::vector<ToolSpec>&, const std::function<void(const std::string&)>&, const CancelToken&) override {
+            calls++;
+            throw ModelUnavailable("The model server returned HTTP 400. {\"error\":\"context length exceeded\"}", 400);
+        }
+    } too_long;
+    ChatConversation other = store.create();
+    std::string shown;
+    try {
+        chat::send(other, "Hello", {}, too_long, store, nullptr, nullptr, &tools);
+    } catch (const ModelUnavailable& error) {
+        shown = error.what();
+    }
+    CHECK(shown.find("context length exceeded") != std::string::npos && too_long.calls == 1);
+    CHECK(chat::calls_tools(too_long) && !chat::offered(other, tools).empty());
     CHECK(!chat::refuses_tools(Error("tool")));  // not an answer from the server
 }
 

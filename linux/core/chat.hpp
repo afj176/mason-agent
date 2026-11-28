@@ -112,7 +112,8 @@ constexpr const char* kNoTools = "This model can't call tools.";
 bool calls_tools(const ChatModel& model);
 /// Remembers, for this run of the app or the CLI, that a connection refuses tools.
 void mark_cannot_call_tools(const ChatModel& model);
-/// A server refuses tools when it answers HTTP 400 or 501, or its error mentions tools.
+/// A server refuses tools when it answers HTTP 501, or HTTP 400 or 422 with an error about tools or functions. Any other
+/// error, such as a prompt that is too long, is not a refusal and leaves tools on.
 bool refuses_tools(const std::exception& error);
 /// The tools a conversation offers now: what its switches allow, less the web when the computer's network setting is
 /// off, skills when there are none and MCP when no server is in use.

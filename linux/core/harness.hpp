@@ -90,7 +90,7 @@ bool needed(int prompt_tokens, int window);
 constexpr const char* kFullMessage = "Coding context is full and automatic compaction is off. Originals are retained; compact manually or load a larger context.";
 /// What a chat stops with in the same case. Chat has no manual compaction.
 constexpr const char* kChatFullMessage = "Chat context is full and automatic compaction is off. Originals are retained; start a new chat or load a larger context.";
-/// True when the last request left no room to work: under 5% of the context (and at least 128 tokens) is free.
+/// True when the last request left no room to work: fewer than 128 tokens of the context are free (the Windows rule).
 bool full(int prompt_tokens, int window);
 /// /compact auto [on|off]: the setting after the command (`current` when none is given) and what to print.
 std::pair<bool, std::string> auto_text(const std::string& argument, bool current, bool chat = false);

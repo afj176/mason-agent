@@ -258,7 +258,9 @@ void mark_cannot_call_tools(const ChatModel& model) {
 bool refuses_tools(const std::exception& error) {
     const auto* answered = dynamic_cast<const ModelUnavailable*>(&error);
     if (!answered || answered->status == 0) return false;
-    return answered->status == 400 || answered->status == 501 || to_lower(answered->what()).find("tool") != std::string::npos;
+    if (answered->status == 501) return true;
+    const std::string text = to_lower(answered->what());
+    return (answered->status == 400 || answered->status == 422) && (text.find("tool") != std::string::npos || text.find("function") != std::string::npos);
 }
 
 namespace {
