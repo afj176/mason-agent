@@ -88,15 +88,13 @@ struct ProjectPane: View {
                 Section {
                     Toggle("Run the project's hooks", isOn: Binding(get: { policy?.hooks ?? false }, set: { run("/policy", $0 ? "hooks on" : "hooks off") }))
                     LabeledContent("Tools switched off", value: (policy?.disabledTools.isEmpty ?? true) ? "None" : (policy?.disabledTools ?? []).joined(separator: ", "))
-                    CommandField(prompt: "run_shell start_job", label: "Switch Off") { run("/policy", "disable " + $0) }
-                    if !(policy?.disabledTools.isEmpty ?? true) { CommandField(prompt: "Tools to switch back on", label: "Switch On") { run("/policy", "enable " + $0) } }
                     LabeledContent("Workflows that may run", value: policy?.workflows.map { $0.isEmpty ? "None" : $0.joined(separator: ", ") } ?? "Any")
                     CommandField(prompt: "test lint  (or: any)", label: "Set") { run("/policy", "workflows " + $0) }
                     if policy != nil { Button("Remove Policy") { run("/policy", "clear") } }
                 } header: {
                     Text("Project policy")
                 } footer: {
-                    Text("Limits for this project, kept outside it so nothing in the project can change them. With hooks on, in Auto, workflows marked afterEdit run after each edit and ones marked beforeVerify must pass before a request may finish.")
+                    Text("Limits for this project, kept outside it so nothing in the project can change them. Switch tools on or off under Tools, and skills under Agents. With hooks on, in Auto, workflows marked afterEdit run after each edit and ones marked beforeVerify must pass before a request may finish.")
                 }
 
                 Section {
@@ -186,11 +184,10 @@ struct ProjectPane: View {
     func run(_ name: String, _ rest: String, show: Bool = false) { model.runControl(name, rest, show: show, then: load) }
 }
 
-/// The models in each role, and what Auto does about the network.
+/// The models in each role. The internet setting lives under Tools.
 struct RolesPane: View {
     @EnvironmentObject var model: AppModel
     @State private var roles = ModelRoles()
-    @State private var asks = false
 
     var home: URL { model.store?.folder.deletingLastPathComponent() ?? DataHome.url }
 
@@ -214,19 +211,12 @@ struct RolesPane: View {
                 Text("Other local models beside the one doing the work. A reviewer reads what a request changed before it may finish, and for the Review button. A visual model looks at pictures of a window.")
             }
             GenerationSection()
-            Section {
-                Toggle("Ask when a command needs a host", isOn: Binding(get: { asks }, set: { run("/network", $0 ? "computer ask" : "computer off") }))
-            } header: {
-                Text("Network in Auto")
-            } footer: {
-                Text("The setting for this computer; a session can choose its own with /network. Commands in the sandbox have no network unless this is on. A sandboxed command can then ask for one host over HTTPS, and your answer lasts for that request. This computer, your local network and plain HTTP stay out of reach.")
-            }
         }
         .formStyle(.grouped)
         .onAppear(perform: load)
     }
 
-    func load() { roles = Roles.load(home: home); asks = NetworkSettings.asks(home: home) }
+    func load() { roles = Roles.load(home: home) }
     func run(_ name: String, _ rest: String) { model.runControl(name, rest, then: load) }
 }
 
